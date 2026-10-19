@@ -1817,6 +1817,11 @@ async def google_callback(request: Request):
         )
 
 
+@app.get("/")
+def root():
+    return {"status": "ok", "app": "PeculiarAI Backend API", "health": "/health"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

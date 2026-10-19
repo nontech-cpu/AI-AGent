@@ -18,8 +18,8 @@ const CONFIG = {
     if (isLocal) {
       return 'http://127.0.0.1:8000';
     }
-    // When deployed on Netlify or public domain, use your Render backend URL (or ngrok fallback)
-    return 'https://tightly-barbell-creamed.ngrok-free.dev';
+    // When deployed on Netlify or public domain, use your live Render backend URL
+    return 'https://peculiar-ai-backend.onrender.com';
   })(),
 
   // App Metadata
