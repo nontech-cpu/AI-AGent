@@ -5,7 +5,7 @@ import json
 import hmac
 import base64
 import hashlib
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -34,6 +34,30 @@ GOOGLE_SCOPES = [
 STATE_MAX_AGE = 600  # 10 minutes
 
 
+def clean_public_base_url(url: str | None = None) -> str:
+    """Normalize and sanitize the public base URL.
+
+    Strips any accidental query parameters (e.g. ?utm_source=chatgpt.com),
+    fragments (#...), or trailing slashes copied from browser address bars.
+    """
+    raw = (url or os.getenv("PUBLIC_BASE_URL", "") or PUBLIC_BASE_URL).strip()
+    if not raw:
+        return ""
+    if not raw.startswith(("http://", "https://")):
+        raw = "https://" + raw
+
+    parsed = urlparse(raw)
+    base_path = parsed.path.rstrip("/")
+    if base_path.endswith("/google/callback"):
+        base_path = base_path[:-len("/google/callback")]
+    elif base_path.endswith("/callback"):
+        base_path = base_path[:-len("/callback")]
+
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc
+    return f"{scheme}://{netloc}{base_path}".rstrip("/")
+
+
 def _check_config():
     missing = []
 
@@ -45,7 +69,7 @@ def _check_config():
         missing.append("GOOGLE_TOKEN_KEY")
     if not WEBHOOK_SECRET:
         missing.append("WEBHOOK_SECRET")
-    if not PUBLIC_BASE_URL:
+    if not clean_public_base_url():
         missing.append("PUBLIC_BASE_URL")
 
     if missing:
@@ -91,7 +115,8 @@ def decrypt_token(encrypted_token: str) -> str:
 def callback_url() -> str:
     """Must exactly match the Google Cloud OAuth redirect URI."""
     _check_config()
-    return f"{PUBLIC_BASE_URL}/google/callback"
+    clean_base = clean_public_base_url()
+    return f"{clean_base}/google/callback"
 
 
 def _state_signature(payload: str) -> str:

@@ -35,6 +35,7 @@ from voice import transcribe_telegram_voice
 from google_services import send_email as google_send_email, upload_text_file as google_upload_text_file, create_meeting as google_create_meeting, list_drive_folders
 from google_auth import (
     build_auth_url,
+    callback_url,
     verify_state,
     verify_state_payload,
     exchange_code,
@@ -1688,6 +1689,26 @@ async def web_google_disconnect(request: Request):
         delete_google_token(int(user_row[0]))
 
     return {"disconnected": True, "message": "Google account disconnected successfully"}
+
+
+@app.get("/web/google/diagnostic")
+def web_google_diagnostic():
+    """Safe diagnostic endpoint showing the active Google OAuth redirect URI without exposing secrets."""
+    try:
+        cb_uri = callback_url()
+        configured = True
+        err = None
+    except Exception as exc:
+        cb_uri = None
+        configured = False
+        err = str(exc)
+
+    return {
+        "status": "ok",
+        "redirect_uri": cb_uri,
+        "is_configured": configured,
+        "error": err,
+    }
 
 
 @app.get("/google/callback", response_class=HTMLResponse)
