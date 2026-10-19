@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — PeculiarAI</title>
+  <meta name="description" content="PeculiarAI Privacy Policy disclosing data collection, Google API user data usage, Telegram verification, and security practices.">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/responsive.css">
+</head>
+<body>
+
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="container nav-inner">
+      <a href="index.html" class="brand-link" aria-label="PeculiarAI Home">
+        <span class="brand-icon">✦</span>
+        <span>PeculiarAI</span>
+      </a>
+
+      <div class="nav-tagline">
+        A little less chaos. A lot more you.
+      </div>
+
+      <div>
+        <a href="index.html" class="badge-beta" style="text-decoration: none;">HOME</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Legal Body -->
+  <main class="container">
+    <article class="legal-content">
+      <h1>Privacy Policy</h1>
+      <div class="meta-info">
+        <strong>Effective Date:</strong> October 17, 2026 • 
+        <strong>Production URL:</strong> <code>https://peculiarai.shapebytes.com/privacy</code> • 
+        <strong>Application:</strong> PeculiarAI
+      </div>
+
+      <p>
+        At <strong>PeculiarAI</strong> (referred to as "we", "our", or "the Service"), accessible from <code>https://peculiarai.shapebytes.com</code>, we respect your privacy and are committed to protecting personal data. This Privacy Policy outlines our transparent data practices, detailing what information is collected, how it is used, how Google Workspace data is processed, and your rights regarding your data.
+      </p>
+
+      <h2>1. Information We Collect</h2>
+      <p>We collect only the minimum information necessary to provide our multi-channel conversational assistant:</p>
+      <ul>
+        <li><strong>Phone Number & OTP Data:</strong> When initiating authentication via our web interface, you provide your phone number. A temporary verification token (expiring in 600 seconds) is generated to match verification requests with our Telegram verification bot (<code>@PeculiarAI_Verify_Bot</code>).</li>
+        <li><strong>Telegram Information:</strong> Your Telegram User ID and conversation prompts when interacting with PeculiarAI bots.</li>
+        <li><strong>Conversational Chat Queries:</strong> Text messages and prompts submitted through the web interface (<code>/web/chat</code>) or Telegram bot to generate real-time AI responses.</li>
+        <li><strong>Technical Logs:</strong> Server logs including IP addresses, browser user-agent, request timestamps, and response status codes for system performance monitoring, debugging, and abuse prevention.</li>
+      </ul>
+
+      <h2>2. Google User Data & OAuth Scopes</h2>
+      <p>
+        PeculiarAI offers optional integrations with Google Workspace to facilitate scheduling and email drafting. When you explicitly connect your Google Account, we request access strictly to the following scopes:
+      </p>
+
+      <div style="background: rgba(15, 23, 42, 0.6); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin: 1.5rem 0;">
+        <h4 style="color: var(--text-primary); margin-bottom: 0.5rem;">A. Google Calendar Events (<code>calendar.events</code>)</h4>
+        <p style="font-size: 0.95rem; margin-bottom: 0.5rem;">
+          <strong>Scope URI:</strong> <code>https://www.googleapis.com/auth/calendar.events</code><br>
+          <strong>Data Accessed:</strong> Calendar event titles, start/end dates and times, event descriptions, and attendee lists.<br>
+          <strong>Purpose:</strong> To check your availability and schedule, update, or organize calendar appointments when you explicitly ask the assistant to schedule an event.
+        </p>
+
+        <h4 style="color: var(--text-primary); margin: 1.25rem 0 0.5rem;">B. Gmail Compose (<code>gmail.compose</code>)</h4>
+        <p style="font-size: 0.95rem; margin-bottom: 0.5rem;">
+          <strong>Scope URI:</strong> <code>https://www.googleapis.com/auth/gmail.compose</code><br>
+          <strong>Data Accessed:</strong> Outgoing email subject, recipient address, and message body drafted upon your request.<br>
+          <strong>Purpose:</strong> To compose email drafts or dispatch messages per your explicit instruction. PeculiarAI does <em>not</em> read your personal inbox archive or request full mailbox access.
+        </p>
+
+        <h4 style="color: var(--text-primary); margin: 1.25rem 0 0.5rem;">C. Basic Identity (<code>openid</code>, <code>userinfo.email</code>)</h4>
+        <p style="font-size: 0.95rem; margin-bottom: 0;">
+          <strong>Purpose:</strong> To verify your Google account identity and link your authorized integration to your PeculiarAI profile.
+        </p>
+      </div>
+
+      <h2>3. Google API Limited Use Disclosure</h2>
+      <p>
+        PeculiarAI's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: underline;">Google API Services User Data Policy</a>, including the Limited Use requirements:
+      </p>
+      <ul>
+        <li><strong>No Selling of Data:</strong> We never sell Google user data to third parties, data brokers, or advertising networks.</li>
+        <li><strong>No Advertising:</strong> Google user data is never used or transferred for serving advertisements, retargeting, or interest-based profiling.</li>
+        <li><strong>No AI Model Training on User Data:</strong> Google user data received through Google APIs is <strong>never</strong> used to train, retrain, or improve generalized or foundational artificial intelligence or machine learning models.</li>
+        <li><strong>Human Oversight Restrictions:</strong> Human beings do not read your Google user data unless: (a) you have provided explicit consent for specific troubleshooting, (b) it is necessary for security purposes (such as investigating abuse), or (c) required by applicable law.</li>
+      </ul>
+
+      <h2>4. Storage, Encryption & Security</h2>
+      <p>
+        We employ industry-standard administrative, physical, and technical controls to safeguard user information:
+      </p>
+      <ul>
+        <li><strong>Encrypted OAuth Tokens:</strong> Google OAuth refresh tokens are encrypted at rest using strong AES encryption on our backend servers. Tokens are never exposed to frontend JavaScript or client-side storage.</li>
+        <li><strong>HTTPS Transport:</strong> All data transmitted between your browser, our API backend, and external providers is encrypted in transit using TLS 1.3 / HTTPS.</li>
+        <li><strong>Ephemeral OTP Verification:</strong> Verification tokens generated during phone authentication expire automatically after 10 minutes (600 seconds) and are permanently invalidated once used.</li>
+      </ul>
+
+      <h2>5. Data Retention & Deletion</h2>
+      <p>
+        We retain your information only as long as necessary to provide the active services:
+      </p>
+      <ul>
+        <li><strong>Session & Chat Data:</strong> Web chat messages are kept temporarily during active sessions. Users can clear local conversation history at any time using the "Clear" button in the dashboard.</li>
+        <li><strong>Disconnection & Revocation:</strong> You can disconnect your Google integration at any time by visiting <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: underline;">Google Account Permissions</a>. Upon revocation, our backend will permanently purge your stored tokens upon request.</li>
+        <li><strong>Account Deletion:</strong> To request complete deletion of your associated phone number, chat records, and integration credentials, email us at <a href="mailto:support@peculiarai.shapebytes.com" style="color: var(--primary);">support@peculiarai.shapebytes.com</a>. Requests are processed within 30 days.</li>
+      </ul>
+
+      <h2>6. Third-Party Service Providers</h2>
+      <p>We work with trusted infrastructure providers to deliver the PeculiarAI service:</p>
+      <ul>
+        <li><strong>Cloud Hosting & Compute:</strong> Fast server hosting providing API execution and encrypted database persistence.</li>
+        <li><strong>Telegram Bot API:</strong> Telegram FZ-LLC for delivering authentication codes and hosting interactive conversational bot interfaces.</li>
+        <li><strong>AI Model Inference Providers:</strong> Enterprise AI processing APIs to generate text responses. Prompt data sent to inference providers is processed under zero-data-retention and non-training terms.</li>
+      </ul>
+
+      <h2>7. Cookies & Local Storage</h2>
+      <p>
+        PeculiarAI does not use third-party tracking cookies or advertising pixels. We utilize standard browser <code>localStorage</code> solely for functional preferences: saving your dark/light theme choice, your local session ID, and your verification state.
+      </p>
+
+      <h2>8. Changes to this Privacy Policy</h2>
+      <p>
+        We may update this Privacy Policy periodically to reflect technical enhancements or regulatory changes. The current version will always be maintained at <code>https://peculiarai.shapebytes.com/privacy</code> with the effective revision date indicated at the top.
+      </p>
+
+      <h2>9. Contact Information & Privacy Requests</h2>
+      <p>
+        If you have any questions, privacy concerns, or wish to exercise your data subject rights, please contact our data protection team:
+      </p>
+      <div style="background: rgba(15, 23, 42, 0.6); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); font-size: 0.95rem;">
+        <strong>PeculiarAI Privacy Team</strong><br>
+        Email: <a href="mailto:support@peculiarai.shapebytes.com" style="color: var(--primary);">support@peculiarai.shapebytes.com</a><br>
+        Website: <a href="https://peculiarai.shapebytes.com" style="color: var(--primary);">https://peculiarai.shapebytes.com</a><br>
+        <em>Company Details: [Shapebytes Technologies — Registered entity details to be finalized upon domain configuration]</em>
+      </div>
+    </article>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-bottom" style="border: none; padding-top: 0;">
+      <div>© 2026 PeculiarAI • All rights reserved.</div>
+      <div style="display: flex; gap: 1.5rem;">
+        <a href="index.html">Home</a>
+        <a href="terms.html">Terms of Service</a>
+        <a href="contact.html">Contact</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>

@@ -1,17 +1,1917 @@
 import os
+import re
+import json
+import secrets
+import sqlite3
+import hashlib
+import string
+import asyncio
 import httpx
+from collections import deque
+from contextlib import asynccontextmanager
+from datetime import date, datetime, time, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+
+from db import (give_consent, has_consent, set_persona, get_persona,
+                set_categories, get_categories, save_memory, list_memories,
+                items_between, delete_user, export_data, add_reminders,
+                get_pending_reminders, mark_sent, create_email_link,
+                get_link_by_email, get_linked_email, verify_email_link,
+                remove_email_link, ensure_user, get_state, set_state,
+                save_google_token, get_google_token, delete_google_token,
+                find_meetings_before, find_meetings_at_times, delete_memory_items, engine, text)
+from categories import CATEGORIES, DEFAULTS
+from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
+                 is_explicit_calendar_action, classify_yes_no_any_language)
+from nlu import yes_no, match_persona, PERSONA_LABELS
+from timing import IST, build_plan, fmt_when, event_over
+from inbox import fetch_unseen
+from lang import (reply_lang, detect_text_language, language_from_whisper,
+                  get_language, set_language, localize)
+from voice import transcribe_telegram_voice
+from google_services import send_email as google_send_email, upload_text_file as google_upload_text_file, create_meeting as google_create_meeting, list_drive_folders
+from google_auth import (
+    build_auth_url,
+    verify_state,
+    verify_state_payload,
+    exchange_code,
+    get_google_email,
+    encrypt_token,
+    decrypt_token,
+    refresh_access_token,
+)
 
 load_dotenv()
+# Reverse-proxy deployment note: run this FastAPI app on port 8001; proxy.py owns port 8000.
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SECRET = os.getenv("WEBHOOK_SECRET")
+BOT_EMAIL = os.getenv("BOT_EMAIL")
+API = f"https://api.telegram.org/bot{TOKEN}"
 
-app = FastAPI()
+MAX_VOICE_SECONDS = 60
+
+EMAIL_FIND = re.compile(r"[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+")
+EMAIL_OK = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Natural-language Google connection requests (no slash-command required).
+GOOGLE_CONNECT_RE = re.compile(
+    r"\b(?:connect|link|integrate|authorize|give)\b.{0,35}\bgoogle\b"
+    r"|\bgoogle\b.{0,35}\b(?:connect|link|integrate|authorize|access)\b",
+    re.IGNORECASE,
+)
+
+# Telegram jab retry kare to wahi update dobara process na ho
+SEEN_UPDATES = deque(maxlen=1000)
+# Background tasks ko zinda rakhne ke liye
+BG_TASKS = set()
+# Pending Google actions are held until explicit yes/no confirmation.
+PENDING_GOOGLE_ACTIONS = {}
+
+# ---------- Texts ----------
+
+WELCOME_CONSENT = (
+    "Hi! I'm your personal assistant. I remember important things like bills, "
+    "bookings and meetings, and remind you at the right time.\n\n"
+    "A few promises:\n"
+    "• I keep only short details (title, amount, date), never your full messages.\n"
+    "• I never ask for OTPs, passwords or card numbers.\n"
+    "• Your messages and voice notes are processed by an AI provider (Groq) "
+    "to understand them. Voice notes are not saved on my side.\n"
+    "• You can delete everything anytime.\n\n"
+    "Shall we continue? Reply yes or no."
+)
+
+PERSONA_TEXT = (
+    "What do you do? This helps me track the right things for you.\n\n"
+    "1. Job\n2. Housework\n3. Business\n4. Student\n5. Other\n\n"
+    "Reply with a number or just type it."
+)
+
+HELP_TEXT = (
+    "I can remember important things and remind you at the right time. Try:\n"
+    "• Electricity bill 1200 due on 25 Oct\n"
+    "• Meeting tomorrow at 5 PM\n"
+    "• What's on my plate today? (or tomorrow, this week)\n"
+    "• Show everything you remember\n"
+    "• Stop tracking work, or track travel too\n"
+    "• Link my email\n"
+    "• Send my data, or delete my data\n"
+    "• Or just send a voice note in your own language 🎙️"
+)
+
+
+# ---------- Telegram helpers (WhatsApp ke time sirf ye 3 badlenge) ----------
+
+async def tg(method, payload):
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{API}/{method}", json=payload)
+
+
+async def say_raw(chat_id, text):
+    """Bina translate kiye bhejta hai (jaise voice ka transcript)."""
+    await tg("sendMessage", {"chat_id": chat_id, "text": text})
+
+
+async def say(chat_id, text):
+    """User ki language me (agar English nahi hai) bhejta hai."""
+    text = await localize(text, reply_lang.get())
+    await tg("sendMessage", {"chat_id": chat_id, "text": text})
+
+
+async def send_file(chat_id, filename, content_bytes, caption):
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{API}/sendDocument",
+            data={"chat_id": chat_id, "caption": caption},
+            files={"document": (filename, content_bytes, "application/json")},
+        )
+
+
+# ---------- Saving items ----------
+
+async def save_item_flow(chat_id, item):
+    # Rule: sirf wahi category jo user ne on rakhi hai
+    if item["category"] not in get_categories(chat_id):
+        await say(chat_id, f"This looks like a {item['category']} item, but I'm not tracking "
+                           "that right now. Say 'track " + item["category"] + "' if you want me to.")
+        return
+
+    item_id = save_memory(chat_id, item["category"], item["title"], item["amount"],
+                          item["due_date"], item["due_time"])
+    plan = build_plan(item["due_date"], item["due_time"])
+    if plan["reminders"] and item_id:
+        add_reminders(item_id, plan["reminders"])
+
+    parts = [f"Saved ✅ {CATEGORIES[item['category']]}: {item['title']}"]
+    if item["amount"] is not None:
+        parts.append(f"Amount: {item['amount']}")
+    if item["due_date"]:
+        parts.append(f"Date: {item['due_date']}")
+    if item["due_time"]:
+        parts.append(f"Time: {item['due_time'].strftime('%H:%M')}")
+
+    if plan["status"] == "scheduled":
+        now = datetime.now(IST)
+        when = ", ".join(fmt_when(at, now) for at, _ in plan["reminders"])
+        parts.append(f"I'll remind you: {when}")
+    elif plan["status"] == "past":
+        parts.append("That time has already passed, so I won't set a reminder.")
+    elif plan["status"] == "none" and item["due_date"]:
+        parts.append("No reminder was set (the usual reminder times have already passed).")
+    await say(chat_id, "\n".join(parts))
+
+    # Bahut kareeb ka event: turant alert
+    if plan["status"] == "urgent":
+        await say(chat_id, f"⚡ Heads up! {item['title']} starts in about "
+                           f"{plan['minutes']} min.")
+
+
+async def handle_memory_text(chat_id, text):
+    # Emails ke liye: sirf item nikalna, koi command nahi
+    if is_sensitive(text):
+        await say(chat_id, "That looks sensitive (OTP, password or card number). "
+                           "I never store those, so I ignored it.")
+        return
+    try:
+        item = await extract(text)
+    except Exception as e:
+        print("extract error:", e)
+        await say(chat_id, "Sorry, something went wrong. Please try again.")
+        return
+    if item is None:
+        await say(chat_id, "I only remember important things like bills, payments, "
+                           "bookings, orders, meetings and appointments. "
+                           "This one wasn't saved.")
+        return
+    await save_item_flow(chat_id, item)
+
+
+# ---------- Showing things ----------
+
+def _as_date(value):
+    """Normalize dates from the LLM/JSON state or SQL driver to date objects."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        # Accept ISO dates and ISO datetimes; reject ambiguous guesses.
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+        for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+    raise ValueError(f"Unsupported date value: {value!r}")
+
+
+def _as_time(value):
+    """Normalize SQL/LLM time values without assuming a particular driver type."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.time()
+    if isinstance(value, time):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        for fmt in ("%H:%M:%S.%f", "%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M%p"):
+            try:
+                return datetime.strptime(raw, fmt).time()
+            except ValueError:
+                continue
+    raise ValueError(f"Unsupported time value: {value!r}")
+
+
+def day_label(d, today):
+    d = _as_date(d)
+    today = _as_date(today)
+    if d == today:
+        return "Today"
+    if d == today + timedelta(days=1):
+        return "Tomorrow"
+    if d == today - timedelta(days=1):
+        return "Yesterday"
+    return d.strftime("%a %d %b")
+
+
+async def show_range(chat_id, start, end, meeting_only=False):
+    now = datetime.now(IST)
+    today = now.date()
+    # understand() returns JSON, so dates commonly arrive as strings such as
+    # "2026-10-16". Normalize before formatting/comparing them.
+    try:
+        start = _as_date(start)
+        end = _as_date(end)
+    except (TypeError, ValueError) as exc:
+        print("show_range invalid date:", repr(exc), "start=", repr(start), "end=", repr(end))
+        await say(chat_id, "Date samajhne mein problem hui. Please 'aaj ke reminders' ya 'kal ke reminders' dobara bolo.")
+        return
+    rows = items_between(chat_id, start, end)
+    normalized_rows = []
+    for row in rows:
+        try:
+            due_date = _as_date(row[0])
+            due_time = _as_time(row[1])
+            normalized_rows.append((due_date, due_time, row[2], row[3], row[4]))
+        except (TypeError, ValueError) as exc:
+            # Do not crash the entire agenda because one legacy row is malformed.
+            print("Skipping malformed reminder row:", repr(row), repr(exc))
+    rows = normalized_rows
+    if meeting_only:
+        rows = [row for row in rows if row[2] == "appointments" and re.search(r"meeting|metting|meetting|meetng|appointment|call", str(row[3]), re.I)]
+    single = start == end
+    label = day_label(start, today) if single else f"{start:%d %b} to {end:%d %b}"
+    if not rows:
+        if meeting_only:
+            await say(chat_id, "I couldn't find a matching saved meeting in that date range. I won't guess a time.")
+        else:
+            await say(chat_id, f"Nothing saved for {label.lower() if single else label}.")
+        return
+
+    lines = [f"📅 {label}:" if not single else f"📅 {label} ({start:%d %b}):"]
+    current = None
+    for due_date, due_time, category, title, amount in rows:
+        if not single and due_date != current:
+            current = due_date
+            lines.append(f"\n{day_label(due_date, today)} ({due_date:%d %b}):")
+        if due_time:
+            over = datetime.combine(due_date, due_time, tzinfo=IST) <= now
+            icon = "✅" if over else "⏳"
+            when = due_time.strftime("%H:%M")
+        else:
+            icon = "📌"
+            when = "All day"
+        line = f"{icon} {when} - {CATEGORIES.get(category, category)}: {title}"
+        if amount is not None:
+            line += f" | {amount}"
+        lines.append(line)
+    await say(chat_id, "\n".join(lines))
+
+
+async def show_memories(chat_id):
+    rows = list_memories(chat_id)
+    if not rows:
+        await say(chat_id, "I haven't saved anything yet. Try telling me "
+                           "'Electricity bill 1200 due on 25 Oct'.")
+        return
+    lines = ["Here's what I remember:"]
+    for category, title, amount, due, due_time in rows:
+        line = f"• {CATEGORIES.get(category, category)}: {title}"
+        if amount is not None:
+            line += f" | {amount}"
+        if due:
+            line += f" | {due}"
+        if due_time:
+            line += f" {due_time.strftime('%H:%M')}"
+        lines.append(line)
+    await say(chat_id, "\n".join(lines))
+
+
+async def send_export(chat_id):
+    data = export_data(chat_id)
+    if data is None:
+        await say(chat_id, "I have no data about you.")
+        return
+    linked = get_linked_email(chat_id)
+    data["linked_email"] = linked[0] if linked else None
+    content = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    await send_file(chat_id, "my_data.json", content.encode("utf-8"),
+                    "Here is all the data I have about you.")
+
+
+# ---------- Onboarding ----------
+
+async def ask_persona(chat_id):
+    await say(chat_id, PERSONA_TEXT)
+
+
+async def apply_persona(chat_id, persona):
+    set_persona(chat_id, persona)
+    set_categories(chat_id, DEFAULTS[persona])
+    set_state(chat_id, None)
+    names = ", ".join(CATEGORIES[c] for c in DEFAULTS[persona])
+    await say(chat_id,
+              f"Great, you're set up as {PERSONA_LABELS[persona]}. I'll keep track of: {names}.\n\n"
+              "Just tell me things to remember, like 'Electricity bill 1200 due on 25 Oct' "
+              "or 'Meeting tomorrow at 5 PM'. Ask 'what's on today?' anytime. "
+              "To change what I track, say something like 'stop tracking work'. "
+              "You can also send voice notes in your own language.")
+
+
+async def handle_persona_answer(chat_id, text):
+    persona, how = match_persona(text)
+    if persona and how == "exact":
+        await apply_persona(chat_id, persona)
+        return
+    if persona and how == "typo":
+        set_state(chat_id, "persona_confirm", persona)
+        await say(chat_id, "I think there's a spelling mistake. "
+                           f"Did you mean {PERSONA_LABELS[persona]}? (yes/no)")
+        return
+    try:
+        guessed = await guess_persona(text)
+    except Exception as e:
+        print("persona error:", e)
+        guessed = None
+    if guessed:
+        await apply_persona(chat_id, guessed)
+        return
+    await say(chat_id, "Sorry, I didn't catch that.\n\n" + PERSONA_TEXT)
+
+
+# ---------- Settings via natural language ----------
+
+async def change_categories(chat_id, on, off):
+    if not on and not off:
+        await say(chat_id, "Tell me what to change, like 'stop tracking work' or "
+                           "'track travel too'. I can track: "
+                           + ", ".join(CATEGORIES.values()) + ".")
+        return
+    enabled = get_categories(chat_id)
+    for c in on:
+        if c not in enabled:
+            enabled.append(c)
+    enabled = [c for c in enabled if c not in off]
+    set_categories(chat_id, enabled)
+    names = ", ".join(CATEGORIES[c] for c in enabled) or "nothing"
+    await say(chat_id, f"Done. I'm now tracking: {names}.")
+
+
+# ---------- Email ----------
+
+async def start_email_link(chat_id, addr):
+    if not BOT_EMAIL:
+        await say(chat_id, "The email feature is not set up yet.")
+        return
+    linked = get_linked_email(chat_id)
+    if linked and linked[1]:
+        verified_addr = linked[0]
+        bot_email = BOT_EMAIL or "bot771347@gmail.com"
+        await say(chat_id, f"✅ Your email is already linked: {verified_addr}. You can now forward or CC your bills, bookings and tickets to {bot_email}.")
+        return
+    if not EMAIL_OK.match(addr) or addr == BOT_EMAIL.lower():
+        await say(chat_id, "That doesn't look like a valid email address. "
+                           "Say 'link my email' to try again.")
+        return
+    existing = get_link_by_email(addr)
+    if existing and existing[0] != chat_id:
+        await say(chat_id, "This email is already linked to another account.")
+        return
+    code = secrets.token_hex(3).upper()
+    create_email_link(chat_id, addr, code)
+    await say(chat_id,
+              f"To verify, send an email FROM {addr} TO {BOT_EMAIL} "
+              f"with this code in the subject or body:\n\n{code}\n\n"
+              "I'll confirm here once it arrives. After that, CC or forward "
+              f"your bills and bookings to {BOT_EMAIL}.")
+
+
+async def handle_mail(m):
+    link = get_link_by_email(m["sender"])
+    if link is None:
+        return  # unknown sender: ignore
+    chat_id, code, verified = link
+    reply_lang.set(get_language(chat_id))
+    if not m["authenticated"]:
+        print("mail ignored (not authenticated):", m["sender"])
+        return
+
+    mail_text = (m.get("subject", "") + " " + m.get("body", "")).lower()
+    is_website_verification_mail = (
+        "verify my email for peculiarai" in m.get("subject", "").lower()
+        or "i requested this email-link verification" in mail_text
+        or "verification code:" in mail_text and "peculiarai" in mail_text
+    )
+
+    if not verified:
+        if code.lower() in mail_text:
+            verify_email_link(m["sender"])
+            # Website-started email linking must update the website UI only.
+            # Preserve the existing Telegram notification for Telegram-started linking.
+            website_started = False
+            try:
+                _init_web_verify_db()
+                with sqlite3.connect(WEB_VERIFY_DB) as conn:
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(web_email_link_sources)").fetchall()}
+                    if cols:
+                        row = conn.execute(
+                            "SELECT 1 FROM web_email_link_sources WHERE email = ? AND telegram_chat_id = ? AND expires_at > ? LIMIT 1",
+                            (m["sender"].strip().lower(), int(chat_id), __import__("time").time()),
+                        ).fetchone()
+                        website_started = bool(row)
+                        if website_started:
+                            conn.execute("DELETE FROM web_email_link_sources WHERE email = ? AND telegram_chat_id = ?", (m["sender"].strip().lower(), int(chat_id)))
+                            conn.commit()
+            except Exception as exc:
+                print("website email-link source check failed:", repr(exc))
+            # Website verification emails must never notify the Telegram chat,
+            # even if the website-source marker is missing or expired.
+            if not website_started and not is_website_verification_mail:
+                await say(chat_id, f"✅ Email {m['sender']} linked! Now CC or forward "
+                                   f"bills, bookings and tickets to {BOT_EMAIL}.")
+        return
+
+    # A verification email is only a handshake. Never feed it to the assistant
+    # as a memory item or announce it as an ordinary received email.
+    if is_website_verification_mail:
+        return
+
+    if not has_consent(chat_id):
+        return
+    text = (m["subject"] + "\n" + m["body"]).strip()
+    if not text:
+        return
+    await say(chat_id, f"📧 Email received: {m['subject'][:60] or '(no subject)'}")
+    await handle_memory_text(chat_id, text)
+
+
+async def mailbox_loop():
+    while True:
+        try:
+            mails = await asyncio.to_thread(fetch_unseen)
+            for m in mails:
+                await handle_mail(m)
+        except Exception as e:
+            print("mailbox error:", e)
+        # Check frequently so website email-link status normally updates within 5-10 seconds.
+        await asyncio.sleep(5)
+
+
+# ---------- Google connection ----------
+
+
+async def get_valid_google_connection_by_chat_id(chat_id: int) -> tuple[bool, str | None]:
+    """Check if the user has a valid, unrevoked Google connection. Returns (is_connected, email)."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT id FROM users WHERE telegram_chat_id = :c"), {"c": chat_id}).first()
+        if not row:
+            return False, None
+        db_user_id = int(row[0])
+        token = get_google_token(db_user_id)
+        if not token or not token.get("refresh_token_enc"):
+            return False, None
+        raw_refresh = decrypt_token(token["refresh_token_enc"])
+        if not raw_refresh:
+            return False, None
+        # Attempt to refresh token with Google to ensure it's not revoked or expired
+        refreshed = await refresh_access_token(raw_refresh)
+        if refreshed and refreshed.get("access_token"):
+            return True, token.get("email")
+        return False, None
+    except Exception as exc:
+        print("Google connection validation check failed:", repr(exc))
+        return False, None
+
+
+async def start_google_connection(chat_id):
+    """Start Google OAuth from an ordinary chat message, e.g. 'connect Google'."""
+    is_connected, google_email = await get_valid_google_connection_by_chat_id(chat_id)
+    if is_connected:
+        await say(
+            chat_id,
+            f"✅ Your Google account is already connected: {google_email}. You can use your connected Google services here."
+        )
+        return
+
+    if not has_consent(chat_id):
+        await say(chat_id, "Please finish setup and consent first, then ask me to connect Google.")
+        return
+
+    try:
+        url = build_auth_url(int(chat_id), source="tg")
+    except Exception as exc:
+        print("Google auth URL error:", exc)
+        await say(chat_id, "Google connection is not configured correctly yet. Please try again later.")
+        return
+
+    await say(
+        chat_id,
+        "Sure — connect your Google account using this secure link:\n\n"
+        f"{url}\n\n"
+        "Google will ask you to approve Drive file creation, Calendar events, and sending email. "
+        "Nothing will be uploaded, scheduled, or emailed just by connecting."
+    )
+
+
+def _safe_web_redirect(return_url: str | None, query_string: str) -> str:
+    """Ensure redirect URL stays within permitted local or production origins."""
+    fallback = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/") + "/connect.html"
+    if not return_url:
+        target = fallback
+    else:
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(return_url)
+            allowed_hosts = {
+                "localhost", "127.0.0.1", "peculiarai.shapebytes.com",
+                "tightly-barbell-creamed.ngrok-free.dev"
+            }
+            extra_frontend = os.getenv("FRONTEND_URL", "").strip()
+            if extra_frontend:
+                extra_host = urlparse(extra_frontend).hostname
+                if extra_host:
+                    allowed_hosts.add(extra_host)
+
+            is_netlify = bool(parsed.hostname and parsed.hostname.endswith(".netlify.app"))
+            if parsed.hostname in allowed_hosts or is_netlify or (not parsed.netloc and parsed.path):
+                target = return_url.split("?")[0].split("#")[0]
+            else:
+                target = fallback
+        except Exception:
+            target = fallback
+    sep = "&" if "?" in target else "?"
+    return f"{target}{sep}{query_string}"
+
+
+def _google_callback_page(title, message, success=False, redirect_url=None):
+    import html as _html
+    colour = "#16803c" if success else "#b42318"
+    safe_title = _html.escape(title)
+    safe_message = _html.escape(message)
+    redirect_script = ""
+    redirect_link = "<p>You can close this page and return to your chat.</p>"
+    if redirect_url:
+        safe_url = _html.escape(redirect_url)
+        redirect_script = f"""
+        <meta http-equiv="refresh" content="2;url={safe_url}">
+        <script>setTimeout(function() {{ window.location.href = "{safe_url}"; }}, 1500);</script>
+        """
+        redirect_link = f"""
+        <p style="margin-top:20px;">
+          <a href="{safe_url}" style="display:inline-block;padding:10px 20px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">
+            Return to PeculiarAI Website &rarr;
+          </a>
+        </p>
+        <p style="font-size:13px;color:#64748b;">Redirecting automatically in 2 seconds...</p>
+        """
+    return HTMLResponse(
+        f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>{safe_title}</title>{redirect_script}</head>
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:620px;margin:12vh auto;padding:24px;line-height:1.6;background:#f8fafc;color:#1e293b;">
+        <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;padding:32px;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+        <h2 style="color:{colour};margin-top:0;">{safe_title}</h2>
+        <p style="font-size:15px;color:#334155;">{safe_message}</p>
+        {redirect_link}
+        </div>
+        </body></html>"""
+    )
+
+
+# ---------- Google actions: explicit confirmation required ----------
+async def handle_google_confirmation(chat_id, clean):
+    pending = PENDING_GOOGLE_ACTIONS.get(chat_id)
+    if not pending:
+        return False
+    yn = yes_no(clean)
+    if yn is None:
+        await say(chat_id, "Please reply yes to confirm this Google action, or no to cancel it.")
+        return True
+    PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+    if yn is False:
+        await say(chat_id, "Cancelled. Nothing was sent, uploaded, or scheduled.")
+        return True
+    try:
+        kind = pending['kind']
+        if kind == 'send_email':
+            result = await google_send_email(chat_id, pending['to'], pending['subject'], pending['body'])
+            await say(chat_id, f"Email sent successfully to {pending['to']}. (Message ID: {result})")
+        elif kind == 'upload_file':
+            result = await google_upload_text_file(chat_id, pending['filename'], pending['content'], pending.get('folder_id'))
+            await say(chat_id, "File uploaded to Google Drive: " + (result.get('webViewLink') or result.get('name', pending['filename'])))
+        elif kind == 'create_meeting':
+            result = await google_create_meeting(chat_id, pending['title'], pending['start_iso'], pending['duration_minutes'], pending.get('attendees', []))
+            msg = "Meeting created: " + (result.get('htmlLink') or pending['title'])
+            if result.get('meet_url'):
+                msg += "\nGoogle Meet: " + result['meet_url']
+            else:
+                msg += "\nGoogle Calendar event created, but Google did not return a Meet link."
+            await say(chat_id, msg)
+        return True
+    except Exception as exc:
+        print('Google action error:', repr(exc))
+        await say(chat_id, "Google action failed. Nothing was confirmed as successful. Please check the connection and try again.")
+        return True
+
+
+async def prepare_google_action(chat_id, r):
+    intent = r['intent']
+    if intent == 'send_email':
+        to, subject, body = r.get('to'), r.get('subject'), r.get('body')
+        if not to or not EMAIL_OK.match(to) or not subject or not body:
+            await say(chat_id, "Email bhejne ke liye recipient email, subject aur message chahiye. Example: 'Send an email to name@example.com, subject Test, message Hello'.")
+            return
+        pending = {'kind':'send_email','to':to,'subject':subject,'body':body}
+        PENDING_GOOGLE_ACTIONS[chat_id] = pending
+        await say(chat_id, f"Please confirm — I will send this email from your connected Gmail account:\nTo: {to}\nSubject: {subject}\nMessage: {body}\n\nReply yes to send or no to cancel.")
+    elif intent == 'upload_file':
+        filename, content = r.get('filename'), r.get('content')
+        if not filename or not content:
+            await say(chat_id, "Drive par file banane ke liye file name aur content batao. Example: 'Create a Drive text file named notes.txt with content: My notes'.")
+            return
+        folders = await list_drive_folders(chat_id)
+        folder = next((f for f in folders if f.get('name','').lower() == 'ai assistant'), None)
+        folder_id = folder.get('id') if folder else None
+        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'upload_file','filename':filename,'content':content,'folder_id':folder_id}
+        folder_name = folder.get('name') if folder else 'My Drive root'
+        await say(chat_id, f"Please confirm — upload/create `{filename}` in Google Drive ({folder_name}) with this content:\n{content}\n\nReply yes to upload or no to cancel.")
+    elif intent == 'create_meeting':
+        title, start_iso = r.get('title'), r.get('start_iso')
+        if not title or not start_iso:
+            # Keep the user's explicit intent across turns; the next message is meeting details,
+            # not a new request to save a reminder.
+            set_state(chat_id, "create_meeting_details", json.dumps({
+                "title": title or "Meeting", "duration_minutes": r.get("duration_minutes", 30),
+                "attendees": r.get("attendees", [])
+            }))
+            await say(chat_id, "Bilkul. Meeting kis din aur kitne baje rakhun? Duration bhi bata sakte ho, jaise aaj shaam 5 baje, 30 minutes. Main pehle details confirm karunga; abhi event create nahi hua.")
+            return
+        attendees = r.get('attendees', [])
+        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees}
+        await say(chat_id, f"Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel.")
+
+
+def _state_payload(data):
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, str):
+        try:
+            value = json.loads(data)
+            return value if isinstance(value, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _time_to_text(value):
+    return value.strftime("%H:%M") if value else "unspecified time"
+
+
+def _extract_requested_times(message):
+    """Extract exact clock times, including 14:00, 5 PM, and '2 baje'."""
+    low = message.casefold()
+    found = []
+    # Prefer HH:MM so the 00 part is not parsed again as a separate time.
+    for m in re.finditer(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)", low):
+        found.append((int(m.group(1)), int(m.group(2))))
+    masked = re.sub(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)", " ", low)
+    for m in re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*(am|pm|baje|bje|bajay|bajey|o'clock|oclock)\b", masked):
+        hour, meridian = int(m.group(1)), m.group(2)
+        if meridian == "pm" and hour < 12: hour += 12
+        elif meridian == "am" and hour == 12: hour = 0
+        found.append((hour, 0))
+    # 24-hour shorthand e.g. "14 wale" or "17 wale" is accepted only when a deletion request exists.
+    for m in re.finditer(r"(?<!\d)(1[3-9]|2[0-3])\s*(?:wale|waale|vala|wala|baje|bje)?\b", masked):
+        found.append((int(m.group(1)), 0))
+    # Bare 1-12 followed by 'wale' commonly means the local clock hour.
+    for m in re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*(?:wale|waale|vala|wala)\b", masked):
+        hour = int(m.group(1))
+        if re.search(r"\b(pm|shaam|evening|raat)\b", low):
+            if hour < 12: hour += 12
+        elif re.search(r"\b(am|subah|morning)\b", low):
+            if hour == 12: hour = 0
+        else:
+            now = datetime.now(IST)
+            options = [h for h in (hour % 12, hour % 12 + 12) if h >= now.hour]
+            hour = min(options) if options else (hour % 12 + (12 if now.hour >= 12 else 0))
+        found.append((hour, 0))
+    return sorted(set(found))
+
+
+def _deletion_time(text):
+    low = text.casefold()
+    if not re.search(r"(before|pehle|pahle|se pehle|ke pehle|ke phele)", low):
+        return None
+    times = _extract_requested_times(text)
+    if not times:
+        return None
+    from datetime import time as _time
+    return _time(times[0][0], times[0][1])
+
+
+async def _begin_meeting_deletion(chat_id, clean):
+    low = clean.casefold()
+    deletion_verb = bool(re.search(r"(delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|मिटा|elimina|borrar|supprimer|löschen|删除|削除)", low))
+    meeting_scope = bool(re.search(r"(meeting|meetings|metting|meetting|meetng|appointment|appointments|reminder|reminders|yaad|मीटिंग|बैठक|recordatorio|rappel|termin|提醒)", low))
+    if not (deletion_verb and meeting_scope):
+        return False
+
+    exact_times = _extract_requested_times(clean)
+    if exact_times:
+        rows = find_meetings_at_times(chat_id, datetime.now(IST).date(), exact_times, clean)
+    else:
+        # Keep the older before-time phrasing supported, but never guess the cutoff.
+        before_time = _deletion_time(clean)
+        if before_time is None:
+            set_state(chat_id, "delete_meetings_target", json.dumps({"date": datetime.now(IST).date().isoformat(), "source": clean}))
+            await say(chat_id, "Kaunse meeting reminders delete karne hain? Exact times batao (jaise 14:00 aur 17:00), ya meeting ka naam. Abhi kuch delete nahi hua.")
+            return True
+        rows = find_meetings_before(chat_id, datetime.now(IST).date(), before_time)
+
+    if not rows:
+        await say(chat_id, "Un times par koi matching saved meeting reminder nahi mila. Kuch delete nahi hua.")
+        return True
+    preview = [f"• {row[2]:%d %b} {row[3].strftime('%H:%M')}: {row[1]}" for row in rows]
+    payload = {"ids": [int(row[0]) for row in rows], "count": len(rows)}
+    set_state(chat_id, "delete_meetings_confirm", json.dumps(payload))
+    await say(chat_id, "Ye exact saved meeting reminders mil rahe hain:\n" + "\n".join(preview) + "\n\nInhe delete kar doon? Abhi kuch delete nahi hua. Haan/yes = delete, nahi/no = cancel.")
+    return True
+
+
+async def _handle_meeting_offer(chat_id, clean, data):
+    yn = yes_no(clean)
+    payload = _state_payload(data)
+    if yn is False:
+        set_state(chat_id, None)
+        await say(chat_id, "Theek hai — meeting reminder nahi banaya. Kuch save nahi hua.")
+        return True
+    if yn is not True:
+        await say(chat_id, "Bas haan ya nahi batao: kya main meeting ke liye reminder set karun?")
+        return True
+
+    item = payload.get("item")
+    if isinstance(item, dict) and item.get("due_date") and item.get("due_time"):
+        # JSON state may turn dates/times into strings; normalize safely.
+        from datetime import date as _date, time as _time
+        try:
+            item["due_date"] = _date.fromisoformat(str(item["due_date"]))
+            item["due_time"] = _time.fromisoformat(str(item["due_time"])[:5])
+        except (ValueError, TypeError):
+            item = None
+        if item:
+            set_state(chat_id, None)
+            await save_item_flow(chat_id, item)
+            return True
+
+    set_state(chat_id, "meeting_time", json.dumps({"title": payload.get("title") or "Meeting"}))
+    await say(chat_id, "What date and time is the meeting? For example: today at 2:30 PM or tomorrow at 11:00. Nothing has been saved yet.")
+    return True
+
+
+async def _handle_meeting_time_followup(chat_id, clean, data):
+    payload = _state_payload(data)
+    parsed = parse_followup_time(clean, datetime.now(IST))
+    if not parsed:
+        if re.search(r"\b(cancel|cancel karo|rehne do|nahi|no)\b", clean.lower()):
+            set_state(chat_id, None)
+            await say(chat_id, "Theek hai, reminder cancel kar diya. Kuch save nahi hua.")
+        else:
+            await say(chat_id, "Time samajh nahi aaya. Aise bhejo: 2:30 PM, 14:30, ya kal 11 baje.")
+        return True
+    due_time, due_date = parsed
+    item = {"category": "appointments", "title": str(payload.get("title") or "Meeting")[:100],
+            "amount": None, "due_date": due_date, "due_time": due_time}
+    set_state(chat_id, None)
+    await save_item_flow(chat_id, item)
+    return True
+
+
+async def _handle_delete_meetings_confirmation(chat_id, clean, data):
+    yn = yes_no(clean)
+    if yn is None:
+        await say(chat_id, "Delete karne ke liye haan/yes, cancel karne ke liye nahi/no bolo. Abhi kuch delete nahi hua.")
+        return True
+    payload = _state_payload(data)
+    set_state(chat_id, None)
+    if yn is False:
+        await say(chat_id, "Cancelled. Koi meeting reminder delete nahi hua.")
+        return True
+    deleted = delete_memory_items(chat_id, payload.get("ids", []))
+    if deleted:
+        set_state(chat_id, "updated_reminders_offer", json.dumps({"date": datetime.now(IST).date().isoformat()}))
+        await say(chat_id, f"Done — {deleted} meeting reminder(s) delete kar diye. Kya aaj ki updated reminder list dikhaun?")
+    else:
+        await say(chat_id, "Koi item delete nahi hua. Database mein matching items dobara verify karna hoga.")
+    return True
+
+
+# ---------- Main conversation brain ----------
+
+
+async def handle_active(chat_id, text):
+    # Fast local response for greetings: avoid a needless Groq round-trip.
+    if re.fullmatch(r"\s*(hi|hello|hey|hii|hlo|namaste|namaskar|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
+        await say(chat_id, HELP_TEXT)
+        return
+
+    # Natural-language trigger: no slash command is required.
+    if GOOGLE_CONNECT_RE.search(text):
+        await start_google_connection(chat_id)
+        return
+
+    if is_sensitive(text):
+        await say(chat_id, "That looks sensitive (OTP, password or card number). "
+                           "I never store those, so I ignored it.")
+        return
+    if await _begin_meeting_deletion(chat_id, text):
+        return
+    try:
+        r = await understand(text)
+    except Exception as e:
+        print("understand error:", e)
+        await say(chat_id, "Sorry, something went wrong. Please try again.")
+        return
+
+    intent = r["intent"]
+    if intent == "link_google":
+        await start_google_connection(chat_id)
+    elif intent == "unlink_google":
+        from sqlalchemy import text as sql_text
+        with engine.connect() as conn:
+            row = conn.execute(sql_text("SELECT id FROM users WHERE telegram_chat_id=:c"), {"c": chat_id}).first()
+        if row:
+            delete_google_token(int(row[0]))
+        await say(chat_id, "Google account disconnected from this assistant. You can connect it again anytime.")
+    elif intent in {"send_email", "upload_file", "create_meeting"}:
+        try:
+            await prepare_google_action(chat_id, r)
+        except Exception as exc:
+            print("Google prepare error:", repr(exc))
+            await say(chat_id, "I couldn't prepare that Google action. Please make sure Google is connected and try again.")
+    elif intent == "offer_meeting_reminder":
+        item = r.get("item")
+        payload = {"title": (item or {}).get("title") or "Meeting", "item": item}
+        set_state(chat_id, "meeting_offer", json.dumps(payload, default=str))
+        await say(chat_id, "Would you like me to set a reminder for this meeting? Reply yes or no. Nothing has been saved yet.")
+    elif intent == "ask_meeting_time":
+        payload = {"title": r.get("title") or "Meeting"}
+        set_state(chat_id, "meeting_time", json.dumps(payload))
+        await say(chat_id, "What date and time is the meeting? For example: today at 2:30 PM or tomorrow at 11:00. Nothing has been saved yet.")
+    elif intent == "save_item":
+        await save_item_flow(chat_id, r["item"])
+    elif intent == "not_important":
+        await say(chat_id, "I only remember important things like bills, payments, "
+                           "bookings, orders, meetings and appointments. "
+                           "This one wasn't saved.")
+    elif intent == "show_agenda":
+        await show_range(chat_id, r["start"], r["end"], meeting_only=bool(r.get("meeting_only")))
+    elif intent == "show_saved":
+        await show_memories(chat_id)
+    elif intent == "change_categories":
+        await change_categories(chat_id, r["on"], r["off"])
+    elif intent == "change_persona":
+        await apply_persona(chat_id, r["persona"])
+    elif intent == "link_email":
+        linked = get_linked_email(chat_id)
+        if linked and linked[1]:
+            bot_email = BOT_EMAIL or "bot771347@gmail.com"
+            await say(chat_id, f"✅ Your email is already linked: {linked[0]}. You can now forward or CC your bills, bookings and tickets to {bot_email}.")
+        else:
+            m = EMAIL_FIND.search(text)
+            if m:
+                await start_email_link(chat_id, m.group(0).strip(".,;").lower())
+            else:
+                set_state(chat_id, "email")
+                await say(chat_id, "Sure. Which email address do you want to link?")
+    elif intent == "unlink_email":
+        remove_email_link(chat_id)
+        await say(chat_id, "Done, your email has been unlinked.")
+    elif intent == "export_data":
+        await send_export(chat_id)
+    elif intent == "delete_data":
+        set_state(chat_id, "forget_confirm")
+        await say(chat_id, "This will permanently delete everything I know about you "
+                           "(settings, linked email and all saved items). "
+                           "Type DELETE to confirm, or anything else to cancel.")
+    else:
+        await say(chat_id, HELP_TEXT)
+
+
+async def handle_user_text(chat_id, text, lang_hint=None):
+    clean = text.strip()
+    if not clean:
+        return
+
+    st = get_state(chat_id)
+    if st is None:  # pehli baar aaya
+        ensure_user(chat_id)
+        set_state(chat_id, "consent")
+        await say(chat_id, WELCOME_CONSENT)
+        return
+    state, data = st
+
+    # Multi-turn meeting flow. A pending question must never hijack unrelated
+    # messages: only a recognizable yes/no answers the reminder offer. Any other
+    # message cancels the stale offer and is routed normally (in any language).
+    if state == "meeting_offer":
+        if is_explicit_calendar_action(clean):
+            set_state(chat_id, None)
+            state = None
+            data = None
+        else:
+            yn = yes_no(clean)
+            if yn is None:
+                yn = await classify_yes_no_any_language(
+                    clean, "The assistant asked whether to save a reminder for a mentioned meeting."
+                )
+            if yn is not None:
+                reply_lang.set(get_language(chat_id))
+                # Normalize a multilingual yes/no into a value understood by the handler.
+                await _handle_meeting_offer(chat_id, "yes" if yn else "no", data)
+                return
+            set_state(chat_id, None)
+            state = None
+            data = None
+
+    if state == "meeting_time":
+        if is_explicit_calendar_action(clean):
+            set_state(chat_id, None)
+            state = None
+            data = None
+        else:
+            # Only consume this message as a time follow-up if a time was actually
+            # parsed, or as a clear cancellation. Otherwise let the normal router
+            # interpret it as a fresh request (e.g. "hi" or create a Meet link).
+            parsed_time = parse_followup_time(clean, datetime.now(IST))
+            yn = yes_no(clean)
+            if yn is None and not parsed_time:
+                yn = await classify_yes_no_any_language(
+                    clean, "The assistant is collecting date/time for a meeting reminder; user may be cancelling."
+                )
+            if yn is False and not parsed_time:
+                set_state(chat_id, None)
+                reply_lang.set(get_language(chat_id))
+                await say(chat_id, "Okay, the meeting reminder was cancelled. Nothing was saved.")
+                return
+            if parsed_time:
+                reply_lang.set(get_language(chat_id))
+                await _handle_meeting_time_followup(chat_id, clean, data)
+                return
+            set_state(chat_id, None)
+            state = None
+            data = None
+
+    if state == "delete_meetings_target":
+        if _extract_requested_times(clean):
+            set_state(chat_id, None)
+            await _begin_meeting_deletion(chat_id, clean + " meeting reminders delete")
+            return
+        # If the reply is a fresh request rather than target details, don't trap it.
+        set_state(chat_id, None)
+        await handle_active(chat_id, clean)
+        return
+
+    if state == "create_meeting_details":
+        if re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin)\b|रद्द|मत करो", clean, re.I):
+            set_state(chat_id, None)
+            await say(chat_id, "Theek hai, meeting create nahi ki. Kuch bhi schedule nahi hua.")
+            return
+        context = _state_payload(data)
+        # Ask the LLM to interpret the follow-up as details for the already-requested Google meeting.
+        try:
+            details = await understand(
+                f"The user has already explicitly requested creation/hosting of a Google Meet meeting. "
+                f"Existing title: {context.get('title') or 'Meeting'}. Existing duration: {context.get('duration_minutes', 30)} minutes. "
+                f"Interpret this new message ONLY as follow-up details for that same meeting, in any language or transliteration: {clean}. "
+                f"Return intent=create_meeting, preserve title unless user provides a better specific title, infer date only when explicit or unambiguous, and extract start_iso with India timezone."
+            )
+        except Exception as exc:
+            print("meeting details parse error:", repr(exc))
+            details = {"intent":"create_meeting"}
+        details["intent"] = "create_meeting"
+        details["title"] = details.get("title") or context.get("title") or "Meeting"
+        details["duration_minutes"] = details.get("duration_minutes") or context.get("duration_minutes") or 30
+        details["attendees"] = details.get("attendees") or context.get("attendees") or []
+        if not details.get("start_iso"):
+            parsed = parse_followup_time(clean, datetime.now(IST))
+            if parsed:
+                from datetime import datetime as _dt
+                due_time, due_date = parsed
+                start_dt = _dt.combine(due_date, due_time, tzinfo=IST)
+                details["start_iso"] = start_dt.isoformat()
+        if not details.get("start_iso"):
+            await say(chat_id, "Date/time abhi clear nahi hua. Aaj, kal ya exact date aur time bata do; abhi meeting create nahi hui.")
+            return
+        set_state(chat_id, None)
+        await prepare_google_action(chat_id, details)
+        return
+
+    if state == "updated_reminders_offer":
+        yn = yes_no(clean)
+        if yn is None:
+            yn = await classify_yes_no_any_language(clean, "The assistant asked whether to show the updated reminder list.")
+        set_state(chat_id, None)
+        if yn is True:
+            today = datetime.now(IST).date()
+            await show_range(chat_id, today, today)
+        elif yn is False:
+            await say(chat_id, "Theek hai, nahi dikhata. Thank you!")
+        else:
+            await handle_active(chat_id, clean)
+        return
+
+    if state == "delete_meetings_confirm":
+        # Any unrelated request cancels this pending destructive confirmation and is routed normally.
+        yn = yes_no(clean)
+        if yn is None:
+            yn = await classify_yes_no_any_language(clean, "The assistant asked whether to delete the previewed meeting reminders.")
+        if yn is None:
+            set_state(chat_id, None)
+            await handle_active(chat_id, clean)
+            return
+        reply_lang.set(get_language(chat_id))
+        await _handle_delete_meetings_confirmation(chat_id, "yes" if yn else "no", data)
+        return
+
+    # Setup ke baad wale states: user ki language me reply
+    if state in ("forget_confirm", "email"):
+        reply_lang.set(get_language(chat_id))
+
+    if state == "consent":
+        yn = yes_no(clean)
+        if yn is True:
+            give_consent(chat_id)
+            set_state(chat_id, "persona")
+            await say(chat_id, "Thank you!")
+            await ask_persona(chat_id)
+        elif yn is False:
+            delete_user(chat_id)
+            await say(chat_id, "Okay, nothing has been saved. "
+                               "Message me anytime if you change your mind.")
+        else:
+            await say(chat_id, "Please reply yes to continue, or no to cancel.")
+        return
+
+    if state == "persona":
+        await handle_persona_answer(chat_id, clean)
+        return
+
+    if state == "persona_confirm":
+        yn = yes_no(clean)
+        if yn is True and data in DEFAULTS:
+            await apply_persona(chat_id, data)
+        elif yn is False:
+            set_state(chat_id, "persona")
+            await say(chat_id, "No problem.\n\n" + PERSONA_TEXT)
+        else:
+            await handle_persona_answer(chat_id, clean)
+        return
+
+    if state == "forget_confirm":
+        set_state(chat_id, None)
+        if clean.lower().strip(" .!") == "delete":
+            delete_user(chat_id)
+            await say(chat_id, "Done. All your data has been deleted. "
+                               "Message me anytime to start fresh.")
+        else:
+            await say(chat_id, "Okay, nothing was deleted.")
+        return
+
+    if state == "email":
+        set_state(chat_id, None)
+        linked = get_linked_email(chat_id)
+        if linked and linked[1]:
+            bot_email = BOT_EMAIL or "bot771347@gmail.com"
+            await say(chat_id, f"✅ Your email is already linked: {linked[0]}. You can now forward or CC your bills, bookings and tickets to {bot_email}.")
+            return
+        m = EMAIL_FIND.search(clean)
+        if m:
+            await start_email_link(chat_id, m.group(0).strip(".,;").lower())
+        else:
+            await say(chat_id, "That doesn't look like an email address. "
+                               "Say 'link my email' to try again.")
+        return
+
+    # Normal (active) user
+    if not has_consent(chat_id):
+        set_state(chat_id, "consent")
+        await say(chat_id, WELCOME_CONSENT)
+        return
+    if not get_persona(chat_id):
+        set_state(chat_id, "persona")
+        await ask_persona(chat_id)
+        return
+
+    # Language: pakka pata chale to badlo, warna purani language chalne do
+    detected = lang_hint or detect_text_language(clean)
+    stored = get_language(chat_id)
+    if detected and detected != stored:
+        set_language(chat_id, detected)
+        stored = detected
+    reply_lang.set(stored)
+
+    if chat_id in PENDING_GOOGLE_ACTIONS:
+        yn_pending = yes_no(clean)
+        if yn_pending is not None:
+            await handle_google_confirmation(chat_id, clean)
+            return
+        # Don't trap an unrelated message as a confirmation; cancel preview and process it normally.
+        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+        await say(chat_id, "Pending Google action cancelled because that wasn't a yes/no confirmation. I'll handle your new message now.")
+
+    if clean.lower() == "/start":
+        await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
+        return
+    await handle_active(chat_id, clean)
+
+
+# ---------- Voice ----------
+
+async def process_voice(chat_id, voice):
+    try:
+        st = get_state(chat_id)
+        # Naya user, ya setup adhura: normal text flow sambhal lega
+        if st is None or (st[0] is None and not (has_consent(chat_id) and get_persona(chat_id))):
+            await handle_user_text(chat_id, "/start")
+            return
+        # Setup ke beech ya confirm steps (jaise DELETE): sirf typing
+        if st[0] is not None:
+            await say(chat_id, "Please type your answer for this step. "
+                               "Voice notes work once setup is finished.")
+            return
+
+        reply_lang.set(get_language(chat_id))
+
+        if voice.get("duration", 0) > MAX_VOICE_SECONDS:
+            await say(chat_id, f"That voice note is too long. "
+                               f"Please keep it under {MAX_VOICE_SECONDS} seconds.")
+            return
+
+        transcript, spoken = await transcribe_telegram_voice(voice["file_id"])
+        if len(transcript) < 2:
+            await say(chat_id, "I couldn't hear that clearly. Please try again or type it.")
+            return
+
+        # Sensitive ho to transcript dikhana bhi nahi
+        if is_sensitive(transcript):
+            await say(chat_id, "That looks sensitive (OTP, password or card number). "
+                               "I never store those, so I ignored it.")
+            return
+
+        # User ko dikhao ki bot ne kya suna (galat amount/date pakadne ke liye)
+        await say_raw(chat_id, f"🎙️ “{transcript}”")
+        await handle_user_text(chat_id, transcript, lang_hint=language_from_whisper(spoken))
+    except Exception as e:
+        print("voice error:", e)
+        try:
+            await say(chat_id, "Sorry, I couldn't process that voice note. "
+                               "Please try again or type it.")
+        except Exception as e2:
+            print("voice error (reply failed):", e2)
+
+
+# ---------- Reminders ----------
+
+HEADS = {
+    "day_before": "🔔 Due tomorrow",
+    "due_day": "⏰ Due today",
+    "15min": "⏳ In 15 minutes",
+    "5min": "⚡ In 5 minutes",
+}
+
+
+def reminder_text(label, category, title, amount, due_time):
+    line = f"{HEADS.get(label, '🔔 Reminder')}: {CATEGORIES.get(category, category)}: {title}"
+    if due_time:
+        line += f" at {due_time.strftime('%H:%M')}"
+    if amount is not None:
+        line += f" | {amount}"
+    return line
+
+
+async def run_reminders():
+    now = datetime.now(IST)
+    for rid, chat_id, category, title, amount, due_date, due_time, label in get_pending_reminders(now):
+        # Event nikal chuka (jaise laptop band tha) to purana reminder mat bhejo
+        if event_over(due_date, due_time, now):
+            mark_sent(rid)
+            continue
+        reply_lang.set(get_language(chat_id))
+        await say(chat_id, reminder_text(label, category, title, amount, due_time))
+        mark_sent(rid)
+
+
+async def reminder_loop():
+    while True:
+        try:
+            await run_reminders()
+        except Exception as e:
+            print("reminder error:", e)
+        await asyncio.sleep(30)
+
+
+@asynccontextmanager
+async def lifespan(app):
+    tasks = [asyncio.create_task(reminder_loop()),
+             asyncio.create_task(mailbox_loop())]
+    yield
+    for t in tasks:
+        t.cancel()
+
+
+# ---------- Temporary website verification via Telegram (not SMS) ----------
+WEB_VERIFY_DB = os.getenv("PECULIARAI_WEB_VERIFY_DB", "peculiarai_web_verify.sqlite3")
+WEB_BASE_URL = os.getenv("STREAMLIT_BASE_URL", "http://localhost:8501").rstrip("/")
+BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+OTP_BOT_TOKEN = os.getenv("TELEGRAM_OTP_BOT_TOKEN", "").strip()
+OTP_BOT_USERNAME = os.getenv("TELEGRAM_OTP_BOT_USERNAME", "PeculiarAI_Verify_Bot").strip().lstrip("@")
+
+
+def _init_web_verify_db():
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS web_verifications (
+            token TEXT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            otp_hash TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            telegram_chat_id TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            verified INTEGER NOT NULL DEFAULT 0
+        )""")
+        conn.commit()
+
+
+def _otp_digest(token, otp):
+    return hashlib.sha256(f"{token}:{otp}".encode("utf-8")).hexdigest()
+
+
+def _create_web_verification(phone):
+    import time as _time
+    token = secrets.token_urlsafe(20).replace("-", "").replace("_", "")[:28]
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    _init_web_verify_db()
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        conn.execute("DELETE FROM web_verifications WHERE (verified = 0 AND created_at < ?) OR (created_at < ?)", (_time.time() - 1800, _time.time() - 86400))
+        conn.execute(
+            "INSERT INTO web_verifications(token, phone, otp_hash, created_at) VALUES (?, ?, ?, ?)",
+            (token, phone, _otp_digest(token, otp), _time.time()),
+        )
+        conn.commit()
+    return token, otp
+
+
+def _resolve_web_session(verification_id: str, max_age: float = 86400.0) -> int:
+    """Validate verification_id and return the associated telegram_chat_id as int."""
+    if not verification_id or not isinstance(verification_id, str):
+        raise HTTPException(status_code=400, detail="Verification session ID is required")
+    token = verification_id.strip()
+    _init_web_verify_db()
+    import time as _time
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        row = conn.execute(
+            "SELECT telegram_chat_id, created_at, verified FROM web_verifications WHERE token = ?",
+            (token,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="Verification session not found. Please verify again.")
+    chat_id_str, created_at, verified = row
+    if _time.time() - created_at > max_age:
+        raise HTTPException(status_code=400, detail="Verification session expired. Please verify again.")
+    if not verified or not chat_id_str:
+        raise HTTPException(status_code=403, detail="Complete Telegram verification first")
+    return int(chat_id_str)
+
+
+async def _send_web_otp_to_telegram(chat_id, token):
+    """Deliver the temporary code through the separate OTP bot only."""
+    import time as _time
+    if not OTP_BOT_TOKEN:
+        print("TELEGRAM_OTP_BOT_TOKEN is not configured")
+        return
+    _init_web_verify_db()
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        row = conn.execute(
+            "SELECT created_at, verified FROM web_verifications WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if not row or row[1] or _time.time() - row[0] > 600:
+            await _send_otp_bot_message(chat_id, "This website verification link has expired. Return to the website and request a new code.")
+            return
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(web_verifications)").fetchall()}
+        if "otp_delivery" not in cols:
+            conn.execute("ALTER TABLE web_verifications ADD COLUMN otp_delivery TEXT")
+            conn.commit()
+        delivery = conn.execute("SELECT otp_delivery FROM web_verifications WHERE token = ?", (token,)).fetchone()
+        otp = delivery[0] if delivery else None
+        if not otp:
+            await _send_otp_bot_message(chat_id, "This verification request is no longer valid. Please request a new code from the website.")
+            return
+        conn.execute(
+            "UPDATE web_verifications SET telegram_chat_id = ?, otp_delivery = NULL WHERE token = ?",
+            (str(chat_id), token),
+        )
+        conn.commit()
+    await _send_otp_bot_message(
+        chat_id,
+        f"Your temporary PeculiarAI website verification code is: {otp}\n\nEnter it on the website within 10 minutes. This is a Telegram-delivered test code, not an SMS."
+    )
+
+
+async def _send_otp_bot_message(chat_id, message):
+    if not OTP_BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Set TELEGRAM_OTP_BOT_TOKEN in .env")
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(
+            f"https://api.telegram.org/bot{OTP_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": message},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError("Telegram OTP bot sendMessage failed")
+
+
+app = FastAPI(lifespan=lifespan)
+
+# CORS: allow the local frontend and the configured production/testing origins.
+_allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://peculiarai.shapebytes.com",
+    "https://tightly-barbell-creamed.ngrok-free.dev",
+]
+_extra_origin = os.getenv("FRONTEND_URL", "").strip()
+if _extra_origin and _extra_origin not in _allowed_origins:
+    _allowed_origins.append(_extra_origin)
+_allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
+if _allowed_origins_env:
+    for _o in _allowed_origins_env.split(","):
+        _o = _o.strip()
+        if _o and _o not in _allowed_origins:
+            _allowed_origins.append(_o)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"^https://[a-zA-Z0-9-]+\.netlify\.app$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.post("/web/verification/start")
+async def web_verification_start(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    phone = str(body.get("phone", "")).strip() if isinstance(body, dict) else ""
+    if not re.fullmatch(r"\+?[0-9 ()-]{7,20}", phone):
+        raise HTTPException(status_code=400, detail="Enter a valid phone number")
+    if not OTP_BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Set TELEGRAM_OTP_BOT_TOKEN in .env")
+    if not OTP_BOT_USERNAME:
+        raise HTTPException(status_code=503, detail="Set TELEGRAM_OTP_BOT_USERNAME in .env")
+    token, otp = _create_web_verification(phone)
+    _init_web_verify_db()
+    import time as _time
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        # Store the delivery code only until the Telegram deep link is opened; it is cleared on delivery.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(web_verifications)").fetchall()}
+        if "otp_delivery" not in cols:
+            conn.execute("ALTER TABLE web_verifications ADD COLUMN otp_delivery TEXT")
+        conn.execute("UPDATE web_verifications SET otp_delivery = ? WHERE token = ?", (otp, token))
+        conn.commit()
+    return {"verification_id": token, "telegram_url": f"https://t.me/{OTP_BOT_USERNAME}?start=verify_{token}", "expires_in_seconds": 600}
+
+
+@app.post("/web/verification/verify")
+async def web_verification_verify(request: Request):
+    import time as _time
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    token = str(body.get("verification_id", "")).strip() if isinstance(body, dict) else ""
+    otp = str(body.get("otp", "")).strip() if isinstance(body, dict) else ""
+    if not token or not re.fullmatch(r"\d{6}", otp):
+        raise HTTPException(status_code=400, detail="Enter the 6-digit code")
+    _init_web_verify_db()
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        row = conn.execute("SELECT otp_hash, created_at, telegram_chat_id, attempts, verified FROM web_verifications WHERE token = ?", (token,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail="Verification request not found")
+        otp_hash, created_at, chat_id, attempts, verified = row
+        if verified:
+            return {"verified": True}
+        if _time.time() - created_at > 600:
+            raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
+        if not chat_id:
+            raise HTTPException(status_code=400, detail="Open the Telegram bot link and press Start to receive your code")
+        if attempts >= 5:
+            raise HTTPException(status_code=429, detail="Too many attempts. Request a new code.")
+        if not secrets.compare_digest(otp_hash, _otp_digest(token, otp)):
+            conn.execute("UPDATE web_verifications SET attempts = attempts + 1 WHERE token = ?", (token,))
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Incorrect code")
+        conn.execute("UPDATE web_verifications SET verified = 1 WHERE token = ?", (token,))
+        conn.commit()
+    return {"verified": True, "method": "telegram_test_code", "note": "This confirms access to the Telegram account, not ownership of the entered phone number."}
+
+
+@app.post("/web/email-link/start")
+async def web_email_link_start(request: Request):
+    """Prepare an email-link verification draft for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    addr = str(body.get("email", "")).strip().lower()
+    verification_id = str(body.get("verification_id", "")).strip()
+
+    if not EMAIL_OK.fullmatch(addr):
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    if not BOT_EMAIL:
+        raise HTTPException(status_code=503, detail="Email linking is not configured: BOT_EMAIL is missing")
+    if addr == BOT_EMAIL.lower():
+        raise HTTPException(status_code=400, detail="Use your own email address, not the PeculiarAI inbox")
+
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    # Check if this account already has a verified email
+    linked = get_linked_email(chat_id)
+    if linked and linked[1]:
+        return {
+            "prepared": False,
+            "already_linked": True,
+            "email": linked[0],
+            "message": f"Your email is already linked: {linked[0]}.",
+        }
+
+    existing = get_link_by_email(addr)
+    if existing and str(existing[0]) != str(chat_id):
+        raise HTTPException(status_code=409, detail="This email is already linked to another account")
+
+    code = secrets.token_hex(3).upper()
+    create_email_link(chat_id, addr, code)
+
+    # Mark this pending link as website-originated so verification is reported
+    # on the website rather than sent as an unsolicited Telegram message.
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS web_email_link_sources (
+            email TEXT NOT NULL,
+            telegram_chat_id INTEGER NOT NULL,
+            verification_id TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            PRIMARY KEY (email, telegram_chat_id)
+        )""")
+        import time as _time
+        conn.execute(
+            "INSERT OR REPLACE INTO web_email_link_sources (email, telegram_chat_id, verification_id, expires_at) VALUES (?, ?, ?, ?)",
+            (addr, chat_id, verification_id, _time.time() + 3600),
+        )
+        conn.commit()
+
+    from urllib.parse import quote
+    subject = "Verify my email for PeculiarAI"
+    body_text = (
+        "Please verify this email address for my PeculiarAI account.\n\n"
+        f"Verification code: {code}\n\n"
+        "I requested this email-link verification."
+    )
+    mailto_url = (
+        f"mailto:{quote(BOT_EMAIL, safe='')}?subject={quote(subject)}"
+        f"&body={quote(body_text)}"
+    )
+    return {
+        "prepared": True,
+        "email": addr,
+        "recipient": BOT_EMAIL,
+        "subject": subject,
+        "body": body_text,
+        "mailto_url": mailto_url,
+        "expires_in_seconds": 600,
+        "message": "Open the prepared email in your mail app and send it from the email address you want to link. The address is linked only after PeculiarAI receives and authenticates the email."
+    }
+
+
+@app.post("/web/email-link/status")
+async def web_email_link_status(request: Request):
+    """Check email-link status for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    addr = str(body.get("email", "")).strip().lower()
+
+    # 1. If an explicit email was provided, check only that specific email for this account
+    if addr and EMAIL_OK.fullmatch(addr):
+        link = get_link_by_email(addr)
+        if link and str(link[0]) == str(chat_id):
+            if bool(link[2]):
+                return {
+                    "linked": True,
+                    "verified": True,
+                    "email": addr,
+                    "status": "linked",
+                    "message": "Email linked successfully",
+                }
+            else:
+                return {
+                    "linked": False,
+                    "verified": False,
+                    "email": addr,
+                    "status": "pending",
+                    "message": "Waiting for verification email to arrive",
+                }
+        return {
+            "linked": False,
+            "verified": False,
+            "email": None,
+            "status": "not_linked",
+            "message": "This email is not linked to your account",
+        }
+
+    # 2. When no email is specified (e.g. on page load), check the account's existing linked email
+    account_link = get_linked_email(chat_id)
+    if account_link and account_link[1]:
+        return {
+            "linked": True,
+            "verified": True,
+            "email": account_link[0],
+            "status": "linked",
+            "message": "Email linked successfully",
+        }
+
+    return {
+        "linked": False,
+        "verified": False,
+        "email": None,
+        "status": "not_linked",
+        "message": "No email linked",
+    }
+
+
+@app.post("/web/email-link/unlink")
+async def web_email_link_unlink(request: Request):
+    """Unlink email for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    remove_email_link(chat_id)
+    return {"unlinked": True, "message": "Email unlinked successfully"}
+
+
+@app.post("/web/google/start")
+async def web_google_start(request: Request):
+    """Initiate Google OAuth for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    return_url = str(body.get("return_url", "")).strip() or None
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+    give_consent(chat_id)
+
+    is_connected, google_email = await get_valid_google_connection_by_chat_id(chat_id)
+    if is_connected:
+        return {
+            "already_connected": True,
+            "connected": True,
+            "email": google_email,
+            "message": f"Your Google account is already connected: {google_email}."
+        }
+
+    try:
+        auth_url = build_auth_url(chat_id, source="web", return_url=return_url)
+        return {"auth_url": auth_url, "already_connected": False}
+    except Exception as exc:
+        print("web_google_start error:", repr(exc))
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured correctly")
+
+
+@app.post("/web/google/status")
+async def web_google_status(request: Request):
+    """Retrieve Google connection status for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    is_connected, google_email = await get_valid_google_connection_by_chat_id(chat_id)
+    return {
+        "connected": is_connected,
+        "email": google_email if is_connected else None,
+        "message": "Google connected" if is_connected else "Google not connected",
+    }
+
+
+@app.post("/web/google/disconnect")
+async def web_google_disconnect(request: Request):
+    """Disconnect Google for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+
+    with engine.connect() as conn:
+        user_row = conn.execute(
+            text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+            {"chat_id": chat_id},
+        ).first()
+    if user_row:
+        delete_google_token(int(user_row[0]))
+
+    return {"disconnected": True, "message": "Google account disconnected successfully"}
+
+
+@app.get("/google/callback", response_class=HTMLResponse)
+async def google_callback(request: Request):
+    """Google OAuth redirect endpoint. Saves only an encrypted refresh token."""
+    params = request.query_params
+    code = params.get("code")
+    state = params.get("state")
+
+    # Decode state early to check if initiated from web
+    state_data = {}
+    is_web = False
+    return_url = None
+    if state:
+        try:
+            state_data = verify_state_payload(state)
+            is_web = (state_data.get("source") == "web")
+            return_url = state_data.get("return_url")
+        except Exception:
+            pass
+
+    if params.get("error"):
+        error_code = params.get("error")
+        if is_web:
+            target_url = _safe_web_redirect(return_url, f"google_status=error&google_message=Google connection was cancelled or denied ({error_code})")
+            return _google_callback_page(
+                "Google connection cancelled",
+                "You did not approve Google access. Nothing was connected.",
+                success=False,
+                redirect_url=target_url,
+            )
+        return _google_callback_page(
+            "Google connection cancelled",
+            "You did not approve Google access. Nothing was connected.",
+            success=False,
+        )
+
+    try:
+        chat_id = verify_state(state)
+        ensure_user(chat_id)
+        if is_web and not has_consent(chat_id):
+            give_consent(chat_id)
+
+        if not has_consent(chat_id):
+            return _google_callback_page(
+                "Connection not completed",
+                "This chat has not granted consent. Return to the assistant and complete setup first.",
+                success=False,
+            )
+
+        tokens = await exchange_code(code)
+        email = await get_google_email(tokens["access_token"])
+
+        # google_tokens.user_id references users.id, not chat ID.
+        with engine.connect() as conn:
+            user_row = conn.execute(
+                text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+                {"chat_id": chat_id},
+            ).first()
+        if not user_row:
+            return _google_callback_page(
+                "Connection not completed",
+                "I could not find your assistant account. Return to your chat and try again.",
+                success=False,
+            )
+        db_user_id = int(user_row[0])
+
+        refresh_token = tokens.get("refresh_token")
+        if not refresh_token:
+            previous = get_google_token(db_user_id)
+            if previous and previous.get("refresh_token_enc"):
+                refresh_token = decrypt_token(previous["refresh_token_enc"])
+            else:
+                if is_web:
+                    target_url = _safe_web_redirect(return_url, "google_status=error&google_message=Google did not return a refresh token. Please reconnect.")
+                    return _google_callback_page(
+                        "Connection not completed",
+                        "Google did not return a refresh token. Please return to the website and try connecting again.",
+                        success=False,
+                        redirect_url=target_url,
+                    )
+                return _google_callback_page(
+                    "Connection not completed",
+                    "Google did not return a refresh token. Please return to your chat and ask me to connect Google again.",
+                    success=False,
+                )
+
+        encrypted = encrypt_token(refresh_token)
+        scopes = " ".join(tokens.get("scope", "").split()) or " ".join([
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/gmail.send",
+        ])
+        save_google_token(db_user_id, email, encrypted, scopes)
+
+        if is_web:
+            target_url = _safe_web_redirect(return_url, "google_status=connected")
+            return _google_callback_page(
+                "Google connected successfully",
+                f"Connected account: {email}. Your assistant can use the approved Google services when you ask.",
+                success=True,
+                redirect_url=target_url,
+            )
+
+        return _google_callback_page(
+            "Google connected successfully",
+            f"Connected account: {email}. Your assistant can use the approved Google services when you ask. No file, calendar event, or email has been created yet.",
+            success=True,
+        )
+    except Exception as exc:
+        print("Google OAuth callback error:", repr(exc))
+        if is_web:
+            from urllib.parse import quote
+            target_url = _safe_web_redirect(return_url, f"google_status=error&google_message={quote(str(exc)[:100])}")
+            return _google_callback_page(
+                "Google connection failed",
+                "Something went wrong while connecting your account. Return to the website and try again.",
+                success=False,
+                redirect_url=target_url,
+            )
+        return _google_callback_page(
+            "Google connection failed",
+            "Something went wrong while connecting your account. Return to your chat and try again.",
+            success=False,
+        )
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/web/chat")
+async def web_chat(request: Request):
+    """Web-only text chat. It never executes account actions or writes user data."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    message = str(body.get("message", "")).strip() if isinstance(body, dict) else ""
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+    if len(message) > 4000:
+        raise HTTPException(status_code=413, detail="Message is too long (maximum 4000 characters)")
+    if is_sensitive(message):
+        return {"reply": "Please don't send passwords, OTPs, card numbers, or other secrets here. I ignored that message."}
+
+    # Classify first. Until a verified web identity is linked to the existing user
+    # record, do not run reminder, email, calendar, memory, or deletion workflows.
+    try:
+        intent_data = await understand(message)
+        intent = intent_data.get("intent", "chat")
+    except Exception as exc:
+        print("web chat intent error:", repr(exc))
+        raise HTTPException(status_code=503, detail="Assistant model is temporarily unavailable")
+
+    if intent != "chat":
+        return {"reply": "I understood this as a request to use a PeculiarAI feature, but web actions aren't enabled until this browser account is securely linked to your assistant account. No reminder, email, calendar event, or data change was made. For now, use your existing Telegram bot for that action."}
+
+    history = body.get("history", []) if isinstance(body, dict) else []
+    messages = [{
+        "role": "system",
+        "content": (
+            "You are PeculiarAI, a helpful personal assistant. Reply naturally and concisely, "
+            "and support English, Hindi, and Hinglish. You may answer questions and have casual "
+            "conversation, but do not claim to have created reminders, sent emails, changed data, "
+            "or accessed calendar/Drive. If asked to perform an action, explain that web actions "
+            "are not enabled yet and no action was taken. Never ask for passwords, OTPs, or card details."
+        ),
+    }]
+    if isinstance(history, list):
+        for item in history[-8:]:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            content = item.get("content")
+            if role in ("user", "assistant") and isinstance(content, str):
+                messages.append({"role": role, "content": content[:4000]})
+    messages.append({"role": "user", "content": message})
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
+                json={"model": os.getenv("GROQ_MODEL"), "temperature": 0.4, "messages": messages},
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"].strip()
+            return {"reply": reply[:6000]}
+    except Exception as exc:
+        print("web chat completion error:", repr(exc))
+        raise HTTPException(status_code=503, detail="Assistant model is temporarily unavailable")
+
+
+@app.post("/telegram/otp-webhook")
+async def telegram_otp_webhook(request: Request):
+    """Webhook dedicated to the OTP bot; never invokes the main assistant handler."""
+    if not OTP_BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="OTP bot is not configured")
+    update = await request.json()
+    message = update.get("message") or {}
+    text_value = message.get("text", "").strip()
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if not chat_id or not text_value:
+        return {"ok": True}
+    match = re.fullmatch(r"/start(?:@\w+)?\s+verify_([A-Za-z0-9]{10,40})", text_value)
+    if match:
+        try:
+            await _send_web_otp_to_telegram(chat_id, match.group(1))
+        except Exception as exc:
+            print("OTP bot delivery error:", repr(exc))
+            # Do not send a normal assistant welcome from this bot.
+    elif text_value.split()[0].split("@")[0] == "/start":
+        await _send_otp_bot_message(
+            chat_id,
+            "PeculiarAI Verification bot. To receive a code, start verification from the PeculiarAI website and open the link it provides."
+        )
+    return {"ok": True}
+
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(
@@ -22,14 +1922,34 @@ async def telegram_webhook(
         raise HTTPException(status_code=403)
 
     update = await request.json()
-    message = update.get("message")
 
-    if message and "text" in message:
+    # Telegram retry kare to dobara process nahi karna
+    uid = update.get("update_id")
+    if uid is not None:
+        if uid in SEEN_UPDATES:
+            return {"ok": True}
+        SEEN_UPDATES.append(uid)
+
+    # Purane messages ke buttons: ab buttons nahi hain
+    if "callback_query" in update:
+        cq = update["callback_query"]
+        await tg("answerCallbackQuery", {"callback_query_id": cq["id"]})
+        await say(cq["message"]["chat"]["id"],
+                  "I don't use buttons anymore. Just type to me 🙂")
+        return {"ok": True}
+
+    message = update.get("message")
+    if message:
         chat_id = message["chat"]["id"]
-        text = message["text"]
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": "hello"},
-            )
+        if "text" in message:
+            incoming_text = message["text"].strip()
+            await handle_user_text(chat_id, incoming_text)
+        elif "voice" in message:
+            # Voice me time lagta hai: background me chalao, Telegram ko turant 200 do
+            task = asyncio.create_task(process_voice(chat_id, message["voice"]))
+            BG_TASKS.add(task)
+            task.add_done_callback(BG_TASKS.discard)
+        else:
+            await say(chat_id, "I can read text messages and voice notes for now.")
+
     return {"ok": True}

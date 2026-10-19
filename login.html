@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Let's make this yours — PeculiarAI</title>
+  <meta name="description" content="Enter your phone number to receive a temporary verification code via Telegram for PeculiarAI.">
+  <meta name="theme-color" content="#6366f1">
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="container nav-inner">
+      <a href="index.html" class="brand-link" aria-label="PeculiarAI Home">
+        <span class="brand-icon">✦</span>
+        <span>PeculiarAI</span>
+      </a>
+
+      <div class="nav-tagline">
+        A little less chaos. A lot more you.
+      </div>
+
+      <div>
+        <span class="badge-beta">PRIVATE BETA</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Account & Verification Main -->
+  <main>
+    <div class="container">
+      <div class="auth-wrapper">
+        
+        <div class="auth-header">
+          <div class="section-tag" id="step-tag">STEP 1 OF 2 · YOUR ACCOUNT</div>
+          <h1 class="auth-title">
+            Let’s make this<br>
+            <span class="text-gradient-purple">yours.</span>
+          </h1>
+          <p class="auth-subtitle" id="auth-subtitle">
+            Enter your phone number, then open PeculiarAI on Telegram to receive a temporary verification code. This is not an SMS.
+          </p>
+        </div>
+
+        <!-- Alert messages container -->
+        <div id="auth-alert" class="alert-box" style="display: none;"></div>
+
+        <!-- Main Auth Card -->
+        <div class="auth-card">
+          
+          <!-- STEP 1: Phone Submission -->
+          <form id="phone-form">
+            <div class="form-group">
+              <label for="country-code" class="form-label">
+                <span>Country / region</span>
+                <span class="help-icon" title="Select your country calling code">ⓘ</span>
+              </label>
+              <select id="country-code" class="form-select">
+                <option value="+91" selected>IN India (+91)</option>
+                <option value="+1">US United States (+1)</option>
+                <option value="+44">GB United Kingdom (+44)</option>
+                <option value="+971">AE United Arab Emirates (+971)</option>
+                <option value="+65">SG Singapore (+65)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="phone-input" class="form-label">Phone number</label>
+              <input 
+                type="tel" 
+                id="phone-input" 
+                class="form-input" 
+                placeholder="8824466229" 
+                required 
+                autocomplete="tel-national"
+              >
+            </div>
+
+            <div class="form-checkbox-row">
+              <input type="checkbox" id="privacy-consent" required checked>
+              <label for="privacy-consent">
+                I agree to the <a href="privacy.html" target="_blank">privacy notice</a> and understand that my messages may be processed by AI services.
+              </label>
+            </div>
+
+            <div class="notice-box">
+              Temporary testing: the code is delivered inside your Telegram bot chat. The entered phone number itself is not proven to belong to you by this test flow.
+            </div>
+
+            <button type="submit" id="send-code-btn" class="btn btn-primary btn-full">
+              Get code on Telegram →
+            </button>
+          </form>
+
+          <!-- STEP 2: OTP Verification (Reveals dynamically upon code delivery) -->
+          <div id="otp-step" class="otp-container">
+            <div class="telegram-bot-banner">
+              <p style="font-weight: 600; margin-bottom: 6px;">Verification code requested!</p>
+              <p style="font-size: 13px; margin-bottom: 12px; color: #166534;">Open the Telegram bot to view your code:</p>
+              <a href="https://t.me/PeculiarAI_Verify_Bot" target="_blank" id="telegram-bot-link" class="btn btn-secondary" style="font-size: 13.5px; padding: 8px 16px;">
+                <span>💬</span> Open PeculiarAI Bot ↗
+              </a>
+            </div>
+
+            <form id="verify-form">
+              <div class="form-group">
+                <label for="otp-input" class="form-label">Enter 6-digit verification code</label>
+                <input 
+                  type="text" 
+                  id="otp-input" 
+                  class="form-input" 
+                  placeholder="• • • • • •" 
+                  maxlength="6" 
+                  pattern="[0-9]{6}" 
+                  style="font-size: 20px; letter-spacing: 0.3em; text-align: center; font-weight: 700;"
+                  required
+                >
+              </div>
+
+              <div class="otp-meta">
+                <span id="countdown-timer">Code expires in 10:00</span>
+                <button type="button" id="resend-code-btn" class="btn-back" style="padding: 4px 10px; font-size: 12px;" disabled>
+                  Resend code
+                </button>
+              </div>
+
+              <button type="submit" id="verify-code-btn" class="btn btn-primary btn-full">
+                Verify & continue →
+              </button>
+            </form>
+          </div>
+
+        </div>
+
+        <!-- Note & Back Button -->
+        <div class="auth-bottom">
+          <div class="auth-note">
+            Testing flow only. Real SMS verification can be added later using an SMS provider.
+          </div>
+        </div>
+
+        <div style="margin-top: 10px;">
+          <a href="index.html" class="btn btn-back">← Back</a>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/auth.js"></script>
+</body>
+</html>

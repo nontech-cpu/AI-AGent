@@ -1,0 +1,71 @@
+from datetime import datetime, time as dtime, timedelta
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
+MORNING = dtime(9, 0)   # din wale reminders ka time
+URGENT_MINUTES = 10     # itne ya kam minute me ho to turant alert
+
+
+def _at(d, t):
+    return datetime.combine(d, t, tzinfo=IST)
+
+
+def build_plan(due_date, due_time, now=None):
+    """Returns {"status": none|past|urgent|scheduled, "minutes": int|None,
+    "reminders": [(remind_at, label), ...]}"""
+    now = now or datetime.now(IST)
+    if due_date is None:
+        return {"status": "none", "minutes": None, "reminders": []}
+
+    reminders = []
+
+    if due_time is not None:
+        due_dt = _at(due_date, due_time)
+        mins = (due_dt - now).total_seconds() / 60
+        if mins <= 0:
+            return {"status": "past", "minutes": None, "reminders": []}
+        if mins <= URGENT_MINUTES:
+            return {"status": "urgent", "minutes": max(1, round(mins)), "reminders": []}
+
+        # Subah 9 wale reminders: sirf tab jab event me kam se kam 1 ghanta ho
+        for d, label in ((due_date - timedelta(days=1), "day_before"),
+                         (due_date, "due_day")):
+            at = _at(d, MORNING)
+            if at > now and at <= due_dt - timedelta(hours=1):
+                reminders.append((at, label))
+        # Time se pehle wale reminders (jo abhi bhi future me hain)
+        for mins_before, label in ((15, "15min"), (5, "5min")):
+            at = due_dt - timedelta(minutes=mins_before)
+            if at > now:
+                reminders.append((at, label))
+    else:
+        if due_date < now.date():
+            return {"status": "past", "minutes": None, "reminders": []}
+        for d, label in ((due_date - timedelta(days=1), "day_before"),
+                         (due_date, "due_day")):
+            at = _at(d, MORNING)
+            if at > now:
+                reminders.append((at, label))
+
+    status = "scheduled" if reminders else "none"
+    return {"status": status, "minutes": None, "reminders": reminders}
+
+
+def event_over(due_date, due_time, now):
+    if due_date is None:
+        return False
+    if due_time is not None:
+        return _at(due_date, due_time) <= now
+    return due_date < now.date()
+
+
+def fmt_when(at, now=None):
+    now = now or datetime.now(IST)
+    at = at.astimezone(IST)
+    if at.date() == now.date():
+        day = "today"
+    elif at.date() == (now + timedelta(days=1)).date():
+        day = "tomorrow"
+    else:
+        day = at.strftime("%d %b")
+    return f"{day} {at.strftime('%H:%M')}"
