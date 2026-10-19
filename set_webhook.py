@@ -8,7 +8,7 @@ load_dotenv()
 
 token = os.getenv("TELEGRAM_BOT_TOKEN")
 secret = os.getenv("WEBHOOK_SECRET")
-base_url = "https://tightly-barbell-creamed.ngrok-free.dev"
+base_url = "https://peculiar-ai-backend.onrender.com"
 
 if not token or not secret:
     raise SystemExit(
