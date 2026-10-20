@@ -430,3 +430,17 @@ def find_meetings_at_times(chat_id, due_date, times, source_text=None):
             ),
             {"c": chat_id, "d": due_date, "times": time_labels},
         ).fetchall()
+
+
+def find_recent_meetings(chat_id, limit=3):
+    """Return this user's most recently created or upcoming meeting reminders."""
+    with engine.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT m.id, m.title, m.due_date, m.due_time "
+                "FROM memory_items m JOIN users u ON u.id = m.user_id "
+                "WHERE u.telegram_chat_id = :c AND m.category = 'appointments' "
+                "ORDER BY m.id DESC LIMIT :lim"
+            ),
+            {"c": chat_id, "lim": limit},
+        ).fetchall()

@@ -22,10 +22,10 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 get_link_by_email, get_linked_email, verify_email_link,
                 remove_email_link, ensure_user, get_state, set_state,
                 save_google_token, get_google_token, delete_google_token,
-                find_meetings_before, find_meetings_at_times, delete_memory_items, engine, text)
+                find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text)
 from categories import CATEGORIES, DEFAULTS
 from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
-                 is_explicit_calendar_action, classify_yes_no_any_language)
+                 is_explicit_calendar_action, classify_yes_no_any_language, _WORD_NUMBERS, _chat_json)
 from nlu import yes_no, match_persona, PERSONA_LABELS
 from timing import IST, build_plan, fmt_when, event_over
 from inbox import fetch_unseen
@@ -721,32 +721,39 @@ def _time_to_text(value):
 
 
 def _extract_requested_times(message):
-    """Extract exact clock times, including 14:00, 5 PM, and '2 baje'."""
+    """Extract exact clock times, including 14:00, 5 PM, '2 baje', and '5 बजे वाली'."""
     low = message.casefold()
+    for word, digit in _WORD_NUMBERS.items():
+        low = re.sub(rf"(^|\s){re.escape(word)}\s*(baje|bje|bajey|bajay|बजे|o\'?clock|am|pm|pr|par|pe|ko)?(\s|$)", rf"\g<1>{digit} \g<2>\g<3>", low, flags=re.I)
+
     found = []
     # Prefer HH:MM so the 00 part is not parsed again as a separate time.
     for m in re.finditer(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)", low):
         found.append((int(m.group(1)), int(m.group(2))))
     masked = re.sub(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)", " ", low)
-    for m in re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*(am|pm|baje|bje|bajay|bajey|o'clock|oclock)\b", masked):
+    for m in re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*(am|pm|baje|bje|bajay|bajey|बजे|बजेवाली|वाली|वाले|वाला|o'clock|oclock)(?:\b|\s|$)", masked):
         hour, meridian = int(m.group(1)), m.group(2)
         if meridian == "pm" and hour < 12: hour += 12
         elif meridian == "am" and hour == 12: hour = 0
+        elif re.search(r"\b(pm|shaam|sham|evening|raat|dopahar)\b|शाम|रात|दोपहर", low):
+            if hour < 12: hour += 12
+        elif re.search(r"\b(am|subah|subha|morning)\b|सुबह", low):
+            if hour == 12: hour = 0
+        elif 1 <= hour <= 6:
+            hour += 12
         found.append((hour, 0))
     # 24-hour shorthand e.g. "14 wale" or "17 wale" is accepted only when a deletion request exists.
-    for m in re.finditer(r"(?<!\d)(1[3-9]|2[0-3])\s*(?:wale|waale|vala|wala|baje|bje)?\b", masked):
+    for m in re.finditer(r"(?<!\d)(1[3-9]|2[0-3])\s*(?:wale|waale|vala|wala|वाली|वाले|वाला|baje|bje|बजे)?(?:\b|\s|$)", masked):
         found.append((int(m.group(1)), 0))
     # Bare 1-12 followed by 'wale' commonly means the local clock hour.
-    for m in re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*(?:wale|waale|vala|wala)\b", masked):
+    for m in re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*(?:wale|waale|vala|wala|वाली|वाले|वाला)(?:\b|\s|$)", masked):
         hour = int(m.group(1))
-        if re.search(r"\b(pm|shaam|evening|raat)\b", low):
+        if re.search(r"\b(pm|shaam|sham|evening|raat|dopahar)\b|शाम|रात|दोपहर", low):
             if hour < 12: hour += 12
-        elif re.search(r"\b(am|subah|morning)\b", low):
+        elif re.search(r"\b(am|subah|morning)\b|सुबह", low):
             if hour == 12: hour = 0
-        else:
-            now = datetime.now(IST)
-            options = [h for h in (hour % 12, hour % 12 + 12) if h >= now.hour]
-            hour = min(options) if options else (hour % 12 + (12 if now.hour >= 12 else 0))
+        elif 1 <= hour <= 6:
+            hour += 12
         found.append((hour, 0))
     return sorted(set(found))
 
@@ -764,8 +771,14 @@ def _deletion_time(text):
 
 async def _begin_meeting_deletion(chat_id, clean):
     low = clean.casefold()
-    deletion_verb = bool(re.search(r"(delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|मिटा|elimina|borrar|supprimer|löschen|删除|削除)", low))
-    meeting_scope = bool(re.search(r"(meeting|meetings|metting|meetting|meetng|appointment|appointments|reminder|reminders|yaad|मीटिंग|बैठक|recordatorio|rappel|termin|提醒)", low))
+    deletion_verb = bool(re.search(
+        r"(delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|हटाओ|हटाएं|हटाए|मिटा|डिलीट|डिलिट|elimina|borrar|supprimer|löschen|删除|削除)",
+        low
+    ))
+    meeting_scope = bool(re.search(
+        r"(meeting|meetings|metting|meetting|meetng|appointment|appointments|reminder|reminders|yaad|मीटिंग|मिटिंग|बैठक|isse|ise|isko|use|usko|wo|yeh|ye|ऊपर|upar)",
+        low
+    ))
     if not (deletion_verb and meeting_scope):
         return False
 
@@ -773,21 +786,25 @@ async def _begin_meeting_deletion(chat_id, clean):
     if exact_times:
         rows = find_meetings_at_times(chat_id, datetime.now(IST).date(), exact_times, clean)
     else:
-        # Keep the older before-time phrasing supported, but never guess the cutoff.
         before_time = _deletion_time(clean)
-        if before_time is None:
-            set_state(chat_id, "delete_meetings_target", json.dumps({"date": datetime.now(IST).date().isoformat(), "source": clean}))
-            await say(chat_id, "Kaunse meeting reminders delete karne hain? Exact times batao (jaise 14:00 aur 17:00), ya meeting ka naam. Abhi kuch delete nahi hua.")
-            return True
-        rows = find_meetings_before(chat_id, datetime.now(IST).date(), before_time)
+        if before_time:
+            rows = find_meetings_before(chat_id, datetime.now(IST).date(), before_time)
+        else:
+            recent = find_recent_meetings(chat_id, limit=2)
+            if recent:
+                rows = [recent[0]]
+            else:
+                set_state(chat_id, "delete_meetings_target", json.dumps({"date": datetime.now(IST).date().isoformat(), "source": clean}))
+                await say(chat_id, "Kaunse meeting reminders delete karne hain? Exact time batao (jaise '5 baje' ya 17:00). Abhi kuch delete nahi hua.")
+                return True
 
     if not rows:
-        await say(chat_id, "Un times par koi matching saved meeting reminder nahi mila. Kuch delete nahi hua.")
+        await say(chat_id, "Koi matching saved meeting reminder nahi mila. Kuch delete nahi hua.")
         return True
     preview = [f"• {row[2]:%d %b} {row[3].strftime('%H:%M')}: {row[1]}" for row in rows]
     payload = {"ids": [int(row[0]) for row in rows], "count": len(rows)}
     set_state(chat_id, "delete_meetings_confirm", json.dumps(payload))
-    await say(chat_id, "Ye exact saved meeting reminders mil rahe hain:\n" + "\n".join(preview) + "\n\nInhe delete kar doon? Abhi kuch delete nahi hua. Haan/yes = delete, nahi/no = cancel.")
+    await say(chat_id, "Ye exact saved meeting reminder mil raha hai:\n" + "\n".join(preview) + "\n\nInhe delete kar doon? Abhi kuch delete nahi hua. Haan/yes = delete, nahi/no = cancel.")
     return True
 
 
@@ -861,10 +878,35 @@ async def _handle_delete_meetings_confirmation(chat_id, clean, data):
 # ---------- Main conversation brain ----------
 
 
+async def handle_conversational_chat(chat_id, user_text):
+    clean = user_text.strip().lower()
+    if clean in {"help", "/help", "kya kar sakte ho", "commands", "menu"}:
+        await say(chat_id, HELP_TEXT)
+        return
+
+    system = (
+        "You are PeculiarAI, a smart, polite, ultra-reliable personal assistant on Telegram. "
+        "The user is talking to you directly. "
+        "Reply in 1-2 friendly, natural, and helpful sentences in the EXACT SAME language or dialect "
+        "used by the user (Hindi, Hinglish, English, etc.). "
+        "Never dump a long command menu or bullet points unless the user explicitly asked for help. "
+        "If they were trying to manage reminders or meetings, politely acknowledge and help them."
+    )
+    try:
+        data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
+        reply = (data.get("reply") or "").strip()
+        if reply:
+            await say(chat_id, reply)
+            return
+    except Exception as exc:
+        print("conversational chat error:", repr(exc))
+    await say(chat_id, "Main aapki reminders, meetings, aur bills track karne me madad karta hu. Aap bataiye kya karna hai?")
+
+
 async def handle_active(chat_id, text):
     # Fast local response for greetings: avoid a needless Groq round-trip.
     if re.fullmatch(r"\s*(hi|hello|hey|hii|hlo|namaste|namaskar|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
-        await say(chat_id, HELP_TEXT)
+        await say(chat_id, "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!")
         return
 
     # Natural-language trigger: no slash command is required.
@@ -947,7 +989,7 @@ async def handle_active(chat_id, text):
                            "(settings, linked email and all saved items). "
                            "Type DELETE to confirm, or anything else to cancel.")
     else:
-        await say(chat_id, HELP_TEXT)
+        await handle_conversational_chat(chat_id, text)
 
 
 async def handle_user_text(chat_id, text, lang_hint=None):
