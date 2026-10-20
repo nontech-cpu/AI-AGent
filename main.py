@@ -77,6 +77,24 @@ BG_TASKS = set()
 # Pending Google actions are held until explicit yes/no confirmation.
 PENDING_GOOGLE_ACTIONS = {}
 
+# Website verification database and initialization
+WEB_VERIFY_DB = os.getenv("PECULIARAI_WEB_VERIFY_DB", "peculiarai_web_verify.sqlite3")
+
+
+def _init_web_verify_db():
+    with sqlite3.connect(WEB_VERIFY_DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS web_verifications (
+            token TEXT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            otp_hash TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            telegram_chat_id TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            verified INTEGER NOT NULL DEFAULT 0
+        )""")
+        conn.commit()
+
+
 # ---------- Texts ----------
 
 WELCOME_CONSENT = (
@@ -675,7 +693,7 @@ async def prepare_google_action(chat_id, r):
         if not to or not EMAIL_OK.match(to) or not subject or not body:
             await say(chat_id, "Email bhejne ke liye recipient email, subject aur message chahiye. Example: 'Send an email to name@example.com, subject Test, message Hello'.")
             return
-        pending = {'kind':'send_email','to':to,'subject':subject,'body':body}
+        pending = {'kind':'send_email','to':to,'subject':subject,'body':body, 'created_at': datetime.now(IST)}
         PENDING_GOOGLE_ACTIONS[chat_id] = pending
         await say(chat_id, f"Please confirm — I will send this email from your connected Gmail account:\nTo: {to}\nSubject: {subject}\nMessage: {body}\n\nReply yes to send or no to cancel.")
     elif intent == 'upload_file':
@@ -686,7 +704,7 @@ async def prepare_google_action(chat_id, r):
         folders = await list_drive_folders(chat_id)
         folder = next((f for f in folders if f.get('name','').lower() == 'ai assistant'), None)
         folder_id = folder.get('id') if folder else None
-        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'upload_file','filename':filename,'content':content,'folder_id':folder_id}
+        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'upload_file','filename':filename,'content':content,'folder_id':folder_id, 'created_at': datetime.now(IST)}
         folder_name = folder.get('name') if folder else 'My Drive root'
         await say(chat_id, f"Please confirm — upload/create `{filename}` in Google Drive ({folder_name}) with this content:\n{content}\n\nReply yes to upload or no to cancel.")
     elif intent == 'create_meeting':
@@ -723,7 +741,7 @@ async def prepare_google_action(chat_id, r):
             await say(chat_id, "Bilkul. Meeting kis din aur kitne baje rakhun? Duration bhi bata sakte ho, jaise aaj shaam 5 baje, 30 minutes. Main pehle details confirm karunga; abhi event create nahi hua.")
             return
         attendees = r.get('attendees', [])
-        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees}
+        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees, 'created_at': datetime.now(IST)}
         await say(chat_id, f"Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel.")
 
 
@@ -1313,17 +1331,36 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     reply_lang.set(stored)
 
     if chat_id in PENDING_GOOGLE_ACTIONS:
-        yn_pending = yes_no(clean)
-        if yn_pending is None:
-            yn_pending = await classify_yes_no_any_language(
-                clean, "The assistant asked confirmation to perform a Google Calendar / Email / Drive action."
-            )
-        if yn_pending is not None:
-            await handle_google_confirmation(chat_id, "yes" if yn_pending else "no")
+        pending = PENDING_GOOGLE_ACTIONS[chat_id]
+        created_at = pending.get("created_at")
+        age = (datetime.now(IST) - created_at).total_seconds() if created_at else 0
+        if age > 900:  # Expired after 15 minutes
+            PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+        else:
+            yn_pending = yes_no(clean)
+            if yn_pending is None:
+                yn_pending = await classify_yes_no_any_language(
+                    clean, f"The assistant asked confirmation to perform a Google {pending.get('kind', 'action')} action."
+                )
+            if yn_pending is not None:
+                await handle_google_confirmation(chat_id, "yes" if yn_pending else "no")
+                return
+
+            # Explicit cancel
+            if clean.lower() in {"cancel", "rehne do", "chhoro", "radd karo", "stop", "no", "nahin", "nahi"}:
+                PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+                await say(chat_id, "Theek hai, action cancel kar diya. Kuch bhi send ya schedule nahi hua.")
+                return
+
+            # If user switched to an entirely different request or query
+            if any(w in clean.lower() for w in ("help", "pdf", "report", "plate", "agenda", "bill", "bijli", "show", "dikhao", "delete")):
+                PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+                await handle_active(chat_id, clean)
+                return
+
+            # Otherwise gently ask for confirmation without destroying state prematurely
+            await say(chat_id, f"Aapka ek Google {pending.get('kind', 'action')} pending hai. Reply 'yes' to proceed, 'cancel' to discard, ya agla instruction bataiye.")
             return
-        # Don't trap an unrelated message as a confirmation; cancel preview and process it normally.
-        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-        await say(chat_id, "Pending Google action cancelled because that wasn't a yes/no confirmation. I'll handle your new message now.")
 
     if clean.lower() == "/start":
         await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
@@ -1684,6 +1721,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 @app.post("/web/verification/start")
@@ -2241,8 +2287,8 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str = Header(None),
 ):
-    if x_telegram_bot_api_secret_token != SECRET:
-        raise HTTPException(status_code=403)
+    if not SECRET or not x_telegram_bot_api_secret_token or not secrets.compare_digest(x_telegram_bot_api_secret_token, SECRET):
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid secret token")
 
     update = await request.json()
 

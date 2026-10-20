@@ -19,10 +19,13 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
-  // Add CORS headers to all responses
+  // Security and CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -31,12 +34,27 @@ const server = http.createServer((req, res) => {
   }
 
   let cleanUrl = req.url.split('?')[0];
-  let safePath = path.normalize(decodeURIComponent(cleanUrl)).replace(/^(\.\.[\/\\])+/, '');
-  if (safePath === '/' || safePath === '\\') {
+  let decodedUrl;
+  try {
+    decodedUrl = decodeURIComponent(cleanUrl);
+  } catch (e) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Bad Request');
+    return;
+  }
+  let safePath = path.normalize(decodedUrl).replace(/^(\.\.[\/\\])+/, '');
+  if (safePath === '/' || safePath === '\\' || safePath === '') {
     safePath = '/index.html';
   }
 
-  const filePath = path.join(BASE_DIR, safePath);
+  const resolvedBase = path.resolve(BASE_DIR);
+  const filePath = path.resolve(resolvedBase, '.' + (safePath.startsWith('/') || safePath.startsWith('\\') ? safePath : '/' + safePath));
+
+  if (!filePath.startsWith(resolvedBase)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
 
   fs.stat(filePath, (err, stats) => {
     if (err || !stats.isFile()) {

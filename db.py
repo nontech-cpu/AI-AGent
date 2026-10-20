@@ -3,7 +3,10 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 load_dotenv()
-engine = create_engine(os.getenv("DATABASE_URL"), pool_pre_ping=True)
+raw_db_url = os.getenv("DATABASE_URL") or "sqlite:///:memory:"
+if raw_db_url.startswith("postgres://"):
+    raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
+engine = create_engine(raw_db_url, pool_pre_ping=True)
 
 
 def give_consent(chat_id):

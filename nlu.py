@@ -25,10 +25,11 @@ PERSONA_WORDS = {
 WORD_TO_PERSONA = {w: p for p, words in PERSONA_WORDS.items() for w in words}
 
 YES = {"yes", "y", "yeah", "yep", "yup", "ok", "okay", "k", "haan", "han", "ha", "haa",
-       "hanji", "sure", "agree", "agreed", "theek", "thik", "correct", "right", "sahi",
-       "continue", "start", "done"}
-NO = {"no", "n", "nope", "nah", "nahi", "nahin", "na", "cancel", "disagree", "mat",
-      "stop", "galat", "wrong"}
+       "hanji", "haanji", "haaji", "sure", "agree", "agreed", "theek", "thik", "correct", "right", "sahi",
+       "continue", "start", "done", "bilkul", "zaroor", "zarur"}
+NO = {"no", "n", "nope", "nah", "nahi", "nahin", "na", "naa", "cancel", "disagree", "mat",
+      "stop", "galat", "wrong", "rehne do", "rahne do"}
+
 
 
 def _tokens(text):
@@ -49,11 +50,11 @@ def yes_no(text):
     hindi_tokens = set(re.findall(r"[\u0900-\u097F]+", low))
     if any(w in hindi_tokens for w in {"हाँ", "हां", "हाँजी", "जी", "बिल्कुल", "सही", "ठीक", "ज़रूर"}):
         return True
-    if any(p in low for p in {"हाँ जी", "जी हाँ", "कर दो", "रख दो", "सेट कर दो"}):
+    if any(p in low for p in {"हाँ जी", "जी हाँ", "कर दो", "रख दो", "सेट कर दो", "kar do", "kardo", "rakh do", "rakhdo", "set kar do", "set kardo", "haan ji", "haan bhai"}):
         return True
     if any(w in hindi_tokens for w in {"नहीं", "ना", "मत", "रद्द", "कैंसिल"}):
         return False
-    if any(p in low for p in {"मत करो", "रहने दो", "नहीं चाहिए"}):
+    if any(p in low for p in {"मत करो", "रहने दो", "नहीं चाहिए", "mat karo", "rehne do", "rahne do", "nahi chahiye", "nahi bhai"}):
         return False
 
     for t in _tokens(text):

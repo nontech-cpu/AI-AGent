@@ -19,9 +19,9 @@ HOP_BY_HOP = {
 
 
 def upstream_for(path: str) -> str:
-    if path == "/health" or path == "/docs" or path == "/openapi.json" or path == "/redoc":
+    if path in ("/", "/health", "/docs", "/openapi.json", "/redoc"):
         return BACKEND
-    if any(path.startswith(prefix) for prefix in API_PREFIXES if prefix.endswith("/")):
+    if any(path.startswith(prefix) for prefix in API_PREFIXES):
         return BACKEND
     return STREAMLIT
 

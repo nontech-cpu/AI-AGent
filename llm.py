@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 import httpx
 from datetime import datetime, date, time as dtime, timedelta
 from zoneinfo import ZoneInfo
@@ -11,7 +12,7 @@ load_dotenv()
 from categories import CATEGORIES, DEFAULTS
 
 IST = ZoneInfo("Asia/Kolkata")
-SENSITIVE = re.compile(r"\b(otp|password|passcode|cvv)\b|\b(?:\d[ -]?){13,19}\b", re.I)
+SENSITIVE = re.compile(r"\b(otp|password|passcode|cvv)\b|(?:api[_\s-]?key|secret[_\s-]?token)|\b(?:\d[ -]?){13,19}\b", re.I)
 
 INTENTS = {"save_item", "show_agenda", "show_saved", "change_categories",
            "change_persona", "link_email", "unlink_email", "export_data",
@@ -67,8 +68,12 @@ async def classify_yes_no_any_language(message, question_context=""):
 
 
 async def _chat_json(system, user_text):
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise RuntimeError("GROQ_API_KEY is not set.")
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
     payload = {
-        "model": os.getenv("GROQ_MODEL"),
+        "model": model,
         "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
@@ -76,16 +81,37 @@ async def _chat_json(system, user_text):
             {"role": "user", "content": user_text},
         ],
     }
-    async with httpx.AsyncClient(timeout=6.0) as client:
-        r = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"},
-            json=payload,
-        )
-    if r.status_code != 200:
-        print("GROQ ERROR:", r.status_code, r.text)
-    r.raise_for_status()
-    return json.loads(r.json()["choices"][0]["message"]["content"])
+
+    last_err = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json=payload,
+                )
+            if r.status_code == 200:
+                raw_content = r.json()["choices"][0]["message"]["content"]
+                return json.loads(raw_content)
+            elif r.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            else:
+                print("GROQ ERROR:", r.status_code, r.text[:300])
+                r.raise_for_status()
+        except (httpx.TimeoutException, httpx.NetworkError) as net_err:
+            last_err = net_err
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            raise
+        except Exception as exc:
+            last_err = exc
+            raise
+
+    if last_err:
+        raise last_err
 
 
 def _now_text(now):
