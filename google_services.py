@@ -166,6 +166,55 @@ async def find_calendar_event(chat_id, title_query=None, target_date=None, targe
             if q_words & ev_words:
                 matches.append(ev)
 
+    # If target_time is specified (e.g. '17:00' or 5 PM), match events occurring around that time
+    if target_time:
+        time_matches = []
+        target_hour = None
+        target_min = 0
+        if isinstance(target_time, str):
+            clean_t = target_time.strip().lower()
+            if "pm" in clean_t or "am" in clean_t:
+                # 5 pm or 5:00 pm
+                is_pm = "pm" in clean_t
+                digits = re.sub(r"[^\d:]", "", clean_t).split(":")
+                try:
+                    h = int(digits[0])
+                    if is_pm and h < 12:
+                        h += 12
+                    elif not is_pm and h == 12:
+                        h = 0
+                    target_hour = h
+                    if len(digits) > 1:
+                        target_min = int(digits[1][:2])
+                except ValueError:
+                    pass
+            else:
+                parts = clean_t.split(":")
+                try:
+                    target_hour = int(parts[0])
+                    if len(parts) > 1:
+                        target_min = int(parts[1][:2])
+                except ValueError:
+                    pass
+        elif hasattr(target_time, 'hour'):
+            target_hour = target_time.hour
+            target_min = target_time.minute
+
+        if target_hour is not None:
+            pool = matches if matches else events
+            for ev in pool:
+                start_str = ev.get('start', {}).get('dateTime') or ev.get('start', {}).get('date')
+                if start_str and "T" in start_str:
+                    try:
+                        ev_dt = datetime.fromisoformat(start_str)
+                        ev_local = ev_dt.astimezone(IST) if ev_dt.tzinfo else ev_dt
+                        if ev_local.hour == target_hour and abs(ev_local.minute - target_min) <= 30:
+                            time_matches.append(ev)
+                    except Exception:
+                        pass
+            if time_matches:
+                matches = time_matches
+
     is_ambiguous = len(matches) > 1
     return matches, is_ambiguous
 

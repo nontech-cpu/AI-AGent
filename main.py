@@ -779,26 +779,33 @@ async def prepare_google_action(chat_id, r):
         PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees, 'created_at': datetime.now(IST)}
         await say(chat_id, f"Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel.")
     elif intent == 'update_meeting':
-        target_title = r.get('target_title') or r.get('title')
+        target_title = r.get('target_title')
+        target_time = r.get('target_time')
+        new_title = r.get('title')
         start_iso = r.get('start_iso')
         is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
         if not is_connected:
             await say(chat_id, "Google Calendar meeting update karne ke liye aapka Google account connect hona zaroori hai. Type karein: 'connect google'")
             return
-        matches, is_ambig = await google_find_calendar_event(chat_id, title_query=target_title)
+        matches, is_ambig = await google_find_calendar_event(
+            chat_id,
+            title_query=target_title or (None if target_time else new_title),
+            target_time=target_time
+        )
         if is_ambig:
             candidates = [f"• '{ev.get('summary')}' on {ev.get('start', {}).get('dateTime', '')[:16]}" for ev in matches[:4]]
             await say(chat_id, "Aapki multiple meetings match ho rahi hain. Kripya exact meeting ka naam ya time batayein:\n" + "\n".join(candidates))
             return
         if not matches:
-            await say(chat_id, f"Google Calendar mein '{target_title or 'meeting'}' naam ki koi meeting nahi mili. Please title check karein; koi nayi meeting create nahi ki gayi.")
+            await say(chat_id, f"Google Calendar mein matching meeting nahi mili. Please title ya time check karein; koi meeting update ya delete nahi hui.")
             return
         event = matches[0]
         event_id = event['id']
-        old_title = event.get('summary') or target_title
+        old_title = event.get('summary') or target_title or 'Meeting'
+        final_title = new_title or old_title
         if not start_iso:
             set_state(chat_id, "update_meeting_time", json.dumps({
-                "event_id": event_id, "title": old_title, "duration_minutes": r.get("duration_minutes", 30)
+                "event_id": event_id, "title": final_title, "duration_minutes": r.get("duration_minutes", 30)
             }))
             await say(chat_id, f"Found meeting: '{old_title}'. Is meeting ko kis din aur kitne baje move karna hai? (jaise 'aaj 5 PM' ya 'kal 11:00 AM').")
             return
@@ -806,21 +813,28 @@ async def prepare_google_action(chat_id, r):
             'kind': 'update_meeting',
             'event_id': event_id,
             'title': old_title,
+            'new_title': final_title,
             'new_start_iso': start_iso,
             'duration_minutes': r.get('duration_minutes', 30),
             'created_at': datetime.now(IST),
         }
         PENDING_GOOGLE_ACTIONS[chat_id] = pending
-        await say(chat_id, f"Please confirm — update '{old_title}'?\nNew Start: {start_iso} (India time)\nDuration: {r.get('duration_minutes', 30)} minutes\n(Existing Meet link will be preserved).\n\nReply yes to confirm or no to cancel.")
+        title_change_text = f" with new title '{final_title}'" if new_title and new_title.lower() != old_title.lower() else ""
+        await say(chat_id, f"Please confirm — reschedule '{old_title}'{title_change_text} to {start_iso} (India time)?\nDuration: {r.get('duration_minutes', 30)} minutes\n(Existing Meet link will be preserved).\n\nReply yes to confirm or no to cancel.")
     elif intent == 'cancel_meeting':
         target_title = r.get('target_title') or r.get('title')
+        target_time = r.get('target_time')
         if chat_id in PENDING_GOOGLE_ACTIONS:
             pending = PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-            await say(chat_id, f"Theek hai, '{pending.get('title', 'meeting')}' cancel kar di. Kuch bhi schedule nahi hua.")
+            await say(chat_id, f"Theek hai, '{pending.get('title', 'meeting')}' cancel kar di. Kuch bhi schedule hua.")
             return
         is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
         if is_connected:
-            matches, is_ambig = await google_find_calendar_event(chat_id, title_query=target_title)
+            matches, is_ambig = await google_find_calendar_event(
+                chat_id,
+                title_query=target_title,
+                target_time=target_time
+            )
             if is_ambig:
                 candidates = [f"• '{ev.get('summary')}' on {ev.get('start', {}).get('dateTime', '')[:16]}" for ev in matches[:4]]
                 await say(chat_id, "Aapki multiple meetings match ho rahi hain. Kripya exact meeting ka naam ya time batayein:\n" + "\n".join(candidates))
@@ -830,7 +844,7 @@ async def prepare_google_action(chat_id, r):
                 pending = {
                     'kind': 'delete_meeting',
                     'event_id': event['id'],
-                    'title': event.get('summary') or target_title,
+                    'title': event.get('summary') or target_title or 'Meeting',
                     'created_at': datetime.now(IST),
                 }
                 PENDING_GOOGLE_ACTIONS[chat_id] = pending
@@ -919,6 +933,15 @@ async def _begin_meeting_deletion(chat_id, clean):
         low
     ))
     if not (deletion_verb and meeting_scope):
+        return False
+
+    # If the user is asking to reschedule, move, change time/title, or create/schedule a replacement,
+    # DO NOT intercept as a pure deletion! Let the intent router handle it as update_meeting or compound action.
+    reschedule_or_replacement = bool(re.search(
+        r"(rakh|rkh|shift|move|reschedule|badal|change|nayi\b|nayee\b|new\b|create\b|jagah\b|badle\b|bana|banao|cancel\s+(krkr|karke)|delete\s+(krkr|karke)|baje\s+(kar|rakh|bana)|pm\s+(kar|rakh|bana)|am\s+(kar|rakh|bana)|and\s+name|title|naam)",
+        low
+    ))
+    if reschedule_or_replacement:
         return False
 
     # 1. Check if there is an active pending Google action awaiting confirmation

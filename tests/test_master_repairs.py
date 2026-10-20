@@ -308,3 +308,50 @@ async def test_create_meeting_details_does_not_trap_casual_chat():
                     await main.handle_user_text(chat_id, "aur bhy kesa h")
                     assert state_store.get(chat_id) is None
                     mock_chat.assert_called_once_with(chat_id, "aur bhy kesa h")
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_replace_meeting_compound_intent():
+    """
+    User says: 'bhy merer 5 bje wale meeting cancel krkr 6 bje rkhdo and name meeting ka peculiar ai meeting'
+    Must NOT be intercepted by _begin_meeting_deletion as pure deletion.
+    Must prepare an update_meeting action with new title and new start time.
+    """
+    chat_id = 888105
+    query = "bhy merer 5 bje wale meeting cancel krkr 6 bje rkhdo and name meeting ka peculiar ai meeting"
+
+    # 1. Verify _begin_meeting_deletion returns False for this compound request
+    is_pure_deletion = await main._begin_meeting_deletion(chat_id, query)
+    assert is_pure_deletion is False
+
+    # 2. Verify handle_active prepares update_meeting with new title & start_iso
+    fake_event = {
+        "id": "evt_5pm_old",
+        "summary": "Pecular AI Meeting",
+        "start": {"dateTime": "2026-10-20T17:00:00+05:30"},
+        "hangoutLink": "https://meet.google.com/test-meet"
+    }
+    with patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock) as mock_conn:
+        mock_conn.return_value = (True, "test@gmail.com")
+        with patch("main.google_find_calendar_event", new_callable=AsyncMock) as mock_find:
+            mock_find.return_value = ([fake_event], False)
+            with patch("main.say", new_callable=AsyncMock) as mock_say:
+                with patch("main.understand", new_callable=AsyncMock) as mock_understand:
+                    mock_understand.return_value = {
+                        "intent": "update_meeting",
+                        "target_time": "17:00",
+                        "title": "peculiar ai meeting",
+                        "start_iso": "2026-10-20T18:00:00+05:30",
+                        "duration_minutes": 30
+                    }
+                    await main.handle_active(chat_id, query)
+
+                    # Pending action must be update_meeting, not delete_meeting
+                    pending = main.PENDING_GOOGLE_ACTIONS.get(chat_id)
+                    assert pending is not None
+                    assert pending["kind"] == "update_meeting"
+                    assert pending["event_id"] == "evt_5pm_old"
+                    assert pending["new_title"] == "peculiar ai meeting"
+                    assert "18:00:00" in pending["new_start_iso"]
+                    mock_say.assert_called()
+                    assert "reschedule" in mock_say.call_args[0][1].lower() or "update" in mock_say.call_args[0][1].lower()

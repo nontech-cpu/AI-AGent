@@ -410,7 +410,7 @@ async def understand(text):
         + "Return JSON only, in this shape: "
         '{"intent": string, "item": object or null, "start": "YYYY-MM-DD" or null, '
         '"end": "YYYY-MM-DD" or null, "categories_on": [strings], '
-        '"categories_off": [strings], "persona": string or null, "to": string or null, "subject": string or null, "body": string or null, "filename": string or null, "content": string or null, "title": string or null, "target_title": string or null, "start_iso": string or null, "duration_minutes": integer or null, "attendees": [email strings], "time_ambiguous": boolean or null}. '
+        '"categories_off": [strings], "persona": string or null, "to": string or null, "subject": string or null, "body": string or null, "filename": string or null, "content": string or null, "title": string or null, "target_title": string or null, "target_time": string or null, "start_iso": string or null, "duration_minutes": integer or null, "attendees": [email strings], "time_ambiguous": boolean or null}. '
         "Intents: "
         "save_item = the user tells you about a bill, bank transaction, booking, order, "
         "appointment, meeting or work deadline to remember (fill item). "
@@ -426,8 +426,8 @@ async def understand(text):
         "link_google = connect Google account. unlink_google = disconnect Google. "
         "send_email = send an email; extract recipient email into to, subject and body. "
         "create_meeting = ONLY when the meaning of the message explicitly asks you to create, host, schedule, organize, generate a video-meeting link, create a calendar event, or send an invitation for a NEW meeting. If the user gives a broad period without an exact hour (such as 'kal shaam', 'today evening', 'afternoon', 'subah'), you MUST leave start_iso as null and set time_ambiguous=true. NEVER guess an arbitrary hour like 18:00 or 6 PM. Extract title, start_iso in ISO 8601 with +05:30 timezone, duration_minutes (default 30), attendees list. "
-        "update_meeting = the user explicitly asks to update, move, change time/date, or reschedule an existing meeting (e.g. 'PeculiarAI QA Test 01 wali meeting ko 5 PM kar do', 'move meeting to 4 PM'). Extract target_title (title of existing meeting to find), title (new title if changing), start_iso (new start time in ISO 8601 with +05:30), duration_minutes (default 30). "
-        "cancel_meeting = the user explicitly asks to cancel, delete, or remove an existing meeting or calendar event (e.g. 'PeculiarAI QA Cancel Test meeting cancel kar do', 'cancel my 5 PM meeting'). Extract target_title, start_iso if time mentioned. "
+        "update_meeting = the user explicitly asks to update, move, change time/date, reschedule, or cancel/replace an existing meeting with a new time/title (e.g. '5 bje wale meeting cancel krkr 6 bje rkhdo and name meeting ka peculiar ai meeting', 'PeculiarAI QA Test 01 wali meeting ko 5 PM kar do', 'move meeting to 4 PM'). Extract target_title (title of existing meeting to find if mentioned), target_time (time of the existing meeting to find, e.g. '17:00' if they refer to '5 bje wale meeting'), title (new title to give the meeting if specified, e.g. 'peculiar ai meeting'), start_iso (new meeting start time in ISO 8601 with +05:30), duration_minutes (default 30). "
+        "cancel_meeting = the user explicitly asks to cancel, delete, or remove an existing meeting or calendar event without rescheduling (e.g. 'PeculiarAI QA Cancel Test meeting cancel kar do', 'cancel my 5 PM meeting'). Extract target_title, target_time, start_iso if time mentioned. "
         "info_query = the user is asking a question about previous conversation turns or stated facts (e.g. 'Maine test project ka kya naam bataya tha', 'what did I say earlier', 'what meeting title did I give you'). This is an informational inquiry, NEVER create or schedule an event. "
         "upload_file = ONLY when the user explicitly asks to create, upload, or save a new file to Google Drive (e.g., 'save this to Drive', 'create notes file in Drive'). If the user mentions a document/PDF they previously sent or asks questions about a file, classify as chat (NEVER upload_file). "
         "export_data = the user wants a copy of their data. "
@@ -448,7 +448,10 @@ async def understand(text):
     if intent not in INTENTS:
         intent = "chat"
     out = {"intent": intent, "item": None, "start": None, "end": None,
-           "on": [], "off": [], "persona": None, "to": None, "subject": None, "body": None, "filename": None, "content": None, "title": None, "target_title": None, "start_iso": None, "duration_minutes": 30, "attendees": [], "time_ambiguous": False}
+           "on": [], "off": [], "persona": None, "to": None, "subject": None, "body": None, "filename": None, "content": None, "title": None, "target_title": None, "target_time": None, "start_iso": None, "duration_minutes": 30, "attendees": [], "time_ambiguous": False}
+
+    if intent == "update_meeting" or intent == "cancel_meeting":
+        out["target_time"] = data.get("target_time")
 
     if intent == "save_item":
         out["item"] = _clean_item(data.get("item"), now)
