@@ -44,12 +44,18 @@ def yes_no(text):
     if "👍" in text:
         return True
     low = text.strip().lower()
-    for w in HINDI_YES:
-        if w in low:
-            return True
-    for w in HINDI_NO:
-        if w in low:
-            return False
+
+    # Check whole Hindi tokens to prevent false substring matches (e.g. 'रखना' matching 'ना' or 'मतेशाम' matching 'मत')
+    hindi_tokens = set(re.findall(r"[\u0900-\u097F]+", low))
+    if any(w in hindi_tokens for w in {"हाँ", "हां", "हाँजी", "जी", "बिल्कुल", "सही", "ठीक", "ज़रूर"}):
+        return True
+    if any(p in low for p in {"हाँ जी", "जी हाँ", "कर दो", "रख दो", "सेट कर दो"}):
+        return True
+    if any(w in hindi_tokens for w in {"नहीं", "ना", "मत", "रद्द", "कैंसिल"}):
+        return False
+    if any(p in low for p in {"मत करो", "रहने दो", "नहीं चाहिए"}):
+        return False
+
     for t in _tokens(text):
         if t in YES:
             return True

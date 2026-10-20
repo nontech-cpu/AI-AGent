@@ -4,7 +4,58 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import json
+
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+
+async def clean_voice_transcript(raw_text):
+    """Clean up obvious acoustic mishearings and speech-to-text typos using fast LLM pass."""
+    if not raw_text or len(raw_text.strip()) < 3:
+        return raw_text
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        return raw_text
+
+    system = (
+        "You are an expert Speech-to-Text post-processor for an Indian personal assistant. "
+        "User speech often has Indian accents, Hindi/Hinglish/English slang, and acoustic mishearings. "
+        "Fix obvious speech recognition errors into what the user was actually saying, in natural Hindi/Hinglish/English. "
+        "Examples: "
+        "- 'ओस कर देव' / 'वोस्ट करनी' / 'होस्ता में' -> 'होस्ट कर दे' / 'होस्ट करनी है' (meeting host), "
+        "- 'पान्च दोजें' -> 'पाँच बजे' (5 baje), "
+        "- 'जेवनिंग' -> 'evening', "
+        "- 'वाई' -> 'भाई', "
+        "- 'आई मतेशाम भूँ' -> 'आज शाम को', "
+        "- 'मिटिंग' -> 'मीटिंग'. "
+        "Preserve user intent and meaning accurately. If the text is already clear, keep it as is. "
+        "Return ONLY a JSON object: {\"clean_text\": \"...\"}."
+    )
+    payload = {
+        "model": os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b",
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": raw_text},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            res = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json=payload,
+            )
+        if res.status_code == 200:
+            val = res.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(val)
+            clean = (parsed.get("clean_text") or "").strip()
+            if clean and len(clean) >= 2:
+                return clean
+    except Exception as exc:
+        print("clean_voice_transcript error:", repr(exc))
+    return raw_text
 
 
 async def transcribe_telegram_voice(file_id):
@@ -35,9 +86,9 @@ async def transcribe_telegram_voice(file_id):
             "response_format": "verbose_json",
             "temperature": "0",
             "prompt": (
-                "Hindi, Hinglish, English speech: reminders, calendar meetings, Google Meet, "
-                "bills, tasks, appointments, dates, times, notes. "
-                "देवनागरी हिंदी: आज, कल, परसों, बजे, मीटिंग, याद दिलाना, सेट करना, रखना."
+                "Bhai meeting host kar de, Devender ke sath meeting schedule kar, Google Meet link bana, "
+                "reminder set kar, 5 baje, aaj shaam 5:00 PM, kal subah 11:00 AM, electricity bill 1200 due 25 Oct. "
+                "मीटिंग होस्ट कर दे, गूगल मीट, शेड्यूल्ड मीटिंग, रिमाइंडर, आज शाम पांच बजे, कल सुबह, devender ke sath."
             ),
         }
         resp = await client.post(
@@ -61,4 +112,6 @@ async def transcribe_telegram_voice(file_id):
     }
     if norm in hallucinations or len(raw_text) < 2:
         return "", (data.get("language") or "")
-    return raw_text, (data.get("language") or "")
+
+    cleaned = await clean_voice_transcript(raw_text)
+    return cleaned, (data.get("language") or "")

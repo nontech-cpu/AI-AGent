@@ -181,10 +181,11 @@ def _explicit_calendar_action(message):
         r"\b(host|schedule|create|organize|organise|set\s*up|arrange|book)\b.{0,60}\b(meeting|meet|emetting|emeting|metting|meetting|meetng|meating|event|session|call)\b",
         r"\b(meeting|meet|emetting|emeting|metting|meetting|meetng|meating|event|session|call)\b.{0,60}\b(host|schedule|create|organize|organise|set\s*up|arrange|book)\b",
         r"\bgoogle\s+(calendar|meet)\b", r"\bcalendar\s+event\b", r"\b(meet|meeting)\s+link\b",
-        # Hindi Devanagari & Transliterated
-        r"(मीटिंग|मीट|meeting|meet|emetting|metting)\b.{0,60}(सेट\s*कर|सेट\s*क|रख|रखो|रखना|रखनी|रख\s*दो|रख\s*दे|बना|बनाओ|बना\s*दो|बना\s*दे|करवा|आयोजित|host|schedule|create|set\s*kar)",
-        r"(सेट\s*कर|रख|रखो|बना|बनाओ|आयोजित|host|schedule)\b.{0,60}(मीटिंग|मीट|meeting|meet)",
-        r"\b(meri|mere|mujhe|bhai)\b.{0,45}\b(meeting|meet)\b.{0,35}\b(host|kar|kr|rakh|bana|banwa|schedule|set)\b",
+        # Hindi Devanagari, speech recognition variants & Transliterated
+        r"(मीटिंग|मिटिंग|मीट|मिट|meeting|meet|emetting|metting)\b.{0,60}(होस्ट|वोस्ट|ओस|ओस्ट|होस्ता|vost|ost|होस्टिंग|सेट\s*कर|सेट\s*क|रख|रखो|रखना|रखनी|रख\s*दो|रख\s*दे|बना|बनाओ|बना\s*दो|बना\s*दे|करवा|आयोजित|host|schedule|create|set\s*kar)",
+        r"(होस्ट|वोस्ट|ओस|ओस्ट|होस्ता|vost|ost|होस्टिंग|सेट\s*कर|रख|रखो|बना|बनाओ|आयोजित|host|schedule)\b.{0,60}(मीटिंग|मिटिंग|मीट|मिट|meeting|meet)",
+        r"\b(meri|mere|mujhe|bhai)\b.{0,45}\b(meeting|meet|मीटिंग|मिटिंग)\b.{0,35}\b(host|होस्ट|वोस्ट|kar|kr|rakh|bana|banwa|schedule|set)\b",
+        r"(host|schedule|होस्ट|वोस्ट|होस्ता).{0,40}(\d{1,2}|shaam|sham|aaj|kal|शाम|आज|कल|baje|o\'?clock|evening|morning)",
         r"\b(add|put|place|schedule|book)\b.{0,70}\b(calendar|event|meeting|meet)\b",
         r"\binvite\b.{0,35}\b(attendees|participants|people|everyone)\b",
         # Other languages
@@ -220,7 +221,7 @@ def _meeting_title(message):
 
 
 def _fast_meeting_reminder(message, now):
-    """Deterministic fast path: mentioning a meeting means REMIND ME, not create Meet."""
+    """Deterministic fast path: only handles unambiguous show queries or explicit reminders."""
     t = message.strip()
     low = t.casefold()
 
@@ -285,7 +286,8 @@ def _fast_meeting_reminder(message, now):
     if not parsed_time:
         if wants_reminder:
             return {"intent": "ask_meeting_time", "source_text": t, "title": _meeting_title(t)}
-        return {"intent": "offer_meeting_reminder", "item": None, "title": _meeting_title(t), "source_text": t}
+        # Do not force an unsolicited reminder offer; let the LLM evaluate the user's intent.
+        return None
     due_time, due_date = parsed_time
 
     title = _meeting_title(t)
@@ -293,7 +295,8 @@ def _fast_meeting_reminder(message, now):
             "due_date": due_date, "due_time": due_time}
     if wants_reminder:
         return {"intent": "save_item", "item": item}
-    return {"intent": "offer_meeting_reminder", "item": item, "source_text": t}
+    # User did not explicitly say "remind me" -> let the LLM see if they want to create/host or save.
+    return None
 
 
 def parse_followup_time(message, now):
