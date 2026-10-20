@@ -35,10 +35,21 @@ def _tokens(text):
     return re.findall(r"[a-zA-Z]+|\d+", text.lower())
 
 
+HINDI_YES = {"हाँ", "हां", "हाँजी", "हाँ जी", "जी", "जी हाँ", "बिल्कुल", "सही", "ठीक", "ज़रूर", "कर दो", "रख दो"}
+HINDI_NO = {"नहीं", "ना", "मत", "मत करो", "रद्द", "कैंसिल"}
+
+
 def yes_no(text):
     """True = yes, False = no, None = samajh nahi aaya"""
     if "👍" in text:
         return True
+    low = text.strip().lower()
+    for w in HINDI_YES:
+        if w in low:
+            return True
+    for w in HINDI_NO:
+        if w in low:
+            return False
     for t in _tokens(text):
         if t in YES:
             return True

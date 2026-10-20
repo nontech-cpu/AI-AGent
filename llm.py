@@ -31,10 +31,19 @@ async def classify_yes_no_any_language(message, question_context=""):
     """Classify a short answer in any language; None means it is not a yes/no answer."""
     low = message.strip().casefold()
     # Fast, common answers avoid a model call.
-    if low in {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "haan", "han", "ha", "ji", "bilkul", "theek hai"}:
+    fast_yes = {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "haan", "han", "ha", "ji", "bilkul", "theek hai", "haanji", "haan ji", "ji haan", "हाँ", "हां", "हाँजी", "हाँ जी", "जी हाँ", "बिल्कुल", "ज़रूर", "ठीक है", "कर दो", "रख दो", "सेट कर दो", "हाँ कर दो", "हा कर दो", "kar do", "rakh do"}
+    fast_no = {"no", "n", "nope", "nah", "nahi", "nahin", "na", "mat karo", "cancel", "cancelled", "cancelled it", "nahi chahiye", "rehne do", "नहीं", "ना", "मत करो", "रद्द", "कैंसिल", "रहने दो", "mat", "nahi karna"}
+    if low in fast_yes:
         return True
-    if low in {"no", "n", "nope", "nah", "nahi", "nahin", "na", "mat karo", "cancel", "cancelled", "cancelled it"}:
+    if low in fast_no:
         return False
+    # Substring checks for natural Hindi/Hinglish confirmations
+    for w in ("हाँ", "हां", "हाँजी", "जी हाँ", "कर दो", "रख दो", "सेट कर दो", "kar do", "rakh do", "theek hai"):
+        if w in low:
+            return True
+    for w in ("नहीं", "मत करो", "रहने दो", "nahi chahiye", "mat karo", "rehne do", "cancel"):
+        if w in low:
+            return False
     try:
         data = await _chat_json(
             "Classify whether the user's latest message is an affirmative or negative answer "
@@ -147,30 +156,38 @@ async def extract(text):
     return _clean_item(data, now)
 
 
-def _explicit_calendar_action(message):
-    """Conservative local detector for common explicit Calendar/Meet requests.
+_WORD_NUMBERS = {
+    # Hindi Devanagari
+    "एक": "1", "दो": "2", "तीन": "3", "चार": "4", "पांच": "5", "पाँच": "5",
+    "छह": "6", "सात": "7", "आठ": "8", "नौ": "9", "दस": "10", "ग्यारह": "11", "बारह": "12",
+    # Hindi/Hinglish Transliterated
+    "ek": "1", "do": "2", "teen": "3", "chaar": "4", "char": "4", "paanch": "5", "panch": "5",
+    "chhe": "6", "che": "6", "saat": "7", "sat": "7", "aath": "8", "nau": "9", "das": "10", "gyarah": "11", "barah": "12",
+    # English words
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+    "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
+}
 
-    This is only a fast-path helper. The intent router prompt below handles other
-    languages and phrasing, so this list is deliberately not treated as exhaustive.
+
+def _explicit_calendar_action(message):
+    """Detector for explicit Calendar / Meet / Event creation across English, Hindi, and Hinglish.
+
+    Any explicit request to host, schedule, create, or set up a meeting or Meet link must
+    trigger calendar/meet integration instead of being trapped as a local reminder.
     """
     t = message.casefold()
     patterns = (
-        # English
-        r"\bgoogle\s+calendar\b", r"\bcalendar\s+event\b",
-        # Meeting-first word order and natural requests across transliteration variants
-        r"\b(meeting|meet|मीटिंग)\b.{0,65}\b(host|host\s+kar|host\s+kr|rakh|rakhna|rakhni|bana|banao|banani|karwa|karva|schedule|create|organize|organise)\b",
-        r"\b(host|host\s+kar|host\s+kr|rakhwa|rakhva|banwa|banva)\b.{0,65}\b(meeting|meet|मीटिंग)\b",
-        r"\b(meri|mere|mujhe|bhai)\b.{0,45}\b(meeting|meet)\b.{0,35}\b(host|kar|kr|rakh|bana|banwa|schedule)\b",
+        # English & common typos (host a meeting, host emetting, schedule, create, set up, organize)
+        r"\b(host|schedule|create|organize|organise|set\s*up|arrange|book)\b.{0,60}\b(meeting|meet|emetting|emeting|metting|meetting|meetng|meating|event|session|call)\b",
+        r"\b(meeting|meet|emetting|emeting|metting|meetting|meetng|meating|event|session|call)\b.{0,60}\b(host|schedule|create|organize|organise|set\s*up|arrange|book)\b",
+        r"\bgoogle\s+(calendar|meet)\b", r"\bcalendar\s+event\b", r"\b(meet|meeting)\s+link\b",
+        # Hindi Devanagari & Transliterated
+        r"(मीटिंग|मीट|meeting|meet|emetting|metting)\b.{0,60}(सेट\s*कर|सेट\s*क|रख|रखो|रखना|रखनी|रख\s*दो|रख\s*दे|बना|बनाओ|बना\s*दो|बना\s*दे|करवा|आयोजित|host|schedule|create|set\s*kar)",
+        r"(सेट\s*कर|रख|रखो|बना|बनाओ|आयोजित|host|schedule)\b.{0,60}(मीटिंग|मीट|meeting|meet)",
+        r"\b(meri|mere|mujhe|bhai)\b.{0,45}\b(meeting|meet)\b.{0,35}\b(host|kar|kr|rakh|bana|banwa|schedule|set)\b",
         r"\b(add|put|place|schedule|book)\b.{0,70}\b(calendar|event|meeting|meet)\b",
-        r"\b(create|make|generate|host|organize|organise|set\s*up|schedule|book)\b.{0,70}\b(meeting|meet|event|invite|link)\b",
-        r"\b(google\s+meet|meet\s+link|meeting\s+link|video\s+call\s+link)\b",
-        r"\b(send|share)\b.{0,35}\b(invite|meeting\s+link|meet\s+link)\b",
         r"\binvite\b.{0,35}\b(attendees|participants|people|everyone)\b",
-        # Hindi / Hinglish (including common transliteration variants)
-        r"(meeting|meet)\s*(link|लिंक)",
-        r"(meeting|meet|मीटिंग)\b.{0,45}(bana|banao|banado|bna|bnao|banani|banani\s+hai|host|schedule|create|kr|karo|kro|karni|karna|rakh|rakhna|set\s*kar)",
-        r"(google\s*meet|गूगल\s*मीट|मीटिंग\s*लिंक|मीटिंग\s*बनाओ|मीटिंग\s*रखो)",
-        # Other common language phrases; broader language coverage is handled by the LLM.
+        # Other languages
         r"\b(crear|organizar|programar|agendar|generar)\b.{0,60}\b(reunión|reunion|reunión|enlace|reuniao|reunião)\b",
         r"\b(créer|organiser|planifier|programmer)\b.{0,60}\b(réunion|reunion|lien)\b",
         r"\b(termin|organisiere|plane|erstelle)\b.{0,60}\b(meeting|besprechung|link|einladung)\b",
@@ -208,8 +225,6 @@ def _fast_meeting_reminder(message, now):
     low = t.casefold()
 
     # Asking what is already saved must win over the generic "meeting mentioned" path.
-    # Accept spelling variation/transliteration instead of requiring one exact sentence.
-    # General reminder-list requests (not just meetings) are lookups, never save offers.
     asks_list = bool(re.search(r"(batao|btao|bata|bta|dikha|dikhao|show|list|tell me|what|which|kaun|kya|ky|kons|kitne|kitni|saare|sare|sarre|sab|all|yaadein|याद|बताओ|दिखाओ|कौन|क्या|सभी|सारे)", low))
     has_reminder = bool(re.search(r"(reminder|reminders|yaad|yaadein|याद|recordatorio|rappel|提醒)", low))
     if has_reminder and asks_list and not re.search(r"(delete|remove|hata|htaa|cancel|set reminder|remind me|yaad dila)", low):
@@ -219,7 +234,7 @@ def _fast_meeting_reminder(message, now):
         elif re.search(r"(next week|agle hafte|अगले हफ्ते)", low): start = now.date() + timedelta(days=7); end = start + timedelta(days=6)
         return {"intent": "show_agenda", "start": start.isoformat(), "end": end.isoformat(), "meeting_only": False}
 
-    has_meeting = bool(re.search(r"(meeting|metting|meetting|meetng|appointment|call|baithak|mulaqat|मीटिंग|बैठक)", low))
+    has_meeting = bool(re.search(r"(meeting|metting|meetting|meetng|meating|emetting|emeting|appointment|call|baithak|mulaqat|मीटिंग|बैठक)", low))
     asks_to_show = bool(re.search(
         r"(batao|btao|bata|bta|dikha|dikhao|show|list|tell me|what|which|kaun|kya|kyaa|ky|kons|kitne|kitni|saare|sare|sab|all|reminder|reminders|yaadein|याद|बताओ|दिखाओ|कौन|क्या|सभी|सारे)", low
     ))
@@ -239,7 +254,10 @@ def _fast_meeting_reminder(message, now):
 
     if not has_meeting:
         return None
+    # Any explicit creation/hosting intent should NEVER be trapped as a local reminder!
     if _explicit_calendar_action(t):
+        return None
+    if re.search(r"\b(host|schedule|create|organize|organise|set\s*up|सेट|आयोजित|बनाओ|रखो|रख\s*do|set\s*kar)\b", low):
         return None
 
     # Questions about existing meetings must query saved reminders, not ask for time again.
@@ -279,12 +297,16 @@ def _fast_meeting_reminder(message, now):
 
 
 def parse_followup_time(message, now):
-    """Parse a time-only follow-up like '1:05 pr h' using the current conversation time."""
+    """Parse a time follow-up using current conversation time, supporting digits and number words."""
     low = message.lower().strip()
+    # Replace spoken/written number words (Hindi and English) before time units
+    for word, digit in _WORD_NUMBERS.items():
+        low = re.sub(rf"(^|\s){re.escape(word)}\s*(baje|bje|bajey|bajay|बजे|o\'?clock|am|pm|pr|par|pe|ko)?(\s|$)", rf"\g<1>{digit} \g<2>\g<3>", low, flags=re.I)
+
     # Strip explicit day-of-month phrases so e.g. "aaj 16 ko 2 baje" doesn't parse 16 as a time.
     time_text = re.sub(r"\b(?:aaj|today)\s+\d{1,2}(?:st|nd|rd|th)?\s+ko\b", " ", low)
     match = re.search(
-        r"(?<!\d)(2[0-3]|1[0-9]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)?\s*(?:baje|bje|bajey|bajay|pr|par|pe|ko)?\b",
+        r"(?<!\d)(2[0-3]|1[0-9]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)?\s*(?:baje|bje|bajey|bajay|बजे|pr|par|pe|ko)?\b",
         time_text,
     )
     if not match:
@@ -292,14 +314,21 @@ def parse_followup_time(message, now):
     hour = int(match.group(1))
     minute = int(match.group(2) or 0)
     meridian = match.group(3)
-    if meridian == "pm" and hour < 12:
+    is_pm_indicator = bool(re.search(r"\b(pm|shaam|sham|dopahar|evening|afternoon|raat|night)\b|शाम|दोपहर|रात", low))
+    is_am_indicator = bool(re.search(r"\b(am|subah|subha|morning)\b|सुबह", low))
+
+    if (meridian == "pm" or is_pm_indicator) and hour < 12:
         hour += 12
-    elif meridian == "am" and hour == 12:
+    elif (meridian == "am" or is_am_indicator) and hour == 12:
         hour = 0
-    explicit_tomorrow = bool(re.search(r"\b(tomorrow|tmrw|kal)\b", low))
-    explicit_parso = bool(re.search(r"\b(parso|day after tomorrow)\b", low))
-    explicit_today = bool(re.search(r"\b(today|aaj)\b", low))
-    if meridian is None and 1 <= hour <= 12 and not (explicit_tomorrow or explicit_parso):
+    elif meridian is None and not is_am_indicator and 1 <= hour <= 6:
+        # Common convention: 1 to 6 for meetings without morning indicator implies PM (afternoon/evening)
+        hour += 12
+
+    explicit_tomorrow = bool(re.search(r"\b(tomorrow|tmrw|kal|कल)\b", low))
+    explicit_parso = bool(re.search(r"\b(parso|day after tomorrow|परसों)\b", low))
+    explicit_today = bool(re.search(r"\b(today|aaj|आज)\b", low))
+    if meridian is None and not is_pm_indicator and not is_am_indicator and 1 <= hour <= 12 and not (explicit_tomorrow or explicit_parso):
         # Choose the nearest upcoming occurrence today; tolerate a just-passed minute as "now".
         candidates = []
         for h in {hour % 12, (hour % 12) + 12}:

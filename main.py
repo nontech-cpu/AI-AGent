@@ -614,6 +614,8 @@ async def handle_google_confirmation(chat_id, clean):
         return False
     yn = yes_no(clean)
     if yn is None:
+        yn = await classify_yes_no_any_language(clean, "Please confirm if you want to proceed with this Google Calendar / Meet / Email / Drive action.")
+    if yn is None:
         await say(chat_id, "Please reply yes to confirm this Google action, or no to cancel it.")
         return True
     PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
@@ -666,9 +668,31 @@ async def prepare_google_action(chat_id, r):
         await say(chat_id, f"Please confirm — upload/create `{filename}` in Google Drive ({folder_name}) with this content:\n{content}\n\nReply yes to upload or no to cancel.")
     elif intent == 'create_meeting':
         title, start_iso = r.get('title'), r.get('start_iso')
+        is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if not is_connected:
+            # Google is not connected yet; guide user to connect and offer reminder alternative
+            msg = (
+                "Google Calendar/Meet meeting schedule karne ke liye aapka Google account connect hona zaroori hai.\n\n"
+                "👉 Google connect karne ke liye type karein: 'connect google' ya website par connect karein."
+            )
+            item = None
+            if title and start_iso:
+                from datetime import datetime as _dt
+                try:
+                    dt = _dt.fromisoformat(start_iso)
+                    item = {"category": "appointments", "title": title[:100], "due_date": dt.date().isoformat(), "due_time": dt.time().strftime("%H:%M")}
+                except Exception:
+                    pass
+            if item:
+                set_state(chat_id, "meeting_offer", json.dumps({"title": title, "item": item}))
+                msg += f"\n\nKya tab tak ke liye main '{title}' ka ek Reminder set kar doon? (Reply yes / no)"
+            else:
+                set_state(chat_id, "meeting_offer", json.dumps({"title": title or "Meeting", "item": None}))
+                msg += "\n\nKya tab tak ke liye main iska ek Reminder set kar doon? (Reply yes / no)"
+            await say(chat_id, msg)
+            return
+
         if not title or not start_iso:
-            # Keep the user's explicit intent across turns; the next message is meeting details,
-            # not a new request to save a reminder.
             set_state(chat_id, "create_meeting_details", json.dumps({
                 "title": title or "Meeting", "duration_minutes": r.get("duration_minutes", 30),
                 "attendees": r.get("attendees", [])
@@ -939,6 +963,17 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         return
     state, data = st
 
+    # Top-level command interruptions should ALWAYS be respected and never treated as yes/no answers!
+    clean_lower = clean.lower()
+    if clean_lower in {"/start", "start"}:
+        set_state(chat_id, None)
+        await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
+        return
+    if clean_lower in {"/cancel", "cancel", "rehne do", "chhoro", "radd karo", "cancel karo"}:
+        set_state(chat_id, None)
+        await say(chat_id, "Cancelled. Kuch save ya schedule nahi hua.")
+        return
+
     # Multi-turn meeting flow. A pending question must never hijack unrelated
     # messages: only a recognizable yes/no answers the reminder offer. Any other
     # message cancels the stale offer and is routed normally (in any language).
@@ -986,9 +1021,10 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 reply_lang.set(get_language(chat_id))
                 await _handle_meeting_time_followup(chat_id, clean, data)
                 return
-            set_state(chat_id, None)
-            state = None
-            data = None
+            # If user said yes or gave a non-time follow-up, do not drop the state! Prompt for the time.
+            reply_lang.set(get_language(chat_id))
+            await say(chat_id, "Meeting kis time ya date par rakhun? Jaise 'aaj 3 baje' ya 'kal 11:00 AM'. (Cancel karne ke liye 'cancel' likhein).")
+            return
 
     if state == "delete_meetings_target":
         if _extract_requested_times(clean):
@@ -1141,8 +1177,12 @@ async def handle_user_text(chat_id, text, lang_hint=None):
 
     if chat_id in PENDING_GOOGLE_ACTIONS:
         yn_pending = yes_no(clean)
+        if yn_pending is None:
+            yn_pending = await classify_yes_no_any_language(
+                clean, "The assistant asked confirmation to perform a Google Calendar / Email / Drive action."
+            )
         if yn_pending is not None:
-            await handle_google_confirmation(chat_id, clean)
+            await handle_google_confirmation(chat_id, "yes" if yn_pending else "no")
             return
         # Don't trap an unrelated message as a confirmation; cancel preview and process it normally.
         PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
@@ -1159,14 +1199,16 @@ async def handle_user_text(chat_id, text, lang_hint=None):
 async def process_voice(chat_id, voice):
     try:
         st = get_state(chat_id)
-        # Naya user, ya setup adhura: normal text flow sambhal lega
-        if st is None or (st[0] is None and not (has_consent(chat_id) and get_persona(chat_id))):
-            await handle_user_text(chat_id, "/start")
+        # Naya user, ya setup adhura: normal flow initialize karega
+        if st is None:
+            ensure_user(chat_id)
+            set_state(chat_id, "consent")
+            await say(chat_id, WELCOME_CONSENT)
             return
-        # Setup ke beech ya confirm steps (jaise DELETE): sirf typing
-        if st[0] is not None:
-            await say(chat_id, "Please type your answer for this step. "
-                               "Voice notes work once setup is finished.")
+
+        # Explicit deletion confirmation requires typed confirmation for safety
+        if st and st[0] == "forget_confirm":
+            await say(chat_id, "Account delete karne ke liye please 'DELETE' type karke bhejein.")
             return
 
         reply_lang.set(get_language(chat_id))
