@@ -16,7 +16,10 @@ SENSITIVE = re.compile(r"\b(otp|password|passcode|cvv)\b|(?:api[_\s-]?key|secret
 
 INTENTS = {"save_item", "show_agenda", "show_saved", "change_categories",
            "change_persona", "link_email", "unlink_email", "export_data",
-           "delete_data", "link_google", "unlink_google", "create_meeting", "upload_file", "send_email", "ask_meeting_time", "chat"}
+           "delete_data", "link_google", "unlink_google", "create_meeting",
+           "update_meeting", "cancel_meeting", "info_query",
+           "upload_file", "send_email", "ask_meeting_time", "chat"}
+
 
 ITEM_RULES = (
     "If the user gives a time without AM/PM, choose the nearest upcoming time. "
@@ -342,6 +345,14 @@ def parse_followup_time(message, now):
         time_text,
     )
     if not match:
+        # Check if a date or broad period was provided without an exact hour (e.g. "kal shaam", "today evening")
+        explicit_tomorrow = bool(re.search(r"\b(tomorrow|tmrw|kal|कल)\b", low))
+        explicit_parso = bool(re.search(r"\b(parso|day after tomorrow|परसों)\b", low))
+        explicit_today = bool(re.search(r"\b(today|aaj|आज)\b", low))
+        has_period = bool(re.search(r"\b(shaam|sham|evening|dopahar|afternoon|subah|subha|morning|raat|night)\b|शाम|दोपहर|सुबह|रात", low))
+        if (explicit_tomorrow or explicit_parso or explicit_today) and has_period:
+            t_date = now.date() + timedelta(days=1) if explicit_tomorrow else (now.date() + timedelta(days=2) if explicit_parso else now.date())
+            return None, t_date
         return None
     hour = int(match.group(1))
     minute = int(match.group(2) or 0)
@@ -399,7 +410,7 @@ async def understand(text):
         + "Return JSON only, in this shape: "
         '{"intent": string, "item": object or null, "start": "YYYY-MM-DD" or null, '
         '"end": "YYYY-MM-DD" or null, "categories_on": [strings], '
-        '"categories_off": [strings], "persona": string or null, "to": string or null, "subject": string or null, "body": string or null, "filename": string or null, "content": string or null, "title": string or null, "start_iso": string or null, "duration_minutes": integer or null, "attendees": [email strings]}. '
+        '"categories_off": [strings], "persona": string or null, "to": string or null, "subject": string or null, "body": string or null, "filename": string or null, "content": string or null, "title": string or null, "target_title": string or null, "start_iso": string or null, "duration_minutes": integer or null, "attendees": [email strings], "time_ambiguous": boolean or null}. '
         "Intents: "
         "save_item = the user tells you about a bill, bank transaction, booking, order, "
         "appointment, meeting or work deadline to remember (fill item). "
@@ -414,7 +425,10 @@ async def understand(text):
         "unlink_email = the user wants to disconnect their email. "
         "link_google = connect Google account. unlink_google = disconnect Google. "
         "send_email = send an email; extract recipient email into to, subject and body. "
-        "create_meeting = ONLY when the meaning of the message explicitly asks you to create, host, schedule, organize, generate a video-meeting link, create a calendar event, or send an invitation. Understand this in ANY language/script, including idioms and transliterations. A plain statement that the user HAS a meeting/appointment/call, or asks to be reminded about it, is save_item or ask_meeting_time (NOT create_meeting). Never infer event creation merely from the word meeting. If explicit intent is clear but date/time is missing, keep intent=create_meeting and leave start_iso null so the app can ask for details. Extract title, start_iso in ISO 8601 with +05:30 timezone, duration_minutes (default 30), attendees list. If date/time is missing, leave start_iso null. "
+        "create_meeting = ONLY when the meaning of the message explicitly asks you to create, host, schedule, organize, generate a video-meeting link, create a calendar event, or send an invitation for a NEW meeting. If the user gives a broad period without an exact hour (such as 'kal shaam', 'today evening', 'afternoon', 'subah'), you MUST leave start_iso as null and set time_ambiguous=true. NEVER guess an arbitrary hour like 18:00 or 6 PM. Extract title, start_iso in ISO 8601 with +05:30 timezone, duration_minutes (default 30), attendees list. "
+        "update_meeting = the user explicitly asks to update, move, change time/date, or reschedule an existing meeting (e.g. 'PeculiarAI QA Test 01 wali meeting ko 5 PM kar do', 'move meeting to 4 PM'). Extract target_title (title of existing meeting to find), title (new title if changing), start_iso (new start time in ISO 8601 with +05:30), duration_minutes (default 30). "
+        "cancel_meeting = the user explicitly asks to cancel, delete, or remove an existing meeting or calendar event (e.g. 'PeculiarAI QA Cancel Test meeting cancel kar do', 'cancel my 5 PM meeting'). Extract target_title, start_iso if time mentioned. "
+        "info_query = the user is asking a question about previous conversation turns or stated facts (e.g. 'Maine test project ka kya naam bataya tha', 'what did I say earlier', 'what meeting title did I give you'). This is an informational inquiry, NEVER create or schedule an event. "
         "upload_file = ONLY when the user explicitly asks to create, upload, or save a new file to Google Drive (e.g., 'save this to Drive', 'create notes file in Drive'). If the user mentions a document/PDF they previously sent or asks questions about a file, classify as chat (NEVER upload_file). "
         "export_data = the user wants a copy of their data. "
         "delete_data = the user wants all their data deleted. "
@@ -434,7 +448,7 @@ async def understand(text):
     if intent not in INTENTS:
         intent = "chat"
     out = {"intent": intent, "item": None, "start": None, "end": None,
-           "on": [], "off": [], "persona": None, "to": None, "subject": None, "body": None, "filename": None, "content": None, "title": None, "start_iso": None, "duration_minutes": 30, "attendees": []}
+           "on": [], "off": [], "persona": None, "to": None, "subject": None, "body": None, "filename": None, "content": None, "title": None, "target_title": None, "start_iso": None, "duration_minutes": 30, "attendees": [], "time_ambiguous": False}
 
     if intent == "save_item":
         out["item"] = _clean_item(data.get("item"), now)
@@ -460,15 +474,55 @@ async def understand(text):
         if not ("drive" in low_t or "google drive" in low_t or "ड्राईव" in low_t or "ड्राइव" in low_t):
             intent = "chat"
             out["intent"] = "chat"
-    if intent in {"send_email", "create_meeting", "upload_file"}:
-        for key in ("to", "subject", "body", "filename", "content", "title", "start_iso"):
+    if intent in {"send_email", "create_meeting", "update_meeting", "cancel_meeting", "upload_file"}:
+        for key in ("to", "subject", "body", "filename", "content", "title", "target_title", "start_iso"):
             value = data.get(key)
             out[key] = value.strip()[:5000] if isinstance(value, str) and value.strip() else None
         duration = data.get("duration_minutes", 30)
         out["duration_minutes"] = duration if isinstance(duration, int) and 5 <= duration <= 480 else 30
         attendees = data.get("attendees", [])
         out["attendees"] = [x.strip() for x in attendees if isinstance(x, str) and "@" in x][:20] if isinstance(attendees, list) else []
+        out["time_ambiguous"] = bool(data.get("time_ambiguous"))
     return out
+
+
+async def answer_conversation_memory(user_query, chat_history, user_lang="en"):
+    """Answers questions about previous messages and stated facts in the conversation."""
+    groq_key = os.getenv("GROQ_API_KEY")
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+    if not groq_key:
+        return "I remember our chat, but my reasoning service is temporarily unavailable."
+
+    system = (
+        "You are PeculiarAI, a helpful personal assistant. "
+        "The user is asking a question about something they said, asked, or discussed earlier in this conversation. "
+        "Answer their question accurately and directly using ONLY the conversation history provided below. "
+        "Do NOT invent details. Answer in the same language and tone as the user (Hindi, Hinglish, English). "
+        "Never propose creating a meeting, reminder, or calendar event in response to this query."
+    )
+    messages = [{"role": "system", "content": system}]
+    if chat_history:
+        for turn in chat_history[-10:]:
+            role = turn.get("role") or "user"
+            text_c = turn.get("text") or ""
+            if text_c:
+                messages.append({"role": role, "content": text_c})
+    messages.append({"role": "user", "content": user_query})
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json={"model": model, "temperature": 0.1, "messages": messages},
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"].strip()
+            return reply
+    except Exception as exc:
+        print("answer_conversation_memory error:", repr(exc))
+        return "Maine aapki pehli baatein yaad rakhi hain. Aap apna sawal dobara pooch sakte hain."
+
 
 
 async def guess_persona(text):

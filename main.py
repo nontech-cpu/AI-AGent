@@ -25,7 +25,8 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text)
 from categories import CATEGORIES, DEFAULTS
 from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
-                 is_explicit_calendar_action, classify_yes_no_any_language, _WORD_NUMBERS, _chat_json)
+                 is_explicit_calendar_action, classify_yes_no_any_language, _WORD_NUMBERS, _chat_json,
+                 answer_conversation_memory)
 from nlu import yes_no, match_persona, PERSONA_LABELS
 from timing import IST, build_plan, fmt_when, event_over
 from inbox import fetch_unseen
@@ -38,7 +39,16 @@ from multimodal import (
     summarize_document_content,
     answer_document_query,
 )
-from google_services import send_email as google_send_email, upload_text_file as google_upload_text_file, create_meeting as google_create_meeting, list_drive_folders
+from google_services import (
+    send_email as google_send_email,
+    upload_text_file as google_upload_text_file,
+    create_meeting as google_create_meeting,
+    update_meeting as google_update_meeting,
+    delete_calendar_event as google_delete_calendar_event,
+    find_calendar_event as google_find_calendar_event,
+    list_calendar_events as google_list_calendar_events,
+    list_drive_folders,
+)
 from google_auth import (
     build_auth_url,
     callback_url,
@@ -679,6 +689,24 @@ async def handle_google_confirmation(chat_id, clean):
             else:
                 msg += "\nGoogle Calendar event created, but Google did not return a Meet link."
             await say(chat_id, msg)
+        elif kind == 'update_meeting':
+            result = await google_update_meeting(
+                chat_id,
+                pending['event_id'],
+                new_start_iso=pending.get('new_start_iso'),
+                duration_minutes=pending.get('duration_minutes'),
+                new_title=pending.get('new_title'),
+                attendees=pending.get('attendees')
+            )
+            msg = f"Meeting updated successfully ✅: {result.get('summary')}\nStart: {result.get('start', {}).get('dateTime', pending.get('new_start_iso'))}"
+            if result.get('meet_url'):
+                msg += f"\nGoogle Meet: {result['meet_url']}"
+            if result.get('htmlLink'):
+                msg += f"\nCalendar Link: {result['htmlLink']}"
+            await say(chat_id, msg)
+        elif kind == 'delete_meeting':
+            await google_delete_calendar_event(chat_id, pending['event_id'])
+            await say(chat_id, f"Meeting '{pending.get('title')}' deleted successfully from your Google Calendar ✅")
         return True
     except Exception as exc:
         print('Google action error:', repr(exc))
@@ -711,7 +739,6 @@ async def prepare_google_action(chat_id, r):
         title, start_iso = r.get('title'), r.get('start_iso')
         is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
         if not is_connected:
-            # Google is not connected yet; guide user to connect and offer reminder alternative
             msg = (
                 "Google Calendar/Meet meeting schedule karne ke liye aapka Google account connect hona zaroori hai.\n\n"
                 "👉 Google connect karne ke liye type karein: 'connect google' ya website par connect karein."
@@ -733,6 +760,14 @@ async def prepare_google_action(chat_id, r):
             await say(chat_id, msg)
             return
 
+        if r.get('time_ambiguous'):
+            set_state(chat_id, "create_meeting_details", json.dumps({
+                "title": title or "Meeting", "duration_minutes": r.get("duration_minutes", 30),
+                "attendees": r.get("attendees", [])
+            }))
+            await say(chat_id, "Kaunse time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
+            return
+
         if not title or not start_iso:
             set_state(chat_id, "create_meeting_details", json.dumps({
                 "title": title or "Meeting", "duration_minutes": r.get("duration_minutes", 30),
@@ -743,6 +778,69 @@ async def prepare_google_action(chat_id, r):
         attendees = r.get('attendees', [])
         PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees, 'created_at': datetime.now(IST)}
         await say(chat_id, f"Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel.")
+    elif intent == 'update_meeting':
+        target_title = r.get('target_title') or r.get('title')
+        start_iso = r.get('start_iso')
+        is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if not is_connected:
+            await say(chat_id, "Google Calendar meeting update karne ke liye aapka Google account connect hona zaroori hai. Type karein: 'connect google'")
+            return
+        matches, is_ambig = await google_find_calendar_event(chat_id, title_query=target_title)
+        if is_ambig:
+            candidates = [f"• '{ev.get('summary')}' on {ev.get('start', {}).get('dateTime', '')[:16]}" for ev in matches[:4]]
+            await say(chat_id, "Aapki multiple meetings match ho rahi hain. Kripya exact meeting ka naam ya time batayein:\n" + "\n".join(candidates))
+            return
+        if not matches:
+            await say(chat_id, f"Google Calendar mein '{target_title or 'meeting'}' naam ki koi meeting nahi mili. Please title check karein; koi nayi meeting create nahi ki gayi.")
+            return
+        event = matches[0]
+        event_id = event['id']
+        old_title = event.get('summary') or target_title
+        if not start_iso:
+            set_state(chat_id, "update_meeting_time", json.dumps({
+                "event_id": event_id, "title": old_title, "duration_minutes": r.get("duration_minutes", 30)
+            }))
+            await say(chat_id, f"Found meeting: '{old_title}'. Is meeting ko kis din aur kitne baje move karna hai? (jaise 'aaj 5 PM' ya 'kal 11:00 AM').")
+            return
+        pending = {
+            'kind': 'update_meeting',
+            'event_id': event_id,
+            'title': old_title,
+            'new_start_iso': start_iso,
+            'duration_minutes': r.get('duration_minutes', 30),
+            'created_at': datetime.now(IST),
+        }
+        PENDING_GOOGLE_ACTIONS[chat_id] = pending
+        await say(chat_id, f"Please confirm — update '{old_title}'?\nNew Start: {start_iso} (India time)\nDuration: {r.get('duration_minutes', 30)} minutes\n(Existing Meet link will be preserved).\n\nReply yes to confirm or no to cancel.")
+    elif intent == 'cancel_meeting':
+        target_title = r.get('target_title') or r.get('title')
+        if chat_id in PENDING_GOOGLE_ACTIONS:
+            pending = PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+            await say(chat_id, f"Theek hai, '{pending.get('title', 'meeting')}' cancel kar di. Kuch bhi schedule nahi hua.")
+            return
+        is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if is_connected:
+            matches, is_ambig = await google_find_calendar_event(chat_id, title_query=target_title)
+            if is_ambig:
+                candidates = [f"• '{ev.get('summary')}' on {ev.get('start', {}).get('dateTime', '')[:16]}" for ev in matches[:4]]
+                await say(chat_id, "Aapki multiple meetings match ho rahi hain. Kripya exact meeting ka naam ya time batayein:\n" + "\n".join(candidates))
+                return
+            if matches:
+                event = matches[0]
+                pending = {
+                    'kind': 'delete_meeting',
+                    'event_id': event['id'],
+                    'title': event.get('summary') or target_title,
+                    'created_at': datetime.now(IST),
+                }
+                PENDING_GOOGLE_ACTIONS[chat_id] = pending
+                await say(chat_id, f"Please confirm — delete this meeting from your Google Calendar?\nTitle: {event.get('summary')}\nStart: {event.get('start', {}).get('dateTime', '')}\n\nReply yes to delete or no to cancel.")
+                return
+        # If Google not connected or event not in Google Calendar, check local reminders
+        if await _begin_meeting_deletion(chat_id, r.get('title') or 'meeting'):
+            return
+        await say(chat_id, f"'{target_title or 'meeting'}' naam ka koi scheduled calendar event ya reminder nahi mila. Kuch delete nahi hua.")
+
 
 
 def _state_payload(data):
@@ -823,6 +921,35 @@ async def _begin_meeting_deletion(chat_id, clean):
     if not (deletion_verb and meeting_scope):
         return False
 
+    # 1. Check if there is an active pending Google action awaiting confirmation
+    if chat_id in PENDING_GOOGLE_ACTIONS:
+        pending = PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+        await say(chat_id, f"Theek hai, '{pending.get('title', 'meeting')}' cancel kar di. Kuch bhi schedule ya save nahi hua.")
+        return True
+
+    # 2. Check if user has a connected Google account with matching calendar events
+    is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
+    if is_connected:
+        title_search = re.sub(
+            r"\b(delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|हटाओ|हटाएं|हटाए|मिटा|डिलीट|डिलिट|meeting|meetings|wali|vali|ko|par|se|karo|kar do|bhai|mereliye|mere liye)\b",
+            " ",
+            clean,
+            flags=re.I
+        ).strip()
+        matches, is_ambig = await google_find_calendar_event(chat_id, title_query=title_search)
+        if matches and not is_ambig:
+            ev = matches[0]
+            pending = {
+                'kind': 'delete_meeting',
+                'event_id': ev['id'],
+                'title': ev.get('summary') or 'Meeting',
+                'created_at': datetime.now(IST),
+            }
+            PENDING_GOOGLE_ACTIONS[chat_id] = pending
+            await say(chat_id, f"Google Calendar meeting mili:\n• {ev.get('summary')} ({ev.get('start', {}).get('dateTime', '')[:16]})\n\nKya is event ko Google Calendar se delete kar doon? Reply yes to delete or no to cancel.")
+            return True
+
+    # 3. Check local database reminders
     exact_times = _extract_requested_times(clean)
     if exact_times:
         rows = find_meetings_at_times(chat_id, datetime.now(IST).date(), exact_times, clean)
@@ -840,13 +967,14 @@ async def _begin_meeting_deletion(chat_id, clean):
                 return True
 
     if not rows:
-        await say(chat_id, "Koi matching saved meeting reminder nahi mila. Kuch delete nahi hua.")
+        await say(chat_id, "Koi matching meeting event ya saved reminder nahi mila. Kuch delete nahi hua.")
         return True
     preview = [f"• {row[2]:%d %b} {row[3].strftime('%H:%M')}: {row[1]}" for row in rows]
     payload = {"ids": [int(row[0]) for row in rows], "count": len(rows)}
     set_state(chat_id, "delete_meetings_confirm", json.dumps(payload))
     await say(chat_id, "Ye exact saved meeting reminder mil raha hai:\n" + "\n".join(preview) + "\n\nInhe delete kar doon? Abhi kuch delete nahi hua. Haan/yes = delete, nahi/no = cancel.")
     return True
+
 
 
 async def _handle_meeting_offer(chat_id, clean, data):
@@ -981,8 +1109,8 @@ async def handle_active(chat_id, text):
         await say_raw(chat_id, reply)
         return
 
-    # Natural-language trigger: no slash command is required.
-    if GOOGLE_CONNECT_RE.search(text):
+    # Natural-language trigger: no slash command is required, but must not intercept task requests
+    if GOOGLE_CONNECT_RE.search(text) and not is_explicit_calendar_action(text) and not any(w in text.lower() for w in ("meeting", "schedule", "calendar", "email", "send", "draft", "file", "upload")):
         await start_google_connection(chat_id)
         return
 
@@ -1009,13 +1137,19 @@ async def handle_active(chat_id, text):
         if row:
             delete_google_token(int(row[0]))
         await say(chat_id, "Google account disconnected from this assistant. You can connect it again anytime.")
-    elif intent in {"send_email", "upload_file", "create_meeting"}:
+    elif intent in {"send_email", "upload_file", "create_meeting", "update_meeting", "cancel_meeting"}:
         try:
             await prepare_google_action(chat_id, r)
         except Exception as exc:
             print("Google prepare error:", repr(exc))
             await say(chat_id, "I couldn't prepare that Google action. Please make sure Google is connected and try again.")
+    elif intent == "info_query":
+        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+        reply = await answer_conversation_memory(text, history, get_language(chat_id))
+        record_chat_turn(chat_id, "assistant", reply)
+        await say_raw(chat_id, reply)
     elif intent == "offer_meeting_reminder":
+
         item = r.get("item")
         payload = {"title": (item or {}).get("title") or "Meeting", "item": item}
         set_state(chat_id, "meeting_offer", json.dumps(payload, default=str))
@@ -1068,6 +1202,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     clean = text.strip()
     if not clean:
         return
+    record_chat_turn(chat_id, "user", clean)
 
     st = get_state(chat_id)
     if st is None:  # pehli baar aaya
@@ -1177,6 +1312,17 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             set_state(chat_id, None)
             await handle_active(chat_id, clean)
             return
+
+        # Check if user is asking an informational question about previous context/conversation
+        clean_low = clean.lower()
+        is_context_q = "?" in clean or any(phrase in clean_low for phrase in ("kya naam", "kya bataya", "kya tha", "kya bola", "kya kaha", "what did i", "what was", "which project", "konsa project", "meeting ka title", "title kya", "kya rakhne", "kya rakhne ko")) or ("kya" in clean_low and "bataya" in clean_low)
+        if is_context_q and not any(w in clean_low for w in ("baje", "pm", "am", "today", "tomorrow", "kal", "aaj", "parso")):
+            history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+            reply = await answer_conversation_memory(clean, history, get_language(chat_id))
+            record_chat_turn(chat_id, "assistant", reply)
+            await say_raw(chat_id, reply)
+            return
+
         context = _state_payload(data)
         # Ask the LLM to interpret the follow-up as details for the already-requested Google meeting.
         try:
@@ -1193,19 +1339,59 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         details["title"] = details.get("title") or context.get("title") or "Meeting"
         details["duration_minutes"] = details.get("duration_minutes") or context.get("duration_minutes") or 30
         details["attendees"] = details.get("attendees") or context.get("attendees") or []
+
+        # Check for ambiguous time period without exact hour (e.g. "kal shaam")
+        if details.get("time_ambiguous"):
+            await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
+            return
+
         if not details.get("start_iso"):
             parsed = parse_followup_time(clean, datetime.now(IST))
             if parsed:
                 from datetime import datetime as _dt
                 due_time, due_date = parsed
+                if due_time is None:
+                    await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
+                    return
                 start_dt = _dt.combine(due_date, due_time, tzinfo=IST)
                 details["start_iso"] = start_dt.isoformat()
+            elif any(w in clean_low for w in ("shaam", "sham", "evening")):
+                await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
+                return
+
         if not details.get("start_iso"):
             await say(chat_id, "Date/time abhi clear nahi hua. Aaj, kal ya exact date aur time bata do; abhi meeting create nahi hui.")
             return
         set_state(chat_id, None)
         await prepare_google_action(chat_id, details)
         return
+
+    if state == "update_meeting_time":
+        if len(clean) < 60 and re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin)\b|रद्द|मत करो", clean, re.I):
+            set_state(chat_id, None)
+            await say(chat_id, "Theek hai, meeting update cancel kar diya. Kuch update nahi hua.")
+            return
+        context = _state_payload(data)
+        parsed = parse_followup_time(clean, datetime.now(IST))
+        if not parsed or parsed[0] is None:
+            await say(chat_id, "Time samajh nahi aaya. Exact time batayein, jaise 'aaj 5 PM' ya 'kal 11:00 AM'.")
+            return
+        due_time, due_date = parsed
+        from datetime import datetime as _dt
+        start_dt = _dt.combine(due_date, due_time, tzinfo=IST)
+        set_state(chat_id, None)
+        pending = {
+            'kind': 'update_meeting',
+            'event_id': context.get('event_id'),
+            'title': context.get('title', 'Meeting'),
+            'new_start_iso': start_dt.isoformat(),
+            'duration_minutes': context.get('duration_minutes', 30),
+            'created_at': datetime.now(IST),
+        }
+        PENDING_GOOGLE_ACTIONS[chat_id] = pending
+        await say(chat_id, f"Please confirm — update '{context.get('title')}' to {start_dt.isoformat()}?\n(Existing Meet link will be preserved).\n\nReply yes to confirm or no to cancel.")
+        return
+
 
     if state == "updated_reminders_offer":
         yn = yes_no(clean)
