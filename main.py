@@ -659,11 +659,79 @@ def _google_callback_page(title, message, success=False, redirect_url=None):
 
 
 # ---------- Google actions: explicit confirmation required ----------
-async def handle_google_confirmation(chat_id, clean):
+def format_event_time_ist(dt_str: str | None) -> str:
+    """Format Google Calendar / ISO dateTime string into user-friendly IST string."""
+    if not dt_str:
+        return ""
+    try:
+        clean_str = dt_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        if dt.tzinfo is None:
+            dt_ist = dt.replace(tzinfo=IST)
+        else:
+            dt_ist = dt.astimezone(IST)
+        return dt_ist.strftime("%d %b, %I:%M %p").replace(" 0", " ")
+    except Exception:
+        return dt_str[:16]
+
+
+CONFIRM_PREFIX_RE = re.compile(
+    r'^\s*(haan\s*ji|haan\s*bhai|haan|han|haa|ha|yes\s*please|yes|yep|yeah|yup|sure|ok\s*kardo|ok\s*kar\s*do|ok|okay|theek\s*hai|thik\s*hai|sahi\s*hai|kar\s*do|kardo|kr\s*do|krdo|karo|kro|delete\s*kar\s*do|delete\s*kr\s*do|delete\s*kardo|delete\s*krdo|delete\s*karo|delete\s*kr|hata\s*do|hata\s*de|हाँ\s*जी|हाँ|हां|हाँजी|जी\s*हाँ|जी|बिल्कुल|सही|ठीक|कर\s*दो|हटा\s*दो)\b\s*(?:aur|and|lekin|or|,|-)?\s*',
+    re.I
+)
+
+REJECT_PREFIX_RE = re.compile(
+    r'^\s*(nahi\s*bhai|nahi|nahin|na|no|nope|cancel|mat\s*karo|mat\s*kr|rehne\s*do|rahne\s*do|chhoro|नहीं|ना|मत\s*करो|रहने\s*दो|रद्द)\b\s*(?:aur|and|lekin|or|,|-)?\s*',
+    re.I
+)
+
+FILLER_WORDS = {
+    'kar do', 'kardo', 'kr do', 'krdo', 'karo', 'kro', 'rehne do', 'rahne do',
+    'bhai', 'please', 'it', 'thanks', 'thank you', 'shukriya', 'dost', 'yaar',
+    'cancel it', 'mat karo', 'nahi'
+}
+
+def parse_confirmation_and_remainder(text: str) -> tuple[bool | None, str]:
+    """Parse whether text starts with affirmative/negative confirmation and extract remaining instruction."""
+    m_pos = CONFIRM_PREFIX_RE.match(text)
+    if m_pos:
+        remainder = text[m_pos.end():].strip()
+        return True, remainder
+    m_neg = REJECT_PREFIX_RE.match(text)
+    if m_neg:
+        remainder = text[m_neg.end():].strip()
+        # If user explicitly specifies a target time or meeting to cancel/schedule (e.g. 'cancel 5pm meeting'),
+        # it is NOT a rejection of the pending action, but a new command!
+        if re.search(r'\b(\d{1,2}(:\d{2})?\s*(baje|bje|pm|am)|\d{1,2}:\d{2}|meeting|reminder)\b', remainder, re.I):
+            return None, text
+        return False, remainder
+    return None, text
+
+def clean_remainder_instruction(rem: str) -> str:
+    """Filter out polite conversational fillers from remainder instructions."""
+    rem_clean = rem.strip(' .,!?')
+    if not rem_clean or rem_clean.lower() in FILLER_WORDS:
+        return ''
+    rem_clean = re.sub(r'^(kar\s*do|kardo|kr\s*do|krdo|bhai|please)\s*(?:aur|and|,|-)?\s*', '', rem_clean, flags=re.I).strip()
+    if not rem_clean or rem_clean.lower() in FILLER_WORDS:
+        return ''
+    if re.search(r'\b(\d{1,2}(:\d{2})?\s*(baje|bje|pm|am)|\d{1,2}:\d{2}|meeting|reminder|call|event|schedule|rkh|rakh|bana|set|dikha|bata|email|drive)\b', rem_clean, re.I):
+        return rem_clean
+    if len(rem_clean.split()) >= 3:
+        return rem_clean
+    return ''
+
+
+async def handle_google_confirmation(chat_id, clean, raw_text=""):
     pending = PENDING_GOOGLE_ACTIONS.get(chat_id)
     if not pending:
         return False
-    yn = yes_no(clean)
+    full_text = raw_text or clean
+    yn_parsed, rem_parsed = parse_confirmation_and_remainder(full_text)
+    if yn_parsed is not None:
+        yn = yn_parsed
+    else:
+        yn = yes_no(clean)
     if yn is None:
         yn = await classify_yes_no_any_language(clean, "Please confirm if you want to proceed with this Google Calendar / Meet / Email / Drive action.")
     if yn is None:
@@ -672,6 +740,9 @@ async def handle_google_confirmation(chat_id, clean):
     PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
     if yn is False:
         await say(chat_id, "Cancelled. Nothing was sent, uploaded, or scheduled.")
+        rem_clean = clean_remainder_instruction(rem_parsed)
+        if rem_clean:
+            await handle_active(chat_id, rem_clean)
         return True
     try:
         kind = pending['kind']
@@ -683,11 +754,12 @@ async def handle_google_confirmation(chat_id, clean):
             await say(chat_id, "File uploaded to Google Drive: " + (result.get('webViewLink') or result.get('name', pending['filename'])))
         elif kind == 'create_meeting':
             result = await google_create_meeting(chat_id, pending['title'], pending['start_iso'], pending['duration_minutes'], pending.get('attendees', []))
-            msg = "Meeting created: " + (result.get('htmlLink') or pending['title'])
+            start_fmt = format_event_time_ist(result.get('start', {}).get('dateTime') or pending['start_iso'])
+            msg = f"Meeting created: {result.get('summary') or pending['title']}\nTime: {start_fmt}"
             if result.get('meet_url'):
                 msg += "\nGoogle Meet: " + result['meet_url']
-            else:
-                msg += "\nGoogle Calendar event created, but Google did not return a Meet link."
+            if result.get('htmlLink'):
+                msg += "\nCalendar Link: " + result['htmlLink']
             await say(chat_id, msg)
         elif kind == 'update_meeting':
             result = await google_update_meeting(
@@ -698,7 +770,8 @@ async def handle_google_confirmation(chat_id, clean):
                 new_title=pending.get('new_title'),
                 attendees=pending.get('attendees')
             )
-            msg = f"Meeting updated successfully ✅: {result.get('summary')}\nStart: {result.get('start', {}).get('dateTime', pending.get('new_start_iso'))}"
+            start_fmt = format_event_time_ist(result.get('start', {}).get('dateTime') or pending.get('new_start_iso'))
+            msg = f"Meeting updated successfully ✅: {result.get('summary')}\nStart: {start_fmt}"
             if result.get('meet_url'):
                 msg += f"\nGoogle Meet: {result['meet_url']}"
             if result.get('htmlLink'):
@@ -707,6 +780,12 @@ async def handle_google_confirmation(chat_id, clean):
         elif kind == 'delete_meeting':
             await google_delete_calendar_event(chat_id, pending['event_id'])
             await say(chat_id, f"Meeting '{pending.get('title')}' deleted successfully from your Google Calendar ✅")
+
+        # Check if user had a follow-up instruction in the same message (e.g. "haan aur 6bje rkh new meeting")
+        rem_clean = clean_remainder_instruction(rem_parsed)
+        if rem_clean:
+            await handle_active(chat_id, rem_clean)
+
         return True
     except Exception as exc:
         print('Google action error:', repr(exc))
@@ -953,13 +1032,19 @@ async def _begin_meeting_deletion(chat_id, clean):
     # 2. Check if user has a connected Google account with matching calendar events
     is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
     if is_connected:
+        exact_times = _extract_requested_times(clean)
+        target_t = f"{exact_times[0][0]:02d}:{exact_times[0][1]:02d}" if exact_times else None
         title_search = re.sub(
-            r"\b(delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|हटाओ|हटाएं|हटाए|मिटा|डिलीट|डिलिट|meeting|meetings|wali|vali|ko|par|se|karo|kar do|bhai|mereliye|mere liye)\b",
+            r"\b(\d{1,2}(:\d{2})?\s*(baje|bje|pm|am)?|\d{1,2}\s*baje|\d{1,2}\s*bje|delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|हटाओ|हटाएं|हटाए|मिटा|डिलीट|डिलिट|meeting|meetings|wali|vali|ko|par|se|karo|kar do|bhai|mereliye|mere liye|jo|h|hai|usko|iska)\b",
             " ",
             clean,
             flags=re.I
         ).strip()
-        matches, is_ambig = await google_find_calendar_event(chat_id, title_query=title_search)
+        matches, is_ambig = await google_find_calendar_event(
+            chat_id,
+            title_query=title_search if title_search else None,
+            target_time=target_t
+        )
         if matches and not is_ambig:
             ev = matches[0]
             pending = {
@@ -969,7 +1054,8 @@ async def _begin_meeting_deletion(chat_id, clean):
                 'created_at': datetime.now(IST),
             }
             PENDING_GOOGLE_ACTIONS[chat_id] = pending
-            await say(chat_id, f"Google Calendar meeting mili:\n• {ev.get('summary')} ({ev.get('start', {}).get('dateTime', '')[:16]})\n\nKya is event ko Google Calendar se delete kar doon? Reply yes to delete or no to cancel.")
+            formatted_time = format_event_time_ist(ev.get('start', {}).get('dateTime'))
+            await say(chat_id, f"Google Calendar meeting mili:\n• {ev.get('summary')} ({formatted_time})\n\nKya is event ko Google Calendar se delete kar doon? Reply yes to delete or no to cancel.")
             return True
 
     # 3. Check local database reminders
@@ -1048,8 +1134,13 @@ async def _handle_meeting_time_followup(chat_id, clean, data):
     return True
 
 
-async def _handle_delete_meetings_confirmation(chat_id, clean, data):
-    yn = yes_no(clean)
+async def _handle_delete_meetings_confirmation(chat_id, clean, data, raw_text=""):
+    full_text = raw_text or clean
+    yn_parsed, rem_parsed = parse_confirmation_and_remainder(full_text)
+    if yn_parsed is not None:
+        yn = yn_parsed
+    else:
+        yn = yes_no(clean)
     if yn is None:
         await say(chat_id, "Delete karne ke liye haan/yes, cancel karne ke liye nahi/no bolo. Abhi kuch delete nahi hua.")
         return True
@@ -1057,9 +1148,17 @@ async def _handle_delete_meetings_confirmation(chat_id, clean, data):
     set_state(chat_id, None)
     if yn is False:
         await say(chat_id, "Cancelled. Koi meeting reminder delete nahi hua.")
+        rem_clean = clean_remainder_instruction(rem_parsed)
+        if rem_clean:
+            await handle_active(chat_id, rem_clean)
         return True
     deleted = delete_memory_items(chat_id, payload.get("ids", []))
     if deleted:
+        rem_clean = clean_remainder_instruction(rem_parsed)
+        if rem_clean:
+            await say(chat_id, f"Done — {deleted} meeting reminder(s) delete kar diye ✅.")
+            await handle_active(chat_id, rem_clean)
+            return True
         set_state(chat_id, "updated_reminders_offer", json.dumps({"date": datetime.now(IST).date().isoformat()}))
         await say(chat_id, f"Done — {deleted} meeting reminder(s) delete kar diye. Kya aaj ki updated reminder list dikhaun?")
     else:
@@ -1453,16 +1552,21 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         return
 
     if state == "delete_meetings_confirm":
-        # Any unrelated request cancels this pending destructive confirmation and is routed normally.
-        yn = yes_no(clean)
-        if yn is None:
-            yn = await classify_yes_no_any_language(clean, "The assistant asked whether to delete the previewed meeting reminders.")
-        if yn is None:
+        # Check if user confirmed or issued a new command/redirection
+        yn_del, rem_del = parse_confirmation_and_remainder(clean)
+        if yn_del is None:
+            # If not starting with yes/no, check if user gave a new command e.g. "17:00 bje jo meeting h usko cancel kr"
+            if _extract_requested_times(clean) or len(clean.split()) >= 4:
+                set_state(chat_id, None)
+                await handle_active(chat_id, clean)
+                return
+            yn_del = await classify_yes_no_any_language(clean, "The assistant asked whether to delete the previewed meeting reminders.")
+        if yn_del is None:
             set_state(chat_id, None)
             await handle_active(chat_id, clean)
             return
         reply_lang.set(get_language(chat_id))
-        await _handle_delete_meetings_confirmation(chat_id, "yes" if yn else "no", data)
+        await _handle_delete_meetings_confirmation(chat_id, "yes" if yn_del else "no", data, raw_text=clean)
         return
 
     # Setup ke baad wale states: user ki language me reply
@@ -1568,25 +1672,20 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         if age > 900:  # Expired after 15 minutes
             PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
         else:
-            yn_pending = yes_no(clean)
-            if yn_pending is None:
-                yn_pending = await classify_yes_no_any_language(
-                    clean, f"The assistant asked confirmation to perform a Google {pending.get('kind', 'action')} action."
-                )
-            if yn_pending is not None:
-                await handle_google_confirmation(chat_id, "yes" if yn_pending else "no")
+            yn_pending, rem_pending = parse_confirmation_and_remainder(clean)
+            if yn_pending is True:
+                await handle_google_confirmation(chat_id, "yes", raw_text=clean)
                 return
-
-            # Explicit cancel
-            if clean.lower() in {"cancel", "rehne do", "chhoro", "radd karo", "stop", "no", "nahin", "nahi"}:
+            elif yn_pending is False:
+                await handle_google_confirmation(chat_id, "no", raw_text=clean)
+                return
+            else:
+                # User did not simply confirm or reject the pending action.
+                # If they gave a new command e.g. "17:00 bje jo meeting h usko cancel kr",
+                # pop the pending action and route immediately to handle_active.
                 PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-                await say(chat_id, "Theek hai, action cancel kar diya. Kuch bhi send ya schedule nahi hua.")
+                await handle_active(chat_id, clean)
                 return
-
-            # If user switched to an entirely different request, query, greeting or chat:
-            PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-            await handle_active(chat_id, clean)
-            return
 
     if clean.lower() == "/start":
         await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)

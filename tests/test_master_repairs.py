@@ -355,3 +355,71 @@ async def test_cancel_and_replace_meeting_compound_intent():
                     assert "18:00:00" in pending["new_start_iso"]
                     mock_say.assert_called()
                     assert "reschedule" in mock_say.call_args[0][1].lower() or "update" in mock_say.call_args[0][1].lower()
+
+
+# --- User Reported Regression: IST formatting, compound confirmation & pending interruption ---
+
+def test_utc_calendar_event_formatted_in_ist():
+    """Google event with UTC dateTime '2026-10-20T11:30:00Z' must format to 5:00 PM in IST."""
+    formatted = main.format_event_time_ist("2026-10-20T11:30:00Z")
+    assert "5:00 PM" in formatted
+    assert "20 Oct" in formatted
+
+
+@pytest.mark.asyncio
+async def test_compound_confirmation_with_new_meeting_command():
+    """
+    When user responds 'haan aur 6bje rkh new meeting' to a pending delete confirmation,
+    the pending reminder must be deleted, and the remaining instruction '6bje rkh new meeting'
+    must be routed to handle_active.
+    """
+    chat_id = 888201
+    payload = json.dumps({"ids": [101], "count": 1})
+
+    with patch("main.set_state"):
+        with patch("main.delete_memory_items", return_value=1) as mock_delete:
+            with patch("main.say", new_callable=AsyncMock) as mock_say:
+                with patch("main.handle_active", new_callable=AsyncMock) as mock_active:
+                    await main._handle_delete_meetings_confirmation(
+                        chat_id, "haan aur 6bje rkh new meeting", payload, raw_text="haan aur 6bje rkh new meeting"
+                    )
+                    mock_delete.assert_called_once_with(chat_id, [101])
+                    mock_active.assert_called_once()
+                    called_text = mock_active.call_args[0][1]
+                    assert "6bje" in called_text or "6 bje" in called_text
+                    assert "meeting" in called_text
+
+
+@pytest.mark.asyncio
+async def test_new_meeting_cancel_command_interrupts_pending_google_action():
+    """
+    When an old Google action is pending, sending '17:00 bje jo meeting h usko cancel kr'
+    must NOT simply abort with 'Cancelled. Nothing was sent...' and throw away the user's intent.
+    It must clear the pending action and route the new 17:00 cancel command to handle_active.
+    """
+    chat_id = 888202
+    main.PENDING_GOOGLE_ACTIONS[chat_id] = {
+        "kind": "delete_meeting",
+        "event_id": "evt_old_1130",
+        "title": "Peculiar AI Meeting",
+        "created_at": datetime.now(main.IST),
+    }
+
+    user_text = "17:00 bje jo meeting h usko cancel kr"
+
+    with patch("main.get_state", return_value=(None, None)):
+        with patch("main.has_consent", return_value=True):
+            with patch("main.get_persona", return_value="founder"):
+                with patch("main.get_language", return_value="en"):
+                    with patch("main.set_language"):
+                        with patch("main.say", new_callable=AsyncMock) as mock_say:
+                            with patch("main.handle_active", new_callable=AsyncMock) as mock_active:
+                                await main.handle_user_text(chat_id, user_text)
+                                # Pending action must be popped
+                                assert chat_id not in main.PENDING_GOOGLE_ACTIONS
+                                # Must NOT say 'Cancelled. Nothing was sent, uploaded, or scheduled.'
+                                for call in mock_say.call_args_list:
+                                    assert "nothing was sent" not in call[0][1].lower()
+                                # handle_active must be called with the new command
+                                mock_active.assert_called_once_with(chat_id, user_text)
+

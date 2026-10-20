@@ -201,14 +201,20 @@ async def find_calendar_event(chat_id, title_query=None, target_date=None, targe
             target_min = target_time.minute
 
         if target_hour is not None:
+            candidate_hours = {target_hour}
+            if target_hour < 12:
+                candidate_hours.add(target_hour + 12)
+            elif target_hour >= 12:
+                candidate_hours.add(target_hour - 12)
             pool = matches if matches else events
             for ev in pool:
                 start_str = ev.get('start', {}).get('dateTime') or ev.get('start', {}).get('date')
                 if start_str and "T" in start_str:
                     try:
-                        ev_dt = datetime.fromisoformat(start_str)
+                        clean_iso = start_str.replace("Z", "+00:00")
+                        ev_dt = datetime.fromisoformat(clean_iso)
                         ev_local = ev_dt.astimezone(IST) if ev_dt.tzinfo else ev_dt
-                        if ev_local.hour == target_hour and abs(ev_local.minute - target_min) <= 30:
+                        if ev_local.hour in candidate_hours and abs(ev_local.minute - target_min) <= 30:
                             time_matches.append(ev)
                     except Exception:
                         pass
