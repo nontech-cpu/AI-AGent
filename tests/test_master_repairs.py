@@ -2,6 +2,7 @@
 Regression tests reproducing and verifying the fixes for all 5 Telegram failures
 and architectural requirements specified in the Master Repair Prompt.
 """
+import json
 import pytest
 from datetime import datetime, timedelta, time as dtime
 from unittest.mock import patch, AsyncMock, MagicMock
@@ -224,3 +225,86 @@ async def test_failure_05_connected_account_does_not_shortcircuit_task():
                 mock_connect.assert_not_called()
                 # prepare_google_action must be called for the task
                 mock_prep.assert_called_once()
+
+
+# --- State Trap Prevention & Flexible Conversation Regressions ---
+@pytest.mark.asyncio
+async def test_create_meeting_details_does_not_trap_greetings():
+    """
+    When a user was previously asked for meeting details (state='create_meeting_details'),
+    sending 'hi' or 'heello' must NOT ask for meeting date/time. It must reset state and greet.
+    """
+    chat_id = 888101
+    state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
+
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
+        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
+            with patch("main.say", new_callable=AsyncMock) as mock_say:
+                await main.handle_user_text(chat_id, "heello")
+                assert state_store.get(chat_id) is None  # State cleared!
+                mock_say.assert_called()
+                reply_sent = mock_say.call_args[0][1]
+                assert "Namaste" in reply_sent or "personal assistant" in reply_sent
+                assert "Date/time" not in reply_sent
+
+
+@pytest.mark.asyncio
+async def test_create_meeting_details_does_not_trap_agenda_query():
+    """
+    When in 'create_meeting_details', asking 'remidner mere aajke' must NOT ask for
+    meeting date/time. It must reset state and show today's agenda.
+    """
+    chat_id = 888102
+    state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
+
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
+        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
+            with patch("main.understand", new_callable=AsyncMock) as mock_understand:
+                mock_understand.return_value = {
+                    "intent": "show_agenda",
+                    "start": datetime(2026, 10, 20).date(),
+                    "end": datetime(2026, 10, 20).date(),
+                    "item": None
+                }
+                with patch("main.show_range", new_callable=AsyncMock) as mock_show_range:
+                    with patch("main.say", new_callable=AsyncMock):
+                        await main.handle_user_text(chat_id, "remidner mere aajke")
+                        assert state_store.get(chat_id) is None
+                        mock_show_range.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_start_command_with_bot_username_resets_state():
+    """
+    When user sends '/start@PeculiarAIBot' while in a pending state,
+    it must immediately reset the state and send the welcome/help message.
+    """
+    chat_id = 888103
+    state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
+
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
+        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
+            with patch("main.say", new_callable=AsyncMock) as mock_say:
+                await main.handle_user_text(chat_id, "/start@PeculiarAIBot")
+                assert state_store.get(chat_id) is None
+                mock_say.assert_called_once()
+                assert "Welcome back!" in mock_say.call_args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_create_meeting_details_does_not_trap_casual_chat():
+    """
+    When in 'create_meeting_details', sending 'aur bhy kesa h' must route to
+    conversational chat, not ask for date/time.
+    """
+    chat_id = 888104
+    state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
+
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
+        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
+            with patch("main.understand", new_callable=AsyncMock) as mock_understand:
+                mock_understand.return_value = {"intent": "chat"}
+                with patch("main.handle_conversational_chat", new_callable=AsyncMock) as mock_chat:
+                    await main.handle_user_text(chat_id, "aur bhy kesa h")
+                    assert state_store.get(chat_id) is None
+                    mock_chat.assert_called_once_with(chat_id, "aur bhy kesa h")

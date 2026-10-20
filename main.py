@@ -1078,7 +1078,7 @@ async def handle_conversational_chat(chat_id, user_text):
         + doc_context
         + history_context
         + "Reply in 1-2 friendly, natural, and helpful sentences in the EXACT SAME language or dialect "
-        "used by the user (Hindi, Hinglish, English, etc.). "
+        "used by the user (Hindi, Hinglish, English, Urdu, etc.). "
         "Never dump a long command menu or bullet points unless the user explicitly asked for help. "
         "If they were trying to manage reminders, meetings, or documents, help them smoothly."
     )
@@ -1086,17 +1086,22 @@ async def handle_conversational_chat(chat_id, user_text):
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
         reply = (data.get("reply") or "").strip()
         if reply:
+            record_chat_turn(chat_id, "assistant", reply)
             await say(chat_id, reply)
             return
     except Exception as exc:
         print("conversational chat error:", repr(exc))
-    await say(chat_id, "Main aapki reminders, meetings, documents, aur bills track karne me madad karta hu. Aap bataiye kya karna hai?")
+    fallback_reply = "Main aapki reminders, meetings, documents, aur bills track karne me madad karta hu. Aap bataiye kya karna hai?"
+    record_chat_turn(chat_id, "assistant", fallback_reply)
+    await say(chat_id, fallback_reply)
 
 
 async def handle_active(chat_id, text):
     # Fast local response for greetings: avoid a needless Groq round-trip.
-    if re.fullmatch(r"\s*(hi|hello|hey|hii|hlo|namaste|namaskar|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
-        await say(chat_id, "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!")
+    if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
+        greet_reply = "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
+        record_chat_turn(chat_id, "assistant", greet_reply)
+        await say(chat_id, greet_reply)
         return
 
     # Check if user is asking about recently sent document
@@ -1212,15 +1217,22 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         return
     state, data = st
 
-    # Top-level command interruptions should ALWAYS be respected and never treated as yes/no answers!
+    # Top-level command interruptions should ALWAYS be respected and immediately reset state and pending actions!
     clean_lower = clean.lower()
-    if clean_lower in {"/start", "start"}:
+    cmd_token = clean_lower.split()[0].split("@")[0]
+    if cmd_token in {"/start", "start"}:
         set_state(chat_id, None)
+        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
         await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
         return
-    if clean_lower in {"/cancel", "cancel", "rehne do", "chhoro", "radd karo", "cancel karo"}:
+    if cmd_token in {"/cancel", "cancel"} or clean_lower in {"/cancel", "cancel", "rehne do", "chhoro", "radd karo", "cancel karo", "stop", "रद्द", "मत करो"}:
         set_state(chat_id, None)
+        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
         await say(chat_id, "Cancelled. Kuch save ya schedule nahi hua.")
+        return
+    if cmd_token in {"/help", "help", "/menu", "menu"}:
+        set_state(chat_id, None)
+        await say(chat_id, HELP_TEXT)
         return
 
     # Multi-turn meeting flow. A pending question must never hijack unrelated
@@ -1270,16 +1282,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 reply_lang.set(get_language(chat_id))
                 await _handle_meeting_time_followup(chat_id, clean, data)
                 return
-            if yn is None and not parsed_time:
-                # If user switched to an entirely different request or query
-                lower_c = clean.lower()
-                if any(w in lower_c for w in ("delete", "hatao", "agenda", "plate", "bill", "bijli", "show", "dikhao", "email", "google", "stop tracking")):
-                    set_state(chat_id, None)
-                    await handle_active(chat_id, clean)
-                    return
-            # If user said yes or gave a non-time follow-up, prompt for the time.
-            reply_lang.set(get_language(chat_id))
-            await say(chat_id, "Meeting kis time ya date par rakhun? Jaise 'aaj 3 baje' ya 'kal 11:00 AM'. (Cancel karne ke liye 'cancel' likhein).")
+            # If the user did not provide a time, don't trap them in meeting_time!
+            set_state(chat_id, None)
+            await handle_active(chat_id, clean)
             return
 
     if state == "delete_meetings_target":
@@ -1303,14 +1308,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say_raw(chat_id, reply)
             return
 
-        if len(clean) < 60 and re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin)\b|रद्द|मत करो", clean, re.I):
+        if len(clean) < 60 and re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin|chhoro|mat karo)\b|रद्द|मत करो", clean, re.I):
             set_state(chat_id, None)
             await say(chat_id, "Theek hai, meeting create nahi ki. Kuch bhi schedule nahi hua.")
-            return
-
-        if any(w in clean.lower() for w in ("help", "pdf", "report", "plate", "agenda", "bill", "bijli", "show", "dikhao", "points", "delete")):
-            set_state(chat_id, None)
-            await handle_active(chat_id, clean)
             return
 
         # Check if user is asking an informational question about previous context/conversation
@@ -1323,57 +1323,79 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say_raw(chat_id, reply)
             return
 
-        context = _state_payload(data)
-        # Ask the LLM to interpret the follow-up as details for the already-requested Google meeting.
-        try:
-            details = await understand(
-                f"The user has already explicitly requested creation/hosting of a Google Meet meeting. "
-                f"Existing title: {context.get('title') or 'Meeting'}. Existing duration: {context.get('duration_minutes', 30)} minutes. "
-                f"Interpret this new message ONLY as follow-up details for that same meeting, in any language or transliteration: {clean}. "
-                f"Return intent=create_meeting, preserve title unless user provides a better specific title, infer date only when explicit or unambiguous, and extract start_iso with India timezone."
-            )
-        except Exception as exc:
-            print("meeting details parse error:", repr(exc))
-            details = {"intent":"create_meeting"}
-        details["intent"] = "create_meeting"
-        details["title"] = details.get("title") or context.get("title") or "Meeting"
-        details["duration_minutes"] = details.get("duration_minutes") or context.get("duration_minutes") or 30
-        details["attendees"] = details.get("attendees") or context.get("attendees") or []
+        # Check if user is actually providing date/time or meeting details
+        parsed = parse_followup_time(clean, datetime.now(IST))
+        has_time_kw = any(w in clean_low for w in ("baje", "pm", "am", "clock", ":00", ":30", ":15", ":45", "today", "tomorrow", "kal", "aaj", "parso", "shaam", "sham", "evening", "morning", "dopahar", "afternoon", "raat", "night"))
+        has_meeting_kw = any(w in clean_low for w in ("meeting", "schedule", "title", "naam", "minute", "minutes", "min", "host", "link"))
 
-        # Check for ambiguous time period without exact hour (e.g. "kal shaam")
-        if details.get("time_ambiguous"):
-            await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
-            return
-
-        if not details.get("start_iso"):
-            parsed = parse_followup_time(clean, datetime.now(IST))
-            if parsed:
-                from datetime import datetime as _dt
-                due_time, due_date = parsed
-                if due_time is None:
-                    await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
-                    return
-                start_dt = _dt.combine(due_date, due_time, tzinfo=IST)
-                details["start_iso"] = start_dt.isoformat()
-            elif any(w in clean_low for w in ("shaam", "sham", "evening")):
+        if parsed or has_time_kw or has_meeting_kw:
+            context = _state_payload(data)
+            # Check for ambiguous time period without exact hour (e.g. "kal shaam")
+            if parsed and parsed[0] is None:
+                await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
+                return
+            if not parsed and any(w in clean_low for w in ("shaam", "sham", "evening")):
                 await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
                 return
 
-        if not details.get("start_iso"):
-            await say(chat_id, "Date/time abhi clear nahi hua. Aaj, kal ya exact date aur time bata do; abhi meeting create nahi hui.")
-            return
+            if parsed and parsed[0] is not None:
+                from datetime import datetime as _dt
+                due_time, due_date = parsed
+                start_dt = _dt.combine(due_date, due_time, tzinfo=IST)
+                details = {
+                    "intent": "create_meeting",
+                    "title": context.get("title") or "Meeting",
+                    "start_iso": start_dt.isoformat(),
+                    "duration_minutes": context.get("duration_minutes") or 30,
+                    "attendees": context.get("attendees") or [],
+                }
+                set_state(chat_id, None)
+                await prepare_google_action(chat_id, details)
+                return
+
+            try:
+                details = await understand(
+                    f"Existing meeting context: title='{context.get('title') or 'Meeting'}', duration={context.get('duration_minutes', 30)}. "
+                    f"Extract updated meeting details from this message: {clean}. "
+                    f"Return start_iso in ISO 8601 with +05:30 timezone."
+                )
+            except Exception as exc:
+                print("meeting details parse error:", repr(exc))
+                details = {}
+
+            if details.get("time_ambiguous"):
+                await say(chat_id, "Shaam ko kis time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
+                return
+
+            if details.get("start_iso"):
+                details["intent"] = "create_meeting"
+                details["title"] = details.get("title") or context.get("title") or "Meeting"
+                details["duration_minutes"] = details.get("duration_minutes") or context.get("duration_minutes") or 30
+                details["attendees"] = details.get("attendees") or context.get("attendees") or []
+                set_state(chat_id, None)
+                await prepare_google_action(chat_id, details)
+                return
+
+        # The message is NOT meeting details (e.g. user said "hi", "aur bhy kesa h", "remidner mere aajke", etc.).
+        # Clear the pending state so the user is never trapped, and route to handle_active!
         set_state(chat_id, None)
-        await prepare_google_action(chat_id, details)
+        await handle_active(chat_id, clean)
         return
 
     if state == "update_meeting_time":
-        if len(clean) < 60 and re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin)\b|रद्द|मत करो", clean, re.I):
+        if len(clean) < 60 and re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin|chhoro|mat karo)\b|रद्द|मत करो", clean, re.I):
             set_state(chat_id, None)
             await say(chat_id, "Theek hai, meeting update cancel kar diya. Kuch update nahi hua.")
             return
         context = _state_payload(data)
         parsed = parse_followup_time(clean, datetime.now(IST))
+        has_time_kw = any(w in clean.lower() for w in ("baje", "pm", "am", "today", "tomorrow", "kal", "aaj", "parso"))
         if not parsed or parsed[0] is None:
+            if not has_time_kw:
+                # User changed topic or asked something else
+                set_state(chat_id, None)
+                await handle_active(chat_id, clean)
+                return
             await say(chat_id, "Time samajh nahi aaya. Exact time batayein, jaise 'aaj 5 PM' ya 'kal 11:00 AM'.")
             return
         due_time, due_date = parsed
@@ -1538,14 +1560,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 await say(chat_id, "Theek hai, action cancel kar diya. Kuch bhi send ya schedule nahi hua.")
                 return
 
-            # If user switched to an entirely different request or query
-            if any(w in clean.lower() for w in ("help", "pdf", "report", "plate", "agenda", "bill", "bijli", "show", "dikhao", "delete")):
-                PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-                await handle_active(chat_id, clean)
-                return
-
-            # Otherwise gently ask for confirmation without destroying state prematurely
-            await say(chat_id, f"Aapka ek Google {pending.get('kind', 'action')} pending hai. Reply 'yes' to proceed, 'cancel' to discard, ya agla instruction bataiye.")
+            # If user switched to an entirely different request, query, greeting or chat:
+            PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+            await handle_active(chat_id, clean)
             return
 
     if clean.lower() == "/start":
