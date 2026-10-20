@@ -389,7 +389,7 @@ async def understand(text):
         "link_google = connect Google account. unlink_google = disconnect Google. "
         "send_email = send an email; extract recipient email into to, subject and body. "
         "create_meeting = ONLY when the meaning of the message explicitly asks you to create, host, schedule, organize, generate a video-meeting link, create a calendar event, or send an invitation. Understand this in ANY language/script, including idioms and transliterations. A plain statement that the user HAS a meeting/appointment/call, or asks to be reminded about it, is save_item or ask_meeting_time (NOT create_meeting). Never infer event creation merely from the word meeting. If explicit intent is clear but date/time is missing, keep intent=create_meeting and leave start_iso null so the app can ask for details. Extract title, start_iso in ISO 8601 with +05:30 timezone, duration_minutes (default 30), attendees list. If date/time is missing, leave start_iso null. "
-        "upload_file = create/upload a text document to Google Drive; extract filename and content. "
+        "upload_file = ONLY when the user explicitly asks to create, upload, or save a new file to Google Drive (e.g., 'save this to Drive', 'create notes file in Drive'). If the user mentions a document/PDF they previously sent or asks questions about a file, classify as chat (NEVER upload_file). "
         "export_data = the user wants a copy of their data. "
         "delete_data = the user wants all their data deleted. "
         "chat = greetings, thanks, questions about what you can do, casual talk, or anything else. "
@@ -428,6 +428,11 @@ async def understand(text):
         if isinstance(p, str) and p in DEFAULTS:
             out["persona"] = p
         else:
+            out["intent"] = "chat"
+    elif intent == "upload_file":
+        low_t = text.lower()
+        if not ("drive" in low_t or "google drive" in low_t or "ड्राईव" in low_t or "ड्राइव" in low_t):
+            intent = "chat"
             out["intent"] = "chat"
     if intent in {"send_email", "create_meeting", "upload_file"}:
         for key in ("to", "subject", "body", "filename", "content", "title", "start_iso"):

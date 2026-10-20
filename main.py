@@ -32,7 +32,12 @@ from inbox import fetch_unseen
 from lang import (reply_lang, detect_text_language, language_from_whisper,
                   get_language, set_language, localize)
 from voice import transcribe_telegram_voice
-from multimodal import process_telegram_photo, process_telegram_document
+from multimodal import (
+    process_telegram_photo,
+    process_telegram_document,
+    summarize_document_content,
+    answer_document_query,
+)
 from google_services import send_email as google_send_email, upload_text_file as google_upload_text_file, create_meeting as google_create_meeting, list_drive_folders
 from google_auth import (
     build_auth_url,
@@ -106,6 +111,20 @@ HELP_TEXT = (
 )
 
 
+# ---------- Memory & Context Store ----------
+
+RECENT_DOCS = {}  # chat_id -> {"filename": str, "content": str, "type": str, "summary": str, "timestamp": datetime}
+RECENT_CHAT_TURNS = {}  # chat_id -> deque([{"role": str, "text": str}], maxlen=10)
+
+
+def record_chat_turn(chat_id: int, role: str, text: str):
+    if not text:
+        return
+    if chat_id not in RECENT_CHAT_TURNS:
+        RECENT_CHAT_TURNS[chat_id] = deque(maxlen=10)
+    RECENT_CHAT_TURNS[chat_id].append({"role": role, "text": text.strip()})
+
+
 # ---------- Telegram helpers (WhatsApp ke time sirf ye 3 badlenge) ----------
 
 async def tg(method, payload):
@@ -115,12 +134,14 @@ async def tg(method, payload):
 
 async def say_raw(chat_id, text):
     """Bina translate kiye bhejta hai (jaise voice ka transcript)."""
+    record_chat_turn(chat_id, "assistant", text)
     await tg("sendMessage", {"chat_id": chat_id, "text": text})
 
 
 async def say(chat_id, text):
     """User ki language me (agar English nahi hai) bhejta hai."""
     text = await localize(text, reply_lang.get())
+    record_chat_turn(chat_id, "assistant", text)
     await tg("sendMessage", {"chat_id": chat_id, "text": text})
 
 
@@ -886,13 +907,34 @@ async def handle_conversational_chat(chat_id, user_text):
         await say(chat_id, HELP_TEXT)
         return
 
+    if is_recent_document_query(chat_id, user_text):
+        doc = RECENT_DOCS[chat_id]
+        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+        reply = await answer_document_query(doc["filename"], doc["content"], user_text, history, get_language(chat_id))
+        record_chat_turn(chat_id, "user", user_text)
+        record_chat_turn(chat_id, "assistant", reply)
+        await say_raw(chat_id, reply)
+        return
+
+    history_context = ""
+    turns = list(RECENT_CHAT_TURNS.get(chat_id, []))[-4:]
+    if turns:
+        history_context = "Recent conversation:\n" + "\n".join([f"- {t['role']}: {t['text'][:120]}" for t in turns]) + "\n\n"
+
+    doc_context = ""
+    if chat_id in RECENT_DOCS:
+        doc = RECENT_DOCS[chat_id]
+        doc_context = f"User recently uploaded document: '{doc['filename']}'.\n\n"
+
     system = (
         "You are PeculiarAI, a smart, polite, ultra-reliable personal assistant on Telegram. "
         "The user is talking to you directly. "
-        "Reply in 1-2 friendly, natural, and helpful sentences in the EXACT SAME language or dialect "
+        + doc_context
+        + history_context
+        + "Reply in 1-2 friendly, natural, and helpful sentences in the EXACT SAME language or dialect "
         "used by the user (Hindi, Hinglish, English, etc.). "
         "Never dump a long command menu or bullet points unless the user explicitly asked for help. "
-        "If they were trying to manage reminders or meetings, politely acknowledge and help them."
+        "If they were trying to manage reminders, meetings, or documents, help them smoothly."
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -902,13 +944,23 @@ async def handle_conversational_chat(chat_id, user_text):
             return
     except Exception as exc:
         print("conversational chat error:", repr(exc))
-    await say(chat_id, "Main aapki reminders, meetings, aur bills track karne me madad karta hu. Aap bataiye kya karna hai?")
+    await say(chat_id, "Main aapki reminders, meetings, documents, aur bills track karne me madad karta hu. Aap bataiye kya karna hai?")
 
 
 async def handle_active(chat_id, text):
     # Fast local response for greetings: avoid a needless Groq round-trip.
     if re.fullmatch(r"\s*(hi|hello|hey|hii|hlo|namaste|namaskar|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
         await say(chat_id, "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!")
+        return
+
+    # Check if user is asking about recently sent document
+    if is_recent_document_query(chat_id, text):
+        doc = RECENT_DOCS[chat_id]
+        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+        reply = await answer_document_query(doc["filename"], doc["content"], text, history, get_language(chat_id))
+        record_chat_turn(chat_id, "user", text)
+        record_chat_turn(chat_id, "assistant", reply)
+        await say_raw(chat_id, reply)
         return
 
     # Natural-language trigger: no slash command is required.
@@ -1088,9 +1140,24 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         return
 
     if state == "create_meeting_details":
-        if re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin)\b|रद्द|मत करो", clean, re.I):
+        if is_recent_document_query(chat_id, clean):
+            set_state(chat_id, None)
+            doc = RECENT_DOCS[chat_id]
+            history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+            reply = await answer_document_query(doc["filename"], doc["content"], clean, history, get_language(chat_id))
+            record_chat_turn(chat_id, "user", clean)
+            record_chat_turn(chat_id, "assistant", reply)
+            await say_raw(chat_id, reply)
+            return
+
+        if len(clean) < 60 and re.search(r"\b(no|cancel|cancel karo|rehne do|nahi|nahin)\b|रद्द|मत करो", clean, re.I):
             set_state(chat_id, None)
             await say(chat_id, "Theek hai, meeting create nahi ki. Kuch bhi schedule nahi hua.")
+            return
+
+        if any(w in clean.lower() for w in ("help", "pdf", "report", "plate", "agenda", "bill", "bijli", "show", "dikhao", "points", "delete")):
+            set_state(chat_id, None)
+            await handle_active(chat_id, clean)
             return
         context = _state_payload(data)
         # Ask the LLM to interpret the follow-up as details for the already-requested Google meeting.
@@ -1308,6 +1375,29 @@ async def process_voice(chat_id, voice):
 
 # ---------- Multimodal (Photos & Documents) ----------
 
+def is_recent_document_query(chat_id: int, text: str) -> bool:
+    doc = RECENT_DOCS.get(chat_id)
+    if not doc:
+        return False
+    age = (datetime.now(IST) - doc["timestamp"]).total_seconds()
+    if age > 7200:  # 2 hours validity
+        return False
+
+    low = text.casefold()
+    # Fast exclusion: clear agenda query or explicit bill creation
+    if re.search(r"\b(plate|agenda|today\'s reminders|aaj ke reminders)\b", low):
+        return False
+    if re.search(r"\b(bill|bijli|electricity|water|wifi)\b.*\d+", low):
+        return False
+
+    doc_kw = re.search(r"\b(pdf|report|doc|document|file|attachment|page|points|point|takeaways|summary|summarize|explain)\b|रिपोर्ट|पीडीएफ|डॉक्यूमेंट|फ़ाइल|पॉइंट्स|महत्वपूर्ण|समरी|निचोड़", low)
+    ref_kw = re.search(r"(is\s*me\s*se|isme\s*se|ismein\s*se|us\s*me\s*se|usme\s*se|usmein\s*se|upar\s*wali|upar\s*jo|upar\s*bheja|pehle\s*bheja|iski|iske|iska|iss\s*ka|iss\s*ke|iss\s*ki|इसमें\s*se|उसमें\s*se|इसमें\s*से|उसमें\s*से|ऊपर\s*वाली|ऊपर\s*जो)", low)
+    clean_fname = re.sub(r"\.[a-zA-Z0-9]+$", "", doc["filename"]).strip().lower()
+    name_kw = (len(clean_fname) >= 4 and clean_fname in low)
+
+    return bool(doc_kw or ref_kw or name_kw)
+
+
 async def process_photo(chat_id, photo_list, caption=""):
     try:
         st = get_state(chat_id)
@@ -1318,8 +1408,9 @@ async def process_photo(chat_id, photo_list, caption=""):
             return
 
         reply_lang.set(get_language(chat_id))
-        await say(chat_id, "🔍 Analyzing image...")
+        set_state(chat_id, None)
 
+        await say(chat_id, "🔍 Analyzing image...")
         best_photo = photo_list[-1]
         file_id = best_photo["file_id"]
 
@@ -1328,13 +1419,26 @@ async def process_photo(chat_id, photo_list, caption=""):
             await say(chat_id, "I couldn't extract details from that image. Please try another image or type.")
             return
 
+        RECENT_DOCS[chat_id] = {
+            "filename": "Photo",
+            "content": analysis,
+            "type": "image",
+            "summary": analysis,
+            "timestamp": datetime.now(IST),
+        }
+        record_chat_turn(chat_id, "user", f"[Sent Photo] {caption or ''}")
+        record_chat_turn(chat_id, "assistant", analysis)
+
         await say_raw(chat_id, f"🖼️ {analysis}")
-        prompt_text = f"User sent an image with caption '{caption or ''}'. Details from image: {analysis}."
-        if caption:
-            prompt_text += f" User instruction: {caption}"
-        else:
-            prompt_text += " Please check if this is a bill or event, and offer to save reminder or schedule meeting accordingly."
-        await handle_user_text(chat_id, prompt_text)
+
+        try:
+            r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")
+            if r.get("intent") == "save_item" and r.get("item"):
+                await save_item_flow(chat_id, r["item"])
+            elif r.get("intent") == "create_meeting":
+                await prepare_google_action(chat_id, r)
+        except Exception as exc:
+            print("photo intent error:", repr(exc))
     except Exception as e:
         print("photo processing error:", repr(e))
         await say(chat_id, "Sorry, I had trouble processing that image. Please try again or type.")
@@ -1350,22 +1454,43 @@ async def process_document(chat_id, doc, caption=""):
             return
 
         reply_lang.set(get_language(chat_id))
+        set_state(chat_id, None)
+
         file_name = doc.get("file_name", "document")
         file_id = doc["file_id"]
         mime_type = doc.get("mime_type", "")
 
         await say(chat_id, f"📄 Reading {file_name}...")
-        extracted = await process_telegram_document(file_id, file_name, mime_type, caption)
-        if not extracted:
-            await say(chat_id, f"I couldn't extract content from {file_name}.")
+        res = await process_telegram_document(file_id, file_name, mime_type, caption)
+        if not res or res.get("is_empty"):
+            err = (res or {}).get("error") or f"I couldn't extract content from {file_name}."
+            await say(chat_id, err)
             return
 
-        prompt_text = f"User sent document '{file_name}'. Content:\n{extracted[:3500]}\n"
-        if caption:
-            prompt_text += f"User request: {caption}"
-        else:
-            prompt_text += "Summarize key information and highlight any due dates or actionable items."
-        await handle_user_text(chat_id, prompt_text)
+        text_content = res.get("text", "")
+        RECENT_DOCS[chat_id] = {
+            "filename": file_name,
+            "content": text_content,
+            "type": "document",
+            "summary": "",
+            "timestamp": datetime.now(IST),
+        }
+        record_chat_turn(chat_id, "user", f"[Sent Document: {file_name}] {caption or ''}")
+
+        summary = await summarize_document_content(file_name, text_content, caption, get_language(chat_id))
+        RECENT_DOCS[chat_id]["summary"] = summary
+        record_chat_turn(chat_id, "assistant", summary)
+        await say_raw(chat_id, summary)
+
+        try:
+            low_text = text_content[:2000].lower()
+            if any(w in low_text for w in ("due date", "bill amount", "total due", "amount payable", "invoice amount", "बिजली", "बिल")):
+                r = await understand(f"This document might be a bill or invoice: {text_content[:800]}")
+                if r.get("intent") == "save_item" and r.get("item"):
+                    await save_item_flow(chat_id, r["item"])
+        except Exception as exc:
+            print("doc reminder check error:", repr(exc))
+
     except Exception as e:
         print("document processing error:", repr(e))
         await say(chat_id, "Sorry, I couldn't process that document. Please try again.")

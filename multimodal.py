@@ -158,20 +158,31 @@ async def process_telegram_document(
     if "pdf" in lower_mime or lower_name.endswith(".pdf"):
         text = extract_text_from_pdf(file_bytes)
         if not text:
-            return (
-                f"I received the PDF '{file_name}', but it seems to contain scanned images "
-                f"without selectable text."
-            )
-        return (
-            f"Document Content from '{file_name}':\n\n{text}"
-            + (f"\n\nUser request: {caption}" if caption else "")
-        )
+            return {
+                "file_name": file_name,
+                "text": "",
+                "is_empty": True,
+                "error": f"I received '{file_name}', but it seems to contain scanned images without selectable text."
+            }
+        return {
+            "file_name": file_name,
+            "text": text,
+            "is_empty": False,
+            "error": None
+        }
 
     # Case 2: Image sent as Document
     if lower_mime.startswith("image/") or any(
         lower_name.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"]
     ):
-        return await analyze_image_with_groq(file_bytes, caption)
+        analysis = await analyze_image_with_groq(file_bytes, caption)
+        return {
+            "file_name": file_name,
+            "text": analysis,
+            "is_image": True,
+            "is_empty": False,
+            "error": None
+        }
 
     # Case 3: Text / Code / CSV / JSON
     if (
@@ -186,14 +197,130 @@ async def process_telegram_document(
         except UnicodeDecodeError:
             content = file_bytes.decode("latin-1", errors="replace")
 
-        # Cap text at 10,000 characters
-        if len(content) > 10000:
-            content = content[:10000] + "\n...[truncated]"
+        if len(content) > 18000:
+            content = content[:18000] + "\n...[truncated]"
 
-        return (
-            f"File '{file_name}' content:\n\n{content}"
-            + (f"\n\nUser request: {caption}" if caption else "")
-        )
+        return {
+            "file_name": file_name,
+            "text": content,
+            "is_empty": False,
+            "error": None
+        }
 
     # Fallback for unsupported formats
-    return f"Received file '{file_name}' ({mime_type or 'unknown format'})."
+    return {
+        "file_name": file_name,
+        "text": "",
+        "is_empty": True,
+        "error": f"Received file '{file_name}' ({mime_type or 'unknown format'}). I can read PDFs, text documents, and images."
+    }
+
+
+async def summarize_document_content(file_name: str, text: str, user_caption: str = "", user_lang: str = "en") -> str:
+    """
+    Produces a structured, executive summary of the document or answers the user caption.
+    """
+    groq_key = os.getenv("GROQ_API_KEY")
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+    if not groq_key:
+        return f"📄 Received '{file_name}' ({len(text)} characters)."
+
+    system = (
+        "You are PeculiarAI, a highly intelligent personal assistant on Telegram. "
+        "The user uploaded a document or report. "
+        "Summarize this document clearly and usefully: "
+        "- Give a crisp 1-line overview of the topic. "
+        "- List 3-6 critical Key Takeaways / Important Points. "
+        "- Highlight any important dates, deadlines, numbers, or action items clearly. "
+        "- End with a friendly note letting the user know they can ask specific questions about this document. "
+        "Write in natural, friendly language (Hindi/Hinglish if user prefers Hindi, else clear English). "
+        "Format cleanly with bullet points and emojis. Return JSON: {\"summary\": \"...\"}"
+    )
+
+    user_prompt = f"Document Name: {file_name}\n\nDocument Content:\n{text[:18000]}"
+    if user_caption:
+        user_prompt += f"\n\nUser Request: {user_caption}"
+
+    payload = {
+        "model": model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                GROQ_API_URL,
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json=payload,
+            )
+        if resp.status_code == 200:
+            val = resp.json()["choices"][0]["message"]["content"]
+            import json
+            parsed = json.loads(val)
+            summary = parsed.get("summary") or parsed.get("reply")
+            if summary:
+                return summary.strip()
+    except Exception as exc:
+        print("[multimodal] summarize_document_content error:", repr(exc))
+
+    return f"📄 **{file_name}** received.\n\n{text[:600]}...\n\n(Aap is document ke baare me koi bhi sawal pooch sakte hain!)"
+
+
+async def answer_document_query(file_name: str, text: str, user_query: str, chat_history: list = None, user_lang: str = "en") -> str:
+    """
+    Answers user questions directly from the document content using Groq LLM.
+    """
+    groq_key = os.getenv("GROQ_API_KEY")
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+    if not groq_key:
+        return "I have the document, but the AI reasoning service is temporarily unavailable."
+
+    system = (
+        "You are PeculiarAI, an expert personal assistant on Telegram. "
+        f"The user is asking a question about a document they previously sent: '{file_name}'. "
+        "Read the document content below carefully and answer the user's question accurately, "
+        "thoroughly, and directly. "
+        "Respond in the EXACT same language and dialect as the user's question (Hindi, Hinglish, English, etc.). "
+        "Do NOT invent details not supported by the document. "
+        "Format with clear bullet points and emojis where helpful. "
+        "Return JSON only: {\"answer\": \"...\"}"
+    )
+
+    messages = [{"role": "system", "content": system}]
+    if chat_history:
+        for turn in chat_history[-4:]:
+            messages.append({"role": turn.get("role", "user"), "content": turn.get("text", "")})
+
+    user_content = f"Document: '{file_name}'\nContent excerpt:\n{text[:18000]}\n\nUser Question: {user_query}"
+    messages.append({"role": "user", "content": user_content})
+
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": messages,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                GROQ_API_URL,
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json=payload,
+            )
+        if resp.status_code == 200:
+            val = resp.json()["choices"][0]["message"]["content"]
+            import json
+            parsed = json.loads(val)
+            answer = parsed.get("answer") or parsed.get("reply")
+            if answer:
+                return answer.strip()
+    except Exception as exc:
+        print("[multimodal] answer_document_query error:", repr(exc))
+
+    return "Maine document check kiya, lekin aapke sawal ka jawab nikaalne me dikkat aayi. Kripya apna sawal thoda aur detail me poochiye."
