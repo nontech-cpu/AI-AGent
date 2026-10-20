@@ -4,6 +4,9 @@ import json
 import httpx
 from datetime import datetime, date, time as dtime, timedelta
 from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from categories import CATEGORIES, DEFAULTS
 

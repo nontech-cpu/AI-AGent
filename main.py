@@ -32,6 +32,7 @@ from inbox import fetch_unseen
 from lang import (reply_lang, detect_text_language, language_from_whisper,
                   get_language, set_language, localize)
 from voice import transcribe_telegram_voice
+from multimodal import process_telegram_photo, process_telegram_document
 from google_services import send_email as google_send_email, upload_text_file as google_upload_text_file, create_meeting as google_create_meeting, list_drive_folders
 from google_auth import (
     build_auth_url,
@@ -92,15 +93,16 @@ PERSONA_TEXT = (
 )
 
 HELP_TEXT = (
-    "I can remember important things and remind you at the right time. Try:\n"
+    "I can remember important things, manage your schedule, and help you get things done. Try:\n"
     "• Electricity bill 1200 due on 25 Oct\n"
     "• Meeting tomorrow at 5 PM\n"
+    "• Send a photo of a bill, receipt, or invite 🖼️\n"
+    "• Send a PDF or document to read & summarize 📄\n"
     "• What's on my plate today? (or tomorrow, this week)\n"
     "• Show everything you remember\n"
-    "• Stop tracking work, or track travel too\n"
+    "• Connect Google (Gmail, Calendar, Drive)\n"
     "• Link my email\n"
-    "• Send my data, or delete my data\n"
-    "• Or just send a voice note in your own language 🎙️"
+    "• Or send a voice note in your own language 🎙️"
 )
 
 
@@ -1304,6 +1306,71 @@ async def process_voice(chat_id, voice):
             print("voice error (reply failed):", e2)
 
 
+# ---------- Multimodal (Photos & Documents) ----------
+
+async def process_photo(chat_id, photo_list, caption=""):
+    try:
+        st = get_state(chat_id)
+        if st is None:
+            ensure_user(chat_id)
+            set_state(chat_id, "consent")
+            await say(chat_id, WELCOME_CONSENT)
+            return
+
+        reply_lang.set(get_language(chat_id))
+        await say(chat_id, "🔍 Analyzing image...")
+
+        best_photo = photo_list[-1]
+        file_id = best_photo["file_id"]
+
+        analysis = await process_telegram_photo(file_id, caption)
+        if not analysis:
+            await say(chat_id, "I couldn't extract details from that image. Please try another image or type.")
+            return
+
+        await say_raw(chat_id, f"🖼️ {analysis}")
+        prompt_text = f"User sent an image with caption '{caption or ''}'. Details from image: {analysis}."
+        if caption:
+            prompt_text += f" User instruction: {caption}"
+        else:
+            prompt_text += " Please check if this is a bill or event, and offer to save reminder or schedule meeting accordingly."
+        await handle_user_text(chat_id, prompt_text)
+    except Exception as e:
+        print("photo processing error:", repr(e))
+        await say(chat_id, "Sorry, I had trouble processing that image. Please try again or type.")
+
+
+async def process_document(chat_id, doc, caption=""):
+    try:
+        st = get_state(chat_id)
+        if st is None:
+            ensure_user(chat_id)
+            set_state(chat_id, "consent")
+            await say(chat_id, WELCOME_CONSENT)
+            return
+
+        reply_lang.set(get_language(chat_id))
+        file_name = doc.get("file_name", "document")
+        file_id = doc["file_id"]
+        mime_type = doc.get("mime_type", "")
+
+        await say(chat_id, f"📄 Reading {file_name}...")
+        extracted = await process_telegram_document(file_id, file_name, mime_type, caption)
+        if not extracted:
+            await say(chat_id, f"I couldn't extract content from {file_name}.")
+            return
+
+        prompt_text = f"User sent document '{file_name}'. Content:\n{extracted[:3500]}\n"
+        if caption:
+            prompt_text += f"User request: {caption}"
+        else:
+            prompt_text += "Summarize key information and highlight any due dates or actionable items."
+        await handle_user_text(chat_id, prompt_text)
+    except Exception as e:
+        print("document processing error:", repr(e))
+        await say(chat_id, "Sorry, I couldn't process that document. Please try again.")
+
+
 # ---------- Reminders ----------
 
 HEADS = {
@@ -2080,7 +2147,21 @@ async def telegram_webhook(
             task = asyncio.create_task(process_voice(chat_id, message["voice"]))
             BG_TASKS.add(task)
             task.add_done_callback(BG_TASKS.discard)
+        elif "audio" in message:
+            task = asyncio.create_task(process_voice(chat_id, message["audio"]))
+            BG_TASKS.add(task)
+            task.add_done_callback(BG_TASKS.discard)
+        elif "photo" in message:
+            caption = (message.get("caption") or "").strip()
+            task = asyncio.create_task(process_photo(chat_id, message["photo"], caption))
+            BG_TASKS.add(task)
+            task.add_done_callback(BG_TASKS.discard)
+        elif "document" in message:
+            caption = (message.get("caption") or "").strip()
+            task = asyncio.create_task(process_document(chat_id, message["document"], caption))
+            BG_TASKS.add(task)
+            task.add_done_callback(BG_TASKS.discard)
         else:
-            await say(chat_id, "I can read text messages and voice notes for now.")
+            await say(chat_id, "I can understand text, voice notes, photos, bills, and PDF documents 🙂")
 
     return {"ok": True}
