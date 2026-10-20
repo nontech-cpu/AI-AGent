@@ -1021,7 +1021,14 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 reply_lang.set(get_language(chat_id))
                 await _handle_meeting_time_followup(chat_id, clean, data)
                 return
-            # If user said yes or gave a non-time follow-up, do not drop the state! Prompt for the time.
+            if yn is None and not parsed_time:
+                # If user switched to an entirely different request or query
+                lower_c = clean.lower()
+                if any(w in lower_c for w in ("delete", "hatao", "agenda", "plate", "bill", "bijli", "show", "dikhao", "email", "google", "stop tracking")):
+                    set_state(chat_id, None)
+                    await handle_active(chat_id, clean)
+                    return
+            # If user said yes or gave a non-time follow-up, prompt for the time.
             reply_lang.set(get_language(chat_id))
             await say(chat_id, "Meeting kis time ya date par rakhun? Jaise 'aaj 3 baje' ya 'kal 11:00 AM'. (Cancel karne ke liye 'cancel' likhein).")
             return
@@ -1104,6 +1111,8 @@ async def handle_user_text(chat_id, text, lang_hint=None):
 
     if state == "consent":
         yn = yes_no(clean)
+        if yn is None:
+            yn = await classify_yes_no_any_language(clean, "The assistant is asking for initial user consent to continue setup.")
         if yn is True:
             give_consent(chat_id)
             set_state(chat_id, "persona")
@@ -1123,6 +1132,8 @@ async def handle_user_text(chat_id, text, lang_hint=None):
 
     if state == "persona_confirm":
         yn = yes_no(clean)
+        if yn is None:
+            yn = await classify_yes_no_any_language(clean, "The assistant is asking confirmation if the guessed persona is correct.")
         if yn is True and data in DEFAULTS:
             await apply_persona(chat_id, data)
         elif yn is False:
@@ -1133,13 +1144,28 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         return
 
     if state == "forget_confirm":
-        set_state(chat_id, None)
-        if clean.lower().strip(" .!") == "delete":
+        clean_norm = clean.lower().strip(" .!")
+        if clean_norm in {"delete", "डिलीट"}:
+            set_state(chat_id, None)
             delete_user(chat_id)
             await say(chat_id, "Done. All your data has been deleted. "
                                "Message me anytime to start fresh.")
-        else:
+            return
+
+        yn = yes_no(clean)
+        if yn is None:
+            yn = await classify_yes_no_any_language(
+                clean, "The assistant asked confirmation to delete user data; user may say no or cancel."
+            )
+        if yn is False or clean_norm in {"no", "cancel", "nahi", "nahin", "rehne do", "chhoro", "don't delete", "dont delete", "mat karo", "रद्द", "नहीं", "रहने दो"}:
+            set_state(chat_id, None)
             await say(chat_id, "Okay, nothing was deleted.")
+            return
+
+        # If user changed the topic or sent a new command (e.g. meeting, bill, question):
+        set_state(chat_id, None)
+        await say(chat_id, "Okay, deletion cancel ho gaya hai. Kuch delete nahi hua.")
+        await handle_active(chat_id, clean)
         return
 
     if state == "email":
@@ -1204,11 +1230,6 @@ async def process_voice(chat_id, voice):
             ensure_user(chat_id)
             set_state(chat_id, "consent")
             await say(chat_id, WELCOME_CONSENT)
-            return
-
-        # Explicit deletion confirmation requires typed confirmation for safety
-        if st and st[0] == "forget_confirm":
-            await say(chat_id, "Account delete karne ke liye please 'DELETE' type karke bhejein.")
             return
 
         reply_lang.set(get_language(chat_id))

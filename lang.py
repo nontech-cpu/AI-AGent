@@ -91,6 +91,7 @@ async def localize(message, lang):
             ("No reminder was set (the usual reminder times have already passed).", "Reminder set nahi hua kyunki reminder ke usual times nikal chuke hain."),
             ("Please reply yes to continue, or no to cancel.", "Aage badhne ke liye yes ya cancel karne ke liye no bhejo."),
             ("Thank you!", "Shukriya!"),
+            ("I couldn't hear that clearly. Please try again or type it.", "Aapki aawaz theek se sunai nahi di. Kripya thoda mic ke paas aakar saaf bolein ya type karein."),
         ]
         out = message
         for old, new in replacements:

@@ -30,10 +30,20 @@ async def transcribe_telegram_voice(file_id):
         audio.raise_for_status()
 
         # Telegram ki file .oga hoti hai; Groq ko .ogg naam se bhejte hain
+        data_payload = {
+            "model": model,
+            "response_format": "verbose_json",
+            "temperature": "0",
+            "prompt": (
+                "Hindi, Hinglish, English speech: reminders, calendar meetings, Google Meet, "
+                "bills, tasks, appointments, dates, times, notes. "
+                "देवनागरी हिंदी: आज, कल, परसों, बजे, मीटिंग, याद दिलाना, सेट करना, रखना."
+            ),
+        }
         resp = await client.post(
             GROQ_STT_URL,
             headers={"Authorization": f"Bearer {groq_key}"},
-            data={"model": model, "response_format": "verbose_json", "temperature": "0"},
+            data=data_payload,
             files={"file": ("voice.ogg", audio.content, "audio/ogg")},
         )
 
@@ -41,4 +51,14 @@ async def transcribe_telegram_voice(file_id):
         print("GROQ STT ERROR:", resp.status_code, resp.text)
     resp.raise_for_status()
     data = resp.json()
-    return (data.get("text") or "").strip(), (data.get("language") or "")
+    raw_text = (data.get("text") or "").strip()
+    norm = raw_text.lower().strip(" .!?,")
+    # Filter well-known Whisper phantom hallucinations on short noise/silence
+    hallucinations = {
+        "you", "thank you", "thank you.", "thank you for watching", "thanks for watching",
+        "bye", "bye.", "subscribe", "please subscribe", "subtitles by", "translated by",
+        "mbc", "amara.org", "watching", "...", "silence", "music"
+    }
+    if norm in hallucinations or len(raw_text) < 2:
+        return "", (data.get("language") or "")
+    return raw_text, (data.get("language") or "")
