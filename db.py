@@ -447,3 +447,340 @@ def find_recent_meetings(chat_id, limit=3):
             ),
             {"c": chat_id, "lim": limit},
         ).fetchall()
+
+
+# ---------- Phase 2: Dynamic Task Boards ----------
+
+def get_board_cards(chat_id):
+    """Fetch user's Kanban board cards organized by status."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT b.id, b.title, b.description, b.status, b.priority, b.due_date, b.created_at "
+                "FROM board_cards b JOIN users u ON u.id = b.user_id "
+                "WHERE u.telegram_chat_id = :c ORDER BY b.id DESC"
+            ),
+            {"c": chat_id},
+        ).fetchall()
+
+    board = {"queue": [], "this_week": [], "today": [], "done": []}
+    for r in rows:
+        st = r[3] if r[3] in board else "queue"
+        board[st].append({
+            "id": r[0],
+            "title": r[1],
+            "description": r[2] or "",
+            "status": r[3],
+            "priority": r[4],
+            "due_date": str(r[5]) if r[5] else None,
+            "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6])
+        })
+    return board
+
+
+def create_board_card(chat_id, title, description="", status="queue", priority="medium", due_date=None):
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO board_cards (user_id, title, description, status, priority, due_date) "
+                "SELECT id, :t, :desc, :st, :pri, :due FROM users WHERE telegram_chat_id = :c RETURNING id"
+            ),
+            {"t": title, "desc": description, "st": status, "pri": priority, "due": due_date, "c": chat_id},
+        ).first()
+    return row[0] if row else None
+
+
+def move_board_card(chat_id, card_id, new_status):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "UPDATE board_cards SET status = :st, updated_at = now() "
+                "WHERE id = :cid AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :c)"
+            ),
+            {"st": new_status, "cid": card_id, "c": chat_id},
+        )
+    return (result.rowcount or 0) > 0
+
+
+def delete_board_card(chat_id, card_id):
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "DELETE FROM board_cards WHERE id = :cid AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :c)"
+            ),
+            {"cid": card_id, "c": chat_id},
+        )
+    return (result.rowcount or 0) > 0
+
+
+# ---------- Phase 2: Persistent Smart Lists ----------
+
+def get_smart_lists(chat_id):
+    with engine.connect() as conn:
+        lists = conn.execute(
+            text(
+                "SELECT l.id, l.name, l.category, l.created_at "
+                "FROM smart_lists l JOIN users u ON u.id = l.user_id "
+                "WHERE u.telegram_chat_id = :c ORDER BY l.id ASC"
+            ),
+            {"c": chat_id},
+        ).fetchall()
+
+        result = []
+        for l in lists:
+            list_id = l[0]
+            items = conn.execute(
+                text(
+                    "SELECT id, title, quantity, checked FROM smart_list_items "
+                    "WHERE list_id = :lid ORDER BY id ASC"
+                ),
+                {"lid": list_id},
+            ).fetchall()
+            result.append({
+                "id": list_id,
+                "name": l[1],
+                "category": l[2],
+                "items": [
+                    {"id": it[0], "title": it[1], "quantity": it[2], "checked": bool(it[3])}
+                    for it in items
+                ]
+            })
+    return result
+
+
+def create_smart_list(chat_id, name, category="general"):
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO smart_lists (user_id, name, category) "
+                "SELECT id, :n, :cat FROM users WHERE telegram_chat_id = :c RETURNING id"
+            ),
+            {"n": name.strip(), "cat": category, "c": chat_id},
+        ).first()
+    return row[0] if row else None
+
+
+def add_smart_list_item(chat_id, list_id, title, quantity=None):
+    with engine.begin() as conn:
+        owner = conn.execute(
+            text(
+                "SELECT l.id FROM smart_lists l JOIN users u ON u.id = l.user_id "
+                "WHERE l.id = :lid AND u.telegram_chat_id = :c"
+            ),
+            {"lid": list_id, "c": chat_id},
+        ).first()
+        if not owner:
+            return None
+        row = conn.execute(
+            text(
+                "INSERT INTO smart_list_items (list_id, title, quantity, checked) "
+                "VALUES (:lid, :t, :q, false) RETURNING id"
+            ),
+            {"lid": list_id, "t": title.strip(), "q": quantity},
+        ).first()
+    return row[0] if row else None
+
+
+def toggle_smart_list_item(chat_id, item_id, checked=None):
+    with engine.begin() as conn:
+        owner = conn.execute(
+            text(
+                "SELECT it.id, it.checked FROM smart_list_items it "
+                "JOIN smart_lists l ON l.id = it.list_id "
+                "JOIN users u ON u.id = l.user_id "
+                "WHERE it.id = :item_id AND u.telegram_chat_id = :c"
+            ),
+            {"item_id": item_id, "c": chat_id},
+        ).first()
+        if not owner:
+            return False
+        current_checked = bool(owner[1])
+        new_val = (not current_checked) if checked is None else bool(checked)
+        conn.execute(
+            text("UPDATE smart_list_items SET checked = :chk WHERE id = :item_id"),
+            {"chk": new_val, "item_id": item_id},
+        )
+    return True
+
+
+def delete_smart_list_item(chat_id, item_id):
+    with engine.begin() as conn:
+        res = conn.execute(
+            text(
+                "DELETE FROM smart_list_items WHERE id = :item_id AND list_id IN "
+                "(SELECT l.id FROM smart_lists l JOIN users u ON u.id = l.user_id WHERE u.telegram_chat_id = :c)"
+            ),
+            {"item_id": item_id, "c": chat_id},
+        )
+    return (res.rowcount or 0) > 0
+
+
+def delete_smart_list(chat_id, list_id):
+    with engine.begin() as conn:
+        res = conn.execute(
+            text(
+                "DELETE FROM smart_lists WHERE id = :lid AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :c)"
+            ),
+            {"lid": list_id, "c": chat_id},
+        )
+    return (res.rowcount or 0) > 0
+
+
+def find_or_create_smart_list(chat_id, name):
+    name_clean = name.strip()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT l.id FROM smart_lists l JOIN users u ON u.id = l.user_id "
+                "WHERE u.telegram_chat_id = :c AND LOWER(l.name) = LOWER(:n)"
+            ),
+            {"c": chat_id, "n": name_clean},
+        ).first()
+    if row:
+        return row[0]
+    return create_smart_list(chat_id, name_clean)
+
+
+# ---------- Phase 2: Behavioral Rules ----------
+
+def get_user_rules(chat_id):
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT r.id, r.rule_text, r.is_active, r.created_at "
+                "FROM user_rules r JOIN users u ON u.id = r.user_id "
+                "WHERE u.telegram_chat_id = :c ORDER BY r.id ASC"
+            ),
+            {"c": chat_id},
+        ).fetchall()
+    return [
+        {"id": r[0], "rule": r[1], "active": bool(r[2]), "created_at": r[3].isoformat() if hasattr(r[3], "isoformat") else str(r[3])}
+        for r in rows
+    ]
+
+
+def add_user_rule(chat_id, rule_text):
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO user_rules (user_id, rule_text, is_active) "
+                "SELECT id, :rt, true FROM users WHERE telegram_chat_id = :c RETURNING id"
+            ),
+            {"rt": rule_text.strip(), "c": chat_id},
+        ).first()
+    return row[0] if row else None
+
+
+def delete_user_rule(chat_id, rule_id):
+    with engine.begin() as conn:
+        res = conn.execute(
+            text(
+                "DELETE FROM user_rules WHERE id = :rid AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :c)"
+            ),
+            {"rid": rule_id, "c": chat_id},
+        )
+    return (res.rowcount or 0) > 0
+
+
+# ---------- Phase 2: Serendipity Feed ----------
+
+def get_serendipity_memories(chat_id, min_days_old=14, limit=5):
+    """Fetch older memories for user review to keep or clear mental clutter."""
+    with engine.connect() as conn:
+        # SQLite compatibility note: if PostgreSQL use interval, if SQLite use date arithmetic
+        is_sqlite = "sqlite" in str(engine.url)
+        if is_sqlite:
+            rows = conn.execute(
+                text(
+                    "SELECT m.id, m.category, m.title, m.amount, m.due_date, m.due_time, m.created_at "
+                    "FROM memory_items m JOIN users u ON u.id = m.user_id "
+                    "WHERE u.telegram_chat_id = :c ORDER BY m.id DESC LIMIT :lim"
+                ),
+                {"c": chat_id, "lim": limit},
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                text(
+                    "SELECT m.id, m.category, m.title, m.amount, m.due_date, m.due_time, m.created_at "
+                    "FROM memory_items m JOIN users u ON u.id = m.user_id "
+                    "WHERE u.telegram_chat_id = :c AND m.created_at < (now() - :days * interval '1 day') "
+                    "ORDER BY RANDOM() LIMIT :lim"
+                ),
+                {"c": chat_id, "days": min_days_old, "lim": limit},
+            ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "category": r[1],
+            "title": r[2],
+            "amount": r[3],
+            "due_date": str(r[4]) if r[4] else None,
+            "due_time": r[5].strftime("%H:%M") if r[5] else None,
+            "saved_date": str(r[6].date()) if hasattr(r[6], "date") else str(r[6])
+        }
+        for r in rows
+    ]
+
+
+# ---------- Phase 2: Relationship & Networking Memory (Enfolo feature) ----------
+
+def get_contact_memories(chat_id):
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT c.id, c.name, c.company, c.role_title, c.email, c.phone, c.met_at, c.context_notes, c.commitments, c.created_at "
+                "FROM contact_memories c JOIN users u ON u.id = c.user_id "
+                "WHERE u.telegram_chat_id = :cid ORDER BY c.id DESC"
+            ),
+            {"cid": chat_id},
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "name": r[1],
+            "company": r[2] or "",
+            "role_title": r[3] or "",
+            "email": r[4] or "",
+            "phone": r[5] or "",
+            "met_at": r[6] or "",
+            "context_notes": r[7] or "",
+            "commitments": r[8] or "",
+            "created_at": r[9].isoformat() if hasattr(r[9], "isoformat") else str(r[9])
+        }
+        for r in rows
+    ]
+
+
+def save_contact_memory(chat_id, name, company=None, role_title=None, email=None, phone=None, met_at=None, context_notes=None, commitments=None):
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO contact_memories (user_id, name, company, role_title, email, phone, met_at, context_notes, commitments) "
+                "SELECT id, :n, :comp, :role, :em, :ph, :met, :ctx, :com "
+                "FROM users WHERE telegram_chat_id = :cid RETURNING id"
+            ),
+            {
+                "cid": chat_id,
+                "n": name.strip(),
+                "comp": company.strip() if company else None,
+                "role": role_title.strip() if role_title else None,
+                "em": email.strip() if email else None,
+                "ph": phone.strip() if phone else None,
+                "met": met_at.strip() if met_at else None,
+                "ctx": context_notes.strip() if context_notes else None,
+                "com": commitments.strip() if commitments else None,
+            },
+        ).first()
+    return row[0] if row else None
+
+
+def delete_contact_memory(chat_id, contact_id):
+    with engine.begin() as conn:
+        res = conn.execute(
+            text(
+                "DELETE FROM contact_memories WHERE id = :cid AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :chat_id)"
+            ),
+            {"cid": contact_id, "chat_id": chat_id},
+        )
+    return (res.rowcount or 0) > 0
+

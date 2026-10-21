@@ -58,17 +58,57 @@ async def clean_voice_transcript(raw_text):
     return raw_text
 
 
+async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "voice.m4a", mime_type: str = "audio/m4a"):
+    """
+    Transcribe raw in-memory audio bytes using Groq Whisper.
+    Supports .m4a, .mp3, .wav, .ogg, .webm.
+    """
+    groq_key = os.getenv("GROQ_API_KEY")
+    model = os.getenv("GROQ_STT_MODEL") or "whisper-large-v3-turbo"
+    if not groq_key:
+        raise RuntimeError("GROQ_API_KEY is missing in .env")
+
+    data_payload = {
+        "model": model,
+        "response_format": "verbose_json",
+        "temperature": "0",
+        "prompt": (
+            "Bhai meeting host kar de, Devender ke sath meeting schedule kar, Google Meet link bana, "
+            "reminder set kar, 5 baje, aaj shaam 5:00 PM, kal subah 11:00 AM, electricity bill 1200 due 25 Oct. "
+            "मीटिंग होस्ट कर दे, गूगल मीट, शेड्यूल्ड मीटिंग, रिमाइंडर, आज शाम पांच बजे, कल सुबह, devender ke sath."
+        ),
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            GROQ_STT_URL,
+            headers={"Authorization": f"Bearer {groq_key}"},
+            data=data_payload,
+            files={"file": (filename, audio_bytes, mime_type)},
+        )
+    if resp.status_code != 200:
+        print("GROQ STT ERROR:", resp.status_code, resp.text)
+    resp.raise_for_status()
+    data = resp.json()
+    raw_text = (data.get("text") or "").strip()
+    norm = raw_text.lower().strip(" .!?,")
+    hallucinations = {
+        "you", "thank you", "thank you.", "thank you for watching", "thanks for watching",
+        "bye", "bye.", "subscribe", "please subscribe", "subtitles by", "translated by",
+        "mbc", "amara.org", "watching", "...", "silence", "music"
+    }
+    if norm in hallucinations or len(raw_text) < 2:
+        return "", (data.get("language") or "")
+
+    cleaned = await clean_voice_transcript(raw_text)
+    return cleaned, (data.get("language") or "")
+
+
 async def transcribe_telegram_voice(file_id):
     """
     Telegram voice note -> (transcript, language name from Whisper).
     Audio sirf memory me rehta hai, disk pe kabhi save nahi hota.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    groq_key = os.getenv("GROQ_API_KEY")
-    model = os.getenv("GROQ_STT_MODEL")
-    if not model:
-        raise RuntimeError("GROQ_STT_MODEL is missing in .env")
-
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.get(
             f"https://api.telegram.org/bot{token}/getFile",
@@ -80,38 +120,4 @@ async def transcribe_telegram_voice(file_id):
         audio = await client.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
         audio.raise_for_status()
 
-        # Telegram ki file .oga hoti hai; Groq ko .ogg naam se bhejte hain
-        data_payload = {
-            "model": model,
-            "response_format": "verbose_json",
-            "temperature": "0",
-            "prompt": (
-                "Bhai meeting host kar de, Devender ke sath meeting schedule kar, Google Meet link bana, "
-                "reminder set kar, 5 baje, aaj shaam 5:00 PM, kal subah 11:00 AM, electricity bill 1200 due 25 Oct. "
-                "मीटिंग होस्ट कर दे, गूगल मीट, शेड्यूल्ड मीटिंग, रिमाइंडर, आज शाम पांच बजे, कल सुबह, devender ke sath."
-            ),
-        }
-        resp = await client.post(
-            GROQ_STT_URL,
-            headers={"Authorization": f"Bearer {groq_key}"},
-            data=data_payload,
-            files={"file": ("voice.ogg", audio.content, "audio/ogg")},
-        )
-
-    if resp.status_code != 200:
-        print("GROQ STT ERROR:", resp.status_code, resp.text)
-    resp.raise_for_status()
-    data = resp.json()
-    raw_text = (data.get("text") or "").strip()
-    norm = raw_text.lower().strip(" .!?,")
-    # Filter well-known Whisper phantom hallucinations on short noise/silence
-    hallucinations = {
-        "you", "thank you", "thank you.", "thank you for watching", "thanks for watching",
-        "bye", "bye.", "subscribe", "please subscribe", "subtitles by", "translated by",
-        "mbc", "amara.org", "watching", "...", "silence", "music"
-    }
-    if norm in hallucinations or len(raw_text) < 2:
-        return "", (data.get("language") or "")
-
-    cleaned = await clean_voice_transcript(raw_text)
-    return cleaned, (data.get("language") or "")
+        return await transcribe_audio_bytes(audio.content, "voice.ogg", "audio/ogg")

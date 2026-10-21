@@ -2047,6 +2047,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from api_v1 import router as api_v1_router
+app.include_router(api_v1_router)
+
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
