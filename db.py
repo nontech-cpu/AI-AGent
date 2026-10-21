@@ -844,6 +844,27 @@ def get_recent_chat_history(chat_id, limit=15):
         return []
 
 
+def get_chat_turns_mentioning_keyword(chat_id, keyword, limit=10):
+    """Retrieves past chat turns that mention a keyword (e.g. contact name or topic) for episodic long-term memory."""
+    if not keyword or len(str(keyword).strip()) < 3:
+        return []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT role, message, created_at FROM chat_logs "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND message ILIKE :kw "
+                    "ORDER BY id DESC LIMIT :lim"
+                ),
+                {"cid": chat_id, "kw": f"%{str(keyword).strip()}%", "lim": limit}
+            ).fetchall()
+        return [{"role": r[0], "text": r[1]} for r in reversed(rows)]
+    except Exception as exc:
+        print("get_chat_turns_mentioning_keyword error:", repr(exc))
+        return []
+
+
 def save_user_fact(chat_id, fact, category="general"):
     """Saves an extracted life context fact, plan, or preference to user_facts."""
     if not fact or not str(fact).strip():

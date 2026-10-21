@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
+import difflib
 from db import (give_consent, has_consent, set_persona, get_persona,
                 set_categories, get_categories, save_memory, list_memories,
                 items_between, items_for_date, get_board_cards, delete_user, export_data, add_reminders,
@@ -24,7 +25,7 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 save_google_token, get_google_token, delete_google_token,
                 find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text,
                 save_contact_memory, get_contact_memories, update_contact_commitment,
-                log_chat_message, get_recent_chat_history, save_user_fact, get_user_facts,
+                log_chat_message, get_recent_chat_history, get_chat_turns_mentioning_keyword, save_user_fact, get_user_facts,
                 save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary)
 from integrations import (validate_notion_token, create_notion_page,
                           validate_github_token, list_github_issues, list_github_repos)
@@ -318,6 +319,41 @@ WEEKDAY_ALIASES = {
 }
 
 
+def format_event_clock_ist(dt_str: str | None) -> str:
+    """Format Google Calendar / ISO dateTime string into an IST clock string (e.g. '6:00 PM')."""
+    if not dt_str:
+        return "All day"
+    try:
+        clean_str = dt_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        if dt.tzinfo is None:
+            dt_ist = dt.replace(tzinfo=IST)
+        else:
+            dt_ist = dt.astimezone(IST)
+        return dt_ist.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return dt_str[11:16] if len(dt_str) >= 16 else (dt_str or "All day")
+
+
+def find_matching_contact(text: str, contacts: list[dict]) -> dict | None:
+    """Intelligently match contact from text using substring, word stems, and fuzzy similarity."""
+    if not contacts or not text:
+        return None
+    text_low = text.lower()
+    words = re.findall(r"[a-zA-Z]{3,}", text_low)
+    for c in contacts:
+        c_name = c["name"].lower()
+        first_name = c_name.split()[0]
+        # Exact substring on full name or first name
+        if first_name in text_low or c_name in text_low:
+            return c
+        # Fuzzy match for common phonetic/typo variations (e.g. annaya, ananay, ananaya vs ananya)
+        for w in words:
+            if difflib.SequenceMatcher(None, first_name, w).ratio() >= 0.75:
+                return c
+    return None
+
+
 async def get_unified_schedule(chat_id: int, target_date: date):
     """
     Unified Temporal Schedule Aggregator:
@@ -460,11 +496,11 @@ async def show_range(chat_id, start, end, meeting_only=False, query_text=""):
                 response = f"Bhai, {label} ({start:%d %b}) ko aap poori tarah free nahi ho — aapka schedule yeh hai:\n\n"
                 if sched.get("calendar_events"):
                     for ev in sched["calendar_events"]:
-                        start_t = (ev.get("start", {}).get("dateTime", "")[11:16]) or "All day"
+                        start_t = format_event_clock_ist(ev.get("start", {}).get("dateTime"))
                         response += f"📅 [Google Calendar] {start_t} - {ev.get('summary')}\n"
                 if sched.get("reminders"):
                     for cat, title, amt, d_time in sched["reminders"]:
-                        t_str = d_time.strftime("%H:%M") if d_time else "All day"
+                        t_str = d_time.strftime("%I:%M %p").lstrip("0") if d_time else "All day"
                         response += f"⏰ [Reminder] {t_str} - {CATEGORIES.get(cat, cat)}: {title}\n"
                 if sched.get("commitments"):
                     for comm in sched["commitments"]:
@@ -473,7 +509,40 @@ async def show_range(chat_id, start, end, meeting_only=False, query_text=""):
                 if sched.get("tasks"):
                     for t in sched["tasks"]:
                         response += f"📋 [Task] {t['title']} ({t['status']})\n"
-                response += f"\nBaaki ka samay aapka free hai! Kya koi specific time par meeting ya task schedule karna hai?"
+
+                # Check if user mentioned a specific time in their query (e.g. 5 bje / 5 pm for movie)
+                time_warning = ""
+                queried_time = None
+                parsed_q = parse_followup_time(query_text, datetime.now(IST))
+                if parsed_q and parsed_q[0] is not None:
+                    queried_time = parsed_q[0]
+                else:
+                    m_t = re.search(r"\b(\d{1,2})\s*(?:bje|baje|pm|am)?\b", query_text, re.I)
+                    if m_t:
+                        try:
+                            h = int(m_t.group(1))
+                            if 1 <= h <= 12:
+                                if "pm" in query_text.lower() or any(w in query_text.lower() for w in ("shaam", "sham", "evening", "raat")):
+                                    if h < 12: h += 12
+                                queried_time = time(h, 0)
+                        except Exception:
+                            pass
+
+                if queried_time and sched.get("calendar_events"):
+                    for ev in sched["calendar_events"]:
+                        raw_dt = ev.get("start", {}).get("dateTime")
+                        if raw_dt:
+                            try:
+                                ev_dt = datetime.fromisoformat(raw_dt.replace("Z", "+00:00")).astimezone(IST)
+                                diff_mins = (ev_dt.hour * 60 + ev_dt.minute) - (queried_time.hour * 60 + queried_time.minute)
+                                if -60 <= diff_mins <= 120:
+                                    ev_clock = ev_dt.strftime("%I:%M %p").lstrip("0")
+                                    time_warning = f"\n⚠️ **Schedule Warning:** Aapne {queried_time.strftime('%I:%M %p').lstrip('0')} ka plan poocha hai, lekin {ev_clock} par aapki '{ev.get('summary', 'Meeting')}' scheduled hai, isliye schedule tight/overlap ho sakta hai!\n"
+                                    break
+                            except Exception:
+                                pass
+
+                response += f"{time_warning}\nBaaki ka samay aapka free hai! Kya koi specific time par meeting ya task schedule karna hai?"
                 await say(chat_id, response)
                 return
             else:
@@ -509,7 +578,7 @@ async def show_range(chat_id, start, end, meeting_only=False, query_text=""):
     # Append Google Calendar events if single day
     if sched and sched.get("calendar_events"):
         for ev in sched["calendar_events"]:
-            start_t = (ev.get("start", {}).get("dateTime", "")[11:16]) or "All day"
+            start_t = format_event_clock_ist(ev.get("start", {}).get("dateTime"))
             lines.append(f"📅 {start_t} - Google Meet: {ev.get('summary')}")
             
     # Append Reminders
@@ -1674,6 +1743,17 @@ async def handle_conversational_chat(chat_id, user_text):
             for c in contacts
         ]) + "\n\n"
 
+    # Episodic past conversation search if user mentions any contact
+    matched_c = find_matching_contact(user_text, contacts) if contacts else None
+    episodic_context = ""
+    if matched_c:
+        first_n = matched_c["name"].split()[0]
+        past_turns = get_chat_turns_mentioning_keyword(chat_id, first_n, limit=8)
+        if past_turns:
+            episodic_context = f"RELEVANT PAST CONVERSATIONS ABOUT {matched_c['name'].upper()}:\n" + "\n".join([
+                f"- {pt['role']}: {pt['text']}" for pt in past_turns
+            ]) + "\n\n"
+
     saved_items = list_memories(chat_id)
     items_context = ""
     if saved_items:
@@ -1686,6 +1766,7 @@ async def handle_conversational_chat(chat_id, user_text):
         "You are PeculiarAI, an empathetic, hyper-competent personal AI assistant on Telegram with persistent memory.\n\n"
         + facts_context
         + contacts_context
+        + episodic_context
         + items_context
         + doc_context
         + history_context
@@ -1697,7 +1778,8 @@ async def handle_conversational_chat(chat_id, user_text):
         "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested.\n"
         "6. STRICT ZERO-HALLUCINATION RULE FOR INTEGRATIONS: NEVER fabricate, invent, or guess GitHub repositories (e.g. 'awesome-python', 'crypto-tracker', 'web-scraper'), Notion pages, or files. If the user asks for repositories or tools data, fetch them via official integrations or ask for their username. NEVER make up fake project names.\n"
         "7. TEMPORAL & SCHEDULE REASONING: When the user asks about their schedule, plans, or whether they are free on a specific day (e.g. 'kya main Tuesday ko free hu?'), ALWAYS inspect the user's saved contacts commitments, items, and facts! If there is a commitment (e.g. 'Ananya ko model/module bhejna hai Tuesday ko'), tell the user clearly: 'Aap Tuesday ko poori tarah free nahi ho, aapka Ananya Roy (Elevate Ventures) ko module bhejna hai. Baaki time aapka free hai.' NEVER say 'mere ko nahi pata' when the information is present in the context!\n"
-        "8. STRICT ZERO-HALLUCINATION FOR MEETINGS & CALENDAR: NEVER claim that a meeting has been scheduled, created, or emailed ('meeting set kar diya hai', 'invite email pe bhej diya hai') in casual chat! Meetings and Google Meet links can ONLY be created when the Google Calendar tool runs and confirms. If the user asks to schedule, change time, or create a link, you must NOT pretend it was completed. Instead, ask for missing details or tell them to confirm the schedule."
+        "8. STRICT ZERO-HALLUCINATION FOR MEETINGS & CALENDAR: NEVER claim that a meeting has been scheduled, created, or emailed ('meeting set kar diya hai', 'invite email pe bhej diya hai') in casual chat! Meetings and Google Meet links can ONLY be created when the Google Calendar tool runs and confirms. If the user asks to schedule, change time, or create a link, you must NOT pretend it was completed. Instead, ask for missing details or tell them to confirm the schedule.\n"
+        "9. CONTACT COMMITMENTS & DELIVERABLES: If the user asks what they need to send, give, or do for a contact (e.g. 'Ananya ko kya bhejna tha?'), NEVER hallucinate or draft an apology message! Answer directly from the contact's commitments and past notes in the context (e.g. 'Aapko Ananya Roy (Elevate Ventures) ko module bhejna tha!')."
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -1912,15 +1994,73 @@ async def handle_active(chat_id, text):
         except Exception as exc:
             print("text card parse error:", repr(exc))
 
-    # 3. Check if user mentions commitment for an existing contact (e.g. Rahul, Ananya)
-    try:
+    # 3. Contact Commitment / Deliverable Query Handler (e.g. "bhy annaya ko mujhe ky bhjna th", "ananya jo h contact m usko ky bhjna th", "kya bhejna tha")
+    is_commitment_q = bool(
+        re.search(r"\b(kya|ky|kisko|kisse|what|kaunsa|konsa|yaad|yad|bata|btao|batao)\b", clean_low)
+        and any(w in clean_low for w in ("bhejna", "bhjna", "bheje", "bhje", "dena", "dna", "karna", "krna", "commitment", "task", "deliverable", "share", "send"))
+    )
+    if is_commitment_q:
         contacts_list = get_contact_memories(chat_id)
-        for c in contacts_list:
-            first_name = c["name"].split()[0].lower()
-            if len(first_name) >= 3 and first_name in clean_low:
-                update_contact_commitment(chat_id, first_name, commitments=text, context_notes="From Telegram")
-    except Exception as exc:
-        print("contact commitment update error:", repr(exc))
+        matched_c = find_matching_contact(clean_low, contacts_list) if contacts_list else None
+        if matched_c:
+            comm = matched_c.get("commitments")
+            first_n = matched_c["name"].split()[0]
+            if not comm:
+                # Episodic search in chat_logs
+                past_turns = get_chat_turns_mentioning_keyword(chat_id, first_n, limit=10)
+                for pt in reversed(past_turns):
+                    if pt["role"] == "user" and any(w in pt["text"].lower() for w in ("module", "deck", "pitch", "presentation", "report", "file", "document", "design", "code", "draft")):
+                        comm = f"{matched_c['name']} ko module bhejna hai"
+                        update_contact_commitment(chat_id, first_n, commitments=comm)
+                        break
+            if comm:
+                reply = f"Bhai, **{matched_c['name']}** ({matched_c.get('company', 'Contact')}) ko aapko: **{comm}**!"
+                await say(chat_id, reply)
+                record_chat_turn(chat_id, "user", text)
+                record_chat_turn(chat_id, "assistant", reply)
+                log_chat_message(chat_id, "assistant", reply)
+                return
+            else:
+                reply = f"Bhai, {matched_c['name']} ({matched_c.get('company', 'Contact')}) ke sath koi specific commitment ya deliverable record nahi hai. Kya unhe kuch bhejna tha jo main yaad rakhun?"
+                await say(chat_id, reply)
+                record_chat_turn(chat_id, "user", text)
+                record_chat_turn(chat_id, "assistant", reply)
+                log_chat_message(chat_id, "assistant", reply)
+                return
+        elif any(w in clean_low for w in ("contact", "contacts", "kisko", "kisse", "all", "sab")):
+            active_comms = [c for c in contacts_list if c.get("commitments")]
+            if active_comms:
+                lines = [f"• **{c['name']}** ({c.get('company', '')}): {c['commitments']}" for c in active_comms]
+                reply = "Aapke contacts ke sath yeh commitments saved hain:\n\n" + "\n".join(lines)
+                await say(chat_id, reply)
+                record_chat_turn(chat_id, "user", text)
+                record_chat_turn(chat_id, "assistant", reply)
+                log_chat_message(chat_id, "assistant", reply)
+                return
+
+    # 4. Check if user states/establishes a commitment for a contact (e.g. "Ananya ko module bhejna hai Tuesday ko")
+    is_q = bool(re.search(r"\b(kya|ky|what|kisko|kisse|kaunsa|konsa|\?)\b", clean_low))
+    if not is_q:
+        try:
+            contacts_list = get_contact_memories(chat_id)
+            matched_c = find_matching_contact(clean_low, contacts_list) if contacts_list else None
+            has_action = any(w in clean_low for w in ("bhejna", "bhjna", "dena", "dna", "karna", "krna", "module", "deck", "pitch", "report", "call", "send", "give", "share"))
+            if matched_c and has_action:
+                first_name = matched_c["name"].split()[0].lower()
+                clean_comm = text
+                try:
+                    c_json = await _chat_json(
+                        f"Extract the specific commitment, deliverable, or action item for {matched_c['name']} from this message into a short clean sentence (e.g. '{matched_c['name']} ko module bhejna hai Tuesday ko'). "
+                        'Return JSON: {"commitment": "..."}. If none, return {"commitment": null}.',
+                        text
+                    )
+                    if c_json and c_json.get("commitment"):
+                        clean_comm = c_json["commitment"]
+                except Exception:
+                    pass
+                update_contact_commitment(chat_id, first_name, commitments=clean_comm, context_notes="From Telegram")
+        except Exception as exc:
+            print("contact commitment update error:", repr(exc))
 
     # Check if user is asking about recently sent document
     if is_recent_document_query(chat_id, text):
