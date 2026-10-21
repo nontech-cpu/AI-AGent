@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse
 
 from db import (give_consent, has_consent, set_persona, get_persona,
                 set_categories, get_categories, save_memory, list_memories,
-                items_between, delete_user, export_data, add_reminders,
+                items_between, items_for_date, get_board_cards, delete_user, export_data, add_reminders,
                 get_pending_reminders, mark_sent, create_email_link,
                 get_link_by_email, get_linked_email, verify_email_link,
                 remove_email_link, ensure_user, get_state, set_state,
@@ -307,11 +307,133 @@ def day_label(d, today):
     return d.strftime("%a %d %b")
 
 
-async def show_range(chat_id, start, end, meeting_only=False):
+WEEKDAY_ALIASES = {
+    "monday": ["monday", "somwar", "somvaar", "mon"],
+    "tuesday": ["tuesday", "mangalwar", "mangalvaar", "mangal", "tue", "tues"],
+    "wednesday": ["wednesday", "budhwar", "budhvaar", "budh", "wed"],
+    "thursday": ["thursday", "guruwar", "guruvaar", "veervaar", "thu", "thurs"],
+    "friday": ["friday", "shukrawar", "shukravaar", "shukra", "fri"],
+    "saturday": ["saturday", "shaniwar", "shanivaar", "shani", "sat"],
+    "sunday": ["sunday", "ravivar", "itwar", "itvaar", "sun"]
+}
+
+
+async def get_unified_schedule(chat_id: int, target_date: date):
+    """
+    Unified Temporal Schedule Aggregator:
+    Combines:
+    1. Google Calendar events
+    2. Saved reminders & appointments (memory_items)
+    3. Contact Commitments (commitments tied to weekday/date)
+    4. Task Board cards (due on target_date)
+    """
+    weekday_str = target_date.strftime("%A").lower()
+    day_aliases = WEEKDAY_ALIASES.get(weekday_str, [weekday_str])
+    date_d_b = target_date.strftime("%d %b").lower()
+    date_iso = target_date.isoformat()
+
+    # 1. Reminders
+    reminders = items_for_date(chat_id, target_date)
+
+    # 2. Google Calendar
+    calendar_events = []
+    try:
+        is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if is_conn:
+            t_min = f"{date_iso}T00:00:00+05:30"
+            t_max = f"{date_iso}T23:59:59+05:30"
+            calendar_events = await google_list_calendar_events(chat_id, time_min_iso=t_min, time_max_iso=t_max)
+    except Exception as exc:
+        print("Calendar fetch in unified schedule skipped/failed:", repr(exc))
+
+    # 3. Contact Commitments
+    matched_commitments = []
+    try:
+        contacts = get_contact_memories(chat_id)
+        for c in contacts:
+            comm = (c.get("commitments") or "").lower()
+            notes = (c.get("context_notes") or "").lower()
+            combined = f"{comm} {notes}"
+            matches = any(alias in combined for alias in day_aliases) or (date_d_b in combined) or (date_iso in combined)
+            if matches and c.get("commitments"):
+                matched_commitments.append({
+                    "name": c["name"],
+                    "company": c.get("company"),
+                    "role_title": c.get("role_title"),
+                    "commitment": c["commitments"],
+                    "email": c.get("email"),
+                    "phone": c.get("phone")
+                })
+    except Exception as exc:
+        print("Contact commitments in unified schedule error:", repr(exc))
+
+    # 4. Board Tasks
+    matched_tasks = []
+    try:
+        board = get_board_cards(chat_id)
+        for st, cards in board.items():
+            for card in cards:
+                if card.get("due_date") == date_iso:
+                    matched_tasks.append(card)
+    except Exception as exc:
+        print("Board tasks in unified schedule error:", repr(exc))
+
+    return {
+        "date": target_date,
+        "weekday": weekday_str,
+        "calendar_events": calendar_events,
+        "reminders": reminders,
+        "commitments": matched_commitments,
+        "tasks": matched_tasks
+    }
+
+
+async def detect_meeting_conflicts(chat_id: int, start_iso: str, duration_minutes: int = 30):
+    """
+    Detect exact time conflicts or day-level commitments before booking a meeting.
+    Returns: (list of time_conflicts, list of day_commitments)
+    """
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+        end_dt = start_dt + timedelta(minutes=int(duration_minutes))
+    except Exception:
+        return [], []
+
+    target_date = start_dt.date()
+    sched = await get_unified_schedule(chat_id, target_date)
+
+    time_conflicts = []
+    # Check Google Calendar events overlap
+    for ev in sched.get("calendar_events", []):
+        ev_start_str = ev.get("start", {}).get("dateTime")
+        ev_end_str = ev.get("end", {}).get("dateTime")
+        if ev_start_str and ev_end_str:
+            try:
+                ev_start = datetime.fromisoformat(ev_start_str)
+                ev_end = datetime.fromisoformat(ev_end_str)
+                if start_dt < ev_end and end_dt > ev_start:
+                    time_conflicts.append(f"Google Calendar: '{ev.get('summary')}' ({ev_start.strftime('%H:%M')} - {ev_end.strftime('%H:%M')})")
+            except Exception:
+                pass
+
+    # Check Reminders within 30 mins
+    for cat, title, amt, d_time in sched.get("reminders", []):
+        if d_time:
+            rem_dt = datetime.combine(target_date, d_time, tzinfo=IST)
+            if abs((rem_dt - start_dt).total_seconds()) < 1800:
+                time_conflicts.append(f"Reminder: '{title}' ({d_time.strftime('%H:%M')})")
+
+    # Day commitments
+    day_commitments = [
+        f"{c['name']} ({c.get('company') or 'Contact'}): {c['commitment']}" for c in sched.get("commitments", [])
+    ]
+
+    return time_conflicts, day_commitments
+
+
+async def show_range(chat_id, start, end, meeting_only=False, query_text=""):
     now = datetime.now(IST)
     today = now.date()
-    # understand() returns JSON, so dates commonly arrive as strings such as
-    # "2026-10-16". Normalize before formatting/comparing them.
     try:
         start = _as_date(start)
         end = _as_date(end)
@@ -319,6 +441,46 @@ async def show_range(chat_id, start, end, meeting_only=False):
         print("show_range invalid date:", repr(exc), "start=", repr(start), "end=", repr(end))
         await say(chat_id, "Date samajhne mein problem hui. Please 'aaj ke reminders' ya 'kal ke reminders' dobara bolo.")
         return
+
+    single = start == end
+    label = day_label(start, today) if single else f"{start:%d %b} to {end:%d %b}"
+    is_free_query = bool(re.search(r"\b(free|khali|available|busy|vyast|schedule kya|kya plan|koi kaam)\b", query_text, re.I))
+
+    # If single day, fetch unified schedule across all tiers
+    sched = None
+    if single:
+        sched = await get_unified_schedule(chat_id, start)
+        total_items = (len(sched.get("calendar_events", [])) +
+                       len(sched.get("reminders", [])) +
+                       len(sched.get("commitments", [])) +
+                       len(sched.get("tasks", [])))
+
+        if is_free_query:
+            if total_items > 0:
+                response = f"Bhai, {label} ({start:%d %b}) ko aap poori tarah free nahi ho — aapka schedule yeh hai:\n\n"
+                if sched.get("calendar_events"):
+                    for ev in sched["calendar_events"]:
+                        start_t = (ev.get("start", {}).get("dateTime", "")[11:16]) or "All day"
+                        response += f"📅 [Google Calendar] {start_t} - {ev.get('summary')}\n"
+                if sched.get("reminders"):
+                    for cat, title, amt, d_time in sched["reminders"]:
+                        t_str = d_time.strftime("%H:%M") if d_time else "All day"
+                        response += f"⏰ [Reminder] {t_str} - {CATEGORIES.get(cat, cat)}: {title}\n"
+                if sched.get("commitments"):
+                    for comm in sched["commitments"]:
+                        comp = f" ({comm['company']})" if comm.get("company") else ""
+                        response += f"🤝 [Commitment] **{comm['name']}{comp}**: *{comm['commitment']}*\n"
+                if sched.get("tasks"):
+                    for t in sched["tasks"]:
+                        response += f"📋 [Task] {t['title']} ({t['status']})\n"
+                response += f"\nBaaki ka samay aapka free hai! Kya koi specific time par meeting ya task schedule karna hai?"
+                await say(chat_id, response)
+                return
+            else:
+                await say(chat_id, f"Haan bhai, {label} ({start:%d %b}) ko aapka koi bhi meeting, reminder ya commitment scheduled nahi hai. Aap bilkul free ho! 🎉")
+                return
+
+    # Regular agenda view
     rows = items_between(chat_id, start, end)
     normalized_rows = []
     for row in rows:
@@ -327,14 +489,15 @@ async def show_range(chat_id, start, end, meeting_only=False):
             due_time = _as_time(row[1])
             normalized_rows.append((due_date, due_time, row[2], row[3], row[4]))
         except (TypeError, ValueError) as exc:
-            # Do not crash the entire agenda because one legacy row is malformed.
             print("Skipping malformed reminder row:", repr(row), repr(exc))
     rows = normalized_rows
     if meeting_only:
         rows = [row for row in rows if row[2] == "appointments" and re.search(r"meeting|metting|meetting|meetng|appointment|call", str(row[3]), re.I)]
-    single = start == end
-    label = day_label(start, today) if single else f"{start:%d %b} to {end:%d %b}"
-    if not rows:
+
+    # If single day and we have unified items, include calendar & commitments in agenda view
+    has_sched_items = bool(sched and (sched.get("calendar_events") or sched.get("commitments") or sched.get("tasks")))
+
+    if not rows and not has_sched_items:
         if meeting_only:
             await say(chat_id, "I couldn't find a matching saved meeting in that date range. I won't guess a time.")
         else:
@@ -342,6 +505,14 @@ async def show_range(chat_id, start, end, meeting_only=False):
         return
 
     lines = [f"📅 {label}:" if not single else f"📅 {label} ({start:%d %b}):"]
+    
+    # Append Google Calendar events if single day
+    if sched and sched.get("calendar_events"):
+        for ev in sched["calendar_events"]:
+            start_t = (ev.get("start", {}).get("dateTime", "")[11:16]) or "All day"
+            lines.append(f"📅 {start_t} - Google Meet: {ev.get('summary')}")
+            
+    # Append Reminders
     current = None
     for due_date, due_time, category, title, amount in rows:
         if not single and due_date != current:
@@ -358,6 +529,20 @@ async def show_range(chat_id, start, end, meeting_only=False):
         if amount is not None:
             line += f" | {amount}"
         lines.append(line)
+
+    # Append Contact Commitments if single day
+    if sched and sched.get("commitments"):
+        lines.append("\n🤝 **Contact Commitments:**")
+        for comm in sched["commitments"]:
+            comp = f" ({comm['company']})" if comm.get("company") else ""
+            lines.append(f"• **{comm['name']}{comp}**: {comm['commitment']}")
+
+    # Append Tasks if single day
+    if sched and sched.get("tasks"):
+        lines.append("\n📋 **Tasks Due:**")
+        for t in sched["tasks"]:
+            lines.append(f"• [{t['priority'].upper()}] {t['title']} ({t['status']})")
+
     await say(chat_id, "\n".join(lines))
 
 
@@ -1099,8 +1284,16 @@ async def prepare_google_action(chat_id, r):
             await say(chat_id, "Bilkul. Meeting kis din aur kitne baje rakhun? Duration bhi bata sakte ho, jaise aaj shaam 5 baje, 30 minutes. Main pehle details confirm karunga; abhi event create nahi hua.")
             return
         attendees = r.get('attendees', [])
+        time_conflicts, day_commitments = await detect_meeting_conflicts(chat_id, start_iso, r.get('duration_minutes', 30))
+        conflict_msg = ""
+        if time_conflicts:
+            conflict_msg = "⚠️ **Time Conflict Warning:** Is samay par already aapka schedule booked hai:\n" + "\n".join([f"• {c}" for c in time_conflicts]) + "\n\n"
+        if day_commitments:
+            conflict_msg += "📌 **Existing Commitments:** Us din aapka yeh commitment bhi hai: " + ", ".join(day_commitments) + "\n\n"
+
         PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees, 'created_at': datetime.now(IST)}
-        await say(chat_id, f"Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel.")
+        confirm_text = f"{conflict_msg}Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel."
+        await say(chat_id, confirm_text)
     elif intent == 'update_meeting':
         target_title = r.get('target_title')
         target_time = r.get('target_time')
@@ -1489,7 +1682,8 @@ async def handle_conversational_chat(chat_id, user_text):
         "3. NEVER hallucinate that you cannot perform an action or that you will 'send in 1-2 minutes'. If user asks for an action or file, execute it.\n"
         "4. Always reply in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul note kar liya!'). Never use Devanagari script unless user explicitly types in Devanagari.\n"
         "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested.\n"
-        "6. STRICT ZERO-HALLUCINATION RULE FOR INTEGRATIONS: NEVER fabricate, invent, or guess GitHub repositories (e.g. 'awesome-python', 'crypto-tracker', 'web-scraper'), Notion pages, or files. If the user asks for repositories or tools data, fetch them via official integrations or ask for their username. NEVER make up fake project names."
+        "6. STRICT ZERO-HALLUCINATION RULE FOR INTEGRATIONS: NEVER fabricate, invent, or guess GitHub repositories (e.g. 'awesome-python', 'crypto-tracker', 'web-scraper'), Notion pages, or files. If the user asks for repositories or tools data, fetch them via official integrations or ask for their username. NEVER make up fake project names.\n"
+        "7. TEMPORAL & SCHEDULE REASONING: When the user asks about their schedule, plans, or whether they are free on a specific day (e.g. 'kya main Tuesday ko free hu?'), ALWAYS inspect the user's saved contacts commitments, items, and facts! If there is a commitment (e.g. 'Ananya ko model/module bhejna hai Tuesday ko'), tell the user clearly: 'Aap Tuesday ko poori tarah free nahi ho, aapka Ananya Roy (Elevate Ventures) ko module bhejna hai. Baaki time aapka free hai.' NEVER say 'mere ko nahi pata' when the information is present in the context!"
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -1584,11 +1778,29 @@ async def handle_active(chat_id, text):
     )
     if excel_request:
         # Check if user also wanted to save a reminder in the same message
-        if any(k in clean_low for k in ("remind", "reminder", "yaad", "save", "bhejna hai", "module")):
+        if any(k in clean_low for k in ("remind", "reminder", "yaad", "save", "bhejna hai", "bhejna h", "module", "send kar")):
             try:
                 r_item = await understand(text)
                 if r_item.get("intent") == "save_item" and r_item.get("item"):
                     await save_item_flow(chat_id, r_item["item"])
+                else:
+                    now_ist = datetime.now(IST)
+                    ex_prompt = (
+                        f"Today is {now_ist.strftime('%A, %Y-%m-%d')}. "
+                        "The user message may combine a file request with a reminder/task/commitment. "
+                        "Extract any reminder or task to remember into JSON: "
+                        '{"title": "short task title", "due_date": "YYYY-MM-DD", "due_time": "HH:MM or null", "category": "appointments"}. '
+                        'If no reminder or task is mentioned, return {"title": null}.'
+                    )
+                    ex_data = await _chat_json(ex_prompt, text)
+                    if ex_data and ex_data.get("title") and ex_data.get("due_date"):
+                        await save_item_flow(chat_id, {
+                            "category": ex_data.get("category") or "appointments",
+                            "title": ex_data["title"],
+                            "amount": None,
+                            "due_date": ex_data.get("due_date"),
+                            "due_time": ex_data.get("due_time")
+                        })
             except Exception as e:
                 print("dual intent parse error:", repr(e))
 
@@ -1598,7 +1810,18 @@ async def handle_active(chat_id, text):
             for c in contacts_list:
                 first_name = c["name"].split()[0].lower()
                 if len(first_name) >= 3 and first_name in clean_low:
-                    update_contact_commitment(chat_id, first_name, commitments=text, context_notes="From Telegram")
+                    clean_comm = text
+                    try:
+                        c_json = await _chat_json(
+                            f"Extract the specific commitment or action item for {c['name']} from this message into a short clean sentence (e.g. '{c['name']} ko module bhejna hai Tuesday ko'). "
+                            'Return JSON: {"commitment": "..."}. If none, return {"commitment": null}.',
+                            text
+                        )
+                        if c_json and c_json.get("commitment"):
+                            clean_comm = c_json["commitment"]
+                    except Exception:
+                        pass
+                    update_contact_commitment(chat_id, first_name, commitments=clean_comm, context_notes="From Telegram")
         except Exception as exc:
             print("contact commitment update error:", repr(exc))
 
@@ -1707,7 +1930,7 @@ async def handle_active(chat_id, text):
                            "bookings, orders, meetings and appointments. "
                            "This one wasn't saved.")
     elif intent == "show_agenda":
-        await show_range(chat_id, r["start"], r["end"], meeting_only=bool(r.get("meeting_only")))
+        await show_range(chat_id, r["start"], r["end"], meeting_only=bool(r.get("meeting_only")), query_text=text)
     elif intent == "show_saved":
         await show_memories(chat_id)
     elif intent == "change_categories":
