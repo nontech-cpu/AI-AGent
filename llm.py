@@ -346,6 +346,16 @@ def parse_followup_time(message, now):
         r"(?<!\d)(2[0-3]|1[0-9]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)?\s*(?:baje|bje|bajey|bajay|बजे|pr|par|pe|ko)?\b",
         time_text,
     )
+    WEEKDAY_PATTERNS = {
+        0: r"\b(monday|somwar|somvaar|mnday|mon)\b|सोमवार",
+        1: r"\b(tuesday|tue|tues|tueday|tuedday|mangalwar|mangalvaar|mangal)\b|मंगलवार",
+        2: r"\b(wednesday|wed|wednessday|budhwar|budhvaar|budh)\b|बुधवार",
+        3: r"\b(thursday|thu|thurs|thurday|guruwar|guruvaar|veervaar|brihaspatiwar)\b|गुरुवार|वीरवार",
+        4: r"\b(friday|fri|shukrawar|shukravaar|shukra)\b|शुक्रवार",
+        5: r"\b(saturday|sat|shaniwar|shanivaar|shani)\b|शनिवार",
+        6: r"\b(sunday|sun|ravivar|itwar|itvaar)\b|रविवार|इतवार",
+    }
+
     if not match:
         # Check if a date or broad period was provided without an exact hour (e.g. "kal shaam", "today evening")
         explicit_tomorrow = bool(re.search(r"\b(tomorrow|tmrw|kal|कल)\b", low))
@@ -355,6 +365,19 @@ def parse_followup_time(message, now):
         if (explicit_tomorrow or explicit_parso or explicit_today) and has_period:
             t_date = now.date() + timedelta(days=1) if explicit_tomorrow else (now.date() + timedelta(days=2) if explicit_parso else now.date())
             return None, t_date
+
+        explicit_weekday = None
+        for wd_num, pat in WEEKDAY_PATTERNS.items():
+            if re.search(pat, low, re.I):
+                explicit_weekday = wd_num
+                break
+        if explicit_weekday is not None:
+            days_ahead = (explicit_weekday - now.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            t_date = now.date() + timedelta(days=days_ahead)
+            return None, t_date
+
         return None
     hour = int(match.group(1))
     minute = int(match.group(2) or 0)
@@ -373,7 +396,13 @@ def parse_followup_time(message, now):
     explicit_tomorrow = bool(re.search(r"\b(tomorrow|tmrw|kal|कल)\b", low))
     explicit_parso = bool(re.search(r"\b(parso|day after tomorrow|परसों)\b", low))
     explicit_today = bool(re.search(r"\b(today|aaj|आज)\b", low))
-    if meridian is None and not is_pm_indicator and not is_am_indicator and 1 <= hour <= 12 and not (explicit_tomorrow or explicit_parso):
+    explicit_weekday = None
+    for wd_num, pat in WEEKDAY_PATTERNS.items():
+        if re.search(pat, low, re.I):
+            explicit_weekday = wd_num
+            break
+
+    if meridian is None and not is_pm_indicator and not is_am_indicator and 1 <= hour <= 12 and not (explicit_tomorrow or explicit_parso or explicit_weekday is not None):
         # Choose the nearest upcoming occurrence today; tolerate a just-passed minute as "now".
         candidates = []
         for h in {hour % 12, (hour % 12) + 12}:
@@ -386,9 +415,16 @@ def parse_followup_time(message, now):
             return future[1], future[0].date()
         chosen_hour = hour + 12 if now.hour >= 12 else hour
         return dtime(chosen_hour, minute), now.date() + timedelta(days=1)
+
     due_time = dtime(hour, minute)
     target_date = now.date()
-    if explicit_tomorrow:
+    if explicit_weekday is not None:
+        days_ahead = (explicit_weekday - now.weekday()) % 7
+        if days_ahead == 0:
+            if datetime.combine(now.date(), due_time, tzinfo=IST) < now - timedelta(minutes=2):
+                days_ahead = 7
+        target_date = now.date() + timedelta(days=days_ahead)
+    elif explicit_tomorrow:
         target_date += timedelta(days=1)
     elif explicit_parso:
         target_date += timedelta(days=2)

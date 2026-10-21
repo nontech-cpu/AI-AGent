@@ -87,7 +87,14 @@ async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=
                             params={'conferenceDataVersion': 1, 'sendUpdates': 'all'}, json=event)
     meet = (result.get('conferenceData') or {}).get('entryPoints') or []
     meet_url = next((x.get('uri') for x in meet if x.get('entryPointType') == 'video'), '')
-    return {'id': result.get('id'), 'htmlLink': result.get('htmlLink'), 'meet_url': meet_url}
+    return {
+        'id': result.get('id'),
+        'summary': result.get('summary', title),
+        'start': result.get('start') or {'dateTime': start_iso},
+        'end': result.get('end') or {},
+        'htmlLink': result.get('htmlLink', ''),
+        'meet_url': meet_url
+    }
 
 
 async def list_calendar_events(chat_id, time_min_iso=None, time_max_iso=None, query=None, max_results=20):

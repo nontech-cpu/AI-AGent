@@ -1183,7 +1183,14 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
             await say(chat_id, "File uploaded to Google Drive: " + (result.get('webViewLink') or result.get('name', pending['filename'])))
         elif kind == 'create_meeting':
             result = await google_create_meeting(chat_id, pending['title'], pending['start_iso'], pending['duration_minutes'], pending.get('attendees', []))
-            start_fmt = format_event_time_ist(result.get('start', {}).get('dateTime') or pending['start_iso'])
+            raw_start = result.get('start') if isinstance(result, dict) else None
+            if isinstance(raw_start, dict):
+                start_val = raw_start.get('dateTime') or raw_start.get('date') or pending['start_iso']
+            elif isinstance(raw_start, str):
+                start_val = raw_start
+            else:
+                start_val = pending['start_iso']
+            start_fmt = format_event_time_ist(start_val)
             msg = f"Meeting created: {result.get('summary') or pending['title']}\nTime: {start_fmt}"
             if result.get('meet_url'):
                 msg += "\nGoogle Meet: " + result['meet_url']
@@ -1276,9 +1283,10 @@ async def prepare_google_action(chat_id, r):
             await say(chat_id, "Kaunse time par meeting schedule karun? (jaise shaam 5 baje ya 6 baje). Exact time bataiye; abhi meeting create nahi hui.")
             return
 
-        if not title or not start_iso:
+        title = title or "Meeting"
+        if not start_iso:
             set_state(chat_id, "create_meeting_details", json.dumps({
-                "title": title or "Meeting", "duration_minutes": r.get("duration_minutes", 30),
+                "title": title, "duration_minutes": r.get("duration_minutes", 30),
                 "attendees": r.get("attendees", [])
             }))
             await say(chat_id, "Bilkul. Meeting kis din aur kitne baje rakhun? Duration bhi bata sakte ho, jaise aaj shaam 5 baje, 30 minutes. Main pehle details confirm karunga; abhi event create nahi hua.")
@@ -1631,6 +1639,11 @@ async def handle_conversational_chat(chat_id, user_text):
         await send_smart_pdf(chat_id, user_text)
         return
 
+    # Check if asking to schedule, host, or set up a meeting:
+    if any(w in clean for w in ("meeting", "schedule", "meet link", "google meet", "calendar")) and any(w in clean for w in ("set", "rakh", "rkh", "bana", "kar", "kr", "host", "karo", "do", "bhejo", "arrange")):
+        await handle_active(chat_id, user_text)
+        return
+
     # Load persistent chat history from PostgreSQL
     history_turns = get_recent_chat_history(chat_id, limit=8)
     history_context = ""
@@ -1683,7 +1696,8 @@ async def handle_conversational_chat(chat_id, user_text):
         "4. Always reply in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul note kar liya!'). Never use Devanagari script unless user explicitly types in Devanagari.\n"
         "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested.\n"
         "6. STRICT ZERO-HALLUCINATION RULE FOR INTEGRATIONS: NEVER fabricate, invent, or guess GitHub repositories (e.g. 'awesome-python', 'crypto-tracker', 'web-scraper'), Notion pages, or files. If the user asks for repositories or tools data, fetch them via official integrations or ask for their username. NEVER make up fake project names.\n"
-        "7. TEMPORAL & SCHEDULE REASONING: When the user asks about their schedule, plans, or whether they are free on a specific day (e.g. 'kya main Tuesday ko free hu?'), ALWAYS inspect the user's saved contacts commitments, items, and facts! If there is a commitment (e.g. 'Ananya ko model/module bhejna hai Tuesday ko'), tell the user clearly: 'Aap Tuesday ko poori tarah free nahi ho, aapka Ananya Roy (Elevate Ventures) ko module bhejna hai. Baaki time aapka free hai.' NEVER say 'mere ko nahi pata' when the information is present in the context!"
+        "7. TEMPORAL & SCHEDULE REASONING: When the user asks about their schedule, plans, or whether they are free on a specific day (e.g. 'kya main Tuesday ko free hu?'), ALWAYS inspect the user's saved contacts commitments, items, and facts! If there is a commitment (e.g. 'Ananya ko model/module bhejna hai Tuesday ko'), tell the user clearly: 'Aap Tuesday ko poori tarah free nahi ho, aapka Ananya Roy (Elevate Ventures) ko module bhejna hai. Baaki time aapka free hai.' NEVER say 'mere ko nahi pata' when the information is present in the context!\n"
+        "8. STRICT ZERO-HALLUCINATION FOR MEETINGS & CALENDAR: NEVER claim that a meeting has been scheduled, created, or emailed ('meeting set kar diya hai', 'invite email pe bhej diya hai') in casual chat! Meetings and Google Meet links can ONLY be created when the Google Calendar tool runs and confirms. If the user asks to schedule, change time, or create a link, you must NOT pretend it was completed. Instead, ask for missing details or tell them to confirm the schedule."
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -1761,6 +1775,50 @@ async def handle_active(chat_id, text):
     if is_github_query:
         await execute_github_action(chat_id, text)
         return
+
+    # Meeting Link Request Trigger (e.g. "meeting ka link ya de", "yhaa bhjdo link", "google meet link bhejo")
+    is_link_query = bool(
+        re.search(r"\b(link|meet\s*link|google\s*meet)\b", clean_low)
+        and any(w in clean_low for w in ("bhej", "bhj", "bhjdo", "bhejo", "de", "dede", "dedo", "send", "give", "share", "yha", "yhaa", "kaha", "kahan", "do", "bhai", "bhy"))
+    )
+    if is_link_query:
+        is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if is_conn:
+            now_iso = datetime.now(IST).isoformat()
+            try:
+                events = await google_list_calendar_events(chat_id, time_min_iso=now_iso, max_results=5)
+                meet_events = [ev for ev in events if ev.get('meet_url')]
+                if meet_events:
+                    ev = meet_events[0]
+                    start_fmt = format_event_time_ist(ev.get('start', {}).get('dateTime') or '')
+                    msg = f"Aapki upcoming meeting '{ev.get('summary', 'Meeting')}' ({start_fmt}) ka Google Meet link yeh raha:\n🔗 {ev['meet_url']}"
+                    await say(chat_id, msg)
+                    return
+                else:
+                    await say(chat_id, "Aapke Google Calendar mein abhi koi upcoming meeting with Google Meet link nahi mili. Agar aap chahein toh mujhe boliye: 'Monday shaam 5 baje meeting schedule kar do', aur main instant Google Meet link generate kar dunga!")
+                    return
+            except Exception as exc:
+                print("Error fetching meet link from calendar:", repr(exc))
+        else:
+            await say(chat_id, "Google Meet link fetch karne ke liye aapka Google account connect hona zaroori hai. Type karein 'connect google' ya connect.html portal par login karein.")
+            return
+
+    # Check if this message is a meeting follow-up like "monday 5 bje" or "tuesday 5pm" when recent context was about a meeting
+    parsed_time_active = parse_followup_time(text, datetime.now(IST))
+    if parsed_time_active and parsed_time_active[0] is not None:
+        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+        last_bot_turn = next((t["content"] for t in reversed(history) if t["role"] == "assistant"), "").lower()
+        if any(w in last_bot_turn for w in ("meeting", "google meet", "calendar", "schedule", "details confirm", "kis din")):
+            due_time, due_date = parsed_time_active
+            start_dt = datetime.combine(due_date, due_time, tzinfo=IST)
+            await prepare_google_action(chat_id, {
+                "intent": "create_meeting",
+                "title": "Meeting",
+                "start_iso": start_dt.isoformat(),
+                "duration_minutes": 30,
+                "attendees": []
+            })
+            return
 
     # 1. PDF Generation Trigger
     pdf_request = bool(
@@ -2325,9 +2383,36 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 await handle_google_confirmation(chat_id, "no", raw_text=clean)
                 return
             else:
-                # User did not simply confirm or reject the pending action.
-                # If they gave a new command e.g. "17:00 bje jo meeting h usko cancel kr",
-                # pop the pending action and route immediately to handle_active.
+                # If user replied with a new date/time for the pending meeting (e.g. "monday 5 bje" or "tuesday 5pm"):
+                if pending.get('kind') == 'create_meeting':
+                    parsed_new = parse_followup_time(clean, datetime.now(IST))
+                    if parsed_new and parsed_new[0] is not None:
+                        new_due_time, new_due_date = parsed_new
+                        new_dt = datetime.combine(new_due_date, new_due_time, tzinfo=IST)
+                        pending['start_iso'] = new_dt.isoformat()
+                        pending['created_at'] = datetime.now(IST)
+
+                        time_conflicts, day_commitments = await detect_meeting_conflicts(chat_id, pending['start_iso'], pending.get('duration_minutes', 30))
+                        conflict_msg = ""
+                        if time_conflicts:
+                            conflict_msg = "⚠️ **Time Conflict Warning:** Is samay par already aapka schedule booked hai:\n" + "\n".join([f"• {c}" for c in time_conflicts]) + "\n\n"
+                        if day_commitments:
+                            conflict_msg += "📌 **Existing Commitments:** Us din aapka yeh commitment bhi hai: " + ", ".join(day_commitments) + "\n\n"
+
+                        display_time_str = f"{new_dt.strftime('%A, %d %b')} at {new_due_time.strftime('%I:%M %p')}"
+                        confirm_text = (
+                            f"{conflict_msg}Meeting time update kar diya hai: **{display_time_str}**.\n\n"
+                            f"Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
+                            f"Title: {pending.get('title', 'Meeting')}\n"
+                            f"Start: {pending['start_iso']} (India time)\n"
+                            f"Duration: {pending.get('duration_minutes', 30)} minutes\n"
+                            f"Attendees: {', '.join(pending.get('attendees', [])) if pending.get('attendees') else 'None'}\n\n"
+                            f"Reply yes to create or no to cancel."
+                        )
+                        await say(chat_id, confirm_text)
+                        return
+
+                # User gave an entirely different command; pop pending action and route
                 PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
                 await handle_active(chat_id, clean)
                 return
