@@ -25,36 +25,62 @@ def generate_aes256_key() -> str:
 
 def get_aes256_key() -> bytes:
     """
-    Retrieve or derive the 256-bit master encryption key.
-    
-    Priority:
-    1. AES_SECRET_KEY in environment (64 hex chars or base64)
-    2. Derived from GOOGLE_TOKEN_KEY / WEBHOOK_SECRET using SHA-256 domain-separation
+    Retrieve and validate the 256-bit (32-byte) AES master encryption key.
+
+    Strict Configuration & Safety Rules:
+    1. If AES_SECRET_KEY is set:
+       - Must be a 64-character hex string (32 bytes) or a valid 32-byte Base64 string.
+       - Invalid formats raise ValueError immediately.
+    2. If AES_SECRET_KEY is missing:
+       - In production (ENVIRONMENT/APP_ENV in {'production', 'prod'}):
+         Raises RuntimeError. Silent fallbacks or generated keys in production are strictly forbidden.
+       - In development/local testing:
+         Derives deterministically from GOOGLE_TOKEN_KEY using SHA-256 with domain separation.
+         If GOOGLE_TOKEN_KEY is also missing, raises RuntimeError.
+         Static hardcoded fallback seeds are strictly removed.
     """
     raw = os.getenv("AES_SECRET_KEY", "").strip()
     if raw:
-        if len(raw) == 64:
+        # Check 64-character hex format
+        if len(raw) == 64 and all(c in "0123456789abcdefABCDEF" for c in raw):
             try:
-                return bytes.fromhex(raw)
+                key_bytes = bytes.fromhex(raw)
+                if len(key_bytes) == 32:
+                    return key_bytes
             except ValueError:
                 pass
+
+        # Check 32-byte Base64/urlsafe-base64 format
         try:
             b = base64.urlsafe_b64decode(raw)
             if len(b) == 32:
                 return b
         except Exception:
             pass
-        return hashlib.sha256(raw.encode("utf-8")).digest()
 
-    # Fallback derivation using existing secrets with domain-separation salt
-    seed = (
-        os.getenv("GOOGLE_TOKEN_KEY")
-        or os.getenv("WEBHOOK_SECRET")
-        or os.getenv("DATABASE_URL")
-        or "peculiar-ai-default-master-key-seed"
+        raise ValueError(
+            f"Invalid AES_SECRET_KEY format: Expected a 64-character hex string (32 bytes) "
+            f"or 32-byte base64 string, got length {len(raw)}. Generate one with crypto.generate_aes256_key()."
+        )
+
+    # If AES_SECRET_KEY is missing, check environment
+    app_env = os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "development")).lower()
+    if app_env in {"production", "prod"}:
+        raise RuntimeError(
+            "Production security requirement: 'AES_SECRET_KEY' environment variable is missing. "
+            "In production, a dedicated 64-character hex key (32 bytes) is required. "
+            "Generate one with: python -c \"import os; print(os.urandom(32).hex())\""
+        )
+
+    # In development/test mode only: derive from GOOGLE_TOKEN_KEY if present
+    dev_seed = os.getenv("GOOGLE_TOKEN_KEY", "").strip()
+    if dev_seed:
+        return hashlib.sha256(f"peculiarai-aes256-gcm-master:{dev_seed}".encode("utf-8")).digest()
+
+    raise RuntimeError(
+        "Configuration error: Neither 'AES_SECRET_KEY' nor 'GOOGLE_TOKEN_KEY' is configured. "
+        "Set 'AES_SECRET_KEY' in your environment."
     )
-    derived = hashlib.sha256(f"peculiarai-aes256-gcm-master:{seed}".encode("utf-8")).digest()
-    return derived
 
 
 class AES256GCMCipher:
@@ -64,7 +90,7 @@ class AES256GCMCipher:
     """
 
     def __init__(self, key: bytes | None = None):
-        self.key = key or get_aes256_key()
+        self.key = key if key is not None else get_aes256_key()
         if len(self.key) != 32:
             raise ValueError(f"AES-256 requires exactly 32 bytes key, got {len(self.key)} bytes.")
         self._cipher = AESGCM(self.key)
@@ -123,22 +149,36 @@ class AES256GCMCipher:
         return val.startswith(PREFIX) or val.startswith("gAAAAAB")
 
 
-_default_cipher = AES256GCMCipher()
+_default_cipher: AES256GCMCipher | None = None
+
+
+def get_default_cipher() -> AES256GCMCipher:
+    """Retrieve or lazily initialize the default global cipher instance."""
+    global _default_cipher
+    if _default_cipher is None:
+        _default_cipher = AES256GCMCipher()
+    return _default_cipher
+
+
+def reset_default_cipher() -> None:
+    """Reset the default cipher instance (useful for test isolation when keys change)."""
+    global _default_cipher
+    _default_cipher = None
 
 
 def encrypt_aes256_gcm(plaintext: str | bytes, associated_data: bytes | None = None) -> str:
     """Convenience helper for AES-256-GCM encryption."""
-    return _default_cipher.encrypt(plaintext, associated_data=associated_data)
+    return get_default_cipher().encrypt(plaintext, associated_data=associated_data)
 
 
 def decrypt_aes256_gcm(ciphertext: str, associated_data: bytes | None = None) -> str:
     """Convenience helper for AES-256-GCM decryption."""
-    return _default_cipher.decrypt(ciphertext, associated_data=associated_data)
+    return get_default_cipher().decrypt(ciphertext, associated_data=associated_data)
 
 
 def is_encrypted(val: Any) -> bool:
     """Check if value is an encrypted string."""
-    return _default_cipher.is_encrypted(val)
+    return get_default_cipher().is_encrypted(val)
 
 
 def decrypt_any(data_str: str, fernet_key: str | None = None) -> str:
@@ -152,7 +192,7 @@ def decrypt_any(data_str: str, fernet_key: str | None = None) -> str:
         return ""
 
     if data_str.startswith(PREFIX):
-        return _default_cipher.decrypt(data_str)
+        return get_default_cipher().decrypt(data_str)
 
     if data_str.startswith("gAAAAAB"):
         fkey = fernet_key or os.getenv("GOOGLE_TOKEN_KEY", "")
