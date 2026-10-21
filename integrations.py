@@ -16,12 +16,12 @@ from typing import Optional, Dict, Any, Tuple
 
 async def validate_notion_token(token: str) -> Tuple[bool, Optional[str]]:
     """
-    Validates a Notion internal integration token (secret_...) against Notion API.
+    Validates a Notion internal integration token (secret_... or ntn_...) against Notion API.
     Returns (is_valid, bot_name_or_workspace_name).
     """
     clean_token = token.strip()
-    if not clean_token.startswith("secret_"):
-        return False, "Notion integration token usually starts with 'secret_'"
+    if not (clean_token.startswith("secret_") or clean_token.startswith("ntn_")):
+        return False, "Notion integration token usually starts with 'secret_' or 'ntn_'"
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
@@ -44,7 +44,8 @@ async def validate_notion_token(token: str) -> Tuple[bool, Optional[str]]:
 async def create_notion_page(token: str, title: str, content: str, parent_id: Optional[str] = None) -> Tuple[bool, str, Optional[str]]:
     """
     Creates a new page with content blocks in the user's Notion workspace.
-    If parent_id is not provided, finds the first shared page or database in the workspace.
+    If parent_id is not provided, finds the best accessible parent page in the workspace,
+    strictly avoiding system collections like 'People'.
     Returns (success, message, page_url).
     """
     clean_token = token.strip()
@@ -55,7 +56,7 @@ async def create_notion_page(token: str, title: str, content: str, parent_id: Op
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        # Step 1: If no parent_id, search for accessible parent pages or databases
+        # Step 1: If no parent_id, search for accessible parent pages (filtering for object == 'page')
         target_parent = None
         target_type = None
 
@@ -63,25 +64,66 @@ async def create_notion_page(token: str, title: str, content: str, parent_id: Op
             target_parent = parent_id.replace("-", "")
             target_type = "page_id"
         else:
+            # 1a. Search explicitly for pages
             search_res = await client.post(
                 "https://api.notion.com/v1/search",
                 headers=headers,
-                json={"page_size": 5}
+                json={"filter": {"value": "page", "property": "object"}, "page_size": 15}
             )
             if search_res.status_code != 200:
                 return False, f"Could not search Notion workspace (Status {search_res.status_code}). Ensure pages are shared with the integration.", None
 
-            results = search_res.json().get("results", [])
-            if not results:
-                return False, "Notion me koi shared page nahi mila. Kripya Notion mein apne kisi page ke '...' ya 'Share' menu me jakar integration ko invite/access karein.", None
+            page_results = search_res.json().get("results", [])
 
-            first_obj = results[0]
-            if first_obj.get("object") == "database":
-                target_parent = first_obj.get("id")
-                target_type = "database_id"
-            else:
-                target_parent = first_obj.get("id")
+            # Filter for valid parent pages (prefer workspace root pages or pages with 'notes' in title)
+            chosen_page = None
+            for r in page_results:
+                parent_info = r.get("parent", {})
+                ptype = parent_info.get("type")
+                # Exclude sub-pages that are records inside a collection database (like People)
+                if ptype in ("workspace", "page_id"):
+                    # Extract title text
+                    title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
+                    plain_title = "".join([t.get("plain_text", "") for t in title_arr])
+                    
+                    # If page has 'note' or 'notes' in title, it's the ideal place!
+                    if "note" in plain_title.lower():
+                        chosen_page = r
+                        break
+                    elif not chosen_page:
+                        chosen_page = r
+
+            # If no workspace/page_id page was found, fallback to any accessible page not inside a database
+            if not chosen_page and page_results:
+                for r in page_results:
+                    if r.get("parent", {}).get("type") != "database_id":
+                        chosen_page = r
+                        break
+                if not chosen_page:
+                    chosen_page = page_results[0]
+
+            if chosen_page:
+                target_parent = chosen_page.get("id")
                 target_type = "page_id"
+            else:
+                # 1b. Check databases (strictly excluding 'People', 'Members', 'Users')
+                db_res = await client.post(
+                    "https://api.notion.com/v1/search",
+                    headers=headers,
+                    json={"filter": {"value": "database", "property": "object"}, "page_size": 10}
+                )
+                db_results = db_res.json().get("results", []) if db_res.status_code == 200 else []
+                valid_db = None
+                for d in db_results:
+                    d_title = "".join([t.get("plain_text", "") for t in d.get("title", [])])
+                    if d_title.lower() not in ("people", "members", "users", "directory"):
+                        valid_db = d
+                        break
+                if valid_db:
+                    target_parent = valid_db.get("id")
+                    target_type = "database_id"
+                else:
+                    return False, "Notion mein koi suitable page nahi mila jisme notes add ho sakein. Kripya Notion mein apne kisi page ke 'Share' menu me jakar integration ko invite karein.", None
 
         # Step 2: Build child blocks from content
         lines = [line.strip() for line in content.split("\n") if line.strip()]

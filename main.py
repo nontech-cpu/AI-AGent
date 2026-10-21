@@ -1437,7 +1437,7 @@ async def handle_active(chat_id, text):
     trimmed = text.strip()
 
     # 0. Check if user sent a raw Notion or GitHub token to link
-    if trimmed.startswith("secret_") and len(trimmed) > 20:
+    if (trimmed.startswith("secret_") or trimmed.startswith("ntn_")) and len(trimmed) > 20:
         is_valid, name = await validate_notion_token(trimmed)
         if is_valid:
             save_user_integration(chat_id, "notion", trimmed)
