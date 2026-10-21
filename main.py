@@ -2009,10 +2009,13 @@ async def handle_active(chat_id, text):
                 # Episodic search in chat_logs
                 past_turns = get_chat_turns_mentioning_keyword(chat_id, first_n, limit=10)
                 for pt in reversed(past_turns):
-                    if pt["role"] == "user" and any(w in pt["text"].lower() for w in ("module", "deck", "pitch", "presentation", "report", "file", "document", "design", "code", "draft")):
-                        comm = f"{matched_c['name']} ko module bhejna hai"
-                        update_contact_commitment(chat_id, first_n, commitments=comm)
-                        break
+                    if pt["role"] == "user":
+                        match_item = re.search(r"\b(module|deck|pitch deck|pitch|presentation|report|file|document|design|code|draft|summary|notes|proposal|bill|invoice)\b", pt["text"], re.I)
+                        if match_item or any(w in pt["text"].lower() for w in ("bhejna", "bhjna", "dena", "send", "give", "share")):
+                            item_name = match_item.group(1) if match_item else "deliverable"
+                            comm = f"{matched_c['name']} ko {item_name} bhejna hai"
+                            update_contact_commitment(chat_id, first_n, commitments=comm)
+                            break
             if comm:
                 reply = f"Bhai, **{matched_c['name']}** ({matched_c.get('company', 'Contact')}) ko aapko: **{comm}**!"
                 await say(chat_id, reply)

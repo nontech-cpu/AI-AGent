@@ -105,3 +105,37 @@ async def test_contact_commitment_query_answers_directly():
         assert len(sent) == 2
         assert "Ananya Roy" in sent[1]
         assert "module bhejna hai" in sent[1]
+
+@pytest.mark.asyncio
+async def test_generic_contact_commitment_for_any_contact():
+    chat_id = 998877
+    sent = []
+    async def mock_say(cid, text):
+        sent.append(text)
+
+    mock_contacts = [
+        {"id": 4, "name": "Rahul Sharma", "company": "TechNova", "commitments": "Rahul ko pitch deck share karni hai"},
+        {"id": 5, "name": "Ananya Roy", "company": "Elevate Ventures", "commitments": "Ananya ko module bhejna hai"}
+    ]
+
+    with patch("main.say", side_effect=mock_say), \
+         patch("main.get_state", return_value=(None, None)), \
+         patch("main.has_consent", return_value=True), \
+         patch("main.get_persona", return_value="professional"), \
+         patch("main.get_language", return_value="en"), \
+         patch("main.set_language"), \
+         patch("main.log_chat_message"), \
+         patch("main.get_contact_memories", return_value=mock_contacts):
+
+        # Generic test for Rahul: "rahul ko kya share karna tha?"
+        await handle_user_text(chat_id, "rahul ko kya share karna tha?")
+        assert len(sent) == 1
+        assert "Rahul Sharma" in sent[0]
+        assert "pitch deck" in sent[0]
+
+        # General query for all contacts: "kisko kya bhejna tha?"
+        await handle_user_text(chat_id, "kisko kya bhejna tha?")
+        assert len(sent) == 2
+        assert "Rahul Sharma" in sent[1]
+        assert "Ananya Roy" in sent[1]
+
