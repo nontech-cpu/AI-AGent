@@ -78,6 +78,9 @@ def _check_config():
         )
 
 
+from crypto import encrypt_aes256_gcm, decrypt_aes256_gcm, PREFIX as AESGCM_PREFIX
+
+
 def _fernet():
     _check_config()
 
@@ -93,22 +96,32 @@ def _fernet():
 
 
 def encrypt_token(token: str) -> str:
-    """Encrypt a Google refresh token before saving it in the database."""
+    """Encrypt a Google refresh token using AES-256-GCM before saving it in the database."""
     if not token:
         raise ValueError("Cannot encrypt an empty token.")
 
-    return _fernet().encrypt(token.encode("utf-8")).decode("utf-8")
+    return encrypt_aes256_gcm(token)
 
 
 def decrypt_token(encrypted_token: str) -> str:
-    """Decrypt a refresh token retrieved from the database."""
+    """Decrypt a refresh token retrieved from the database (AES-256-GCM with legacy Fernet fallback)."""
+    if not encrypted_token:
+        raise ValueError("Cannot decrypt an empty token.")
+
+    if encrypted_token.startswith(AESGCM_PREFIX):
+        try:
+            return decrypt_aes256_gcm(encrypted_token)
+        except Exception as exc:
+            raise ValueError(f"Token decryption failed: {exc}") from exc
+
+    # Legacy Fernet token fallback
     try:
         return _fernet().decrypt(
             encrypted_token.encode("utf-8")
         ).decode("utf-8")
-    except InvalidToken as exc:
+    except (InvalidToken, Exception) as exc:
         raise ValueError(
-            "Token decryption failed. Check GOOGLE_TOKEN_KEY."
+            "Token decryption failed. Check GOOGLE_TOKEN_KEY or encryption key."
         ) from exc
 
 
