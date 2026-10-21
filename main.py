@@ -27,7 +27,7 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 log_chat_message, get_recent_chat_history, save_user_fact, get_user_facts,
                 save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary)
 from integrations import (validate_notion_token, create_notion_page,
-                          validate_github_token, list_github_issues)
+                          validate_github_token, list_github_issues, list_github_repos)
 from file_generator import build_contacts_excel, build_styled_pdf
 from categories import CATEGORIES, DEFAULTS
 from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
@@ -498,6 +498,84 @@ async def execute_notion_action(chat_id, user_prompt):
         )
     await say_raw(chat_id, reply)
     log_chat_message(chat_id, "user", user_prompt)
+    log_chat_message(chat_id, "assistant", reply)
+
+
+async def execute_github_action(chat_id: int, text: str):
+    """Executes real GitHub queries (repositories, issues, PRs) with ZERO hallucination."""
+    clean_low = text.lower().strip()
+    gh_info = get_user_integration(chat_id, "github")
+    token = gh_info["api_key"] if gh_info else os.getenv("GITHUB_TOKEN")
+
+    # Extract username from url or text if present (e.g. https://github.com/nontech-cpu or nontech-cpu)
+    extracted_username = None
+    gh_url_match = re.search(r"github\.com/([a-zA-Z0-9_\-]+)", text)
+    if gh_url_match:
+        extracted_username = gh_url_match.group(1)
+    elif re.fullmatch(r"@?[a-zA-Z0-9_\-]{2,39}", text.strip()):
+        extracted_username = text.strip().lstrip("@")
+
+    # Check if query is about issues / PRs
+    is_issues_query = any(w in clean_low for w in ("issue", "issues", "pr", "prs", "pull request", "pulls"))
+
+    if is_issues_query:
+        if not token:
+            msg = (
+                "Bhai aapka **GitHub Account** abhi connect nahi hai! 🐙\n\n"
+                "Aap niche diye gaye link par jakar 1-click mein apna GitHub connect kar sakte ho:\n"
+                "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+                "Connect hote hi aap yahan direct issues aur PRs track kar sakte ho!"
+            )
+            await say_raw(chat_id, msg)
+            log_chat_message(chat_id, "user", text)
+            log_chat_message(chat_id, "assistant", msg)
+            return
+
+        success, issues = await list_github_issues(token)
+        if success and issues:
+            lines = [f"• #{it.get('number')} **{it.get('title')}** ({it.get('state')}) - {it.get('html_url')}" for it in issues[:7]]
+            reply = "🐙 **GitHub Open Issues & Tasks:**\n\n" + "\n".join(lines)
+        elif success:
+            reply = "🐙 **GitHub:** Aapke pass abhi koi open issue assigned nahi hai!"
+        else:
+            reply = "⚠️ GitHub issues fetch karne mein issue aaya. Token permissions verify karein."
+        await say_raw(chat_id, reply)
+        log_chat_message(chat_id, "user", text)
+        log_chat_message(chat_id, "assistant", reply)
+        return
+
+    # Otherwise: Repositories Query (100% Real Live GitHub Data)
+    await say_raw(chat_id, "⏳ GitHub se aapke real repositories fetch kar raha hu...")
+    success, repos, resolved_user = await list_github_repos(token=token, username=extracted_username)
+
+    if success and repos:
+        user_label = resolved_user or "Aapke"
+        lines = []
+        for idx, r in enumerate(repos[:15], 1):
+            r_name = r.get("name")
+            r_url = r.get("html_url")
+            r_desc = f" - {r.get('description')}" if r.get("description") else ""
+            r_lang = f" `[{r.get('language')}]`" if r.get("language") else ""
+            lines.append(f"{idx}. 📁 **[{r_name}]({r_url})**{r_lang}{r_desc}")
+
+        reply = f"🐙 **GitHub Repositories ({user_label}):**\n\n" + "\n".join(lines)
+        if len(repos) > 15:
+            reply += f"\n\n*Total {len(repos)} repositories found on GitHub.*"
+    elif success:
+        reply = f"🐙 **GitHub ({resolved_user}):** Is account par abhi koi public repository nahi mili."
+    else:
+        if not token and not extracted_username:
+            reply = (
+                "Bhai aapka **GitHub Account** abhi connect nahi hai! 🐙\n\n"
+                "Aap connect page par jakar GitHub link kar sakte ho:\n"
+                "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+                "Ya mujhe apna GitHub profile link (jaise: `https://github.com/username`) batao, main turant fetch kar dunga!"
+            )
+        else:
+            reply = f"⚠️ GitHub user '{extracted_username or 'account'}' ki repositories fetch nahi ho paayi. Username check karein."
+
+    await say_raw(chat_id, reply)
+    log_chat_message(chat_id, "user", text)
     log_chat_message(chat_id, "assistant", reply)
 
 
@@ -1410,7 +1488,8 @@ async def handle_conversational_chat(chat_id, user_text):
         "2. If user mentions a contact (Rahul, Ananya, etc.), remember all commitments, phone, company, and networking history.\n"
         "3. NEVER hallucinate that you cannot perform an action or that you will 'send in 1-2 minutes'. If user asks for an action or file, execute it.\n"
         "4. Always reply in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul note kar liya!'). Never use Devanagari script unless user explicitly types in Devanagari.\n"
-        "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested."
+        "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested.\n"
+        "6. STRICT ZERO-HALLUCINATION RULE FOR INTEGRATIONS: NEVER fabricate, invent, or guess GitHub repositories (e.g. 'awesome-python', 'crypto-tracker', 'web-scraper'), Notion pages, or files. If the user asks for repositories or tools data, fetch them via official integrations or ask for their username. NEVER make up fake project names."
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -1479,31 +1558,14 @@ async def handle_active(chat_id, text):
         await execute_notion_action(chat_id, text)
         return
 
-    # GitHub Actions Trigger
-    if "github" in clean_low and any(w in clean_low for w in ("issue", "issues", "pr", "prs", "pull", "repo", "repos", "check", "dikha", "list", "show")):
-        gh_info = get_user_integration(chat_id, "github")
-        if not gh_info:
-            msg = (
-                "Bhai aapka **GitHub Account** abhi connect nahi hai! 🐙\n\n"
-                "Aap niche diye gaye link par jakar 1-click mein apna GitHub connect kar sakte ho:\n"
-                "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
-                "Connect hote hi aap yahan direct issues aur PRs track kar sakte ho!"
-            )
-            await say_raw(chat_id, msg)
-            log_chat_message(chat_id, "user", text)
-            log_chat_message(chat_id, "assistant", msg)
-            return
-        success, issues = await list_github_issues(gh_info["api_key"])
-        if success and issues:
-            lines = [f"• #{it.get('number')} **{it.get('title')}** ({it.get('state')})" for it in issues[:7]]
-            reply = "🐙 **GitHub Open Issues & Tasks:**\n\n" + "\n".join(lines)
-        elif success:
-            reply = "🐙 **GitHub:** Aapke pass abhi koi open issue assigned nahi hai!"
-        else:
-            reply = "⚠️ GitHub issues fetch karne mein issue aaya. Token permissions verify karein."
-        await say_raw(chat_id, reply)
-        log_chat_message(chat_id, "user", text)
-        log_chat_message(chat_id, "assistant", reply)
+    # GitHub Actions Trigger (Catches github, girhub, repo, repositories, github.com links)
+    is_github_query = (
+        any(w in clean_low for w in ("github", "girhub", "githun", "guthub", "git hub", "github.com"))
+        or any(w in clean_low for w in ("repository", "repositories", "repo", "repos"))
+        or "github.com/" in clean_low
+    )
+    if is_github_query:
+        await execute_github_action(chat_id, text)
         return
 
     # 1. PDF Generation Trigger

@@ -237,3 +237,53 @@ async def list_github_issues(token: str) -> Tuple[bool, list]:
             return False, []
     except Exception:
         return False, []
+
+
+async def list_github_repos(token: Optional[str] = None, username: Optional[str] = None) -> Tuple[bool, list, Optional[str]]:
+    """
+    Retrieves real repositories for an authenticated user or a specific GitHub username.
+    Returns (success, repos_list, resolved_username).
+    """
+    clean_token = token.strip() if token else None
+    headers = {
+        "User-Agent": "PeculiarAI",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    if clean_token:
+        headers["Authorization"] = f"Bearer {clean_token}"
+
+    clean_user = username.strip().lstrip("@") if username else None
+    if clean_user and "github.com/" in clean_user:
+        parts = clean_user.split("github.com/")[-1].strip("/").split("/")
+        if parts:
+            clean_user = parts[0]
+
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            # 1. If specific username requested
+            if clean_user:
+                url = f"https://api.github.com/users/{clean_user}/repos?sort=updated&per_page=30"
+                res = await client.get(url, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    if isinstance(data, list):
+                        return True, data, clean_user
+                return False, [], clean_user
+
+            # 2. Otherwise list authenticated user's repos
+            if clean_token:
+                res = await client.get(
+                    "https://api.github.com/user/repos?sort=updated&per_page=30",
+                    headers=headers
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    user_res = await client.get("https://api.github.com/user", headers=headers)
+                    login = user_res.json().get("login") if user_res.status_code == 200 else "User"
+                    return True, data if isinstance(data, list) else [], login
+
+            return False, [], None
+    except Exception as exc:
+        print("list_github_repos error:", repr(exc))
+        return False, [], None
+
