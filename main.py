@@ -23,7 +23,9 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 remove_email_link, ensure_user, get_state, set_state,
                 save_google_token, get_google_token, delete_google_token,
                 find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text,
-                save_contact_memory, get_contact_memories, update_contact_commitment)
+                save_contact_memory, get_contact_memories, update_contact_commitment,
+                log_chat_message, get_recent_chat_history, save_user_fact, get_user_facts)
+from file_generator import build_contacts_excel, build_styled_pdf
 from categories import CATEGORIES, DEFAULTS
 from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
                  is_explicit_calendar_action, classify_yes_no_any_language, _WORD_NUMBERS, _chat_json,
@@ -150,9 +152,15 @@ LAST_SCANNED_CONTACT = {}  # chat_id -> dict of last scanned contact card detail
 def record_chat_turn(chat_id: int, role: str, text: str):
     if not text:
         return
+    clean_msg = text.strip()
     if chat_id not in RECENT_CHAT_TURNS:
-        RECENT_CHAT_TURNS[chat_id] = deque(maxlen=10)
-    RECENT_CHAT_TURNS[chat_id].append({"role": role, "text": text.strip()})
+        RECENT_CHAT_TURNS[chat_id] = deque(maxlen=20)
+    RECENT_CHAT_TURNS[chat_id].append({"role": role, "text": clean_msg})
+    # Persist in Neon PostgreSQL chat_logs
+    try:
+        log_chat_message(chat_id, role, clean_msg)
+    except Exception as exc:
+        print("record_chat_turn persist error:", repr(exc))
 
 
 # ---------- Telegram helpers (WhatsApp ke time sirf ye 3 badlenge) ----------
@@ -369,90 +377,6 @@ async def show_memories(chat_id):
     await say(chat_id, "\n".join(lines))
 
 
-def build_contacts_excel(contacts, tasks=None) -> bytes:
-    """Builds a formatted multi-sheet Excel spreadsheet containing contacts and tasks."""
-    import io
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-
-    wb = openpyxl.Workbook()
-    # Sheet 1: Contacts & Networking
-    ws = wb.active
-    ws.title = "Contacts & Networking"
-
-    headers = [
-        "Full Name", "Company", "Job Title / Role", "Email", "Phone",
-        "Met At / Location", "Context & Notes", "Commitments / Action Items", "Saved Date"
-    ]
-    ws.append(headers)
-
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
-    )
-
-    for col_idx in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    for c in contacts:
-        ws.append([
-            c.get("name") or "",
-            c.get("company") or "",
-            c.get("role_title") or "",
-            c.get("email") or "",
-            c.get("phone") or "",
-            c.get("met_at") or "",
-            c.get("context_notes") or "",
-            c.get("commitments") or "",
-            str(c.get("created_at") or "")[:10]
-        ])
-
-    for row in ws.iter_rows(min_row=2, max_row=max(ws.max_row, 2), min_col=1, max_col=len(headers)):
-        for cell in row:
-            cell.border = thin_border
-            cell.alignment = Alignment(vertical="center")
-
-    for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        col_letter = get_column_letter(col[0].column)
-        ws.column_dimensions[col_letter].width = max(min(max_len + 4, 45), 14)
-
-    # Sheet 2: Tasks & Reminders (if any)
-    if tasks:
-        ws_tasks = wb.create_sheet(title="Tasks & Reminders")
-        task_headers = ["Category", "Title", "Amount", "Due Date", "Time"]
-        ws_tasks.append(task_headers)
-        for col_idx in range(1, len(task_headers) + 1):
-            cell = ws_tasks.cell(row=1, column=col_idx)
-            cell.fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-        for t in tasks:
-            ws_tasks.append([
-                t[0] if len(t) > 0 else "",
-                t[1] if len(t) > 1 else "",
-                t[2] if len(t) > 2 else "",
-                str(t[3]) if len(t) > 3 and t[3] else "",
-                str(t[4])[:5] if len(t) > 4 and t[4] else ""
-            ])
-        for col in ws_tasks.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col)
-            col_letter = get_column_letter(col[0].column)
-            ws_tasks.column_dimensions[col_letter].width = max(min(max_len + 4, 40), 14)
-
-    bio = io.BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
-
-
 async def send_contacts_excel(chat_id):
     """Generates an Excel spreadsheet of all contacts & tasks and sends it to Telegram."""
     contacts = get_contact_memories(chat_id)
@@ -473,6 +397,83 @@ async def send_contacts_excel(chat_id):
         caption=caption,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+
+async def send_smart_pdf(chat_id, user_request):
+    """
+    Generates a structured executive PDF document based on user prompt, contacts, and memories,
+    and sends it directly to Telegram chat.
+    """
+    contacts = get_contact_memories(chat_id)
+    tasks = list_memories(chat_id)
+    facts = get_user_facts(chat_id)
+
+    prompt = (
+        "You are an expert executive document writer. The user asked for a PDF document.\n"
+        f"User request: \"{user_request}\"\n\n"
+        f"Available Context:\n"
+        f"- Saved Contacts: {len(contacts)} contacts\n"
+        f"- Tasks/Reminders: {len(tasks)} items\n"
+        f"- Active Life Facts: {[f['fact'] for f in facts[:10]]}\n\n"
+        "Generate a structured document JSON strictly with:\n"
+        "{\n"
+        "  \"title\": \"Clear Document Title\",\n"
+        "  \"sections\": [\n"
+        "    {\"heading\": \"Executive Summary\", \"paragraphs\": [\"...\"]},\n"
+        "    {\"heading\": \"Key Details / Action Items\", \"paragraphs\": [\"...\"]},\n"
+        "    {\"heading\": \"Overview Table\", \"table\": [[\"Category / Item\", \"Details\"], [\"Item 1\", \"Value 1\"]]}\n"
+        "  ]\n"
+        "}"
+    )
+    try:
+        await say(chat_id, "📄 Generating your PDF document...")
+        doc_data = await _chat_json(prompt, user_request)
+        title = doc_data.get("title") or "PeculiarAI Document"
+        sections = doc_data.get("sections") or [{"heading": "Summary", "paragraphs": ["Generated based on your request."]}]
+        pdf_bytes = build_styled_pdf(title, sections)
+        safe_fname = re.sub(r'[^a-zA-Z0-9_-]', '_', title.strip())[:30] + ".pdf"
+        await send_file(
+            chat_id=chat_id,
+            filename=safe_fname,
+            content_bytes=pdf_bytes,
+            caption=f"📄 Ye rahi aapki generated PDF file: '{title}'",
+            mime_type="application/pdf"
+        )
+    except Exception as exc:
+        print("send_smart_pdf error:", repr(exc))
+        await say(chat_id, "PDF generate karne mein thodi samasya aayi. Kripya dobara try karein.")
+
+
+async def extract_and_save_user_facts(chat_id: int, text: str):
+    """
+    Extracts life updates, schedules, plans, preferences, travel, and personal facts
+    from user messages and stores them in user_facts table (ChatGPT Memory style).
+    """
+    if len(text.strip()) < 8:
+        return
+    if text.strip().lower() in ("yes", "no", "haan", "nahi", "cancel", "ok", "done", "/start", "/help"):
+        return
+
+    prompt = (
+        "Extract any permanent personal facts, future plans, travel, habits, preferences, or life events "
+        "mentioned by the user in this message.\n\n"
+        f"User message: \"{text}\"\n\n"
+        "Guidelines:\n"
+        "- If user mentions going somewhere, an event, or plan (e.g. 'going to Jaipur today for model event', 'going movie today'): extract as a plan.\n"
+        "- If user mentions preferences, work info, people they know, projects: extract as a fact.\n"
+        "- If message is just a casual greeting or command with no personal facts/plans, return empty list.\n\n"
+        "Return strictly JSON: {\"facts\": [{\"fact\": \"...\", \"category\": \"plan|preference|profile|work\"}]}"
+    )
+    try:
+        data = await _chat_json(prompt, text)
+        facts = data.get("facts") or []
+        for item in facts:
+            f_text = (item.get("fact") or "").strip()
+            cat = item.get("category") or "general"
+            if f_text and len(f_text) > 3:
+                save_user_fact(chat_id, f_text, cat)
+    except Exception as exc:
+        print("extract_and_save_user_facts error:", repr(exc))
 
 
 async def send_export(chat_id):
@@ -1297,10 +1298,26 @@ async def handle_conversational_chat(chat_id, user_text):
         await say_raw(chat_id, reply)
         return
 
+    # Check if asking for PDF document
+    if re.search(r"\b(pdf)\b", clean) and any(w in clean for w in ("bhej", "bhejo", "bana", "banao", "de", "dede", "export", "send", "download", "tayyar", "taiyar", "do", "karo", "kr")):
+        await send_smart_pdf(chat_id, user_text)
+        return
+
+    # Load persistent chat history from PostgreSQL
+    history_turns = get_recent_chat_history(chat_id, limit=8)
     history_context = ""
-    turns = list(RECENT_CHAT_TURNS.get(chat_id, []))[-4:]
-    if turns:
-        history_context = "Recent conversation:\n" + "\n".join([f"- {t['role']}: {t['text'][:120]}" for t in turns]) + "\n\n"
+    if history_turns:
+        history_context = "RECENT CONVERSATION HISTORY (From PostgreSQL Database):\n" + "\n".join([
+            f"- {t['role']}: {t['text'][:120]}" for t in history_turns[-5:]
+        ]) + "\n\n"
+
+    # Load user life context facts & plans (ChatGPT style memory)
+    user_facts = get_user_facts(chat_id, limit=20)
+    facts_context = ""
+    if user_facts:
+        facts_context = "USER'S PERMANENT LIFE CONTEXT, PLANS & HABITS (ChatGPT-style Memory):\n" + "\n".join([
+            f"- [{f['category'].upper()}] {f['fact']}" for f in user_facts
+        ]) + "\n\n"
 
     doc_context = ""
     if chat_id in RECENT_DOCS:
@@ -1325,17 +1342,18 @@ async def handle_conversational_chat(chat_id, user_text):
         ]) + "\n\n"
 
     system = (
-        "You are PeculiarAI, a smart, polite, ultra-reliable personal assistant on Telegram. "
-        "The user is talking to you directly. "
+        "You are PeculiarAI, an empathetic, hyper-competent personal AI assistant on Telegram with persistent memory.\n\n"
+        + facts_context
         + contacts_context
         + items_context
         + doc_context
         + history_context
-        + "Reply in 1-2 friendly, natural, and helpful sentences in the EXACT SAME language or dialect "
-        "used by the user (Hindi, Hinglish, English, Urdu, etc.). "
-        "You have full long-term memory of all the user's contacts and commitments listed above. "
-        "Never claim you forgot or don't have details if they are in the saved contacts above. "
-        "If they ask for an Excel or CSV file, confirm that you are sending the document file directly."
+        + "COGNITIVE MEMORY & CONTINUITY GUIDELINES (Like ChatGPT Memory):\n"
+        "1. Proactively connect context between different messages and conversations! For example, if the user previously mentioned going to a movie today or meeting someone, and now says they are traveling to Jaipur or doing something else, intelligently observe and ask: 'Aap Jaipur ja rahe ho? To kya movie ka plan cancel ho gaya?'\n"
+        "2. If user mentions a contact (Rahul, Ananya, etc.), remember all commitments, phone, company, and networking history.\n"
+        "3. NEVER hallucinate that you cannot perform an action or that you will 'send in 1-2 minutes'. If user asks for an action or file, execute it.\n"
+        "4. Always reply in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul note kar liya!'). Never use Devanagari script unless user explicitly types in Devanagari.\n"
+        "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested."
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -1361,7 +1379,15 @@ async def handle_active(chat_id, text):
 
     clean_low = text.lower()
 
-    # 1. Excel / CSV Export Trigger
+    # 1. PDF Generation Trigger
+    pdf_request = bool(
+        re.search(r"\b(pdf)\b", clean_low) and any(w in clean_low for w in ("bhej", "bhejo", "bana", "bna", "bnaa", "banao", "de", "dede", "export", "send", "download", "give", "karo", "kr"))
+    )
+    if pdf_request:
+        await send_smart_pdf(chat_id, text)
+        return
+
+    # 2. Excel / CSV Export Trigger
     excel_request = bool(
         re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean_low) or
         re.search(r"\b(file|document)\b.*\b(bhej|bhejo|bana|bna|bnaa|banao|de|dede|export|send|download|give)\b", clean_low) or
@@ -1530,6 +1556,13 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if not clean:
         return
     record_chat_turn(chat_id, "user", clean)
+    # Background: extract and learn user life facts, habits, and plans
+    try:
+        task_f = asyncio.create_task(extract_and_save_user_facts(chat_id, clean))
+        BG_TASKS.add(task_f)
+        task_f.add_done_callback(BG_TASKS.discard)
+    except Exception as exc:
+        print("fact extraction trigger error:", repr(exc))
 
     st = get_state(chat_id)
     if st is None:  # pehli baar aaya

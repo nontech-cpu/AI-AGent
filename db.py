@@ -805,3 +805,87 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
             },
         )
 
+
+# ---------- Persistent Chat Logs & ChatGPT-style Long-Term Memory ----------
+
+def log_chat_message(chat_id, role, message):
+    """Saves a conversation turn permanently in PostgreSQL."""
+    if not message or not str(message).strip():
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO chat_logs (user_id, role, message) "
+                    "SELECT id, :role, :msg FROM users WHERE telegram_chat_id = :cid"
+                ),
+                {"cid": chat_id, "role": role, "msg": str(message).strip()}
+            )
+    except Exception as exc:
+        print("log_chat_message error:", repr(exc))
+
+
+def get_recent_chat_history(chat_id, limit=15):
+    """Retrieves the recent conversation history in chronological order."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT role, message, created_at FROM chat_logs "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "ORDER BY id DESC LIMIT :lim"
+                ),
+                {"cid": chat_id, "lim": limit}
+            ).fetchall()
+        # Return chronological order (oldest to newest)
+        return [{"role": r[0], "text": r[1]} for r in reversed(rows)]
+    except Exception as exc:
+        print("get_recent_chat_history error:", repr(exc))
+        return []
+
+
+def save_user_fact(chat_id, fact, category="general"):
+    """Saves an extracted life context fact, plan, or preference to user_facts."""
+    if not fact or not str(fact).strip():
+        return
+    clean_fact = str(fact).strip()
+    try:
+        with engine.begin() as conn:
+            # Avoid exact duplicate active facts
+            existing = conn.execute(
+                text(
+                    "SELECT id FROM user_facts "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND status = 'active' AND LOWER(fact) = LOWER(:f)"
+                ),
+                {"cid": chat_id, "f": clean_fact}
+            ).first()
+            if not existing:
+                conn.execute(
+                    text(
+                        "INSERT INTO user_facts (user_id, fact, category, status) "
+                        "SELECT id, :f, :cat, 'active' FROM users WHERE telegram_chat_id = :cid"
+                    ),
+                    {"cid": chat_id, "f": clean_fact, "cat": category}
+                )
+    except Exception as exc:
+        print("save_user_fact error:", repr(exc))
+
+
+def get_user_facts(chat_id, limit=25):
+    """Retrieves active life context facts, plans, and preferences for the user."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, fact, category, created_at FROM user_facts "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND status = 'active' ORDER BY updated_at DESC LIMIT :lim"
+                ),
+                {"cid": chat_id, "lim": limit}
+            ).fetchall()
+        return [{"id": r[0], "fact": r[1], "category": r[2]} for r in rows]
+    except Exception as exc:
+        print("get_user_facts error:", repr(exc))
+        return []
+

@@ -9,6 +9,7 @@ with engine.begin() as conn:
             telegram_chat_id BIGINT UNIQUE NOT NULL,
             persona TEXT,
             categories TEXT[],
+            language TEXT,
             consented_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ DEFAULT now()
         )
@@ -80,4 +81,30 @@ with engine.begin() as conn:
         )
     """))
 
-print("All Phase 2 tables including Relationship/Enfolo memory created successfully!")
+    # 7. Persistent Chat Logs (Full Conversation History in PostgreSQL)
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS chat_logs (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_chat_logs_user ON chat_logs(user_id, created_at DESC)"))
+
+    # 8. User Long-Term Semantic Facts & Life Memory (ChatGPT style memory)
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_facts (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            fact TEXT NOT NULL,
+            category TEXT DEFAULT 'general',
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_facts(user_id, status)"))
+
+print("All tables including chat_logs and user_facts created successfully!")
