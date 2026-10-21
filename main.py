@@ -22,7 +22,8 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 get_link_by_email, get_linked_email, verify_email_link,
                 remove_email_link, ensure_user, get_state, set_state,
                 save_google_token, get_google_token, delete_google_token,
-                find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text)
+                find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text,
+                save_contact_memory, get_contact_memories, update_contact_commitment)
 from categories import CATEGORIES, DEFAULTS
 from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
                  is_explicit_calendar_action, classify_yes_no_any_language, _WORD_NUMBERS, _chat_json,
@@ -143,6 +144,7 @@ HELP_TEXT = (
 
 RECENT_DOCS = {}  # chat_id -> {"filename": str, "content": str, "type": str, "summary": str, "timestamp": datetime}
 RECENT_CHAT_TURNS = {}  # chat_id -> deque([{"role": str, "text": str}], maxlen=10)
+LAST_SCANNED_CONTACT = {}  # chat_id -> dict of last scanned contact card details
 
 
 def record_chat_turn(chat_id: int, role: str, text: str):
@@ -173,12 +175,12 @@ async def say(chat_id, text):
     await tg("sendMessage", {"chat_id": chat_id, "text": text})
 
 
-async def send_file(chat_id, filename, content_bytes, caption):
-    async with httpx.AsyncClient() as client:
+async def send_file(chat_id, filename, content_bytes, caption, mime_type="application/octet-stream"):
+    async with httpx.AsyncClient(timeout=60.0) as client:
         await client.post(
             f"{API}/sendDocument",
             data={"chat_id": chat_id, "caption": caption},
-            files={"document": (filename, content_bytes, "application/json")},
+            files={"document": (filename, content_bytes, mime_type)},
         )
 
 
@@ -365,6 +367,112 @@ async def show_memories(chat_id):
             line += f" {due_time.strftime('%H:%M')}"
         lines.append(line)
     await say(chat_id, "\n".join(lines))
+
+
+def build_contacts_excel(contacts, tasks=None) -> bytes:
+    """Builds a formatted multi-sheet Excel spreadsheet containing contacts and tasks."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    # Sheet 1: Contacts & Networking
+    ws = wb.active
+    ws.title = "Contacts & Networking"
+
+    headers = [
+        "Full Name", "Company", "Job Title / Role", "Email", "Phone",
+        "Met At / Location", "Context & Notes", "Commitments / Action Items", "Saved Date"
+    ]
+    ws.append(headers)
+
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for c in contacts:
+        ws.append([
+            c.get("name") or "",
+            c.get("company") or "",
+            c.get("role_title") or "",
+            c.get("email") or "",
+            c.get("phone") or "",
+            c.get("met_at") or "",
+            c.get("context_notes") or "",
+            c.get("commitments") or "",
+            str(c.get("created_at") or "")[:10]
+        ])
+
+    for row in ws.iter_rows(min_row=2, max_row=max(ws.max_row, 2), min_col=1, max_col=len(headers)):
+        for cell in row:
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(min(max_len + 4, 45), 14)
+
+    # Sheet 2: Tasks & Reminders (if any)
+    if tasks:
+        ws_tasks = wb.create_sheet(title="Tasks & Reminders")
+        task_headers = ["Category", "Title", "Amount", "Due Date", "Time"]
+        ws_tasks.append(task_headers)
+        for col_idx in range(1, len(task_headers) + 1):
+            cell = ws_tasks.cell(row=1, column=col_idx)
+            cell.fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        for t in tasks:
+            ws_tasks.append([
+                t[0] if len(t) > 0 else "",
+                t[1] if len(t) > 1 else "",
+                t[2] if len(t) > 2 else "",
+                str(t[3]) if len(t) > 3 and t[3] else "",
+                str(t[4])[:5] if len(t) > 4 and t[4] else ""
+            ])
+        for col in ws_tasks.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws_tasks.column_dimensions[col_letter].width = max(min(max_len + 4, 40), 14)
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+async def send_contacts_excel(chat_id):
+    """Generates an Excel spreadsheet of all contacts & tasks and sends it to Telegram."""
+    contacts = get_contact_memories(chat_id)
+    tasks = list_memories(chat_id)
+    if not contacts and not tasks:
+        await say(chat_id, "Abhi aapke paas koi saved contacts ya tasks nahi hain Excel file banane ke liye.")
+        return
+
+    excel_bytes = build_contacts_excel(contacts, tasks)
+    caption = (
+        f"📊 Ye rahi aapki Excel file!\n\n"
+        f"Isme aapke {len(contacts)} saved contacts aur {len(tasks)} tasks/reminders successfully export kar diye hain."
+    )
+    await send_file(
+        chat_id=chat_id,
+        filename="My_Contacts_and_Tasks.xlsx",
+        content_bytes=excel_bytes,
+        caption=caption,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 async def send_export(chat_id):
@@ -1175,6 +1283,11 @@ async def handle_conversational_chat(chat_id, user_text):
         await say(chat_id, HELP_TEXT)
         return
 
+    # Check if asking for an Excel / CSV / document file
+    if re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean) or ("file" in clean and any(w in clean for w in ("bhej", "bhejo", "bana", "banao", "de", "dede", "export", "send", "download", "tayyar", "taiyar", "do"))):
+        await send_contacts_excel(chat_id)
+        return
+
     if is_recent_document_query(chat_id, user_text):
         doc = RECENT_DOCS[chat_id]
         history = list(RECENT_CHAT_TURNS.get(chat_id, []))
@@ -1194,15 +1307,35 @@ async def handle_conversational_chat(chat_id, user_text):
         doc = RECENT_DOCS[chat_id]
         doc_context = f"User recently uploaded document: '{doc['filename']}'.\n\n"
 
+    # Load permanent contacts and items from PostgreSQL
+    contacts = get_contact_memories(chat_id)
+    contacts_context = ""
+    if contacts:
+        contacts_context = "USER'S PERMANENT SAVED CONTACTS & NETWORKING MEMORY (NEVER FORGET THESE):\n" + "\n".join([
+            f"- {c['name']} (Company: {c['company']}, Role: {c['role_title']}): Email: {c['email']}, Phone: {c['phone']}, Met At: {c['met_at']}, Commitments/Action Items: '{c['commitments']}', Notes: '{c['context_notes']}'"
+            for c in contacts
+        ]) + "\n\n"
+
+    saved_items = list_memories(chat_id)
+    items_context = ""
+    if saved_items:
+        items_context = "USER'S SAVED ITEMS & REMINDERS:\n" + "\n".join([
+            f"- {CATEGORIES.get(it[0], it[0])}: {it[1]}" + (f" (Due: {it[3]})" if it[3] else "")
+            for it in saved_items[:8]
+        ]) + "\n\n"
+
     system = (
         "You are PeculiarAI, a smart, polite, ultra-reliable personal assistant on Telegram. "
         "The user is talking to you directly. "
+        + contacts_context
+        + items_context
         + doc_context
         + history_context
         + "Reply in 1-2 friendly, natural, and helpful sentences in the EXACT SAME language or dialect "
         "used by the user (Hindi, Hinglish, English, Urdu, etc.). "
-        "Never dump a long command menu or bullet points unless the user explicitly asked for help. "
-        "If they were trying to manage reminders, meetings, or documents, help them smoothly."
+        "You have full long-term memory of all the user's contacts and commitments listed above. "
+        "Never claim you forgot or don't have details if they are in the saved contacts above. "
+        "If they ask for an Excel or CSV file, confirm that you are sending the document file directly."
     )
     try:
         data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
@@ -1213,7 +1346,7 @@ async def handle_conversational_chat(chat_id, user_text):
             return
     except Exception as exc:
         print("conversational chat error:", repr(exc))
-    fallback_reply = "Main aapki reminders, meetings, documents, aur bills track karne me madad karta hu. Aap bataiye kya karna hai?"
+    fallback_reply = "Main aapki reminders, meetings, documents, aur contacts track karne me madad karta hu. Aap bataiye kya karna hai?"
     record_chat_turn(chat_id, "assistant", fallback_reply)
     await say(chat_id, fallback_reply)
 
@@ -1235,6 +1368,49 @@ async def handle_active(chat_id, text):
         record_chat_turn(chat_id, "assistant", reply)
         await say_raw(chat_id, reply)
         return
+
+    clean_low = text.lower()
+
+    # 1. Excel / CSV Export Trigger
+    if re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean_low) or ("file" in clean_low and any(w in clean_low for w in ("bhej", "bhejo", "bana", "banao", "de", "dede", "export", "send", "download", "tayyar", "taiyar", "do"))):
+        await send_contacts_excel(chat_id)
+        return
+
+    # 2. Check if text is pasted business card info
+    if any(k in clean_low for k in ("company name:", "person's name:", "contact person:", "contact information:")):
+        try:
+            card_json = await _chat_json(
+                'Extract business card contact details strictly into JSON: '
+                '{"name": "...", "company": "...", "role_title": "...", "email": "...", "phone": "...", "location": "..."}. '
+                'If no person name is found, return {"name": null}.',
+                text
+            )
+            if card_json and card_json.get("name"):
+                c_name = card_json.get("name").strip()
+                save_contact_memory(
+                    chat_id=chat_id,
+                    name=c_name,
+                    company=(card_json.get("company") or "").strip(),
+                    role_title=(card_json.get("role_title") or "").strip(),
+                    email=(card_json.get("email") or "").strip(),
+                    phone=(card_json.get("phone") or "").strip(),
+                    met_at=(card_json.get("location") or "").strip(),
+                    context_notes="Pasted contact details",
+                    commitments=""
+                )
+                await say(chat_id, f"✅ Contact permanently saved in memory: {c_name} ({card_json.get('company') or 'Business Contact'})")
+        except Exception as exc:
+            print("text card parse error:", repr(exc))
+
+    # 3. Check if user mentions commitment for an existing contact (e.g. Rahul, Ananya)
+    try:
+        contacts_list = get_contact_memories(chat_id)
+        for c in contacts_list:
+            first_name = c["name"].split()[0].lower()
+            if len(first_name) >= 3 and first_name in clean_low:
+                update_contact_commitment(chat_id, first_name, commitments=text, context_notes="From Telegram")
+    except Exception as exc:
+        print("contact commitment update error:", repr(exc))
 
     # Natural-language trigger: no slash command is required, but must not intercept task requests
     if GOOGLE_CONNECT_RE.search(text) and not is_explicit_calendar_action(text) and not any(w in text.lower() for w in ("meeting", "schedule", "calendar", "email", "send", "draft", "file", "upload")):
@@ -1792,6 +1968,41 @@ async def process_photo(chat_id, photo_list, caption=""):
         record_chat_turn(chat_id, "assistant", analysis)
 
         await say_raw(chat_id, f"🖼️ {analysis}")
+
+        # Automatic Business / Visiting Card Detection & Database Persistence
+        is_contact_card = any(k in analysis.lower() for k in ("company", "person's name", "job title", "contact information", "phone", "email", "visiting card", "business card"))
+        if is_contact_card:
+            try:
+                card_json = await _chat_json(
+                    'Extract business card contact details strictly into JSON: '
+                    '{"name": "...", "company": "...", "role_title": "...", "email": "...", "phone": "...", "location": "..."}. '
+                    'If no person name is found, return {"name": null}.',
+                    analysis
+                )
+                if card_json and card_json.get("name"):
+                    c_name = card_json.get("name").strip()
+                    cid = save_contact_memory(
+                        chat_id=chat_id,
+                        name=c_name,
+                        company=(card_json.get("company") or "").strip(),
+                        role_title=(card_json.get("role_title") or "").strip(),
+                        email=(card_json.get("email") or "").strip(),
+                        phone=(card_json.get("phone") or "").strip(),
+                        met_at=(card_json.get("location") or "").strip(),
+                        context_notes=caption or "",
+                        commitments=""
+                    )
+                    LAST_SCANNED_CONTACT[chat_id] = {
+                        "id": cid,
+                        "name": c_name,
+                        "company": card_json.get("company"),
+                        "role_title": card_json.get("role_title"),
+                        "email": card_json.get("email"),
+                        "phone": card_json.get("phone")
+                    }
+                    await say(chat_id, f"✅ Contact permanently saved in memory: {c_name} ({card_json.get('company') or 'Business Contact'})")
+            except Exception as card_err:
+                print("auto save contact from photo error:", repr(card_err))
 
         try:
             r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")

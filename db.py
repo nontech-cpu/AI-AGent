@@ -784,3 +784,24 @@ def delete_contact_memory(chat_id, contact_id):
         )
     return (res.rowcount or 0) > 0
 
+
+def update_contact_commitment(chat_id, contact_name, commitments=None, context_notes=None):
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE contact_memories SET "
+                "commitments = COALESCE(:com, commitments), "
+                "context_notes = CASE "
+                "WHEN :ctx IS NOT NULL AND context_notes IS NOT NULL THEN context_notes || ' | ' || :ctx "
+                "WHEN :ctx IS NOT NULL THEN :ctx ELSE context_notes END "
+                "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                "AND LOWER(name) LIKE LOWER(:pattern)"
+            ),
+            {
+                "cid": chat_id,
+                "com": commitments.strip() if commitments else None,
+                "ctx": context_notes.strip() if context_notes else None,
+                "pattern": f"%{contact_name.strip()}%",
+            },
+        )
+
