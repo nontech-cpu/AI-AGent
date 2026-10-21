@@ -1359,20 +1359,34 @@ async def handle_active(chat_id, text):
         await say(chat_id, greet_reply)
         return
 
-    # Check if user is asking about recently sent document
-    if is_recent_document_query(chat_id, text):
-        doc = RECENT_DOCS[chat_id]
-        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
-        reply = await answer_document_query(doc["filename"], doc["content"], text, history, get_language(chat_id))
-        record_chat_turn(chat_id, "user", text)
-        record_chat_turn(chat_id, "assistant", reply)
-        await say_raw(chat_id, reply)
-        return
-
     clean_low = text.lower()
 
     # 1. Excel / CSV Export Trigger
-    if re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean_low) or ("file" in clean_low and any(w in clean_low for w in ("bhej", "bhejo", "bana", "banao", "de", "dede", "export", "send", "download", "tayyar", "taiyar", "do"))):
+    excel_request = bool(
+        re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean_low) or
+        re.search(r"\b(file|document)\b.*\b(bhej|bhejo|bana|bna|bnaa|banao|de|dede|export|send|download|give)\b", clean_low) or
+        re.search(r"\b(bhej|bhejo|bana|bna|bnaa|banao|de|dede|export|send|download|give)\b.*\b(file|document|excel|csv)\b", clean_low)
+    )
+    if excel_request:
+        # Check if user also wanted to save a reminder in the same message
+        if any(k in clean_low for k in ("remind", "reminder", "yaad", "save", "bhejna hai", "module")):
+            try:
+                r_item = await understand(text)
+                if r_item.get("intent") == "save_item" and r_item.get("item"):
+                    await save_item_flow(chat_id, r_item["item"])
+            except Exception as e:
+                print("dual intent parse error:", repr(e))
+
+        # Check if user mentions commitment for an existing contact (e.g. Rahul, Ananya)
+        try:
+            contacts_list = get_contact_memories(chat_id)
+            for c in contacts_list:
+                first_name = c["name"].split()[0].lower()
+                if len(first_name) >= 3 and first_name in clean_low:
+                    update_contact_commitment(chat_id, first_name, commitments=text, context_notes="From Telegram")
+        except Exception as exc:
+            print("contact commitment update error:", repr(exc))
+
         await send_contacts_excel(chat_id)
         return
 
@@ -1411,6 +1425,16 @@ async def handle_active(chat_id, text):
                 update_contact_commitment(chat_id, first_name, commitments=text, context_notes="From Telegram")
     except Exception as exc:
         print("contact commitment update error:", repr(exc))
+
+    # Check if user is asking about recently sent document
+    if is_recent_document_query(chat_id, text):
+        doc = RECENT_DOCS[chat_id]
+        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
+        reply = await answer_document_query(doc["filename"], doc["content"], text, history, get_language(chat_id))
+        record_chat_turn(chat_id, "user", text)
+        record_chat_turn(chat_id, "assistant", reply)
+        await say_raw(chat_id, reply)
+        return
 
     # Natural-language trigger: no slash command is required, but must not intercept task requests
     if GOOGLE_CONNECT_RE.search(text) and not is_explicit_calendar_action(text) and not any(w in text.lower() for w in ("meeting", "schedule", "calendar", "email", "send", "draft", "file", "upload")):
@@ -1922,10 +1946,16 @@ def is_recent_document_query(chat_id: int, text: str) -> bool:
         return False
 
     low = text.casefold()
-    # Fast exclusion: clear agenda query or explicit bill creation
+    # Fast exclusions
     if re.search(r"\b(plate|agenda|today\'s reminders|aaj ke reminders)\b", low):
         return False
     if re.search(r"\b(bill|bijli|electricity|water|wifi)\b.*\d+", low):
+        return False
+    if re.search(r"\b(excel|csv|sheet|spreadsheet)\b", low):
+        return False
+    if re.search(r"\b(bna|bnaa|banao|bana do|bhej|bhejo|create|make|export|download|give)\b", low) and re.search(r"\b(file|document|csv|excel|sheet)\b", low):
+        return False
+    if doc.get("filename") == "Photo" and not any(w in low for w in ("photo", "tasveer", "image", "pic", "picture")):
         return False
 
     doc_kw = re.search(r"\b(pdf|report|doc|document|file|attachment|page|points|point|takeaways|summary|summarize|explain)\b|रिपोर्ट|पीडीएफ|डॉक्यूमेंट|फ़ाइल|पॉइंट्स|महत्वपूर्ण|समरी|निचोड़", low)

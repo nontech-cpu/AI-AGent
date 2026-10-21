@@ -37,16 +37,36 @@ WHISPER_CODES = {
 
 
 def detect_text_language(message):
-    """Language ka naam, ya None agar pakka nahi (tab purani language chalti rahegi)."""
-    for name, pattern in SCRIPTS:
+    """Detects message language and script strictly based on user input characters."""
+    has_devanagari = bool(re.search(r"[\u0900-\u097F]", message))
+    if has_devanagari:
+        return "Hindi (written in Devanagari script)"
+
+    for name, pattern in SCRIPTS[1:]:
         if pattern.search(message):
             return name
-    tokens = re.findall(r"[a-zA-Z]+", message.lower())
-    if any(t in HINGLISH_WORDS for t in tokens):
+
+    tokens = set(re.findall(r"[a-zA-Z]+", message.lower()))
+    if not tokens:
+        return None
+
+    # Check for Hinglish
+    extended_hinglish = HINGLISH_WORDS | {
+        "bhy", "bhai", "mekro", "merko", "mereko", "mujhe", "mujh", "tu", "teri", "tera",
+        "tere", "k", "ke", "ki", "ko", "se", "ne", "me", "mein", "par", "pe", "ab", "abhi",
+        "bna", "bnaa", "banao", "bhejo", "bhej", "de", "dede", "dena", "daal", "daalkr",
+        "kr", "krde", "krdo", "karna", "karo", "rhe", "rha", "rhi", "aaya", "aayi", "aaye",
+        "pta", "smjh", "smjha", "bol", "bta", "btaa", "bata", "batao", "ka", "ki", "h", "hai",
+        "hain", "tha", "thi", "the", "toh", "to", "bhi", "aur", "or", "kuch", "sab", "sarre",
+        "sarra", "saare", "dono", "ek", "do", "teen", "chaar", "paanch", "chhe", "kya", "kyu",
+        "kyun", "kaise", "kisko", "kaha", "kahan", "kitna", "kitne", "kitni"
+    }
+    if tokens & extended_hinglish:
         return "Hinglish"
-    if len(tokens) >= 4:
+
+    if len(tokens) >= 2:
         return "English"
-    return None
+    return "Hinglish"
 
 
 def language_from_whisper(name):
