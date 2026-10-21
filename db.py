@@ -889,3 +889,117 @@ def get_user_facts(chat_id, limit=25):
         print("get_user_facts error:", repr(exc))
         return []
 
+
+# ---------- User Third-Party Integrations (Notion, GitHub, etc.) ----------
+
+def save_user_integration(chat_id, service: str, api_key: str, config_data: str = "{}"):
+    """Encrypts and securely stores an API key/token for a third-party service."""
+    if not api_key or not str(api_key).strip():
+        return False
+    from crypto import encrypt_aes256_gcm
+    enc = encrypt_aes256_gcm(str(api_key).strip())
+    svc = str(service).strip().lower()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO user_integrations (user_id, service, api_key_enc, config_data, is_active, updated_at) "
+                    "SELECT id, :svc, :enc, :cfg, true, now() FROM users WHERE telegram_chat_id = :cid "
+                    "ON CONFLICT (user_id, service) DO UPDATE SET "
+                    "api_key_enc = EXCLUDED.api_key_enc, "
+                    "config_data = EXCLUDED.config_data, "
+                    "is_active = true, "
+                    "updated_at = now()"
+                ),
+                {"cid": chat_id, "svc": svc, "enc": enc, "cfg": config_data or "{}"}
+            )
+        return True
+    except Exception as exc:
+        print("save_user_integration error:", repr(exc))
+        return False
+
+
+def get_user_integration(chat_id, service: str):
+    """Retrieves and decrypts the API key/token for a user integration."""
+    from crypto import decrypt_any
+    svc = str(service).strip().lower()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT api_key_enc, config_data, is_active FROM user_integrations "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND service = :svc AND is_active = true"
+                ),
+                {"cid": chat_id, "svc": svc}
+            ).first()
+        if not row:
+            # Fallback to environment variable if present
+            if svc == "notion" and os.getenv("NOTION_API_KEY"):
+                return {"api_key": os.getenv("NOTION_API_KEY"), "config_data": "{}", "is_active": True}
+            if svc == "github" and os.getenv("GITHUB_TOKEN"):
+                return {"api_key": os.getenv("GITHUB_TOKEN"), "config_data": "{}", "is_active": True}
+            return None
+        decrypted_key = decrypt_any(row[0])
+        return {
+            "api_key": decrypted_key,
+            "config_data": row[1] or "{}",
+            "is_active": row[2]
+        }
+    except Exception as exc:
+        print("get_user_integration error:", repr(exc))
+        return None
+
+
+def delete_user_integration(chat_id, service: str):
+    """Deletes or deactivates a user integration."""
+    svc = str(service).strip().lower()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "DELETE FROM user_integrations "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND service = :svc"
+                ),
+                {"cid": chat_id, "svc": svc}
+            )
+        return True
+    except Exception as exc:
+        print("delete_user_integration error:", repr(exc))
+        return False
+
+
+def get_user_integrations_summary(chat_id):
+    """Returns a status summary of all supported integrations for a user."""
+    integrations = {
+        "notion": {"connected": False, "details": "Not connected"},
+        "github": {"connected": False, "details": "Not connected"},
+    }
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT service, api_key_enc, is_active FROM user_integrations "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid)"
+                ),
+                {"cid": chat_id}
+            ).fetchall()
+        for r in rows:
+            svc = r[0].lower()
+            if r[2] and svc in integrations:
+                integrations[svc] = {
+                    "connected": True,
+                    "details": f"Connected ({svc.capitalize()} Token Active)"
+                }
+    except Exception as exc:
+        print("get_user_integrations_summary error:", repr(exc))
+
+    if not integrations["notion"]["connected"] and os.getenv("NOTION_API_KEY"):
+        integrations["notion"] = {"connected": True, "details": "Connected via workspace NOTION_API_KEY"}
+    if not integrations["github"]["connected"] and os.getenv("GITHUB_TOKEN"):
+        integrations["github"] = {"connected": True, "details": "Connected via workspace GITHUB_TOKEN"}
+
+    return integrations
+
+

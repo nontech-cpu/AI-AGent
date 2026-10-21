@@ -253,6 +253,66 @@ class PeculiarAPI {
       body: { verification_id: verificationId.trim() }
     });
   }
+
+  /**
+   * 11. POST /web/integrations/status
+   * @param {string} verificationId - Active verification ID
+   * @returns {Promise<{integrations: Object}>}
+   */
+  async getIntegrationsStatus(verificationId) {
+    if (!verificationId) {
+      throw new Error('Verification ID is required.');
+    }
+    return await this.request('/web/integrations/status', {
+      method: 'POST',
+      body: { verification_id: verificationId.trim() }
+    });
+  }
+
+  /**
+   * 12. POST /web/integrations/save
+   * @param {string} verificationId - Active verification ID
+   * @param {string} service - Service name ('notion' or 'github')
+   * @param {string} apiKey - API key / token
+   * @param {Object} [config] - Optional service config
+   * @returns {Promise<{connected: boolean, message: string}>}
+   */
+  async saveIntegration(verificationId, service, apiKey, config = {}) {
+    if (!verificationId) {
+      throw new Error('Verification ID is required.');
+    }
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error('Please enter a valid token.');
+    }
+    return await this.request('/web/integrations/save', {
+      method: 'POST',
+      body: {
+        verification_id: verificationId.trim(),
+        service: service.trim(),
+        api_key: apiKey.trim(),
+        config
+      }
+    });
+  }
+
+  /**
+   * 13. POST /web/integrations/disconnect
+   * @param {string} verificationId - Active verification ID
+   * @param {string} service - Service name
+   * @returns {Promise<{disconnected: boolean, message: string}>}
+   */
+  async disconnectIntegration(verificationId, service) {
+    if (!verificationId) {
+      throw new Error('Verification ID is required.');
+    }
+    return await this.request('/web/integrations/disconnect', {
+      method: 'POST',
+      body: {
+        verification_id: verificationId.trim(),
+        service: service.trim()
+      }
+    });
+  }
 }
 
 // Instantiate global API client

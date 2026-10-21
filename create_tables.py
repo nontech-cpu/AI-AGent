@@ -107,4 +107,19 @@ with engine.begin() as conn:
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_facts(user_id, status)"))
 
-print("All tables including chat_logs and user_facts created successfully!")
+    # 9. User Integrations & API Tokens (Notion, GitHub, Trello)
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_integrations (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            service TEXT NOT NULL,
+            api_key_enc TEXT NOT NULL,
+            config_data TEXT DEFAULT '{}',
+            is_active BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now(),
+            CONSTRAINT unique_user_service UNIQUE(user_id, service)
+        )
+    """))
+
+print("All tables including user_integrations created successfully!")

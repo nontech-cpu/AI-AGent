@@ -24,7 +24,10 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 save_google_token, get_google_token, delete_google_token,
                 find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text,
                 save_contact_memory, get_contact_memories, update_contact_commitment,
-                log_chat_message, get_recent_chat_history, save_user_fact, get_user_facts)
+                log_chat_message, get_recent_chat_history, save_user_fact, get_user_facts,
+                save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary)
+from integrations import (validate_notion_token, create_notion_page,
+                          validate_github_token, list_github_issues)
 from file_generator import build_contacts_excel, build_styled_pdf
 from categories import CATEGORIES, DEFAULTS
 from llm import (extract, understand, guess_persona, is_sensitive, parse_followup_time,
@@ -442,6 +445,59 @@ async def send_smart_pdf(chat_id, user_request):
     except Exception as exc:
         print("send_smart_pdf error:", repr(exc))
         await say(chat_id, "PDF generate karne mein thodi samasya aayi. Kripya dobara try karein.")
+
+
+async def execute_notion_action(chat_id, user_prompt):
+    """Executes a Notion note/page creation from user prompt or recent context."""
+    notion_info = get_user_integration(chat_id, "notion")
+    if not notion_info:
+        msg = (
+            "Bhai aapka **Notion Workspace** abhi connect nahi hai! 🔗\n\n"
+            "Aap connect page (https://peculiar-ai.netlify.app/connect.html) par jaakar Notion token paste kar sakte ho, "
+            "ya yahan chat mein seedhe apna Notion token (`secret_...`) bhej do, main turant connect kar dunga!"
+        )
+        await say_raw(chat_id, msg)
+        log_chat_message(chat_id, "user", user_prompt)
+        log_chat_message(chat_id, "assistant", msg)
+        return
+
+    token = notion_info["api_key"]
+    await say_raw(chat_id, "⏳ Notion mein add kar raha hu...")
+
+    # Extract title and structured summary/notes from prompt and recent turns
+    history_turns = get_recent_chat_history(chat_id, limit=5)
+    context_text = "\n".join([f"{t['role']}: {t['text']}" for t in history_turns])
+
+    prompt = (
+        f"You are PeculiarAI. The user wants to save notes or a summary to their Notion workspace.\n"
+        f"User Prompt: {user_prompt}\n"
+        f"Recent Chat Context:\n{context_text}\n\n"
+        f"Generate a clear, crisp page title and structured notes with bullet points.\n"
+        f"Respond ONLY with valid JSON: {{\"title\": \"...\", \"notes\": \"...\"}}"
+    )
+    try:
+        res = await _chat_json(prompt)
+        title = res.get("title") or "PeculiarAI Note"
+        notes = res.get("notes") or user_prompt
+    except Exception:
+        title = "PeculiarAI Note"
+        notes = user_prompt
+
+    success, msg_detail, page_url = await create_notion_page(token, title, notes)
+    if success:
+        reply = (
+            f"✅ **Notion mein successfully add ho gaya!** 📝\n\n"
+            f"📌 **Title:** {title}\n"
+            f"🔗 **Link:** {page_url or 'Aapke Notion workspace mein page save ho gaya hai'}"
+        )
+    else:
+        reply = (
+            f"⚠️ **Notion update issue:**\n{msg_detail}\n\n"
+            f"💡 *Tip:* Notion mein apne kisi page ke 'Share' menu mein jakar integration ko invite/access zaroor karein."
+        )
+    await say_raw(chat_id, reply)
+    log_chat_message(chat_id, "user", user_prompt)
+    log_chat_message(chat_id, "assistant", reply)
 
 
 async def extract_and_save_user_facts(chat_id: int, text: str):
@@ -1378,6 +1434,73 @@ async def handle_active(chat_id, text):
         return
 
     clean_low = text.lower()
+    trimmed = text.strip()
+
+    # 0. Check if user sent a raw Notion or GitHub token to link
+    if trimmed.startswith("secret_") and len(trimmed) > 20:
+        is_valid, name = await validate_notion_token(trimmed)
+        if is_valid:
+            save_user_integration(chat_id, "notion", trimmed)
+            msg = (
+                f"✅ **Notion Workspace successfully connect ho gaya!** 📝\n"
+                f"Workspace: **{name}**\n\n"
+                f"Ab aap mujhe kabhi bhi bol sakte ho:\n"
+                f"• *'ye summary mere Notion mein add kar de'*\n"
+                f"• *'meeting notes Notion par bhej de'*"
+            )
+            await say_raw(chat_id, msg)
+            log_chat_message(chat_id, "assistant", msg)
+            return
+        else:
+            await say_raw(chat_id, f"⚠️ Notion token validation failed: {name}. Kripya check karein ki token sahi hai.")
+            return
+
+    if (trimmed.startswith("ghp_") or trimmed.startswith("github_pat_")) and len(trimmed) > 20:
+        is_valid, login = await validate_github_token(trimmed)
+        if is_valid:
+            save_user_integration(chat_id, "github", trimmed)
+            msg = (
+                f"✅ **GitHub successfully connect ho gaya!** 🐙\n"
+                f"User: **@{login}**\n\n"
+                f"Ab aap mujhe kabhi bhi bol sakte ho:\n"
+                f"• *'mere GitHub issues check kar'*\n"
+                f"• *'open PRs dikha'*"
+            )
+            await say_raw(chat_id, msg)
+            log_chat_message(chat_id, "assistant", msg)
+            return
+        else:
+            await say_raw(chat_id, f"⚠️ GitHub token validation failed: {login}. Kripya check karein ki token sahi hai.")
+            return
+
+    # Notion Actions Trigger
+    if "notion" in clean_low and any(w in clean_low for w in ("add", "daal", "dal", "save", "note", "notes", "page", "write", "bana", "bna", "bnaa", "banao", "create", "sync", "send", "kr", "karo", "kar", "me", "mein")):
+        await execute_notion_action(chat_id, text)
+        return
+
+    # GitHub Actions Trigger
+    if "github" in clean_low and any(w in clean_low for w in ("issue", "issues", "pr", "prs", "pull", "repo", "repos", "check", "dikha", "list", "show")):
+        gh_info = get_user_integration(chat_id, "github")
+        if not gh_info:
+            await say_raw(
+                chat_id,
+                "Bhai aapka **GitHub** abhi connect nahi hai! 🐙\n\n"
+                "Aap connect page (https://peculiar-ai.netlify.app/connect.html) par jaakar GitHub token paste kar sakte ho, "
+                "ya yahan chat mein seedhe apna Personal Access Token (`ghp_...`) bhej do!"
+            )
+            return
+        success, issues = await list_github_issues(gh_info["api_key"])
+        if success and issues:
+            lines = [f"• #{it.get('number')} **{it.get('title')}** ({it.get('state')})" for it in issues[:7]]
+            reply = "🐙 **GitHub Open Issues & Tasks:**\n\n" + "\n".join(lines)
+        elif success:
+            reply = "🐙 **GitHub:** Aapke pass abhi koi open issue assigned nahi hai!"
+        else:
+            reply = "⚠️ GitHub issues fetch karne mein issue aaya. Token permissions verify karein."
+        await say_raw(chat_id, reply)
+        log_chat_message(chat_id, "user", text)
+        log_chat_message(chat_id, "assistant", reply)
+        return
 
     # 1. PDF Generation Trigger
     pdf_request = bool(
@@ -2634,6 +2757,96 @@ async def web_google_disconnect(request: Request):
         delete_google_token(int(user_row[0]))
 
     return {"disconnected": True, "message": "Google account disconnected successfully"}
+
+
+@app.post("/web/integrations/status")
+async def web_integrations_status(request: Request):
+    """Retrieve Notion and GitHub connection statuses for a Telegram-verified web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    status_data = get_user_integrations_summary(chat_id)
+    return {"status": "ok", "integrations": status_data}
+
+
+@app.post("/web/integrations/save")
+async def web_integrations_save(request: Request):
+    """Validate, encrypt, and save a third-party token (Notion, GitHub) for a web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    service = str(body.get("service", "")).strip().lower()
+    api_key = str(body.get("api_key", "")).strip()
+    config = body.get("config") or {}
+
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Token/API Key cannot be empty.")
+
+    if service == "notion":
+        is_valid, info = await validate_notion_token(api_key)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid Notion Token: {info}")
+        saved = save_user_integration(chat_id, "notion", api_key, json.dumps(config))
+        if not saved:
+            raise HTTPException(status_code=500, detail="Failed to save Notion token.")
+        return {
+            "connected": True,
+            "service": "notion",
+            "name": info,
+            "message": f"Successfully connected to Notion ({info})!"
+        }
+
+    elif service == "github":
+        is_valid, info = await validate_github_token(api_key)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid GitHub Token: {info}")
+        saved = save_user_integration(chat_id, "github", api_key, json.dumps(config))
+        if not saved:
+            raise HTTPException(status_code=500, detail="Failed to save GitHub token.")
+        return {
+            "connected": True,
+            "service": "github",
+            "name": info,
+            "message": f"Successfully connected to GitHub as @{info}!"
+        }
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported service '{service}'. Supported: 'notion', 'github'")
+
+
+@app.post("/web/integrations/disconnect")
+async def web_integrations_disconnect(request: Request):
+    """Disconnect and delete an integration token for a web session."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    verification_id = str(body.get("verification_id", "")).strip()
+    chat_id = _resolve_web_session(verification_id)
+
+    service = str(body.get("service", "")).strip().lower()
+    delete_user_integration(chat_id, service)
+    return {"disconnected": True, "service": service, "message": f"{service.capitalize()} disconnected successfully"}
+
 
 
 @app.get("/web/google/diagnostic")
