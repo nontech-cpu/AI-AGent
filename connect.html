@@ -847,7 +847,19 @@
       try {
         const res = await window.api.saveIntegration(verificationId, 'notion', token);
         showNotionConnected(res.name || 'Notion Workspace');
-        showNotionAlert(res.message || 'Notion connected successfully!', 'success');
+        const alertEl = document.getElementById('notion-alert');
+        if (alertEl) {
+          alertEl.className = 'alert-box alert-success';
+          alertEl.style.display = 'flex';
+          alertEl.innerHTML = `
+            <span>✅</span>
+            <div style="flex: 1;">
+              <strong>Notion connected successfully!</strong>
+              <div style="font-size: 13px; margin: 4px 0 8px;">Share anything you like in Telegram to forward into your Notion workspace.</div>
+              <a href="https://t.me/PeculiarAIBOT" target="_blank" class="btn btn-secondary" style="font-size: 12px; padding: 4px 12px; display: inline-flex;">Open Telegram Chat ↗</a>
+            </div>
+          `;
+        }
       } catch (err) {
         showNotionAlert(err.message || 'Failed to connect Notion. Please check token.', 'error');
         if (btn) {
@@ -891,7 +903,19 @@
       try {
         const res = await window.api.saveIntegration(verificationId, 'github', token);
         showGithubConnected(res.name || '@github-user');
-        showGithubAlert(res.message || 'GitHub connected successfully!', 'success');
+        const alertEl = document.getElementById('github-alert');
+        if (alertEl) {
+          alertEl.className = 'alert-box alert-success';
+          alertEl.style.display = 'flex';
+          alertEl.innerHTML = `
+            <span>✅</span>
+            <div style="flex: 1;">
+              <strong>GitHub connected successfully!</strong>
+              <div style="font-size: 13px; margin: 4px 0 8px;">You can now query open issues & PRs directly from Telegram.</div>
+              <a href="https://t.me/PeculiarAIBOT" target="_blank" class="btn btn-secondary" style="font-size: 12px; padding: 4px 12px; display: inline-flex;">Open Telegram Chat ↗</a>
+            </div>
+          `;
+        }
       } catch (err) {
         showGithubAlert(err.message || 'Failed to connect GitHub. Please check token.', 'error');
         if (btn) {

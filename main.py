@@ -453,8 +453,9 @@ async def execute_notion_action(chat_id, user_prompt):
     if not notion_info:
         msg = (
             "Bhai aapka **Notion Workspace** abhi connect nahi hai! 🔗\n\n"
-            "Aap connect page (https://peculiar-ai.netlify.app/connect.html) par jaakar Notion token paste kar sakte ho, "
-            "ya yahan chat mein seedhe apna Notion token (`secret_...`) bhej do, main turant connect kar dunga!"
+            "Aap niche diye gaye link par jakar 1-click mein apna Notion connect kar sakte ho:\n"
+            "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+            "Connect hone ke baad aap mujhe yahan koi bhi notes, meeting summaries ya text forward karoge to main seedhe aapke Notion workspace mein save kar dunga!"
         )
         await say_raw(chat_id, msg)
         log_chat_message(chat_id, "user", user_prompt)
@@ -1482,12 +1483,15 @@ async def handle_active(chat_id, text):
     if "github" in clean_low and any(w in clean_low for w in ("issue", "issues", "pr", "prs", "pull", "repo", "repos", "check", "dikha", "list", "show")):
         gh_info = get_user_integration(chat_id, "github")
         if not gh_info:
-            await say_raw(
-                chat_id,
-                "Bhai aapka **GitHub** abhi connect nahi hai! 🐙\n\n"
-                "Aap connect page (https://peculiar-ai.netlify.app/connect.html) par jaakar GitHub token paste kar sakte ho, "
-                "ya yahan chat mein seedhe apna Personal Access Token (`ghp_...`) bhej do!"
+            msg = (
+                "Bhai aapka **GitHub Account** abhi connect nahi hai! 🐙\n\n"
+                "Aap niche diye gaye link par jakar 1-click mein apna GitHub connect kar sakte ho:\n"
+                "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+                "Connect hote hi aap yahan direct issues aur PRs track kar sakte ho!"
             )
+            await say_raw(chat_id, msg)
+            log_chat_message(chat_id, "user", text)
+            log_chat_message(chat_id, "assistant", msg)
             return
         success, issues = await list_github_issues(gh_info["api_key"])
         if success and issues:
@@ -2805,6 +2809,19 @@ async def web_integrations_save(request: Request):
         saved = save_user_integration(chat_id, "notion", api_key, json.dumps(config))
         if not saved:
             raise HTTPException(status_code=500, detail="Failed to save Notion token.")
+
+        # Notify user in Telegram / messaging channel
+        try:
+            confirm_msg = (
+                f"🎉 **Notion Workspace successfully connected!** 📝\n\n"
+                f"Workspace: **{info}**\n\n"
+                f"Ab aap mujhe koi bhi notes, meeting summaries ya tasks forward karoge to main seedhe aapke Notion workspace mein save kar dunga!"
+            )
+            await say_raw(chat_id, confirm_msg)
+            log_chat_message(chat_id, "assistant", confirm_msg)
+        except Exception as exc:
+            print("Telegram notification dispatch error:", repr(exc))
+
         return {
             "connected": True,
             "service": "notion",
@@ -2819,6 +2836,19 @@ async def web_integrations_save(request: Request):
         saved = save_user_integration(chat_id, "github", api_key, json.dumps(config))
         if not saved:
             raise HTTPException(status_code=500, detail="Failed to save GitHub token.")
+
+        # Notify user in Telegram / messaging channel
+        try:
+            confirm_msg = (
+                f"🎉 **GitHub successfully connected!** 🐙\n\n"
+                f"Account: **@{info}**\n\n"
+                f"Ab aap mujhe GitHub issues track karne ya open PRs check karne ko bol sakte ho!"
+            )
+            await say_raw(chat_id, confirm_msg)
+            log_chat_message(chat_id, "assistant", confirm_msg)
+        except Exception as exc:
+            print("Telegram notification dispatch error:", repr(exc))
+
         return {
             "connected": True,
             "service": "github",
