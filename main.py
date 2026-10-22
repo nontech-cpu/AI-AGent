@@ -1808,7 +1808,7 @@ async def handle_active(chat_id, text):
     trimmed = text.strip()
 
     # Feature Flag: AGENT_CORE=v2 (Native Tool-Calling Agent Loop)
-    if os.getenv("AGENT_CORE", "v1").lower() == "v2":
+    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
         try:
             from agent.loop import run_agent_turn
             res = await run_agent_turn(chat_id, text)

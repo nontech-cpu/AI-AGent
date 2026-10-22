@@ -110,8 +110,21 @@ def resolve_user_id(chat_id_or_user_id: int) -> int:
         except Exception:
             pass
 
-        # If user table not present or empty, fallback to chat_id_or_user_id as user_id
-        return chat_id_or_user_id
+    # Ensure user exists in users table to satisfy foreign key constraints
+    try:
+        db.ensure_user(chat_id_or_user_id)
+        with db.engine.connect() as conn:
+            row3 = conn.execute(
+                text("SELECT id FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id_or_user_id}
+            ).fetchone()
+            if row3:
+                return row3[0]
+    except Exception:
+        pass
+
+    # If user table not present or empty, fallback to chat_id_or_user_id as user_id
+    return chat_id_or_user_id
 
 
 # ---------------------------------------------------------------------------

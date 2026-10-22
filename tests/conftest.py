@@ -25,6 +25,7 @@ os.environ["TELEGRAM_OTP_BOT_TOKEN"] = "123456:TEST_OTP_BOT_TOKEN"
 os.environ["TELEGRAM_OTP_BOT_USERNAME"] = "PeculiarAI_Verify_Bot"
 os.environ["PECULIARAI_WEB_VERIFY_DB"] = "test_web_verify.sqlite3"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["AGENT_CORE"] = "v1"
 
 import main
 import llm

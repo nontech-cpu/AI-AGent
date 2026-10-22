@@ -83,6 +83,18 @@ class TimeInterval:
         e2 = other.buffered_end if use_buffer else other.end
         return max(s1, s2) < min(e1, e2)
 
+    def overlap_minutes(self, other: "TimeInterval", use_buffer: bool = False) -> int:
+        """Calculates overlapping minutes between two intervals."""
+        s1 = self.buffered_start if use_buffer else self.start
+        e1 = self.buffered_end if use_buffer else self.end
+        s2 = other.buffered_start if use_buffer else other.start
+        e2 = other.buffered_end if use_buffer else other.end
+        overlap_start = max(s1, s2)
+        overlap_end = min(e1, e2)
+        if overlap_start < overlap_end:
+            return int((overlap_end - overlap_start).total_seconds() / 60)
+        return 0
+
     def format_ist(self) -> str:
         s_str = self.start.strftime("%I:%M %p")
         e_str = self.end.strftime("%I:%M %p")

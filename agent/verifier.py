@@ -99,11 +99,18 @@ def deterministic_verify(
         github_tool_res = [tr for tr in tool_results if isinstance(tr, dict) and "repositories" in tr]
         if github_tool_res:
             real_repos = set(r.lower() for r in github_tool_res[0].get("repositories", []))
-            # Find bullet items in reply e.g. "- awesome-python", "1. crypto-tracker"
-            mentioned_items = re.findall(r'[-*•]\s*([a-zA-Z0-9_\-]+)', draft_reply)
+            # Find bulleted or numbered items in reply e.g. "- awesome-python", "1. crypto-tracker"
+            mentioned_items = re.findall(r'(?:[-*•]|\d+\.)\s*([a-zA-Z0-9_\-]+)', draft_reply)
             for item in mentioned_items:
                 if item.lower() not in real_repos and item.lower() not in ["peculiarai", "github"]:
                     violations.append(f"Fabricated GitHub repository: {item}")
+
+    # 4. Fabricated Email Address Check
+    draft_emails = set(EMAIL_PATTERN.findall(draft_reply))
+    evidence_emails = set(EMAIL_PATTERN.findall(evidence_str))
+    for em in draft_emails:
+        if em.lower() not in {e.lower() for e in evidence_emails}:
+            violations.append(f"Fabricated email address: {em}")
 
     if violations:
         # If fake links found, strip them
@@ -111,7 +118,7 @@ def deterministic_verify(
             clean_reply = MEET_URL_PATTERN.sub("[Meet link available upon confirmation]", draft_reply)
             return False, clean_reply, violations
 
-        return False, None, violations
+        return False, "Mere paas iski koi saved information nahi hai.", violations
 
     return True, draft_reply, []
 
@@ -124,7 +131,7 @@ async def verify_and_ground_reply(
 ) -> Tuple[bool, str, List[str]]:
     """
     Two-tier verification pass:
-    1. Deterministic rule check (Meet links, completion claims, repo audits).
+    1. Deterministic rule check (Meet links, completion claims, repo audits, email audits).
     2. Optional LLM verifier pass if factual assertions need cross-checking.
     """
     # 1. Deterministic fast check (0 latency)
@@ -140,7 +147,7 @@ async def verify_and_ground_reply(
     # If no evidence and draft claims specific names/commitments, flag it
     evidence_text = extract_evidence_text(tool_results, memory_context)
     if not evidence_text.strip():
-        if any(w in user_query.lower() for w in ["kya bhejna", "kab hai", "details", "repo", "schedule", "free hu"]):
+        if any(w in user_query.lower() for w in ["kya bhejna", "kab hai", "details", "repo", "schedule", "free hu", "kahan", "kaam", "kaun", "kiska", "who", "where", "what", "email", "phone"]):
             fallback = "Mere paas iski koi saved information nahi hai. Kya aap mujhe batana chahenge taaki main yaad rakhun?"
             return False, fallback, ["Unsubstantiated factual claim with zero tool/memory evidence."]
         return True, draft_reply, []
