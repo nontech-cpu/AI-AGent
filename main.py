@@ -91,8 +91,9 @@ GOOGLE_CONNECT_RE = re.compile(
 SEEN_UPDATES = deque(maxlen=1000)
 # Background tasks ko zinda rakhne ke liye
 BG_TASKS = set()
-# Pending Google actions are held until explicit yes/no confirmation.
-PENDING_GOOGLE_ACTIONS = {}
+# Pending Google actions are held until explicit yes/no confirmation (Phase 5: Persistent Multi-Turn State)
+from state.pending import get_pending_actions_proxy
+PENDING_GOOGLE_ACTIONS = get_pending_actions_proxy()
 
 # Website verification database and initialization
 WEB_VERIFY_DB = os.getenv("PECULIARAI_WEB_VERIFY_DB", "peculiarai_web_verify.sqlite3")
@@ -2564,6 +2565,16 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                         )
                         await say(chat_id, confirm_text)
                         return
+
+                from state.pending import classify_confirmation_intent
+                intent, _ = classify_confirmation_intent(clean, pending)
+                if intent == "cross_question":
+                    # User is asking a cross-question (e.g. checking schedule/free time)
+                    # KEEP pending action intact so it can be confirmed afterwards!
+                    await handle_active(chat_id, clean)
+                    p_title = pending.get('title') or "Meeting"
+                    await say(chat_id, f"📌 **Pending Confirmation:** Aapka '{p_title}' schedule karne ka request abhi bhi waiting hai. Kya main ise confirm kar doon? (Reply 'yes' ya 'cancel')")
+                    return
 
                 # User gave an entirely different command; pop pending action and route
                 PENDING_GOOGLE_ACTIONS.pop(chat_id, None)

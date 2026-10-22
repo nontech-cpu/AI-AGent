@@ -59,6 +59,79 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         current_date_weekday=now_ist.strftime("%A, %d %B %Y")
     )
 
+    # Check for active pending action (Phase 5: Persistent Multi-Turn State)
+    from state.pending import (
+        get_pending_action,
+        save_pending_action,
+        classify_confirmation_intent,
+        execute_pending_action,
+        cancel_pending_action
+    )
+    active_pending = get_pending_action(chat_id)
+    is_cross_q = False
+    if active_pending:
+        intent, extra = classify_confirmation_intent(user_text, active_pending)
+        if intent == "confirm":
+            success, reply_msg = await execute_pending_action(chat_id, active_pending)
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", reply_msg)
+            return {
+                "reply": reply_msg,
+                "tool_calls_executed": [],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+        elif intent == "cancel":
+            cancel_pending_action(chat_id)
+            reply_msg = "Action cancel kar diya gaya hai. Kuch bhi schedule ya send nahi kiya gaya."
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", reply_msg)
+            return {
+                "reply": reply_msg,
+                "tool_calls_executed": [],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+        elif intent == "update_time":
+            new_due_time, new_due_date = extra
+            new_dt = datetime.combine(new_due_date, new_due_time, tzinfo=IST)
+            payload = dict(active_pending.get("payload", {}))
+            payload["start_iso"] = new_dt.isoformat()
+            save_pending_action(chat_id, active_pending.get("action_kind", "meeting"), payload)
+            from timing import format_event_clock_ist
+            clock_str = format_event_clock_ist(payload["start_iso"])
+            reply_msg = (
+                f"Meeting time update kar diya hai: **{clock_str}**.\n\n"
+                f"Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
+                f"Title: {payload.get('title', 'Meeting')}\n"
+                f"Time: {clock_str} (India time)\n"
+                f"Duration: {payload.get('duration_minutes', 30)} minutes\n"
+                f"Attendees: {', '.join(payload.get('attendees', [])) if payload.get('attendees') else 'None'}\n\n"
+                f"Reply yes to create or no to cancel."
+            )
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", reply_msg)
+            return {
+                "reply": reply_msg,
+                "tool_calls_executed": [],
+                "pending_action": payload,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+        elif intent == "cross_question":
+            is_cross_q = True
+
     # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
     mem_ctx = assemble_memory_context(chat_id, user_text)
     if mem_ctx.get("formatted_block"):
@@ -134,15 +207,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Two-phase confirmation interception
                 if tool_result.get("status") == "needs_confirmation":
                     pending_action = tool_result
-                    from main import PENDING_GOOGLE_ACTIONS
-                    PENDING_GOOGLE_ACTIONS[chat_id] = {
+                    payload = {
                         "kind": tool_result["action"],
                         "title": tool_result.get("title", "Meeting"),
                         "start_iso": tool_result.get("start_iso"),
                         "duration_minutes": tool_result.get("duration_minutes", 30),
                         "attendees": tool_result.get("attendees", []),
-                        "created_at": datetime.now(IST)
+                        "created_at": datetime.now(IST).isoformat()
                     }
+                    save_pending_action(chat_id, tool_result["action"], payload)
+                    from main import PENDING_GOOGLE_ACTIONS
+                    PENDING_GOOGLE_ACTIONS[chat_id] = payload
 
                     # Format human confirmation dialogue
                     conflicts_msg = ""
@@ -176,6 +251,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not final_reply:
         final_reply = "Bhai, main aapka personal AI assistant hu. Reminders, schedule, contacts aur tasks ke baare mein kuch bhi bataiye!"
 
+    # If user was asking a cross-question during a pending confirmation, append pending reminder
+    if is_cross_q and active_pending:
+        p_title = active_pending.get("payload", {}).get("title") or "Meeting"
+        final_reply += f"\n\n📌 **Pending Confirmation:** Aapka '{p_title}' schedule karne ka request abhi bhi waiting hai. Kya main ise confirm kar doon? (Reply 'yes' ya 'cancel')"
+
     # Phase 3: Zero-Unsupported-Claims Grounding Verifier Pass
     is_grounded, verified_reply, violations = await verify_and_ground_reply(
         draft_reply=final_reply,
@@ -202,7 +282,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     return {
         "reply": final_reply,
         "tool_calls_executed": tool_calls_executed,
-        "pending_action": pending_action,
+        "pending_action": pending_action or (active_pending.get("payload") if is_cross_q else None),
         "is_grounded": is_grounded,
         "violations": violations,
         "latency_ms": latency_ms,
