@@ -21,6 +21,12 @@ from agent.tools import TOOL_DEFINITIONS, execute_tool
 from memory.retrieval import assemble_memory_context
 from memory.extractor import extract_and_persist_turn
 from agent.verifier import verify_and_ground_reply
+from connectors.guardrails import (
+    sanitize_untrusted_content,
+    check_fake_success_guard,
+    check_repeat_guard,
+    safe_error_reply
+)
 
 AGENT_SYSTEM_PROMPT = """You are PeculiarAI, an empathetic, hyper-competent personal AI assistant with persistent memory and real-world tools.
 
@@ -60,7 +66,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
-    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
     now_ist = datetime.now(IST)
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system)
@@ -310,7 +316,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     break
 
                 # Sanitize untrusted content before appending tool result to messages
-                from connectors.guardrails import sanitize_untrusted_content, check_fake_success_guard, check_repeat_guard, safe_error_reply
                 raw_json = json.dumps(tool_result, ensure_ascii=False)
                 clean_json = sanitize_untrusted_content(raw_json)
                 messages.append({

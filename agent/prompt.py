@@ -117,15 +117,23 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
     # 2. Async lookups in parallel (Google status & unified schedules)
     async def fetch_google():
         try:
-            from main import get_valid_google_connection_by_chat_id
-            return await get_valid_google_connection_by_chat_id(chat_id)
+            from db import get_google_token
+            with db.engine.connect() as conn:
+                row = conn.execute(text("SELECT id FROM users WHERE telegram_chat_id = :c"), {"c": chat_id}).first()
+            if not row:
+                return False, None
+            token = get_google_token(int(row[0]))
+            if token and token.get("refresh_token_enc"):
+                return True, token.get("email") or "Active"
+            return False, None
         except Exception:
             return False, None
 
     async def fetch_sched(d):
         try:
-            from main import get_unified_schedule
-            return await get_unified_schedule(chat_id, d)
+            from main import items_for_date
+            rems = items_for_date(chat_id, d)
+            return {"reminders": rems}
         except Exception:
             return {}
 
@@ -140,7 +148,8 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
 
     integrations_parts = []
     if is_g and g_row:
-        integrations_parts.append(f"Google: connected ({g_row.get('google_email', 'Active')})")
+        email = g_row.get("google_email", "Active") if isinstance(g_row, dict) else str(g_row)
+        integrations_parts.append(f"Google: connected ({email})")
     else:
         integrations_parts.append("Google: not connected")
 
