@@ -105,12 +105,39 @@ def deterministic_verify(
         # Check if list_github_repos was called
         github_tool_res = [tr for tr in tool_results if isinstance(tr, dict) and "repositories" in tr]
         if github_tool_res:
-            real_repos = set(r.lower() for r in github_tool_res[0].get("repositories", []))
-            # Find bulleted or numbered items in reply e.g. "- awesome-python", "1. crypto-tracker"
-            mentioned_items = re.findall(r'(?:[-*•]|\d+\.)\s*([a-zA-Z0-9_\-]+)', draft_reply)
+            raw_repos = github_tool_res[0].get("repositories", [])
+            real_repos = set(str(r).lower() for r in raw_repos)
+            gh_user = (github_tool_res[0].get("username") or "").lower()
+            allowed_tokens = {"peculiarai", "github", "repositories", "repo", "public", "private", "account", "profile", "repos"}
+            if gh_user:
+                allowed_tokens.add(gh_user)
+                for part in gh_user.split("-"):
+                    if part: allowed_tokens.add(part)
+                for r in list(raw_repos):
+                    real_repos.add(f"{gh_user}/{str(r).lower()}")
+
+            # Normalize real repos: alphanumeric only lowercase
+            norm_real_repos = {re.sub(r'[^a-z0-9]', '', r) for r in real_repos}
+            norm_allowed = {re.sub(r'[^a-z0-9]', '', a) for a in allowed_tokens}
+
+            # Strip markdown formatting like **, *, [, ]
+            clean_draft = re.sub(r'[*_`\[\]]', '', draft_reply)
+            mentioned_items = re.findall(r'(?:[-*•]|\d+\.)\s*([a-zA-Z0-9_\-\/]+)', clean_draft)
             for item in mentioned_items:
-                if item.lower() not in real_repos and item.lower() not in ["peculiarai", "github"]:
-                    violations.append(f"Fabricated GitHub repository: {item}")
+                clean_item = item.lower().split('/')[-1]
+                norm_item = re.sub(r'[^a-z0-9]', '', item.lower())
+                norm_clean = re.sub(r'[^a-z0-9]', '', clean_item)
+
+                if (clean_item not in real_repos and 
+                    item.lower() not in real_repos and 
+                    norm_item not in norm_real_repos and
+                    norm_clean not in norm_real_repos and
+                    item.lower() not in allowed_tokens and
+                    clean_item not in allowed_tokens and
+                    norm_item not in norm_allowed and
+                    norm_clean not in norm_allowed):
+                    if len(norm_clean) > 2 and not norm_clean.isdigit():
+                        violations.append(f"Fabricated GitHub repository: {item}")
 
     # 4. Fabricated Email Address Check
     draft_emails = set(EMAIL_PATTERN.findall(draft_reply))

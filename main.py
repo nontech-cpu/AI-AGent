@@ -3689,6 +3689,18 @@ async def telegram_webhook(
     message = update.get("message")
     if message:
         chat_id = message["chat"]["id"]
+        from_user = message.get("from") or {}
+        fn = from_user.get("first_name")
+        un = from_user.get("username")
+        if fn or un:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("UPDATE users SET first_name = COALESCE(:fn, first_name), username = COALESCE(:un, username) WHERE telegram_chat_id = :cid"),
+                        {"fn": fn, "un": un, "cid": chat_id}
+                    )
+            except Exception:
+                pass
         if "text" in message:
             incoming_text = message["text"].strip()
             await handle_user_text(chat_id, incoming_text)
