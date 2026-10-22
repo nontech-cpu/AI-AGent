@@ -2568,6 +2568,13 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if chat_id in PENDING_GOOGLE_ACTIONS:
         pending = PENDING_GOOGLE_ACTIONS[chat_id]
         created_at = pending.get("created_at")
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at)
+            except Exception:
+                created_at = None
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=IST)
         age = (datetime.now(IST) - created_at).total_seconds() if created_at else 0
         if age > 900:  # Expired after 15 minutes
             PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
@@ -3746,7 +3753,16 @@ async def telegram_webhook(
                 pass
         if "text" in message:
             incoming_text = message["text"].strip()
-            await handle_user_text(chat_id, incoming_text)
+            try:
+                await handle_user_text(chat_id, incoming_text)
+            except Exception as exc:
+                print("Webhook handle_user_text error:", repr(exc))
+                import traceback
+                traceback.print_exc()
+                try:
+                    await say(chat_id, "Sorry, ek technical error aa gaya tha. Kripya dobara try karein!")
+                except Exception:
+                    pass
         elif "voice" in message:
             # Voice me time lagta hai: background me chalao, Telegram ko turant 200 do
             task = asyncio.create_task(process_voice(chat_id, message["voice"]))
