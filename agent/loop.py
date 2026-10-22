@@ -62,11 +62,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
     now_ist = datetime.now(IST)
-
-    system_content = (custom_system or AGENT_SYSTEM_PROMPT).format(
-        current_time_ist=now_ist.strftime("%I:%M %p"),
-        current_date_weekday=now_ist.strftime("%A, %d %B %Y")
-    )
+    from agent.prompt import build_runtime_system_prompt
+    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system)
 
     # Check for active pending action (Phase 5: Persistent Multi-Turn State)
     from state.pending import (
@@ -143,8 +140,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
     mem_ctx = assemble_memory_context(chat_id, user_text)
-    if mem_ctx.get("formatted_block"):
-        system_content += "\n\nRELEVANT USER COGNITIVE MEMORY & ENTITIES:\n" + mem_ctx["formatted_block"]
 
     # Context assembly: recent conversation turns
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
@@ -241,6 +236,44 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Execute tool
                 tool_result = await execute_tool(chat_id, fn_name, args_dict)
                 tool_results_list.append(tool_result)
+
+                # Track active conversation context for seamless multi-turn references ("pehla wala", "usko", etc.)
+                try:
+                    from state.active_context import update_active_context
+                    if fn_name == "list_github_repos":
+                        repos = tool_result.get("repositories", [])
+                        if repos:
+                            repo_names = [r.get("name") if isinstance(r, dict) else str(r) for r in repos]
+                            update_active_context(chat_id, connector="GitHub", topic="repositories", objects=repo_names)
+                    elif fn_name == "list_github_issues":
+                        issues = tool_result.get("issues", [])
+                        if issues:
+                            issue_titles = [f"#{iss.get('number', '')} {iss.get('title', '')}" if isinstance(iss, dict) else str(iss) for iss in issues]
+                            update_active_context(chat_id, connector="GitHub", topic="issues", objects=issue_titles)
+                    elif fn_name == "list_contacts":
+                        contacts = tool_result.get("contacts", [])
+                        if contacts:
+                            names = [c.get("name") if isinstance(c, dict) else str(c) for c in contacts]
+                            update_active_context(chat_id, connector="Contacts", topic="contacts", objects=names)
+                    elif fn_name == "list_reminders":
+                        rems = tool_result.get("reminders", [])
+                        if rems:
+                            titles = [r.get("title") if isinstance(r, dict) else str(r) for r in rems]
+                            update_active_context(chat_id, connector="Reminders", topic="reminders", objects=titles)
+                    elif fn_name in ("get_contact", "save_contact", "update_contact_commitment"):
+                        c_name = tool_result.get("name") or args_dict.get("name")
+                        if c_name:
+                            update_active_context(chat_id, connector="Contacts", topic=c_name)
+                    elif fn_name in ("create_meeting", "check_availability", "get_schedule"):
+                        update_active_context(chat_id, connector="Google Calendar", topic="schedule")
+                    elif fn_name == "send_email":
+                        to_email = args_dict.get("to")
+                        update_active_context(chat_id, connector="Gmail", topic=f"email to {to_email}" if to_email else "email")
+                    elif fn_name == "create_notion_page":
+                        n_title = args_dict.get("title", "Notion page")
+                        update_active_context(chat_id, connector="Notion", topic=n_title, objects=[n_title])
+                except Exception as ctx_err:
+                    print("Active context update error:", repr(ctx_err))
 
                 # Two-phase confirmation interception
                 if tool_result.get("status") == "needs_confirmation":
