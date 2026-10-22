@@ -42,9 +42,11 @@ GROUNDING & TRUTH CONTRACT:
 8. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
 9. THIRD-PARTY CONNECTORS & INTEGRATIONS (GitHub, Notion, Google):
    - When user asks whether an account or integration is connected (e.g. 'bhy mera github account connected h?', 'kya google connected hai?'), ALWAYS call `check_integrations_status` tool to check live status.
-   - When user asks to connect Google, or says 'connect google', 'link my email', or asks to schedule/host a Google Calendar / Meet meeting when Google is not connected: ALWAYS call `connect_integration` with service='google'.
+   - When user asks to connect Google, or says 'connect google', 'link my email', or asks to schedule/host a Google Calendar / Meet meeting when Google is not connected: ALWAYS call `connect_integration` with service='google' immediately! DO NOT call `ask_user` to ask if they want to connect — they already asked!
    - NEVER ask the user for their Google email address or password to connect Google! Google OAuth requires the user to click the official authorization link.
    - If the user sends an email address (e.g. 'xyz@gmail.com') wishing to connect Google, DO NOT say you cannot connect Google! Call `connect_integration` with service='google' and return the official OAuth link so the user can authorize.
+   - When user asks to send an email, upload a file, or create a calendar event: ALWAYS call the respective tool (send_email, upload_to_drive, create_meeting) directly! NEVER call `ask_user` to ask whether you should execute what the user just asked for.
+   - When user confirms connecting an integration (e.g. 'Krdiya h mene', 'connect ho gaya'), look at the MOST RECENT meeting or task requested right before connecting!
    - When user sends a GitHub URL or username (e.g. 'https://github.com/nontech-cpu', 'nontech-cpu') or asks to connect GitHub/Notion, ALWAYS call `connect_integration` with service='github' and the value. NEVER call `save_note_or_fact` for profile URLs or connectors!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
 
@@ -182,7 +184,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Context assembly: recent conversation turns (truncated to avoid prompt bloat from large lists)
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = db.get_recent_chat_history(chat_id, limit=6)
+    recent_history = db.get_recent_chat_history(chat_id, limit=12)
     for turn in recent_history:
         t_text = turn.get("text") or ""
         if len(t_text) > 350:
@@ -334,37 +336,102 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
                 # Two-phase confirmation interception
                 if tool_result.get("status") == "needs_confirmation":
-                    pending_action = tool_result
-                    payload = {
-                        "kind": tool_result["action"],
-                        "title": tool_result.get("title", "Meeting"),
-                        "start_iso": tool_result.get("start_iso"),
-                        "duration_minutes": tool_result.get("duration_minutes", 30),
-                        "attendees": tool_result.get("attendees", []),
-                        "created_at": datetime.now(IST).isoformat()
-                    }
-                    save_pending_action(chat_id, tool_result["action"], payload)
-                    from main import PENDING_GOOGLE_ACTIONS
-                    PENDING_GOOGLE_ACTIONS[chat_id] = payload
+                    act = tool_result.get("action", "")
 
-                    # Format human confirmation dialogue
-                    conflicts_msg = ""
-                    if tool_result.get("conflicts"):
-                        conflicts_msg = "⚠️ **Time Conflict Warning:** Is samay par already schedule booked hai:\n" + "\n".join([f"• {c}" for c in tool_result["conflicts"]]) + "\n\n"
-                    if tool_result.get("commitments"):
-                        conflicts_msg += "📌 **Existing Commitments:** " + ", ".join(tool_result["commitments"]) + "\n\n"
+                    if act in ("send_email", "email"):
+                        payload = {
+                            "kind": "send_email",
+                            "action": "send_email",
+                            "to": tool_result.get("to"),
+                            "subject": tool_result.get("subject", "No Subject"),
+                            "body": tool_result.get("body", ""),
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        pending_action = payload
+                        save_pending_action(chat_id, "send_email", payload)
+                        from main import PENDING_GOOGLE_ACTIONS
+                        PENDING_GOOGLE_ACTIONS[chat_id] = payload
+                        final_reply = (
+                            f"Please confirm — send this email from your connected Gmail?\n\n"
+                            f"📤 **To:** {payload['to']}\n"
+                            f"📝 **Subject:** {payload['subject']}\n"
+                            f"💬 **Message:** {payload['body']}\n\n"
+                            f"Reply yes to send or no to cancel."
+                        )
+                        break
 
-                    from main import format_event_clock_ist
-                    clock_str = format_event_clock_ist(tool_result.get("start_iso"))
-                    final_reply = (
-                        f"{conflicts_msg}Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
-                        f"Title: {tool_result.get('title', 'Meeting')}\n"
-                        f"Time: {clock_str} (India time)\n"
-                        f"Duration: {tool_result.get('duration_minutes', 30)} minutes\n"
-                        f"Attendees: {', '.join(tool_result.get('attendees', [])) if tool_result.get('attendees') else 'None'}\n\n"
-                        f"Reply yes to create or no to cancel."
-                    )
-                    break
+                    elif act in ("upload_file", "drive_file", "upload_to_drive"):
+                        payload = {
+                            "kind": "upload_file",
+                            "action": "upload_file",
+                            "filename": tool_result.get("filename", "notes.txt"),
+                            "content": tool_result.get("content", ""),
+                            "folder_id": tool_result.get("folder_id"),
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        pending_action = payload
+                        save_pending_action(chat_id, "upload_file", payload)
+                        from main import PENDING_GOOGLE_ACTIONS
+                        PENDING_GOOGLE_ACTIONS[chat_id] = payload
+                        final_reply = (
+                            f"Please confirm — upload this file to Google Drive?\n\n"
+                            f"📄 **Filename:** {payload['filename']}\n"
+                            f"📝 **Content:** {payload['content'][:150]}\n\n"
+                            f"Reply yes to upload or no to cancel."
+                        )
+                        break
+
+                    elif act in ("delete_meeting",):
+                        payload = {
+                            "kind": "delete_meeting",
+                            "action": "delete_meeting",
+                            "event_id": tool_result.get("event_id"),
+                            "title": tool_result.get("title", "Meeting"),
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        pending_action = payload
+                        save_pending_action(chat_id, "delete_meeting", payload)
+                        from main import PENDING_GOOGLE_ACTIONS
+                        PENDING_GOOGLE_ACTIONS[chat_id] = payload
+                        final_reply = (
+                            f"Please confirm — delete '{payload.get('title')}' from your Google Calendar?\n\n"
+                            f"Reply yes to delete or no to cancel."
+                        )
+                        break
+
+                    else:
+                        payload = {
+                            "kind": tool_result.get("action", "create_meeting"),
+                            "action": tool_result.get("action", "create_meeting"),
+                            "title": tool_result.get("title", "Meeting"),
+                            "start_iso": tool_result.get("start_iso"),
+                            "duration_minutes": tool_result.get("duration_minutes", 30),
+                            "attendees": tool_result.get("attendees", []),
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        pending_action = payload
+                        save_pending_action(chat_id, tool_result.get("action", "create_meeting"), payload)
+                        from main import PENDING_GOOGLE_ACTIONS
+                        PENDING_GOOGLE_ACTIONS[chat_id] = payload
+
+                        # Format human confirmation dialogue
+                        conflicts_msg = ""
+                        if tool_result.get("conflicts"):
+                            conflicts_msg = "⚠️ **Time Conflict Warning:** Is samay par already schedule booked hai:\n" + "\n".join([f"• {c}" for c in tool_result["conflicts"]]) + "\n\n"
+                        if tool_result.get("commitments"):
+                            conflicts_msg += "📌 **Existing Commitments:** " + ", ".join(tool_result["commitments"]) + "\n\n"
+
+                        from main import format_event_clock_ist
+                        clock_str = format_event_clock_ist(tool_result.get("start_iso"))
+                        final_reply = (
+                            f"{conflicts_msg}Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
+                            f"Title: {tool_result.get('title', 'Meeting')}\n"
+                            f"Time: {clock_str} (India time)\n"
+                            f"Duration: {tool_result.get('duration_minutes', 30)} minutes\n"
+                            f"Attendees: {', '.join(tool_result.get('attendees', [])) if tool_result.get('attendees') else 'None'}\n\n"
+                            f"Reply yes to create or no to cancel."
+                        )
+                        break
 
                 # Sanitize untrusted content before appending tool result to messages
                 raw_json = json.dumps(tool_result, ensure_ascii=False)
@@ -418,7 +485,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not is_fake_ok:
         print(f"Fake Success Guard intercepted: {fake_err}")
         violations.append(fake_err)
-        final_reply = "Action prepare kar liya gaya hai, lekin abhi tool dwara confirmed link ya ID prapt nahi hui hai."
+        final_reply = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
 
     # Guardrail: Repeat Suppression
     final_reply = check_repeat_guard(chat_id, final_reply)

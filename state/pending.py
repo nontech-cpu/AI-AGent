@@ -199,7 +199,7 @@ AFFIRMATIVE_REGEX = re.compile(
 )
 
 NEGATIVE_REGEX = re.compile(
-    r"^(no|nope|cancel|mat karo|mat kro|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it)\b",
+    r"^(no|nope|cancel|mat karo|mat kro|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it)\b|meeting ka ni|ye nahi|ye mat|nhi chahiye|nahi chahiye",
     re.I
 )
 

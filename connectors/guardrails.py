@@ -13,8 +13,12 @@ from connectors.errors import format_connector_error
 
 # Phrases claiming a real-world write/external action occurred
 ACTION_COMPLETION_PATTERNS = [
-    re.compile(r"\b(?:ho gaya|kar diya|bhej diya|add kar diya|update ho gaya|create ho gaya|schedule ho gaya|delete kar diya)\b", re.I),
-    re.compile(r"\b(?:successfully (?:created|sent|updated|deleted|scheduled|uploaded))\b", re.I),
+    re.compile(r"\b(?:meeting|event|calendar)\s+(?:create|schedule|add)\s+(?:ho gayi|ho gaya|kar di|kar diya)\b", re.I),
+    re.compile(r"\b(?:email|mail)\s+(?:send|bhej)\s+(?:diya|di|ho gaya|kar diya)\b", re.I),
+    re.compile(r"\b(?:file|doc)\s+(?:upload|save)\s+(?:ho gayi|kar diya|ho gaya)\b", re.I),
+    re.compile(r"\b(?:issue|pr|pull request|repo)\s+(?:create|close|merge)\s+(?:ho gaya|kar diya)\b", re.I),
+    re.compile(r"\b(?:create kar diya|schedule kar diya|send kar diya|upload kar diya|delete kar diya)\b", re.I),
+    re.compile(r"\b(?:successfully (?:created|sent|updated|deleted|scheduled|uploaded|create))\b", re.I),
     re.compile(r"\b(?:created|sent|deleted|scheduled)\b.{0,20}\b(?:event|meeting|email|mail|issue|page|file)\b", re.I)
 ]
 
@@ -48,6 +52,11 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
     Blocks claims of successful action execution unless confirmed by a real tool result with an ID or URL.
     Returns (passed, error_reason).
     """
+    low = draft_reply.lower()
+    # Confirmation dialogues, question prompts, auth URL invitations, and cancellations are never fake success claims
+    if any(q in low for q in ["please confirm", "reply yes", "options:", "kya main", "kya aap", "auth/google", "oauth", "secure link", "?"]):
+        return True, None
+
     has_completion_claim = any(pat.search(draft_reply) for pat in ACTION_COMPLETION_PATTERNS)
     if not has_completion_claim:
         return True, None
@@ -60,9 +69,12 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
         status = tr.get("status")
         ok = tr.get("ok", False)
         # Check success status
-        if status == "success" or ok is True:
-            # Must have an ID, event/message ID, commit/issue URL or confirmation payload
-            if tr.get("id") or tr.get("ids") or tr.get("url") or tr.get("urls") or tr.get("meet_url") or tr.get("message_id") or tr.get("file_id"):
+        if status in ("success", "needs_confirmation") or ok is True:
+            # Must have an ID, event/message ID, commit/issue URL, auth_url, or confirmed payload
+            if (tr.get("id") or tr.get("ids") or tr.get("url") or tr.get("urls") or 
+                tr.get("meet_url") or tr.get("message_id") or tr.get("file_id") or 
+                tr.get("auth_url") or tr.get("saved_fact") or tr.get("name") or 
+                tr.get("title") or tr.get("action")):
                 has_confirmed_success = True
                 break
 

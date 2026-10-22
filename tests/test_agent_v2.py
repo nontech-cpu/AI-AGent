@@ -210,3 +210,62 @@ async def test_standalone_email_provides_google_oauth_url():
         assert "https://test.com/oauth/google" in res["reply"]
         assert "connect_integration" in res["tool_calls_executed"]
 
+
+@pytest.mark.asyncio
+async def test_send_email_confirmation_dialogue_formats_email_not_meeting():
+    chat_id = 998833
+    groq_resp = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_email_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_email",
+                        "arguments": '{"to": "aaravmishra619@gmail.com", "subject": "meeting test", "body": "mail sent"}'
+                    }
+                }]
+            }
+        }],
+        "usage": {"total_tokens": 100}
+    }
+
+    async def mock_post(*args, **kwargs):
+        class MockResp:
+            status_code = 200
+            def json(self): return groq_resp
+        return MockResp()
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post), \
+         patch("db.get_recent_chat_history", return_value=[]), \
+         patch("connectors.gmail.GmailConnector.auth_state", return_value="connected"), \
+         patch("db.log_chat_message"):
+
+        res = await run_agent_turn(chat_id, "Send a mail to aaravmishra619@gmail.com subject meeting test body mail sent")
+
+        # Must format email confirmation dialogue, NOT a Google Calendar meeting!
+        assert "send this email from your connected Gmail" in res["reply"]
+        assert "aaravmishra619@gmail.com" in res["reply"]
+        assert "meeting test" in res["reply"]
+        assert "Google Calendar meeting" not in res["reply"]
+        assert res["pending_action"]["kind"] == "send_email"
+        assert res["pending_action"]["to"] == "aaravmishra619@gmail.com"
+
+
+def test_fake_success_guard_does_not_block_conversational_text():
+    from connectors.guardrails import check_fake_success_guard
+    # Questions and confirmations should pass freely
+    ok, err = check_fake_success_guard("Please confirm — create this Google Calendar meeting with a Google Meet link?", [])
+    assert ok is True
+
+    # Informational or rejection text should pass
+    ok, err = check_fake_success_guard("Aapka request note kar liya gaya hai. Kripya details confirm karein.", [])
+    assert ok is True
+
+    # Real success claim without evidence must be blocked
+    ok, err = check_fake_success_guard("Meeting create ho gayi hai!", [])
+    assert ok is False
+
+
