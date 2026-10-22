@@ -147,11 +147,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
     mem_ctx = assemble_memory_context(chat_id, user_text)
 
-    # Context assembly: recent conversation turns
+    # Context assembly: recent conversation turns (truncated to avoid prompt bloat from large lists)
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = db.get_recent_chat_history(chat_id, limit=8)
+    recent_history = db.get_recent_chat_history(chat_id, limit=6)
     for turn in recent_history:
-        messages.append({"role": turn["role"], "content": turn["text"]})
+        t_text = turn.get("text") or ""
+        if len(t_text) > 350:
+            t_text = t_text[:350] + "... [earlier items truncated]"
+        messages.append({"role": turn["role"], "content": t_text})
 
     # Append current user prompt
     messages.append({"role": "user", "content": user_text})

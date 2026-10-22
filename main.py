@@ -2214,6 +2214,17 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         await say(chat_id, HELP_TEXT)
         return
 
+    if cmd_token in {"/clear", "/reset", "clear", "reset"} or any(phrase in clean_lower for phrase in ("chat history delete", "chat histroy delete", "chat clear", "saari chat delete", "sarre chat histroy delete", "chat history mita")):
+        set_state(chat_id, None)
+        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM chat_logs WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid)"), {"cid": chat_id})
+        except Exception:
+            pass
+        await say(chat_id, "Maine aapki purani chat history memory se clear kar di hai! Ab hum fresh conversation start kar sakte hain. Bataiye kya madad chahiye?")
+        return
+
     # Owner & Diagnostic Commands (Part 5: Live Observability)
     if cmd_token in {"/connectors", "connectors"}:
         from connectors.registry import get_all_connectors
