@@ -559,6 +559,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "get_schedule":
             args = GetScheduleArgs(**arguments)
+            try:
+                from schedule.intervals import get_unified_daily_schedule
+                target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
+                daily = await get_unified_daily_schedule(chat_id, target_d)
+                return daily
+            except Exception as exc:
+                print("Interval get_schedule fallback:", exc)
+
             from main import get_unified_schedule, format_event_clock_ist
             target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
             sched = await get_unified_schedule(chat_id, target_d)
@@ -581,11 +589,24 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "check_availability":
             args = CheckAvailabilityArgs(**arguments)
+            try:
+                from schedule.intervals import check_interval_availability
+                res = await check_interval_availability(
+                    chat_id=chat_id,
+                    start_time_str=args.start_time,
+                    target_date_str=args.target_date,
+                    duration_minutes=args.duration_minutes,
+                    activity_type=args.activity_type,
+                    travel_buffer_minutes=15
+                )
+                return res
+            except Exception as exc:
+                print("Interval availability check fallback:", exc)
+
             from main import get_unified_schedule, format_event_clock_ist
             target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
             sched = await get_unified_schedule(chat_id, target_d)
 
-            # Parse start time
             time_parts = re.findall(r"\d+", args.start_time)
             h = int(time_parts[0]) if time_parts else 17
             m = int(time_parts[1]) if len(time_parts) > 1 else 0
@@ -603,7 +624,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         ev_dt = datetime.fromisoformat(raw_dt.replace("Z", "+00:00")).astimezone(IST)
                         ev_start_mins = ev_dt.hour * 60 + ev_dt.minute
                         ev_end_mins = ev_start_mins + 30
-                        # Check overlap: (StartA < EndB) and (EndA > StartB)
                         if (activity_start_mins < ev_end_mins) and (activity_end_mins > ev_start_mins):
                             conflicts.append(f"Meeting '{ev.get('summary', 'Meeting')}' at {format_event_clock_ist(raw_dt)}")
                     except Exception:
