@@ -19,25 +19,29 @@ else:
 
 
 def give_consent(chat_id):
+    now_expr = "NOW()" if engine.dialect.name == "postgresql" else "CURRENT_TIMESTAMP"
     with engine.begin() as conn:
         conn.execute(
-            text(
-                "INSERT INTO users (telegram_chat_id, consented_at) "
-                "VALUES (:c, now()) "
-                "ON CONFLICT (telegram_chat_id) "
-                "DO UPDATE SET consented_at = now()"
-            ),
+            text(f"""
+                INSERT INTO users (telegram_chat_id, consented_at)
+                VALUES (:c, {now_expr})
+                ON CONFLICT (telegram_chat_id)
+                DO UPDATE SET consented_at = {now_expr}
+            """),
             {"c": chat_id},
         )
 
 
 def has_consent(chat_id):
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT consented_at FROM users WHERE telegram_chat_id = :c"),
-            {"c": chat_id},
-        ).first()
-    return bool(row and row[0])
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT consented_at FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id},
+            ).first()
+        return bool(row and row[0])
+    except Exception:
+        return False
 
 
 def set_persona(chat_id, persona):
@@ -277,14 +281,17 @@ def remove_email_link(chat_id):
 # ---------- Conversation state (WhatsApp-style flow) ----------
 
 def ensure_user(chat_id):
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO users (telegram_chat_id) VALUES (:c) "
-                "ON CONFLICT (telegram_chat_id) DO NOTHING"
-            ),
-            {"c": chat_id},
-        )
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO users (telegram_chat_id) VALUES (:c) "
+                    "ON CONFLICT (telegram_chat_id) DO NOTHING"
+                ),
+                {"c": chat_id},
+            )
+    except Exception:
+        pass
 
 
 def get_state(chat_id):

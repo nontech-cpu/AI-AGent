@@ -4,6 +4,11 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Pre-warm backend service in the background as soon as page loads
+  if (window.api && typeof window.api.checkHealth === 'function') {
+    window.api.checkHealth().catch(() => {});
+  }
+
   const phoneForm = document.getElementById('phone-form');
   const otpStep = document.getElementById('otp-step');
   const verifyForm = document.getElementById('verify-form');
@@ -88,6 +93,12 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.removeItem(window.CONFIG?.STORAGE_KEYS?.IS_VERIFIED);
       }
 
+      let serverTimer = setTimeout(() => {
+        if (sendCodeBtn && sendCodeBtn.disabled) {
+          sendCodeBtn.innerHTML = 'Connecting to secure server... (please wait)';
+        }
+      }, 3000);
+
       try {
         sendCodeBtn.disabled = true;
         sendCodeBtn.innerHTML = 'Connecting to Telegram...';
@@ -121,6 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {
         showAlert(err.message || 'Failed to start verification. Please verify your connection.');
       } finally {
+        clearTimeout(serverTimer);
         sendCodeBtn.disabled = false;
         sendCodeBtn.textContent = 'Get code on Telegram →';
       }

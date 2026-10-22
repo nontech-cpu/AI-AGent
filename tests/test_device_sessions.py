@@ -30,7 +30,10 @@ def init_test_db():
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_chat_id INTEGER UNIQUE NOT NULL,
-                has_given_consent BOOLEAN DEFAULT 0,
+                consented_at TIMESTAMP,
+                state TEXT,
+                state_data TEXT,
+                persona TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))

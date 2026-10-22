@@ -2189,16 +2189,44 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         print("fact extraction trigger error:", repr(exc))
 
     st = get_state(chat_id)
-    if st is None:  # pehli baar aaya
+    if st is None:
         ensure_user(chat_id)
         set_state(chat_id, "consent")
         await say(chat_id, WELCOME_CONSENT)
         return
     state, data = st
 
-    # Top-level command interruptions should ALWAYS be respected and immediately reset state and pending actions!
     clean_lower = clean.lower()
     cmd_token = clean_lower.split()[0].split("@")[0]
+
+    # Handle initial onboarding & consent for new users: never send "Welcome back!" to unconsented users
+    if state in (None, "consent") and not has_consent(chat_id):
+        if state == "consent":
+            yn = yes_no(clean)
+            if yn is None:
+                yn = await classify_yes_no_any_language(clean, "The assistant is asking for initial user consent to continue setup.")
+            if yn is True:
+                give_consent(chat_id)
+                set_state(chat_id, "persona")
+                await say(chat_id, "Thank you!")
+                await ask_persona(chat_id)
+                return
+            elif yn is False:
+                delete_user(chat_id)
+                await say(chat_id, "Okay, nothing has been saved. Message me anytime if you change your mind.")
+                return
+            elif cmd_token in {"/start", "start"}:
+                await say(chat_id, WELCOME_CONSENT)
+                return
+            else:
+                await say(chat_id, "Shall we continue? Please reply yes or no.")
+                return
+        else:
+            set_state(chat_id, "consent")
+            await say(chat_id, WELCOME_CONSENT)
+            return
+
+    # Top-level command interruptions should ALWAYS be respected and immediately reset state and pending actions!
     if cmd_token in {"/start", "start"}:
         set_state(chat_id, None)
         PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
@@ -2643,7 +2671,11 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 return
 
     if clean.lower() == "/start":
-        await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
+        if has_consent(chat_id):
+            await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
+        else:
+            set_state(chat_id, "consent")
+            await say(chat_id, WELCOME_CONSENT)
         return
     await handle_active(chat_id, clean)
 

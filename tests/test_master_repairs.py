@@ -423,3 +423,36 @@ async def test_new_meeting_cancel_command_interrupts_pending_google_action():
                                 # handle_active must be called with the new command
                                 mock_active.assert_called_once_with(chat_id, user_text)
 
+
+@pytest.mark.asyncio
+async def test_new_user_start_triggers_consent_not_welcome_back():
+    """
+    When a brand-new user (or someone with no consent) sends /start or /start website_chat,
+    the bot MUST present the initial onboarding & consent prompt (WELCOME_CONSENT),
+    and must NEVER say 'Welcome back!' before consent is given.
+    """
+    chat_id = 999888777
+    state_store = {chat_id: (None, None)}
+
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid)):
+        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.update({cid: (st, data)})):
+            with patch("main.has_consent", return_value=False):
+                with patch("main.ensure_user"):
+                    with patch("main.say", new_callable=AsyncMock) as mock_say:
+                        # 1. New user sends /start
+                        await main.handle_user_text(chat_id, "/start")
+                        assert state_store[chat_id][0] == "consent"
+                        assert mock_say.call_count == 1
+                        first_reply = mock_say.call_args[0][1]
+                        assert "Welcome back!" not in first_reply
+                        assert "Shall we continue? Reply yes or no." in first_reply
+
+                        # 2. If user types casual question before consenting, bot reminds for consent
+                        mock_say.reset_mock()
+                        await main.handle_user_text(chat_id, "do u have reminder for me regarding anything")
+                        assert mock_say.call_count == 1
+                        second_reply = mock_say.call_args[0][1]
+                        assert "Shall we continue? Please reply yes or no." in second_reply
+                        assert "Welcome back!" not in second_reply
+
+
