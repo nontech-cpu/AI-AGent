@@ -122,8 +122,8 @@ class CheckIntegrationsStatusArgs(BaseModel):
     service: Optional[str] = Field(None, description="Optional service name filter e.g. 'github', 'notion', 'google'.")
 
 class ConnectIntegrationArgs(BaseModel):
-    service: str = Field(..., description="Service to connect: 'github' or 'notion'.")
-    value: str = Field(..., description="GitHub profile URL (e.g. 'https://github.com/nontech-cpu'), GitHub username, or access token.")
+    service: str = Field(..., description="Service to connect: 'google', 'github', or 'notion'.")
+    value: Optional[str] = Field("connect", description="GitHub profile URL (e.g. 'https://github.com/nontech-cpu'), GitHub username, access token, Notion token, or 'connect' for Google.")
 
 class AskUserArgs(BaseModel):
     question: str = Field(..., description="Specific question to ask the user.")
@@ -429,14 +429,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "connect_integration",
-            "description": "Connect a user integration like GitHub or Notion using a profile URL (e.g. 'https://github.com/nontech-cpu'), username, or personal access token.",
+            "description": "Connect a user integration like Google (Calendar/Meet/Gmail/Drive), GitHub, or Notion. For Google, returns the secure OAuth authorization link.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service": {"type": "string", "description": "Service to connect: 'github' or 'notion'."},
-                    "value": {"type": "string", "description": "GitHub profile URL, username, or personal access token."}
+                    "service": {"type": "string", "description": "Service to connect: 'google', 'github', or 'notion'."},
+                    "value": {"type": ["string", "null"], "description": "GitHub profile URL, username, personal access token, or 'connect' for Google."}
                 },
-                "required": ["service", "value"]
+                "required": ["service"]
             }
         }
     },
@@ -926,9 +926,26 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
         elif tool_name == "connect_integration":
             args = ConnectIntegrationArgs(**arguments)
             svc = args.service.strip().lower()
-            val = args.value.strip()
+            val = (args.value or "connect").strip()
 
-            if svc == "github":
+            if svc in ("google", "gmail", "calendar", "google_calendar", "drive", "google_drive"):
+                from google_auth import build_auth_url
+                try:
+                    auth_url = build_auth_url(int(chat_id), source="tg")
+                    return {
+                        "status": "success",
+                        "service": "google",
+                        "auth_url": auth_url,
+                        "message": (
+                            f"Google account connect karne ke liye is secure link par click karke login & approve karein:\n\n"
+                            f"{auth_url}\n\n"
+                            f"Approve hote hi Google Calendar, Meet aur Drive automatically ready ho jayenge!"
+                        )
+                    }
+                except Exception as exc:
+                    return {"status": "error", "message": f"Could not generate Google auth URL: {exc}"}
+
+            elif svc == "github":
                 clean_user = val
                 if "github.com/" in clean_user:
                     parts = clean_user.split("github.com/")[-1].strip("/").split("/")

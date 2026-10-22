@@ -333,6 +333,14 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
 
     except Exception as exc:
         logger.error(f"Error executing pending action {action_id}: {exc}", exc_info=True)
+        err_str = str(exc)
+        if "not connected" in err_str.lower() or "token" in err_str.lower():
+            try:
+                from google_auth import build_auth_url
+                auth_url = build_auth_url(int(chat_id), source="tg")
+                return False, f"⚠️ Google account connected nahi hai. Action complete karne ke liye pehle is link se Google connect karein:\n\n{auth_url}"
+            except Exception:
+                return False, "⚠️ Google account connected nahi hai. Kripya pehle Google account connect karein."
         return False, f"Failed to execute action: {str(exc)}"
 
 

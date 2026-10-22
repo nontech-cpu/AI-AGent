@@ -1295,7 +1295,21 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
         return True
     except Exception as exc:
         print('Google action error:', repr(exc))
-        await say(chat_id, "Google action failed. Nothing was confirmed as successful. Please check the connection and try again.")
+        err_str = str(exc)
+        if "not connected" in err_str.lower() or "token" in err_str.lower():
+            try:
+                from google_auth import build_auth_url
+                auth_url = build_auth_url(int(chat_id), source="tg")
+                await say(
+                    chat_id,
+                    f"⚠️ Aapka Google account connected nahi hai. Google Calendar ya Meet use karne ke liye pehle is secure link par click karke connect karein:\n\n"
+                    f"{auth_url}\n\n"
+                    f"Connect hone ke baad aap easily meeting schedule kar sakte hain!"
+                )
+            except Exception:
+                await say(chat_id, "Google account connected nahi hai. Google Calendar use karne ke liye pehle apna Google account connect karein.")
+        else:
+            await say(chat_id, f"Google action complete nahi ho paya: {str(exc)}. Please check your connection and try again.")
         return True
 
 

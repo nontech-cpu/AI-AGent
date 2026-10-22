@@ -43,8 +43,13 @@ class CalendarConnector(Connector):
             return "not_connected"
 
     def connect_instructions(self, user_or_chat_id: int) -> str:
-        base_url = os.getenv("PUBLIC_BASE_URL", "https://tightly-barbell-creamed.ngrok-free.dev")
-        return f"Google Calendar connect karne ke liye is link par authorize karein: {base_url}/connect.html"
+        try:
+            from google_auth import build_auth_url
+            url = build_auth_url(int(user_or_chat_id), source="tg")
+            return f"Google Calendar connect karne ke liye is link par authorize karein:\n{url}"
+        except Exception:
+            base_url = os.getenv("PUBLIC_BASE_URL", "https://tightly-barbell-creamed.ngrok-free.dev")
+            return f"Google Calendar connect karne ke liye is link par authorize karein: {base_url}/connect.html"
 
     def tools(self) -> List[ToolSpec]:
         return [
@@ -105,6 +110,18 @@ class CalendarConnector(Connector):
         ]
 
     async def execute(self, user_or_chat_id: int, tool_name: str, args: Dict[str, Any]) -> ToolResult:
+        if tool_name in ["create_meeting", "delete_meeting"]:
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(user_or_chat_id)
+            if not is_conn:
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.NOT_CONNECTED.value,
+                        "message": "Google Calendar is not connected. User must connect Google first."
+                    }
+                )
+
         if tool_name == "create_meeting":
             if not args.get("_confirmed", False):
                 return ToolResult(

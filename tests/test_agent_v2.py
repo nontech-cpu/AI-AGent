@@ -170,3 +170,43 @@ async def test_tool_save_contact_and_lookup_typo():
     assert res_lookup["name"] == "Ananya Sharma"
     assert res_lookup["phone"] == "+91 98765 43210"
     assert res_lookup["email"] == "ananya.sharma@example.com"
+
+
+@pytest.mark.asyncio
+async def test_create_meeting_fails_gracefully_when_google_not_connected():
+    chat_id = 771122
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)):
+        res = await execute_tool(chat_id, "create_meeting", {
+            "title": "Strategy Sync",
+            "start_iso": "2026-10-27T20:00:00+05:30",
+            "duration_minutes": 30
+        })
+        assert res.get("status") == "error"
+        assert res.get("error_type") == "not_connected"
+        assert "Google Calendar" in res.get("message", "")
+        assert "not connected" in res.get("message", "").lower() or "connected nahi hai" in res.get("message", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_connect_integration_google_returns_oauth_url():
+    chat_id = 771122
+    with patch("google_auth.build_auth_url", return_value="https://test.com/oauth/google"):
+        res = await execute_tool(chat_id, "connect_integration", {
+            "service": "google",
+            "value": "connect"
+        })
+        assert res.get("status") == "success"
+        assert "https://test.com/oauth/google" in res.get("auth_url", "")
+        assert "https://test.com/oauth/google" in res.get("message", "")
+
+
+@pytest.mark.asyncio
+async def test_standalone_email_provides_google_oauth_url():
+    chat_id = 771122
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)), \
+         patch("google_auth.build_auth_url", return_value="https://test.com/oauth/google"), \
+         patch("db.log_chat_message"):
+        res = await run_agent_turn(chat_id, "neeravmishrarealme1@gmail.com")
+        assert "https://test.com/oauth/google" in res["reply"]
+        assert "connect_integration" in res["tool_calls_executed"]
+

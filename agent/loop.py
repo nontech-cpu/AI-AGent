@@ -4,6 +4,7 @@ Native tool-calling loop using Groq (openai/gpt-oss-120b or llama-3.3-70b-versat
 Strict Zero-Hallucination Grounding Contract: Model acts via tools or acknowledges missing data.
 """
 import os
+import re
 import json
 import time
 import asyncio
@@ -41,6 +42,9 @@ GROUNDING & TRUTH CONTRACT:
 8. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
 9. THIRD-PARTY CONNECTORS & INTEGRATIONS (GitHub, Notion, Google):
    - When user asks whether an account or integration is connected (e.g. 'bhy mera github account connected h?', 'kya google connected hai?'), ALWAYS call `check_integrations_status` tool to check live status.
+   - When user asks to connect Google, or says 'connect google', 'link my email', or asks to schedule/host a Google Calendar / Meet meeting when Google is not connected: ALWAYS call `connect_integration` with service='google'.
+   - NEVER ask the user for their Google email address or password to connect Google! Google OAuth requires the user to click the official authorization link.
+   - If the user sends an email address (e.g. 'xyz@gmail.com') wishing to connect Google, DO NOT say you cannot connect Google! Call `connect_integration` with service='google' and return the official OAuth link so the user can authorize.
    - When user sends a GitHub URL or username (e.g. 'https://github.com/nontech-cpu', 'nontech-cpu') or asks to connect GitHub/Notion, ALWAYS call `connect_integration` with service='github' and the value. NEVER call `save_note_or_fact` for profile URLs or connectors!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
 
@@ -70,6 +74,35 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     now_ist = datetime.now(IST)
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system)
+
+    # Check if user sent just a raw email address (e.g. attempting to link Google)
+    trimmed_text = user_text.strip()
+    if re.fullmatch(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", trimmed_text):
+        from main import get_valid_google_connection_by_chat_id
+        is_g_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if not is_g_conn:
+            from google_auth import build_auth_url
+            try:
+                auth_url = build_auth_url(int(chat_id), source="tg")
+                reply_msg = (
+                    f"Google account connect karne ke liye Google security guidelines ke anusaar official login link par authorize karna zaroori hota hai (chat mein email type karke access nahi hota).\n\n"
+                    f"👉 Kripya is secure link par click karke Google account connect karein:\n{auth_url}\n\n"
+                    f"Connect hone ke baad aap meetings host kar payenge aur calendar events create ho jayenge!"
+                )
+                db.log_chat_message(chat_id, "user", user_text)
+                db.log_chat_message(chat_id, "assistant", reply_msg)
+                return {
+                    "reply": reply_msg,
+                    "tool_calls_executed": ["connect_integration"],
+                    "pending_action": None,
+                    "is_grounded": True,
+                    "violations": [],
+                    "latency_ms": int((time.time() - start_ts) * 1000),
+                    "tokens_used": 0,
+                    "memory_context": {}
+                }
+            except Exception as exc:
+                print("Email auth url generation error:", repr(exc))
 
     # Check for active pending action (Phase 5: Persistent Multi-Turn State)
     from state.pending import (
