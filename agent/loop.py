@@ -158,10 +158,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     MAX_TOOL_ITERATIONS = 6
+    current_model = model
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             payload = {
-                "model": model,
+                "model": current_model,
                 "temperature": 0.1,
                 "messages": messages,
                 "tools": TOOL_DEFINITIONS,
@@ -174,9 +175,37 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 json=payload
             )
 
+            # Auto-fallback on 429 Rate Limit (e.g. 8k TPM limit on 120b)
+            if resp.status_code == 429:
+                print(f"Agent Loop 429 Rate Limit on {current_model}. Switching to fallback model openai/gpt-oss-20b...")
+                if current_model != "openai/gpt-oss-20b":
+                    current_model = "openai/gpt-oss-20b"
+                    payload["model"] = current_model
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json=payload
+                    )
+                if resp.status_code == 429:
+                    await asyncio.sleep(2.0)
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json=payload
+                    )
+
             if resp.status_code != 200:
                 print("Agent Loop Groq Error:", resp.status_code, resp.text[:300])
-                break
+                if current_model != "openai/gpt-oss-20b":
+                    current_model = "openai/gpt-oss-20b"
+                    payload["model"] = current_model
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json=payload
+                    )
+                if resp.status_code != 200:
+                    break
 
             resp_data = resp.json()
             choice = resp_data["choices"][0]
@@ -254,7 +283,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 break
 
     if not final_reply:
-        final_reply = "Bhai, main aapka personal AI assistant hu. Reminders, schedule, contacts aur tasks ke baare mein kuch bhi bataiye!"
+        if tool_results_list:
+            last_res = tool_results_list[-1]
+            if last_res.get("status") == "success" and "message" in last_res:
+                final_reply = last_res["message"]
+            elif "commitment" in last_res:
+                c_name = last_res.get("contact", "Contact")
+                final_reply = f"{c_name} ke liye note/commitment save kar liya gaya hai: '{last_res.get('commitment')}'."
+            elif last_res.get("found") and last_res.get("phone"):
+                final_reply = f"{last_res.get('name', 'Contact')} ka phone number **{last_res.get('phone')}** hai."
+            elif last_res.get("found") and last_res.get("email"):
+                final_reply = f"{last_res.get('name', 'Contact')} ka email **{last_res.get('email')}** hai."
+            else:
+                final_reply = "Aapka request successfully process aur save ho gaya hai."
+        else:
+            final_reply = "Haan ji, main sun raha hoon! Aap bataiye kya help chahiye?"
 
     # If user was asking a cross-question during a pending confirmation, append pending reminder
     if is_cross_q and active_pending:

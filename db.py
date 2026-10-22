@@ -790,10 +790,10 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
         conn.execute(
             text(
                 "UPDATE contact_memories SET "
-                "commitments = COALESCE(:com, commitments), "
+                "commitments = COALESCE(CAST(:com AS VARCHAR), commitments), "
                 "context_notes = CASE "
-                "WHEN :ctx IS NOT NULL AND context_notes IS NOT NULL THEN context_notes || ' | ' || :ctx "
-                "WHEN :ctx IS NOT NULL THEN :ctx ELSE context_notes END "
+                "WHEN CAST(:ctx AS VARCHAR) IS NOT NULL AND context_notes IS NOT NULL THEN context_notes || ' | ' || CAST(:ctx AS VARCHAR) "
+                "WHEN CAST(:ctx AS VARCHAR) IS NOT NULL THEN CAST(:ctx AS VARCHAR) ELSE context_notes END "
                 "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
                 "AND LOWER(name) LIKE LOWER(:pattern)"
             ),

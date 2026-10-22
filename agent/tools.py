@@ -452,6 +452,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "get_contact":
             args = GetContactArgs(**arguments)
+            contacts = []
+            try:
+                contacts = db.get_contact_memories(chat_id)
+            except Exception:
+                contacts = []
+            from main import find_matching_contact
+            match = find_matching_contact(args.name_or_alias, contacts) if contacts else None
+
+            cognitive_data = {}
             try:
                 from memory.store import resolve_user_id, find_entity, get_commitments_for_user
                 uid = resolve_user_id(chat_id)
@@ -460,8 +469,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     ent_comms = get_commitments_for_user(uid, entity_id=ent["id"])
                     comm_str = "; ".join([c["commitment"] for c in ent_comms])
                     attrs = ent.get("attributes", {})
-                    return {
-                        "found": True,
+                    cognitive_data = {
                         "name": ent["name"],
                         "company": attrs.get("company", ""),
                         "role_title": attrs.get("role_title", ""),
@@ -473,19 +481,26 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             except Exception as exc:
                 print("Cognitive entity lookup fallback:", exc)
 
-            contacts = db.get_contact_memories(chat_id)
-            from main import find_matching_contact
-            match = find_matching_contact(args.name_or_alias, contacts)
-            if match:
+            if match or cognitive_data:
+                name = (match.get("name") if match else None) or cognitive_data.get("name") or args.name_or_alias
+                phone = (match.get("phone") if match and match.get("phone") else None) or cognitive_data.get("phone") or ""
+                email = (match.get("email") if match and match.get("email") else None) or cognitive_data.get("email") or ""
+                role_title = (match.get("role_title") if match and match.get("role_title") else None) or cognitive_data.get("role_title") or ""
+                company = (match.get("company") if match and match.get("company") else None) or cognitive_data.get("company") or ""
+
+                m_comm = match.get("commitments", "") if match else ""
+                c_comm = cognitive_data.get("commitments", "")
+                commitments = "; ".join(filter(None, [m_comm, c_comm])) if (m_comm != c_comm) else m_comm
+
                 return {
                     "found": True,
-                    "name": match["name"],
-                    "company": match.get("company", ""),
-                    "role_title": match.get("role_title", ""),
-                    "email": match.get("email", ""),
-                    "phone": match.get("phone", ""),
-                    "commitments": match.get("commitments", ""),
-                    "context_notes": match.get("context_notes", "")
+                    "name": name,
+                    "company": company,
+                    "role_title": role_title,
+                    "email": email,
+                    "phone": phone,
+                    "commitments": commitments,
+                    "context_notes": (match.get("context_notes") if match else "") or cognitive_data.get("context_notes", "")
                 }
             return {"found": False, "message": f"Contact '{args.name_or_alias}' not found in saved memories."}
 

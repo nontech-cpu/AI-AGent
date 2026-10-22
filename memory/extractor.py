@@ -63,7 +63,8 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
     and persists discoveries into Entities and Memories.
     """
     try:
-        user_id = db.ensure_user(chat_id)
+        from memory.store import resolve_user_id
+        user_id = resolve_user_id(chat_id)
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             return
