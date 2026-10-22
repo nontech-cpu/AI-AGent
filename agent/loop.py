@@ -162,6 +162,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     final_reply = ""
     total_tokens = 0
 
+    # Load core tools + relevant connected tools from connector registry
+    from connectors.registry import get_available_tools
+    active_connector_tools = get_available_tools(chat_id, user_text)
+    active_conn_tool_names = {t.name for t in active_connector_tools}
+    CORE_TOOL_NAMES = {
+        "search_memory", "save_note_or_fact", "save_contact", "get_contact",
+        "update_contact_commitment", "list_contacts", "save_reminder",
+        "list_reminders", "delete_reminders", "connect_integration",
+        "check_integrations_status", "ask_user"
+    }
+    effective_tools = [
+        t for t in TOOL_DEFINITIONS
+        if t["function"]["name"] in CORE_TOOL_NAMES or t["function"]["name"] in active_conn_tool_names
+    ]
+
     MAX_TOOL_ITERATIONS = 6
     current_model = model
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -170,7 +185,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "model": current_model,
                 "temperature": 0.1,
                 "messages": messages,
-                "tools": TOOL_DEFINITIONS,
+                "tools": effective_tools,
                 "tool_choice": "auto"
             }
 

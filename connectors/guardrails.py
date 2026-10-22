@@ -33,12 +33,13 @@ def sanitize_untrusted_content(content: str) -> str:
         sanitized = pat.sub("[neutralized-untrusted-text]", sanitized)
     return sanitized
 
-def safe_error_reply(error_type: str, connector_name: str = "Service", instructions: str = "", user_lang: str = "hinglish") -> str:
+def safe_error_reply(error_type: str, connector_name: str = "Service", instructions: str = "", details: str = "", user_lang: str = "hinglish") -> str:
     """Standardized error reply preventing generic unhelpful fallbacks."""
     return format_connector_error(
         error_type=error_type,
         connector_name=connector_name,
         instructions=instructions,
+        details=details,
         lang=user_lang
     )
 

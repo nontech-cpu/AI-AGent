@@ -449,7 +449,7 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "question": {"type": "string", "description": "The question to ask."},
-                    "options": {"type": "array", "items": {"type": "string"}, "description": "Optional choices."}
+                    "options": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Optional choices or null."}
                 },
                 "required": ["question"]
             }
