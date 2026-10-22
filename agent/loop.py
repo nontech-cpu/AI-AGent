@@ -15,6 +15,8 @@ from typing import Optional, Dict, Any, List
 from timing import IST
 import db
 from agent.tools import TOOL_DEFINITIONS, execute_tool
+from memory.retrieval import assemble_memory_context
+from memory.extractor import extract_and_persist_turn
 
 AGENT_SYSTEM_PROMPT = """You are PeculiarAI, an empathetic, hyper-competent personal AI assistant with persistent memory and real-world tools.
 
@@ -55,6 +57,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         current_time_ist=now_ist.strftime("%I:%M %p"),
         current_date_weekday=now_ist.strftime("%A, %d %B %Y")
     )
+
+    # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
+    mem_ctx = assemble_memory_context(chat_id, user_text)
+    if mem_ctx.get("formatted_block"):
+        system_content += "\n\nRELEVANT USER COGNITIVE MEMORY & ENTITIES:\n" + mem_ctx["formatted_block"]
 
     # Context assembly: recent conversation turns
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
@@ -172,10 +179,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     db.log_chat_message(chat_id, "user", user_text)
     db.log_chat_message(chat_id, "assistant", final_reply)
 
+    # Continuous background memory extraction
+    try:
+        asyncio.create_task(extract_and_persist_turn(chat_id, user_text, final_reply))
+    except Exception as exc:
+        print("Background extractor task launch error:", exc)
+
     return {
         "reply": final_reply,
         "tool_calls_executed": tool_calls_executed,
         "pending_action": pending_action,
         "latency_ms": latency_ms,
-        "tokens_used": total_tokens
+        "tokens_used": total_tokens,
+        "memory_context": mem_ctx
     }

@@ -389,19 +389,47 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
     try:
         if tool_name == "search_memory":
             args = SearchMemoryArgs(**arguments)
-            # Search chat_logs
+            hybrid_res = []
+            try:
+                from memory.store import resolve_user_id, search_memories_hybrid
+                uid = resolve_user_id(chat_id)
+                hybrid_res = search_memories_hybrid(uid, args.query, limit=5)
+            except Exception as exc:
+                print("Hybrid search fallback:", exc)
+
             logs = db.get_chat_turns_mentioning_keyword(chat_id, args.query, limit=10)
-            # Search facts
             facts = db.get_user_facts(chat_id, limit=20)
             matched_facts = [f for f in facts if args.query.lower() in f.get("fact", "").lower()]
             return {
                 "query": args.query,
+                "hybrid_memories": [f"[{h['memory_type']}] {h['content']}" for h in hybrid_res],
                 "chat_matches": [f"{l['role']}: {l['text']}" for l in logs],
                 "fact_matches": [f["fact"] for f in matched_facts]
             }
 
         elif tool_name == "get_contact":
             args = GetContactArgs(**arguments)
+            try:
+                from memory.store import resolve_user_id, find_entity, get_commitments_for_user
+                uid = resolve_user_id(chat_id)
+                ent = find_entity(uid, args.name_or_alias)
+                if ent:
+                    ent_comms = get_commitments_for_user(uid, entity_id=ent["id"])
+                    comm_str = "; ".join([c["commitment"] for c in ent_comms])
+                    attrs = ent.get("attributes", {})
+                    return {
+                        "found": True,
+                        "name": ent["name"],
+                        "company": attrs.get("company", ""),
+                        "role_title": attrs.get("role_title", ""),
+                        "email": attrs.get("email", ""),
+                        "phone": attrs.get("phone", ""),
+                        "commitments": comm_str,
+                        "context_notes": attrs.get("context_notes", "")
+                    }
+            except Exception as exc:
+                print("Cognitive entity lookup fallback:", exc)
+
             contacts = db.get_contact_memories(chat_id)
             from main import find_matching_contact
             match = find_matching_contact(args.name_or_alias, contacts)
@@ -419,6 +447,24 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             return {"found": False, "message": f"Contact '{args.name_or_alias}' not found in saved memories."}
 
         elif tool_name == "list_contacts":
+            try:
+                from memory.store import resolve_user_id, list_entities, get_commitments_for_user
+                uid = resolve_user_id(chat_id)
+                ents = list_entities(uid, entity_type="person")
+                if ents:
+                    res_contacts = []
+                    for e in ents:
+                        comms = get_commitments_for_user(uid, entity_id=e["id"])
+                        comm_str = "; ".join([c["commitment"] for c in comms])
+                        res_contacts.append({
+                            "name": e["name"],
+                            "company": e.get("attributes", {}).get("company", ""),
+                            "commitments": comm_str
+                        })
+                    return {"count": len(res_contacts), "contacts": res_contacts}
+            except Exception as exc:
+                print("Cognitive list_entities fallback:", exc)
+
             contacts = db.get_contact_memories(chat_id)
             return {
                 "count": len(contacts),
@@ -434,6 +480,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "update_contact_commitment":
             args = UpdateContactCommitmentArgs(**arguments)
+            try:
+                from memory.store import resolve_user_id, find_entity, save_entity, save_memory_item
+                uid = resolve_user_id(chat_id)
+                ent = find_entity(uid, args.contact_name)
+                eid = ent["id"] if ent else save_entity(uid, args.contact_name)
+                save_memory_item(uid, args.commitment, memory_type="commitment", subject_entity_id=eid)
+            except Exception as exc:
+                print("Cognitive commitment save fallback:", exc)
+
             contacts = db.get_contact_memories(chat_id)
             from main import find_matching_contact
             match = find_matching_contact(args.contact_name, contacts)
@@ -443,6 +498,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "get_commitments":
             args = GetCommitmentsArgs(**arguments)
+            try:
+                from memory.store import resolve_user_id, find_entity, get_commitments_for_user
+                uid = resolve_user_id(chat_id)
+                eid = None
+                if args.contact:
+                    ent = find_entity(uid, args.contact)
+                    if ent:
+                        eid = ent["id"]
+                all_comms = get_commitments_for_user(uid, entity_id=eid)
+                if all_comms:
+                    return {"commitments": [{"name": c["contact_name"], "commitment": c["commitment"]} for c in all_comms]}
+            except Exception as exc:
+                print("Cognitive get_commitments fallback:", exc)
+
             contacts = db.get_contact_memories(chat_id)
             if args.contact:
                 from main import find_matching_contact
@@ -455,6 +524,13 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "save_note_or_fact":
             args = SaveNoteOrFactArgs(**arguments)
+            try:
+                from memory.store import resolve_user_id, save_user_semantic_fact
+                uid = resolve_user_id(chat_id)
+                save_user_semantic_fact(uid, args.text, category=args.category or "general")
+            except Exception as exc:
+                print("Cognitive fact save fallback:", exc)
+
             db.save_user_fact(chat_id, args.text, category=args.category)
             return {"status": "success", "saved_fact": args.text}
 
