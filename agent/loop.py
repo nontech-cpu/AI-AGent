@@ -309,11 +309,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     )
                     break
 
-                # Append tool result to messages
+                # Sanitize untrusted content before appending tool result to messages
+                from connectors.guardrails import sanitize_untrusted_content, check_fake_success_guard, check_repeat_guard, safe_error_reply
+                raw_json = json.dumps(tool_result, ensure_ascii=False)
+                clean_json = sanitize_untrusted_content(raw_json)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": json.dumps(tool_result, ensure_ascii=False)
+                    "content": clean_json
                 })
 
             if pending_action:
@@ -331,10 +334,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply = f"{last_res.get('name', 'Contact')} ka phone number **{last_res.get('phone')}** hai."
             elif last_res.get("found") and last_res.get("email"):
                 final_reply = f"{last_res.get('name', 'Contact')} ka email **{last_res.get('email')}** hai."
+            elif last_res.get("status") == "error" and "message" in last_res:
+                final_reply = last_res["message"]
             else:
-                final_reply = "Aapka request successfully process aur save ho gaya hai."
+                final_reply = "Aapka request process ho gaya hai."
         else:
-            final_reply = "Haan ji, main sun raha hoon! Aap bataiye kya help chahiye?"
+            final_reply = safe_error_reply("api_error", connector_name="Assistant", details="Response ready nahi ho paya, kripya dobara try karein.")
 
     # If user was asking a cross-question during a pending confirmation, append pending reminder
     if is_cross_q and active_pending:
@@ -352,6 +357,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         print(f"Grounding Verifier intercepted unsupported claims: {violations}")
         final_reply = verified_reply
 
+    # Guardrail: Fake-Success Prevention in code
+    is_fake_ok, fake_err = check_fake_success_guard(final_reply, tool_results_list)
+    if not is_fake_ok:
+        print(f"Fake Success Guard intercepted: {fake_err}")
+        violations.append(fake_err)
+        final_reply = "Action prepare kar liya gaya hai, lekin abhi tool dwara confirmed link ya ID prapt nahi hui hai."
+
+    # Guardrail: Repeat Suppression
+    final_reply = check_repeat_guard(chat_id, final_reply)
+
     latency_ms = int((time.time() - start_ts) * 1000)
 
     # Record turn
@@ -363,6 +378,27 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         asyncio.create_task(extract_and_persist_turn(chat_id, user_text, final_reply))
     except Exception as exc:
         print("Background extractor task launch error:", exc)
+
+    # Observability Turn Trace
+    try:
+        from connectors.trace import log_turn_trace
+        is_suspect = (not is_grounded) or (not is_fake_ok)
+        suspect_reason = "; ".join(violations) if violations else None
+        log_turn_trace(
+            chat_id=chat_id,
+            message=user_text,
+            tools_called=tool_calls_executed,
+            tool_results=tool_results_list,
+            guard_results={"is_grounded": is_grounded, "fake_success_ok": is_fake_ok, "violations": violations},
+            latency_ms=latency_ms,
+            tokens=total_tokens,
+            reply_path="tool_calling_v2",
+            detected_connector=None,
+            is_suspect=is_suspect,
+            suspect_reason=suspect_reason
+        )
+    except Exception as t_err:
+        print("Trace logging error:", repr(t_err))
 
     return {
         "reply": final_reply,

@@ -465,6 +465,30 @@ TOOL_DEFINITIONS = [
 async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
     """Executes a tool call asynchronously and returns structured JSON output."""
     try:
+        # 1. Unified Connector Architecture Dispatch
+        from connectors.registry import get_connector_by_tool
+        from connectors.errors import format_connector_error
+        conn = get_connector_by_tool(tool_name)
+        if conn:
+            tool_res = await conn.execute(chat_id, tool_name, arguments)
+            if not tool_res.ok:
+                err = tool_res.error or {}
+                err_msg = format_connector_error(
+                    error_type=err.get("type", "api_error"),
+                    connector_name=conn.display_name,
+                    instructions=conn.connect_instructions(chat_id),
+                    details=err.get("message", "")
+                )
+                return {
+                    "status": "error",
+                    "error_type": err.get("type", "api_error"),
+                    "connector": conn.name,
+                    "message": err_msg
+                }
+            if isinstance(tool_res.data, dict):
+                return tool_res.data
+            return {"status": "success", "result": tool_res.data}
+
         if tool_name == "search_memory":
             args = SearchMemoryArgs(**arguments)
             hybrid_res = []

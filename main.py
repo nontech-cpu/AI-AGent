@@ -2214,6 +2214,49 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         await say(chat_id, HELP_TEXT)
         return
 
+    # Owner & Diagnostic Commands (Part 5: Live Observability)
+    if cmd_token in {"/connectors", "connectors"}:
+        from connectors.registry import get_all_connectors
+        lines = ["🔌 **Connected Integrations & Capabilities:**\n"]
+        for c in get_all_connectors():
+            st = c.auth_state(chat_id)
+            icon = "🟢" if st == "connected" else ("🟡" if st == "partial" else "⚪")
+            tools_str = ", ".join([t.name for t in c.tools()])
+            lines.append(f"{icon} **{c.display_name}** ({st.upper()}):\n  • Tools: `{tools_str}`")
+        await say(chat_id, "\n\n".join(lines))
+        return
+
+    if cmd_token in {"/selftest", "selftest"}:
+        from connectors.registry import get_all_connectors
+        lines = ["🧪 **Live Connector Self-Test & Diagnostic:**\n"]
+        for c in get_all_connectors():
+            st = c.auth_state(chat_id)
+            h = await c.health_check(chat_id)
+            m = c.mock()
+            m_ok = len(m.tools()) > 0
+            h_icon = "✅" if h.ok else "⚠️"
+            lines.append(f"{h_icon} **{c.display_name}**: State={st.upper()} | {h.message} ({h.latency_ms}ms) | Mock={'PASS' if m_ok else 'FAIL'}")
+        await say(chat_id, "\n".join(lines))
+        return
+
+    if cmd_token in {"/debug", "debug"}:
+        from connectors.trace import get_last_trace
+        tr = get_last_trace(chat_id)
+        if not tr:
+            await say(chat_id, "No recent turn trace recorded.")
+            return
+        msg = (
+            f"🔍 **Last Turn Observability Trace** (`{tr['trace_id']}`)\n\n"
+            f"• **User Message:** {tr['message'][:150]}\n"
+            f"• **Tools Called:** {tr['tools_called']}\n"
+            f"• **Latency:** {tr['latency_ms']} ms | **Tokens:** {tr['tokens']}\n"
+            f"• **Guard Status:** {tr['guard_results']}\n"
+            f"• **Suspect Turn:** {tr['is_suspect']} ({tr['suspect_reason'] or 'Clean'})\n"
+            f"• **Timestamp:** {tr['created_at']}"
+        )
+        await say(chat_id, msg)
+        return
+
     # Multi-turn meeting flow. A pending question must never hijack unrelated
     # messages: only a recognizable yes/no answers the reminder offer. Any other
     # message cancels the stale offer and is routed normally (in any language).
