@@ -1806,6 +1806,16 @@ async def handle_active(chat_id, text):
     clean_low = text.lower()
     trimmed = text.strip()
 
+    # Feature Flag: AGENT_CORE=v2 (Native Tool-Calling Agent Loop)
+    if os.getenv("AGENT_CORE", "v1").lower() == "v2":
+        try:
+            from agent.loop import run_agent_turn
+            res = await run_agent_turn(chat_id, text)
+            await say(chat_id, res["reply"])
+            return
+        except Exception as exc:
+            print("AGENT_CORE v2 fallback to v1 on error:", repr(exc))
+
     # 0. Check if user sent a raw Notion or GitHub token to link
     if (trimmed.startswith("secret_") or trimmed.startswith("ntn_")) and len(trimmed) > 20:
         is_valid, name = await validate_notion_token(trimmed)
