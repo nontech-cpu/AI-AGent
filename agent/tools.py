@@ -118,6 +118,13 @@ class GeneratePdfArgs(BaseModel):
 class GenerateExcelArgs(BaseModel):
     data_type: Optional[str] = Field("contacts", description="Type of data to export: 'contacts' or 'reminders'.")
 
+class CheckIntegrationsStatusArgs(BaseModel):
+    service: Optional[str] = Field(None, description="Optional service name filter e.g. 'github', 'notion', 'google'.")
+
+class ConnectIntegrationArgs(BaseModel):
+    service: str = Field(..., description="Service to connect: 'github' or 'notion'.")
+    value: str = Field(..., description="GitHub profile URL (e.g. 'https://github.com/nontech-cpu'), GitHub username, or access token.")
+
 class AskUserArgs(BaseModel):
     question: str = Field(..., description="Specific question to ask the user.")
     options: Optional[List[str]] = Field(None, description="Optional list of choices for the user.")
@@ -402,6 +409,34 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "data_type": {"type": "string", "description": "'contacts' or 'reminders'."}
                 }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_integrations_status",
+            "description": "Check whether user third-party integrations (GitHub, Notion, Google Calendar/Meet/Gmail/Drive) are connected.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": ["string", "null"], "description": "Optional service name filter e.g. 'github', 'notion', 'google'."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "connect_integration",
+            "description": "Connect a user integration like GitHub or Notion using a profile URL (e.g. 'https://github.com/nontech-cpu'), username, or personal access token.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "Service to connect: 'github' or 'notion'."},
+                    "value": {"type": "string", "description": "GitHub profile URL, username, or personal access token."}
+                },
+                "required": ["service", "value"]
             }
         }
     },
@@ -819,15 +854,168 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             res = await integrations.create_notion_page(token_row["api_key"], args.title, args.content)
             return res
 
+        elif tool_name == "check_integrations_status":
+            args = CheckIntegrationsStatusArgs(**arguments)
+            summary = db.get_user_integrations_summary(chat_id)
+
+            google_conn = False
+            google_email = None
+            try:
+                from main import get_valid_google_connection_by_chat_id
+                is_g_conn, g_conn_row = await get_valid_google_connection_by_chat_id(chat_id)
+                google_conn = bool(is_g_conn)
+                if google_conn and g_conn_row:
+                    google_email = g_conn_row.get("google_email")
+            except Exception:
+                pass
+
+            gh_row = db.get_user_integration(chat_id, "github")
+            gh_username = None
+            if gh_row:
+                try:
+                    cfg = json.loads(gh_row.get("config_data") or "{}")
+                    gh_username = cfg.get("username")
+                except Exception:
+                    pass
+
+            status = {
+                "github": {
+                    "connected": bool(summary.get("github", {}).get("connected") or gh_username),
+                    "username": gh_username,
+                    "details": summary.get("github", {}).get("details", "")
+                },
+                "notion": {
+                    "connected": bool(summary.get("notion", {}).get("connected")),
+                    "details": summary.get("notion", {}).get("details", "")
+                },
+                "google": {
+                    "connected": google_conn,
+                    "email": google_email,
+                    "services": ["Google Calendar", "Google Meet", "Gmail", "Google Drive"] if google_conn else []
+                }
+            }
+            if args.service:
+                s_key = args.service.strip().lower()
+                return {s_key: status.get(s_key, {"connected": False, "details": "Unknown service"})}
+            return status
+
+        elif tool_name == "connect_integration":
+            args = ConnectIntegrationArgs(**arguments)
+            svc = args.service.strip().lower()
+            val = args.value.strip()
+
+            if svc == "github":
+                clean_user = val
+                if "github.com/" in clean_user:
+                    parts = clean_user.split("github.com/")[-1].strip("/").split("/")
+                    if parts:
+                        clean_user = parts[0]
+                clean_user = clean_user.lstrip("@").strip()
+
+                if clean_user.startswith("ghp_") or clean_user.startswith("github_pat_"):
+                    is_valid, login = await integrations.validate_github_token(clean_user)
+                    if is_valid:
+                        db.save_user_integration(chat_id, "github", clean_user, json.dumps({"username": login}))
+                        return {
+                            "status": "success",
+                            "service": "github",
+                            "username": login,
+                            "message": f"GitHub personal token validated! Account @{login} connected successfully."
+                        }
+                    else:
+                        return {"status": "error", "message": f"Invalid GitHub token: {login}"}
+
+                # Public profile username check
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    gh_res = await client.get(
+                        f"https://api.github.com/users/{clean_user}",
+                        headers={"User-Agent": "PeculiarAI", "Accept": "application/vnd.github.v3+json"}
+                    )
+                    if gh_res.status_code == 200:
+                        u_info = gh_res.json()
+                        login = u_info.get("login") or clean_user
+                        public_repos = u_info.get("public_repos", 0)
+                        db.save_user_integration(
+                            chat_id,
+                            "github",
+                            os.getenv("GITHUB_TOKEN", "public_access"),
+                            json.dumps({"username": login, "profile_url": f"https://github.com/{login}", "public_repos": public_repos})
+                        )
+                        return {
+                            "status": "success",
+                            "service": "github",
+                            "username": login,
+                            "public_repos": public_repos,
+                            "message": f"GitHub account @{login} connected successfully! Found {public_repos} public repositories."
+                        }
+                    else:
+                        return {
+                            "status": "error",
+                            "message": f"GitHub user '{clean_user}' not found (Status {gh_res.status_code})."
+                        }
+
+            elif svc == "notion":
+                is_valid, name = await integrations.validate_notion_token(val)
+                if is_valid:
+                    db.save_user_integration(chat_id, "notion", val, json.dumps({"workspace_name": name}))
+                    return {
+                        "status": "success",
+                        "service": "notion",
+                        "workspace": name,
+                        "message": f"Notion workspace '{name}' connected successfully."
+                    }
+                else:
+                    return {"status": "error", "message": f"Invalid Notion token: {name}"}
+
+            return {"status": "error", "message": f"Unsupported service '{svc}'."}
+
         elif tool_name == "list_github_repos":
             args = ListGitHubReposArgs(**arguments)
+            req_username = args.username
+
+            # Check if user has saved GitHub username in user_integrations
             token_row = db.get_user_integration(chat_id, "github")
             token = token_row.get("api_key") if token_row else None
-            success, repos, resolved_user = await integrations.list_github_repos(token=token, username=args.username)
+            saved_username = None
+            if token_row:
+                try:
+                    cfg = json.loads(token_row.get("config_data") or "{}")
+                    saved_username = cfg.get("username")
+                except Exception:
+                    pass
+
+            if not req_username and saved_username:
+                req_username = saved_username
+
+            # Check recent history for any github.com/username
+            if not req_username:
+                recent_history = db.get_recent_chat_history(chat_id, limit=6)
+                for h in reversed(recent_history):
+                    txt = h.get("text", "")
+                    m = re.search(r"github\.com/([a-zA-Z0-9_\-]+)", txt)
+                    if m:
+                        req_username = m.group(1)
+                        break
+
+            # Fallback to system token
+            if not token:
+                token = os.getenv("GITHUB_TOKEN")
+
+            success, repos, resolved_user = await integrations.list_github_repos(token=token, username=req_username)
+            if not success and req_username:
+                success, repos, resolved_user = await integrations.list_github_repos(token=None, username=req_username)
+
             if not success:
                 return {"status": "error", "message": "Could not fetch repositories from GitHub."}
+
             repo_names = [r.get("name") for r in repos if isinstance(r, dict)]
-            return {"status": "success", "username": resolved_user or args.username, "repositories": repo_names}
+            return {
+                "status": "success",
+                "username": resolved_user or req_username,
+                "count": len(repo_names),
+                "repositories": repo_names
+            }
 
         elif tool_name == "generate_pdf":
             args = GeneratePdfArgs(**arguments)
