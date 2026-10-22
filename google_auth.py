@@ -140,7 +140,7 @@ def _state_signature(payload: str) -> str:
     ).hexdigest()
 
 
-def create_state(user_id: int, source: str = "tg", return_url: str = None) -> str:
+def create_state(user_id: int, source: str = "tg", return_url: str = None, device_id: str = None, phone: str = None) -> str:
     """Create a signed OAuth state containing the Telegram user ID and optional metadata."""
     _check_config()
 
@@ -151,6 +151,10 @@ def create_state(user_id: int, source: str = "tg", return_url: str = None) -> st
     }
     if return_url:
         data["return_url"] = str(return_url)
+    if device_id:
+        data["device_id"] = str(device_id)
+    if phone:
+        data["phone"] = str(phone)
 
     raw = json.dumps(
         data, separators=(",", ":"), sort_keys=True
@@ -197,7 +201,7 @@ def verify_state(state: str) -> int:
     return verify_state_payload(state)["user_id"]
 
 
-def build_auth_url(user_id: int, source: str = "tg", return_url: str = None) -> str:
+def build_auth_url(user_id: int, source: str = "tg", return_url: str = None, device_id: str = None, phone: str = None) -> str:
     """Generate the Google consent URL for a user."""
     _check_config()
 
@@ -209,7 +213,7 @@ def build_auth_url(user_id: int, source: str = "tg", return_url: str = None) -> 
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
-        "state": create_state(user_id, source=source, return_url=return_url),
+        "state": create_state(user_id, source=source, return_url=return_url, device_id=device_id, phone=phone),
     }
 
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"

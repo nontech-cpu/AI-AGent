@@ -6,7 +6,16 @@ load_dotenv()
 raw_db_url = os.getenv("DATABASE_URL") or "sqlite:///:memory:"
 if raw_db_url.startswith("postgres://"):
     raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
-engine = create_engine(raw_db_url, pool_pre_ping=True)
+
+if raw_db_url.startswith("sqlite"):
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine(
+        raw_db_url,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    engine = create_engine(raw_db_url, pool_pre_ping=True)
 
 
 def give_consent(chat_id):
@@ -314,20 +323,21 @@ def items_between(chat_id, start, end):
 
 def save_google_token(user_id: int, email: str, refresh_token_enc: str, scopes: str):
     """Insert or update the encrypted Google refresh token."""
+    now_expr = "NOW()" if engine.dialect.name == "postgresql" else "CURRENT_TIMESTAMP"
     with engine.begin() as conn:
         conn.execute(
-            text("""
+            text(f"""
                 INSERT INTO google_tokens
                     (user_id, email, refresh_token_enc, scopes,
                      created_at, updated_at)
                 VALUES
                     (:user_id, :email, :refresh_token_enc, :scopes,
-                     NOW(), NOW())
+                     {now_expr}, {now_expr})
                 ON CONFLICT (user_id) DO UPDATE SET
                     email = EXCLUDED.email,
                     refresh_token_enc = EXCLUDED.refresh_token_enc,
                     scopes = EXCLUDED.scopes,
-                    updated_at = NOW()
+                    updated_at = {now_expr}
             """),
             {
                 "user_id": user_id,
@@ -1039,5 +1049,174 @@ def get_user_integrations_summary(chat_id):
         integrations["github"] = {"connected": True, "details": "Connected via workspace GITHUB_TOKEN"}
 
     return integrations
+
+
+def _init_device_sessions_table():
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_device_sessions (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        phone TEXT,
+                        device_id TEXT NOT NULL,
+                        google_email TEXT,
+                        last_login_at TIMESTAMPTZ DEFAULT now(),
+                        created_at TIMESTAMPTZ DEFAULT now(),
+                        CONSTRAINT uq_user_device UNIQUE (user_id, device_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_user_device ON user_device_sessions(user_id, device_id);
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_device_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        phone TEXT,
+                        device_id TEXT NOT NULL,
+                        google_email TEXT,
+                        last_login_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (user_id, device_id)
+                    )
+                """))
+    except Exception as exc:
+        print("init_device_sessions_table error:", repr(exc))
+
+
+def record_device_session(user_id: int, phone: str, device_id: str, google_email: str = None):
+    """Upsert a device session record for (user_id, device_id)."""
+    if not user_id or not device_id:
+        return
+    _init_device_sessions_table()
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(
+                    text("""
+                        INSERT INTO user_device_sessions (user_id, phone, device_id, google_email, last_login_at, created_at)
+                        VALUES (:uid, :ph, :did, :email, now(), now())
+                        ON CONFLICT (user_id, device_id)
+                        DO UPDATE SET
+                            phone = COALESCE(EXCLUDED.phone, user_device_sessions.phone),
+                            google_email = COALESCE(EXCLUDED.google_email, user_device_sessions.google_email),
+                            last_login_at = now()
+                    """),
+                    {"uid": user_id, "ph": phone, "did": device_id, "email": google_email}
+                )
+            else:
+                conn.execute(
+                    text("""
+                        INSERT INTO user_device_sessions (user_id, phone, device_id, google_email, last_login_at, created_at)
+                        VALUES (:uid, :ph, :did, :email, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT (user_id, device_id)
+                        DO UPDATE SET
+                            phone = COALESCE(excluded.phone, user_device_sessions.phone),
+                            google_email = COALESCE(excluded.google_email, user_device_sessions.google_email),
+                            last_login_at = CURRENT_TIMESTAMP
+                    """),
+                    {"uid": user_id, "ph": phone, "did": device_id, "email": google_email}
+                )
+    except Exception as exc:
+        print("record_device_session error:", repr(exc))
+
+
+def get_device_session(user_id: int, device_id: str):
+    """Retrieve device session for a user and device."""
+    if not user_id or not device_id:
+        return None
+    _init_device_sessions_table()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT user_id, phone, device_id, google_email, last_login_at, created_at
+                    FROM user_device_sessions
+                    WHERE user_id = :uid AND device_id = :did
+                """),
+                {"uid": user_id, "did": device_id}
+            ).mappings().first()
+            return dict(row) if row else None
+    except Exception as exc:
+        print("get_device_session error:", repr(exc))
+        return None
+
+
+def get_latest_device_session_for_user(user_id: int):
+    """Get the most recent device session for a user."""
+    if not user_id:
+        return None
+    _init_device_sessions_table()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT user_id, phone, device_id, google_email, last_login_at, created_at
+                    FROM user_device_sessions
+                    WHERE user_id = :uid
+                    ORDER BY last_login_at DESC
+                    LIMIT 1
+                """),
+                {"uid": user_id}
+            ).mappings().first()
+            return dict(row) if row else None
+    except Exception as exc:
+        print("get_latest_device_session_for_user error:", repr(exc))
+        return None
+
+
+def check_device_authorization(user_id: int, device_id: str, max_days: int = 30) -> dict:
+    """
+    Validates if (user_id, device_id) has authorized access:
+    - Same device and last login <= 30 days: valid = True
+    - Device mismatch (session exists on another device but not this one): valid = False, reason = 'different_device'
+    - Last login > 30 days: valid = False, reason = 'expired_30_days'
+    """
+    from datetime import datetime, timezone
+    session = get_device_session(user_id, device_id)
+    if not session:
+        other = get_latest_device_session_for_user(user_id)
+        if other:
+            return {
+                "valid": False,
+                "reason": "different_device",
+                "google_email": other.get("google_email"),
+                "message": "Connected on another device. Please re-login on this device to authorize."
+            }
+        return {
+            "valid": False,
+            "reason": "no_session",
+            "google_email": None,
+            "message": "No active session found on this device."
+        }
+
+    last_login = session.get("last_login_at")
+    if last_login:
+        if isinstance(last_login, str):
+            try:
+                last_login = datetime.fromisoformat(last_login)
+            except Exception:
+                pass
+        now_dt = datetime.now(timezone.utc)
+        if last_login.tzinfo is None:
+            last_login = last_login.replace(tzinfo=timezone.utc)
+        age_days = (now_dt - last_login).total_seconds() / 86400.0
+        if age_days > max_days:
+            return {
+                "valid": False,
+                "reason": "expired_30_days",
+                "google_email": session.get("google_email"),
+                "message": f"Login session expired ({int(age_days)} days > {max_days} days). Please re-login to authorize."
+            }
+
+    return {
+        "valid": True,
+        "reason": "valid",
+        "google_email": session.get("google_email"),
+        "message": "Device session valid"
+    }
 
 

@@ -2920,8 +2920,12 @@ def _init_web_verify_db():
             created_at REAL NOT NULL,
             telegram_chat_id TEXT,
             attempts INTEGER NOT NULL DEFAULT 0,
-            verified INTEGER NOT NULL DEFAULT 0
+            verified INTEGER NOT NULL DEFAULT 0,
+            device_id TEXT
         )""")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(web_verifications)").fetchall()}
+        if "device_id" not in cols:
+            conn.execute("ALTER TABLE web_verifications ADD COLUMN device_id TEXT")
         conn.commit()
 
 
@@ -2929,7 +2933,7 @@ def _otp_digest(token, otp):
     return hashlib.sha256(f"{token}:{otp}".encode("utf-8")).hexdigest()
 
 
-def _create_web_verification(phone):
+def _create_web_verification(phone, device_id: str = None):
     import time as _time
     token = secrets.token_urlsafe(20).replace("-", "").replace("_", "")[:28]
     otp = f"{secrets.randbelow(1_000_000):06d}"
@@ -2937,15 +2941,15 @@ def _create_web_verification(phone):
     with sqlite3.connect(WEB_VERIFY_DB) as conn:
         conn.execute("DELETE FROM web_verifications WHERE (verified = 0 AND created_at < ?) OR (created_at < ?)", (_time.time() - 1800, _time.time() - 86400))
         conn.execute(
-            "INSERT INTO web_verifications(token, phone, otp_hash, created_at) VALUES (?, ?, ?, ?)",
-            (token, phone, _otp_digest(token, otp), _time.time()),
+            "INSERT INTO web_verifications(token, phone, otp_hash, created_at, device_id) VALUES (?, ?, ?, ?, ?)",
+            (token, phone, _otp_digest(token, otp), _time.time(), device_id),
         )
         conn.commit()
     return token, otp
 
 
-def _resolve_web_session(verification_id: str, max_age: float = 86400.0) -> int:
-    """Validate verification_id and return the associated telegram_chat_id as int."""
+def _get_web_session_info(verification_id: str, max_age: float = 86400.0) -> dict:
+    """Validate verification_id and return session details: chat_id, phone, device_id."""
     if not verification_id or not isinstance(verification_id, str):
         raise HTTPException(status_code=400, detail="Verification session ID is required")
     token = verification_id.strip()
@@ -2953,17 +2957,26 @@ def _resolve_web_session(verification_id: str, max_age: float = 86400.0) -> int:
     import time as _time
     with sqlite3.connect(WEB_VERIFY_DB) as conn:
         row = conn.execute(
-            "SELECT telegram_chat_id, created_at, verified FROM web_verifications WHERE token = ?",
+            "SELECT telegram_chat_id, created_at, verified, phone, device_id FROM web_verifications WHERE token = ?",
             (token,),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="Verification session not found. Please verify again.")
-    chat_id_str, created_at, verified = row
+    chat_id_str, created_at, verified, phone, dev_id = row
     if _time.time() - created_at > max_age:
         raise HTTPException(status_code=400, detail="Verification session expired. Please verify again.")
     if not verified or not chat_id_str:
         raise HTTPException(status_code=403, detail="Complete Telegram verification first")
-    return int(chat_id_str)
+    return {
+        "chat_id": int(chat_id_str),
+        "phone": phone,
+        "device_id": dev_id,
+    }
+
+
+def _resolve_web_session(verification_id: str, max_age: float = 86400.0) -> int:
+    """Validate verification_id and return the associated telegram_chat_id as int."""
+    return _get_web_session_info(verification_id, max_age=max_age)["chat_id"]
 
 
 async def _send_web_otp_to_telegram(chat_id, token):
@@ -3063,13 +3076,14 @@ async def web_verification_start(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     phone = str(body.get("phone", "")).strip() if isinstance(body, dict) else ""
+    device_id = str(body.get("device_id", "")).strip() or request.headers.get("X-Device-Id", "").strip() or None
     if not re.fullmatch(r"\+?[0-9 ()-]{7,20}", phone):
         raise HTTPException(status_code=400, detail="Enter a valid phone number")
     if not OTP_BOT_TOKEN:
         raise HTTPException(status_code=503, detail="Set TELEGRAM_OTP_BOT_TOKEN in .env")
     if not OTP_BOT_USERNAME:
         raise HTTPException(status_code=503, detail="Set TELEGRAM_OTP_BOT_USERNAME in .env")
-    token, otp = _create_web_verification(phone)
+    token, otp = _create_web_verification(phone, device_id=device_id)
     _init_web_verify_db()
     import time as _time
     with sqlite3.connect(WEB_VERIFY_DB) as conn:
@@ -3091,15 +3105,30 @@ async def web_verification_verify(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     token = str(body.get("verification_id", "")).strip() if isinstance(body, dict) else ""
     otp = str(body.get("otp", "")).strip() if isinstance(body, dict) else ""
+    device_id = str(body.get("device_id", "")).strip() or request.headers.get("X-Device-Id", "").strip() or None
     if not token or not re.fullmatch(r"\d{6}", otp):
         raise HTTPException(status_code=400, detail="Enter the 6-digit code")
     _init_web_verify_db()
     with sqlite3.connect(WEB_VERIFY_DB) as conn:
-        row = conn.execute("SELECT otp_hash, created_at, telegram_chat_id, attempts, verified FROM web_verifications WHERE token = ?", (token,)).fetchone()
+        row = conn.execute("SELECT otp_hash, created_at, telegram_chat_id, attempts, verified, phone, device_id FROM web_verifications WHERE token = ?", (token,)).fetchone()
         if not row:
             raise HTTPException(status_code=400, detail="Verification request not found")
-        otp_hash, created_at, chat_id, attempts, verified = row
+        otp_hash, created_at, chat_id, attempts, verified, phone, saved_device_id = row
+        active_device_id = device_id or saved_device_id
         if verified:
+            if chat_id and active_device_id:
+                try:
+                    ensure_user(int(chat_id))
+                    with engine.connect() as u_conn:
+                        u_row = u_conn.execute(
+                            text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+                            {"chat_id": int(chat_id)},
+                        ).first()
+                    if u_row:
+                        from db import record_device_session
+                        record_device_session(int(u_row[0]), phone=phone, device_id=active_device_id)
+                except Exception as exc:
+                    print("Error recording device session on verified check:", repr(exc))
             return {"verified": True}
         if _time.time() - created_at > 600:
             raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
@@ -3112,7 +3141,24 @@ async def web_verification_verify(request: Request):
             conn.commit()
             raise HTTPException(status_code=400, detail="Incorrect code")
         conn.execute("UPDATE web_verifications SET verified = 1 WHERE token = ?", (token,))
+        if device_id:
+            conn.execute("UPDATE web_verifications SET device_id = ? WHERE token = ?", (device_id, token))
         conn.commit()
+
+    if chat_id and active_device_id:
+        try:
+            ensure_user(int(chat_id))
+            with engine.connect() as u_conn:
+                u_row = u_conn.execute(
+                    text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+                    {"chat_id": int(chat_id)},
+                ).first()
+            if u_row:
+                from db import record_device_session
+                record_device_session(int(u_row[0]), phone=phone, device_id=active_device_id)
+        except Exception as exc:
+            print("Error recording device session on verify:", repr(exc))
+
     return {"verified": True, "method": "telegram_test_code", "note": "This confirms access to the Telegram account, not ownership of the entered phone number."}
 
 
@@ -3290,22 +3336,46 @@ async def web_google_start(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     verification_id = str(body.get("verification_id", "")).strip()
+    device_id = str(body.get("device_id", "")).strip() or request.headers.get("X-Device-Id", "").strip() or None
     return_url = str(body.get("return_url", "")).strip() or None
-    chat_id = _resolve_web_session(verification_id)
+
+    session_info = _get_web_session_info(verification_id)
+    chat_id = session_info["chat_id"]
+    active_device_id = device_id or session_info.get("device_id")
+    phone = session_info.get("phone")
+
     ensure_user(chat_id)
     give_consent(chat_id)
 
     is_connected, google_email = await get_valid_google_connection_by_chat_id(chat_id)
     if is_connected:
-        return {
-            "already_connected": True,
-            "connected": True,
-            "email": google_email,
-            "message": f"Your Google account is already connected: {google_email}."
-        }
+        with engine.connect() as conn:
+            u_row = conn.execute(
+                text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+                {"chat_id": chat_id},
+            ).first()
+        user_id = int(u_row[0]) if u_row else None
+        if user_id and active_device_id:
+            from db import check_device_authorization
+            auth_check = check_device_authorization(user_id, active_device_id, max_days=30)
+            if auth_check["valid"]:
+                return {
+                    "already_connected": True,
+                    "connected": True,
+                    "email": google_email,
+                    "message": f"Your Google account is already connected: {google_email}."
+                }
+            # Device mismatch or expired (>30 days): allow re-authorization for this device!
+        elif not active_device_id:
+            return {
+                "already_connected": True,
+                "connected": True,
+                "email": google_email,
+                "message": f"Your Google account is already connected: {google_email}."
+            }
 
     try:
-        auth_url = build_auth_url(chat_id, source="web", return_url=return_url)
+        auth_url = build_auth_url(chat_id, source="web", return_url=return_url, device_id=active_device_id, phone=phone)
         return {"auth_url": auth_url, "already_connected": False}
     except Exception as exc:
         print("web_google_start error:", repr(exc))
@@ -3323,13 +3393,55 @@ async def web_google_status(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     verification_id = str(body.get("verification_id", "")).strip()
-    chat_id = _resolve_web_session(verification_id)
+    device_id = str(body.get("device_id", "")).strip() or request.headers.get("X-Device-Id", "").strip() or None
+
+    session_info = _get_web_session_info(verification_id)
+    chat_id = session_info["chat_id"]
+    active_device_id = device_id or session_info.get("device_id")
+    phone = session_info.get("phone")
+
     ensure_user(chat_id)
 
     is_connected, google_email = await get_valid_google_connection_by_chat_id(chat_id)
+    if not is_connected:
+        return {
+            "connected": False,
+            "email": None,
+            "requires_relogin": False,
+            "message": "Google not connected",
+        }
+
+    with engine.connect() as conn:
+        u_row = conn.execute(
+            text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+            {"chat_id": chat_id},
+        ).first()
+    user_id = int(u_row[0]) if u_row else None
+
+    if user_id and active_device_id:
+        from db import check_device_authorization, record_device_session
+        auth_check = check_device_authorization(user_id, active_device_id, max_days=30)
+        if not auth_check["valid"]:
+            return {
+                "connected": False,
+                "email": google_email,
+                "requires_relogin": True,
+                "reason": auth_check["reason"],
+                "message": auth_check["message"],
+            }
+        else:
+            record_device_session(user_id, phone=phone, device_id=active_device_id, google_email=google_email)
+            return {
+                "connected": True,
+                "email": google_email,
+                "requires_relogin": False,
+                "message": "Google connected",
+            }
+
     return {
         "connected": is_connected,
         "email": google_email if is_connected else None,
+        "requires_relogin": False,
         "message": "Google connected" if is_connected else "Google not connected",
     }
 
@@ -3588,6 +3700,16 @@ async def google_callback(request: Request):
             "https://www.googleapis.com/auth/gmail.send",
         ])
         save_google_token(db_user_id, email, encrypted, scopes)
+
+        # Record device session on successful Google OAuth
+        callback_device_id = state_data.get("device_id")
+        callback_phone = state_data.get("phone")
+        if callback_device_id:
+            try:
+                from db import record_device_session
+                record_device_session(db_user_id, phone=callback_phone, device_id=callback_device_id, google_email=email)
+            except Exception as exc:
+                print("Error recording device session in google callback:", repr(exc))
 
         if is_web:
             target_url = _safe_web_redirect(return_url, "google_status=connected")

@@ -9,6 +9,22 @@ class PeculiarAPI {
   }
 
   /**
+   * Get or initialize a unique persistent device ID for this client/browser
+   */
+  getDeviceId() {
+    let deviceId = localStorage.getItem('peculiar_device_id');
+    if (!deviceId) {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        deviceId = 'dev_' + crypto.randomUUID();
+      } else {
+        deviceId = 'dev_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+      }
+      localStorage.setItem('peculiar_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
+  /**
    * Core request helper with timeout and standardized error handling
    */
   async request(endpoint, options = {}) {
@@ -20,6 +36,7 @@ class PeculiarAPI {
     const headers = {
       'Accept': 'application/json',
       'ngrok-skip-browser-warning': 'true', // Required when testing via ngrok
+      'X-Device-Id': this.getDeviceId(),
       ...(options.headers || {})
     };
 
@@ -88,7 +105,10 @@ class PeculiarAPI {
     }
     return await this.request('/web/verification/start', {
       method: 'POST',
-      body: { phone: phone.trim() }
+      body: {
+        phone: phone.trim(),
+        device_id: this.getDeviceId()
+      }
     });
   }
 
@@ -109,7 +129,8 @@ class PeculiarAPI {
       method: 'POST',
       body: {
         verification_id: verificationId.trim(),
-        otp: String(otp).trim()
+        otp: String(otp).trim(),
+        device_id: this.getDeviceId()
       }
     });
   }
@@ -215,7 +236,10 @@ class PeculiarAPI {
     }
     return await this.request('/web/google/status', {
       method: 'POST',
-      body: { verification_id: verificationId.trim() }
+      body: {
+        verification_id: verificationId.trim(),
+        device_id: this.getDeviceId()
+      }
     });
   }
 
@@ -229,7 +253,10 @@ class PeculiarAPI {
     if (!verificationId) {
       throw new Error('Verification ID is required.');
     }
-    const body = { verification_id: verificationId.trim() };
+    const body = {
+      verification_id: verificationId.trim(),
+      device_id: this.getDeviceId()
+    };
     if (returnUrl) {
       body.return_url = returnUrl;
     }

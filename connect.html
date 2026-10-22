@@ -481,6 +481,16 @@
       }
     }
 
+    // Switch Google UI to requires-relogin state (different device or >30 days)
+    function showGoogleRequiresRelogin(email, reason, message) {
+      showGoogleUnconnected();
+      const connectBtn = document.getElementById('connect-google-btn');
+      if (connectBtn) {
+        connectBtn.textContent = email ? `Sign in with ${email} ↗` : 'Authorize Google on this device ↗';
+      }
+      showGoogleAlert(message || 'Please sign in with Google on this device to authorize access.', 'info');
+    }
+
     const storageKey = window.CONFIG?.STORAGE_KEYS?.VERIFICATION_ID || 'peculiar_verification_id';
 
     // Handle Google connect initiation
@@ -605,8 +615,8 @@
         }
       } catch (e) {
         console.warn('Could not retrieve email status from backend:', e.message);
-        const fallbackEmail = localStorage.getItem('peculiar_linked_email');
-        if (fallbackEmail) showLinkedSuccess(fallbackEmail);
+        localStorage.removeItem('peculiar_linked_email');
+        resetEmailForm();
       }
 
       // 2. Fetch real Google Connection status from backend
@@ -614,6 +624,8 @@
         const googleStatus = await window.api.getGoogleStatus(verificationId);
         if (googleStatus && googleStatus.connected && googleStatus.email) {
           showGoogleConnected(googleStatus.email);
+        } else if (googleStatus && googleStatus.requires_relogin) {
+          showGoogleRequiresRelogin(googleStatus.email, googleStatus.reason, googleStatus.message);
         } else {
           showGoogleUnconnected();
         }

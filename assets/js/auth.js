@@ -80,6 +80,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const fullPhoneNumber = countryCode.startsWith('+') ? `${countryCode}${rawNumber}` : `+${countryCode}${rawNumber}`;
 
+      // Reset stale session/email data if phone number changed or logging in as another user
+      const previousPhone = localStorage.getItem(window.CONFIG?.STORAGE_KEYS?.PHONE_NUMBER);
+      if (previousPhone && previousPhone !== fullPhoneNumber) {
+        localStorage.removeItem('peculiar_linked_email');
+        localStorage.removeItem('peculiar_pending_email');
+        localStorage.removeItem(window.CONFIG?.STORAGE_KEYS?.IS_VERIFIED);
+      }
+
       try {
         sendCodeBtn.disabled = true;
         sendCodeBtn.innerHTML = 'Connecting to Telegram...';
