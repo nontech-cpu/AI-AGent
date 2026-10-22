@@ -17,6 +17,7 @@ import db
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from memory.retrieval import assemble_memory_context
 from memory.extractor import extract_and_persist_turn
+from agent.verifier import verify_and_ground_reply
 
 AGENT_SYSTEM_PROMPT = """You are PeculiarAI, an empathetic, hyper-competent personal AI assistant with persistent memory and real-world tools.
 
@@ -73,6 +74,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     messages.append({"role": "user", "content": user_text})
 
     tool_calls_executed = []
+    tool_results_list = []
     pending_action = None
     final_reply = ""
     total_tokens = 0
@@ -127,6 +129,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
                 # Execute tool
                 tool_result = await execute_tool(chat_id, fn_name, args_dict)
+                tool_results_list.append(tool_result)
 
                 # Two-phase confirmation interception
                 if tool_result.get("status") == "needs_confirmation":
@@ -173,6 +176,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not final_reply:
         final_reply = "Bhai, main aapka personal AI assistant hu. Reminders, schedule, contacts aur tasks ke baare mein kuch bhi bataiye!"
 
+    # Phase 3: Zero-Unsupported-Claims Grounding Verifier Pass
+    is_grounded, verified_reply, violations = await verify_and_ground_reply(
+        draft_reply=final_reply,
+        tool_results=tool_results_list,
+        memory_context=mem_ctx,
+        user_query=user_text
+    )
+    if not is_grounded:
+        print(f"Grounding Verifier intercepted unsupported claims: {violations}")
+        final_reply = verified_reply
+
     latency_ms = int((time.time() - start_ts) * 1000)
 
     # Record turn
@@ -189,6 +203,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         "reply": final_reply,
         "tool_calls_executed": tool_calls_executed,
         "pending_action": pending_action,
+        "is_grounded": is_grounded,
+        "violations": violations,
         "latency_ms": latency_ms,
         "tokens_used": total_tokens,
         "memory_context": mem_ctx
