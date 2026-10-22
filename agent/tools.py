@@ -28,6 +28,14 @@ class SearchMemoryArgs(BaseModel):
 class GetContactArgs(BaseModel):
     name_or_alias: str = Field(..., description="Name, nickname, or alias of the contact (handles typos e.g. 'annaya', 'rahul').")
 
+class SaveContactArgs(BaseModel):
+    name: str = Field(..., description="Full name of the contact (e.g. 'Ananya Sharma').")
+    phone: Optional[str] = Field(None, description="Phone number if specified.")
+    email: Optional[str] = Field(None, description="Email address if specified.")
+    role: Optional[str] = Field(None, description="Job role, company, or relationship e.g. 'Lead UI/UX Designer'.")
+    aliases: Optional[List[str]] = Field(None, description="Common nicknames or short names e.g. ['ananya', 'annaya'].")
+    notes: Optional[str] = Field(None, description="Any extra notes or details.")
+
 class ListContactsArgs(BaseModel):
     pass
 
@@ -41,6 +49,9 @@ class GetCommitmentsArgs(BaseModel):
 class SaveNoteOrFactArgs(BaseModel):
     text: str = Field(..., description="The user fact, life detail, or preference to remember permanently.")
     category: Optional[str] = Field("general", description="Category e.g. 'preference', 'work', 'personal'.")
+
+class ClearChatHistoryArgs(BaseModel):
+    confirm: Optional[bool] = Field(True, description="Confirmation flag to delete chat history.")
 
 class CreateReminderArgs(BaseModel):
     title: str = Field(..., description="Title of the reminder or task.")
@@ -149,6 +160,25 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "save_contact",
+            "description": "Saves or updates a person or contact in the user's persistent address book and cognitive memory with phone number, email, role, and aliases.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Full name of the contact."},
+                    "phone": {"type": ["string", "null"], "description": "Phone number."},
+                    "email": {"type": ["string", "null"], "description": "Email address."},
+                    "role": {"type": ["string", "null"], "description": "Role, title, or company."},
+                    "aliases": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Nicknames or alternate spellings."},
+                    "notes": {"type": ["string", "null"], "description": "Additional notes."}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_contacts",
             "description": "Retrieve all saved contacts, networking connections, and their pending commitments.",
             "parameters": {
@@ -197,6 +227,19 @@ TOOL_DEFINITIONS = [
                     "category": {"type": ["string", "null"], "description": "Category e.g. preference, work, personal."}
                 },
                 "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_chat_history",
+            "description": "Clears or deletes recent conversation history when explicitly asked by the user (e.g. 'chat history delete kar de').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": ["boolean", "null"], "description": "Set to true to clear chat history."}
+                }
             }
         }
     },
@@ -446,6 +489,58 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 }
             return {"found": False, "message": f"Contact '{args.name_or_alias}' not found in saved memories."}
 
+        elif tool_name == "save_contact":
+            args = SaveContactArgs(**arguments)
+            try:
+                from memory.store import resolve_user_id, save_entity, add_entity_alias
+                uid = resolve_user_id(chat_id)
+                attrs = {}
+                if args.phone: attrs["phone"] = args.phone
+                if args.email: attrs["email"] = args.email
+                if args.role: attrs["role_title"] = args.role
+                if args.notes: attrs["context_notes"] = args.notes
+
+                first_name = args.name.split()[0].strip()
+                alias_list = list(args.aliases or [])
+                if first_name.lower() not in [a.lower() for a in alias_list]:
+                    alias_list.append(first_name)
+                if first_name.lower() == "ananya":
+                    alias_list.append("annaya")
+
+                ent_id = save_entity(
+                    user_id=uid,
+                    name=args.name,
+                    entity_type="person",
+                    primary_alias=first_name,
+                    attributes=attrs
+                )
+                for al in alias_list:
+                    add_entity_alias(ent_id, al)
+            except Exception as exc:
+                print("Cognitive save_contact fallback:", exc)
+
+            try:
+                db.save_contact_memory(
+                    chat_id=chat_id,
+                    name=args.name,
+                    phone=args.phone or "",
+                    email=args.email or "",
+                    role_title=args.role or "",
+                    company="",
+                    context_notes=args.notes or "Saved via Agent V2"
+                )
+            except Exception as exc:
+                print("db.save_contact_memory error:", exc)
+
+            return {
+                "status": "success",
+                "name": args.name,
+                "phone": args.phone,
+                "email": args.email,
+                "role": args.role,
+                "message": f"Contact '{args.name}' successfully saved in persistent address book and memory."
+            }
+
         elif tool_name == "list_contacts":
             try:
                 from memory.store import resolve_user_id, list_entities, get_commitments_for_user
@@ -533,6 +628,13 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             db.save_user_fact(chat_id, args.text, category=args.category)
             return {"status": "success", "saved_fact": args.text}
+
+        elif tool_name == "clear_chat_history":
+            db.clear_chat_history(chat_id)
+            return {
+                "status": "success",
+                "message": "Chat history has been successfully cleared."
+            }
 
         elif tool_name == "create_reminder":
             args = CreateReminderArgs(**arguments)

@@ -11,6 +11,9 @@ import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, List
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from timing import IST
 import db
@@ -25,9 +28,11 @@ GROUNDING & TRUTH CONTRACT:
 1. Factual statements about the user's schedule, contacts, commitments, reminders, files, or past conversations must come ONLY from tool results.
 2. If data is not found or empty, tell the user plainly: "Mere paas yeh information saved nahi hai" and offer to save it. NEVER invent facts or repositories.
 3. NEVER claim an action was performed (meeting scheduled, email sent, notes saved) unless a tool returned success.
-4. When user asks what they need to send, give, or do for a contact (e.g. 'Ananya ko kya bhejna tha?'), use get_contact or search_memory to look up commitments. Do NOT draft unnecessary apology messages.
-5. Answer in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul!').
-6. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
+4. When the user asks to save or remember a contact (e.g. 'Ananya ka contact save kar le: phone ... email ... role ...'), ALWAYS call the `save_contact` tool immediately with name, phone, email, and role.
+5. When the user asks to remember a fact or preference, call `save_note_or_fact`. When the user mentions a promise or commitment to a contact, call `update_contact_commitment`.
+6. When user asks what they need to send, give, or do for a contact (e.g. 'Ananya ko kya bhejna tha?'), use get_contact or search_memory to look up commitments. Do NOT draft unnecessary apology messages.
+7. Answer in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul!').
+8. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)

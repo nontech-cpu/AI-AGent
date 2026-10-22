@@ -149,3 +149,24 @@ async def test_agent_loop_executes_tool_and_answers():
         assert "module bhejna" in res["reply"]
         assert "get_contact" in res["tool_calls_executed"]
         assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_tool_save_contact_and_lookup_typo():
+    chat_id = 998822
+    # 1. Save contact Ananya Sharma with phone and email
+    res_save = await execute_tool(chat_id, "save_contact", {
+        "name": "Ananya Sharma",
+        "phone": "+91 98765 43210",
+        "email": "ananya.sharma@example.com",
+        "role": "Lead UI/UX Designer"
+    })
+    assert res_save["status"] == "success"
+    assert res_save["name"] == "Ananya Sharma"
+
+    # 2. Look up contact with typo 'annaya'
+    res_lookup = await execute_tool(chat_id, "get_contact", {"name_or_alias": "annaya"})
+    assert res_lookup["found"] is True
+    assert res_lookup["name"] == "Ananya Sharma"
+    assert res_lookup["phone"] == "+91 98765 43210"
+    assert res_lookup["email"] == "ananya.sharma@example.com"

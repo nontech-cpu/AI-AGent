@@ -21,9 +21,12 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
     stopwords = {
         "hai", "bhy", "bhai", "mera", "meri", "mere", "mujhe", "kya", "tha", "thi",
         "the", "ko", "koo", "ka", "ki", "ke", "aur", "and", "karo", "bhejna", "kar",
-        "bolo", "batao", "batana", "meeting", "reminder", "today", "tomorrow", "time"
+        "bolo", "batao", "batana", "meeting", "reminder", "today", "tomorrow", "time",
+        "contact", "save", "phone", "email", "role", "lead", "designer", "example", "com",
+        "bhejo", "rakh", "rakhna", "karna", "number", "notes", "detail", "details",
+        "info", "information", "dekh", "dekho", "please", "help", "with", "from"
     }
-    candidates = [w for w in words if w not in stopwords]
+    candidates = [w for w in words if w not in stopwords][:4]
     return candidates
 
 

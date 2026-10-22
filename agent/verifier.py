@@ -32,9 +32,16 @@ Respond ONLY with valid JSON:
 }
 """
 
-def extract_evidence_text(tool_results: List[Dict[str, Any]], memory_context: Optional[Dict[str, Any]] = None) -> str:
-    """Combines all tool outputs and memory context into a single audit string."""
+def extract_evidence_text(
+    tool_results: List[Dict[str, Any]],
+    memory_context: Optional[Dict[str, Any]] = None,
+    user_query: str = ""
+) -> str:
+    """Combines all tool outputs, memory context, and user-provided inputs into a single audit string."""
     parts = []
+    if user_query:
+        parts.append(f"User Query & Provided Details:\n{user_query}")
+
     if memory_context and memory_context.get("formatted_block"):
         parts.append(f"Memory Evidence:\n{memory_context['formatted_block']}")
 
@@ -56,7 +63,7 @@ def deterministic_verify(
     Fast, zero-latency deterministic safety checks.
     Returns (passed, revised_reply, violation_reasons).
     """
-    evidence_str = extract_evidence_text(tool_results, memory_context)
+    evidence_str = extract_evidence_text(tool_results, memory_context, user_query)
     violations = []
 
     # 1. Fake Google Meet Link Check
@@ -140,12 +147,13 @@ async def verify_and_ground_reply(
         return False, revised or "Mere paas iski koi saved information nahi hai. Kya aap batana chahenge taaki main yaad rakhun?", violations
 
     # If already a missing-data statement or simple greeting, pass immediately
-    low_reply = draft_reply.lower()
-    if any(k in low_reply for k in ["nahi hai", "not found", "kaise ho", "hello", "kripya", "bataiye", "yes to create"]):
+    # If user instruction is to save/add/update/create, do not flag acknowledging the user's data as unsupported
+    is_save_request = any(k in user_query.lower() for k in ["save", "note", "add", "store", "update", "yaad rakh", "likh", "bana", "set", "kar le", "krle", "rakh"])
+    if is_save_request:
         return True, draft_reply, []
 
     # If no evidence and draft claims specific names/commitments, flag it
-    evidence_text = extract_evidence_text(tool_results, memory_context)
+    evidence_text = extract_evidence_text(tool_results, memory_context, user_query)
     if not evidence_text.strip():
         if any(w in user_query.lower() for w in ["kya bhejna", "kab hai", "details", "repo", "schedule", "free hu", "kahan", "kaam", "kaun", "kiska", "who", "where", "what", "email", "phone"]):
             fallback = "Mere paas iski koi saved information nahi hai. Kya aap mujhe batana chahenge taaki main yaad rakhun?"
@@ -161,7 +169,7 @@ async def verify_and_ground_reply(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
                         "messages": [
                             {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
                             {

@@ -844,6 +844,23 @@ def get_recent_chat_history(chat_id, limit=15):
         return []
 
 
+def clear_chat_history(chat_id):
+    """Deletes recent conversation logs for a user."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "DELETE FROM chat_logs "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid)"
+                ),
+                {"cid": chat_id}
+            )
+        return True
+    except Exception as exc:
+        print("clear_chat_history error:", repr(exc))
+        return False
+
+
 def get_chat_turns_mentioning_keyword(chat_id, keyword, limit=10):
     """Retrieves past chat turns that mention a keyword (e.g. contact name or topic) for episodic long-term memory."""
     if not keyword or len(str(keyword).strip()) < 3:
