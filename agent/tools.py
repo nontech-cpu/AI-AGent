@@ -1167,7 +1167,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 if notion_row:
                     msg = f"✅ Aapka Notion account connected hai! (Workspace: {notion_ws})"
                 else:
-                    msg = "❌ Aapka Notion account abhi connect nahi hai. Connect karne ke liye apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                    from notion_auth import is_notion_oauth_configured, build_notion_auth_url
+                    if is_notion_oauth_configured():
+                        try:
+                            auth_url = build_notion_auth_url(int(chat_id), source="tg")
+                            msg = (
+                                f"❌ Aapka Notion account abhi connect nahi hai.\n\n"
+                                f"👉 1-Click Login: Is secure link par click karke workspace authorize karein:\n"
+                                f"{auth_url}\n\n"
+                                f"Ya apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                            )
+                        except Exception:
+                            msg = "❌ Aapka Notion account abhi connect nahi hai. Connect karne ke liye apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                    else:
+                        msg = "❌ Aapka Notion account abhi connect nahi hai. Connect karne ke liye apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
                 return {
                     "status": "success",
                     "service": "notion",
@@ -1401,8 +1414,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                             "workspace": name,
                             "message": f"✅ Notion workspace '{name}' connected successfully! Ab aap summaries ya notes Notion me add kar sakte hain."
                         }
-                    else:
-                        return {"status": "error", "message": f"⚠️ Invalid Notion token: {name}"}
+                existing_row = db.get_user_integration(chat_id, "notion")
+                if existing_row:
+                    existing_ws = "Connected"
+                    try:
+                        cfg = json.loads(existing_row.get("config_data") or "{}")
+                        existing_ws = cfg.get("workspace_name") or "Connected"
+                    except Exception:
+                        pass
+                    return {
+                        "status": "success",
+                        "service": "notion",
+                        "workspace": existing_ws,
+                        "message": f"✅ Aapka Notion workspace '{existing_ws}' already connected hai! Ab aap notes ya meeting summaries Notion me add kar sakte hain."
+                    }
 
                 if is_notion_oauth_configured():
                     try:

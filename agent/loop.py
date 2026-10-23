@@ -292,7 +292,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         # 1. Notion Connection / Status Queries (Only if NOT creating/adding notes)
         is_note_action = bool(re.search(r"\b(add|save|daal|daalo|dal|bana|banao|bna|bnao|write|create|append|likh|likho|heading|bullet|bullets|points|section)\b", low_prompt_raw))
         if has_notion and not is_note_action and (re.search(conn_kw_re, low_prompt_raw) or len(words) <= 4 or "?" in low_prompt_raw):
-            is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
+            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|juda|judi|linked)\b", low_prompt_raw))
+            is_connect_intent = (not is_explicit_status_check) and bool(re.search(r"(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)", low_prompt_raw))
             tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
             res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
             if res.get("message"):
@@ -311,7 +312,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
         # 2. GitHub Queries
         if has_github and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
-            is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
+            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|juda|judi|linked)\b", low_prompt_raw))
+            is_connect_intent = (not is_explicit_status_check) and bool(re.search(r"(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)", low_prompt_raw))
             tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
             res = await execute_tool(chat_id, tool_to_call, {"service": "github"})
             if res.get("message"):
@@ -330,7 +332,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
         # 3. Google Queries
         if has_google and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
-            is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
+            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|juda|judi|linked)\b", low_prompt_raw))
+            is_connect_intent = (not is_explicit_status_check) and bool(re.search(r"(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)", low_prompt_raw))
             tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
             res = await execute_tool(chat_id, tool_to_call, {"service": "google"})
             if res.get("message"):

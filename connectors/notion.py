@@ -33,6 +33,13 @@ class NotionConnector(Connector):
         return "not_connected"
 
     def connect_instructions(self, user_or_chat_id: int) -> str:
+        from notion_auth import is_notion_oauth_configured, build_notion_auth_url
+        if is_notion_oauth_configured():
+            try:
+                url = build_notion_auth_url(int(user_or_chat_id), source="tg")
+                return f"Apna Notion workspace 1-click mein connect karne ke liye is link par authorize karein:\n👉 {url}"
+            except Exception:
+                pass
         return "Notion connect karne ke liye apna Notion integration token (`secret_...` ya `ntn_...`) chat mein bhej dijiye."
 
     def tools(self) -> List[ToolSpec]:

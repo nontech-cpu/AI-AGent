@@ -1102,6 +1102,18 @@ def get_user_integration(chat_id, service: str):
                 {"cid": chat_id, "svc": svc}
             ).first()
         if not row:
+            if svc == "notion" and os.getenv("NOTION_API_KEY"):
+                return {
+                    "api_key": os.getenv("NOTION_API_KEY").strip(),
+                    "config_data": json.dumps({"workspace_name": "buisiness"}),
+                    "is_active": True
+                }
+            if svc == "github" and os.getenv("GITHUB_TOKEN"):
+                return {
+                    "api_key": os.getenv("GITHUB_TOKEN").strip(),
+                    "config_data": json.dumps({"username": "nontech-cpu"}),
+                    "is_active": True
+                }
             return None
         decrypted_key = decrypt_any(row[0])
         return {
