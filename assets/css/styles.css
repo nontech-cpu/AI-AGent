@@ -725,6 +725,20 @@ main {
   color: #ffffff;
 }
 
+.btn-github {
+  background: #24292e;
+  color: #ffffff;
+  width: 100%;
+  box-shadow: 0 4px 14px rgba(36, 41, 46, 0.25);
+}
+
+.btn-github:hover {
+  background: #000000;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  color: #ffffff;
+}
+
 .btn-back {
   background: #ffffff;
   border: 1.5px solid var(--border-subtle);

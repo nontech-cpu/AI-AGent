@@ -340,6 +340,28 @@ class PeculiarAPI {
       }
     });
   }
+
+  /**
+   * 14. POST /web/github/start
+   * @param {string} verificationId - Active verification ID
+   * @param {string} [returnUrl] - Return URL after GitHub OAuth
+   * @returns {Promise<{auth_url: string, already_connected: boolean}>}
+   */
+  async startGithubConnect(verificationId, returnUrl = null) {
+    if (!verificationId) {
+      throw new Error('Verification ID is required.');
+    }
+    const body = {
+      verification_id: verificationId.trim()
+    };
+    if (returnUrl) {
+      body.return_url = returnUrl;
+    }
+    return await this.request('/web/github/start', {
+      method: 'POST',
+      body
+    });
+  }
 }
 
 // Instantiate global API client

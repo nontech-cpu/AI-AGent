@@ -748,10 +748,11 @@ async def execute_notion_action(chat_id, user_prompt):
     """Executes a Notion note/page creation from user prompt or recent context."""
     notion_info = get_user_integration(chat_id, "notion")
     if not notion_info:
+        frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
         msg = (
             "Bhai aapka **Notion Workspace** abhi connect nahi hai! 🔗\n\n"
-            "Aap niche diye gaye link par jakar 1-click mein apna Notion connect kar sakte ho:\n"
-            "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+            f"Aap niche diye gaye link par jakar 1-click mein apna Notion connect kar sakte ho:\n"
+            f"👉 {frontend_connect}\n\n"
             "Connect hone ke baad aap mujhe yahan koi bhi notes, meeting summaries ya text forward karoge to main seedhe aapke Notion workspace mein save kar dunga!"
         )
         await say_raw(chat_id, msg)
@@ -817,10 +818,11 @@ async def execute_github_action(chat_id: int, text: str):
 
     if is_issues_query:
         if not token:
+            frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
             msg = (
                 "Bhai aapka **GitHub Account** abhi connect nahi hai! 🐙\n\n"
-                "Aap niche diye gaye link par jakar 1-click mein apna GitHub connect kar sakte ho:\n"
-                "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+                f"Aap niche diye gaye link par jakar 1-click mein apna GitHub connect kar sakte ho:\n"
+                f"👉 {frontend_connect}\n\n"
                 "Connect hote hi aap yahan direct issues aur PRs track kar sakte ho!"
             )
             await say_raw(chat_id, msg)
@@ -862,10 +864,11 @@ async def execute_github_action(chat_id: int, text: str):
         reply = f"🐙 **GitHub ({resolved_user}):** Is account par abhi koi public repository nahi mili."
     else:
         if not token and not extracted_username:
+            frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
             reply = (
                 "Bhai aapka **GitHub Account** abhi connect nahi hai! 🐙\n\n"
-                "Aap connect page par jakar GitHub link kar sakte ho:\n"
-                "👉 https://peculiar-ai.netlify.app/connect.html\n\n"
+                f"Aap connect page par jakar GitHub link kar sakte ho:\n"
+                f"👉 {frontend_connect}\n\n"
                 "Ya mujhe apna GitHub profile link (jaise: `https://github.com/username`) batao, main turant fetch kar dunga!"
             )
         else:
@@ -1183,7 +1186,7 @@ async def start_google_connection(chat_id):
 
 def _safe_web_redirect(return_url: str | None, query_string: str) -> str:
     """Ensure redirect URL stays within permitted local or production origins."""
-    fallback = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/") + "/connect.html"
+    fallback = os.getenv("FRONTEND_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app").rstrip("/") + "/connect.html"
     if not return_url:
         target = fallback
     else:

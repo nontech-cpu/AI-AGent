@@ -195,7 +195,7 @@
               </div>
               <h2 class="connect-card-title">GitHub</h2>
               <p class="connect-card-desc">
-                Query open pull requests, check assigned issues, and track your repositories directly through chat.
+                Authorize GitHub access to autonomously inspect code, check issues, and commit changes or README updates directly via chat.
               </p>
             </div>
 
@@ -204,19 +204,28 @@
 
               <!-- Unconnected State -->
               <div id="github-unconnected-container">
-                <div class="form-group" style="margin-bottom: 10px;">
-                  <label for="github-token-input" class="form-label" style="font-size: 12px; margin-bottom: 4px;">Personal Access Token</label>
-                  <div style="display: flex; gap: 6px;">
-                    <input type="password" id="github-token-input" class="form-input" placeholder="ghp_..." style="font-size: 12.5px; font-family: var(--font-mono); padding: 8px 12px;">
-                    <button type="button" id="github-paste-btn" class="btn btn-secondary" style="font-size: 11.5px; padding: 0 10px; white-space: nowrap;" title="Paste from clipboard">📋 Paste</button>
-                  </div>
-                </div>
-                <button type="button" id="connect-github-btn" class="btn btn-primary btn-full" style="font-size: 13.5px; padding: 9px;">
-                  Connect GitHub
-                </button>
+                <a href="#" id="connect-github-oauth-btn" class="btn btn-github">
+                  Connect GitHub ↗
+                </a>
                 <div class="connect-card-note">
-                  Create a token with 'repo' scope at <a href="https://github.com/settings/tokens" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: underline;">github.com/settings/tokens</a>.
+                  1-Click authorization with write &amp; commit permissions. Encrypted &amp; securely stored.
                 </div>
+
+                <details style="margin-top: 14px; font-size: 12.5px; color: var(--text-secondary);">
+                  <summary style="cursor: pointer; color: var(--primary); font-weight: 500; margin-bottom: 8px;">Or enter Personal Access Token</summary>
+                  <div class="form-group" style="margin-bottom: 10px;">
+                    <div style="display: flex; gap: 6px;">
+                      <input type="password" id="github-token-input" class="form-input" placeholder="ghp_..." style="font-size: 12.5px; font-family: var(--font-mono); padding: 8px 12px;">
+                      <button type="button" id="github-paste-btn" class="btn btn-secondary" style="font-size: 11.5px; padding: 0 10px; white-space: nowrap;" title="Paste from clipboard">📋 Paste</button>
+                    </div>
+                  </div>
+                  <button type="button" id="connect-github-btn" class="btn btn-secondary btn-full" style="font-size: 13px; padding: 8px;">
+                    Save Token
+                  </button>
+                  <div class="connect-card-note" style="margin-top: 6px;">
+                    Needs 'repo' scope at <a href="https://github.com/settings/tokens" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: underline;">github.com/settings/tokens</a>.
+                  </div>
+                </details>
               </div>
 
               <!-- Connected State -->
@@ -228,9 +237,14 @@
                 <p style="font-size: 13px; color: var(--text-main); margin-bottom: 12px;">
                   Account: <strong id="github-name-display" style="color: var(--primary);">@github-user</strong>
                 </p>
-                <button type="button" id="disconnect-github-btn" class="btn btn-secondary" style="font-size: 12.5px; padding: 6px 14px;">
-                  Disconnect GitHub
-                </button>
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                  <button type="button" id="disconnect-github-btn" class="btn btn-secondary" style="font-size: 12.5px; padding: 6px 14px;">
+                    Disconnect GitHub
+                  </button>
+                  <a href="#" id="reconnect-github-oauth-btn" class="btn btn-secondary" style="font-size: 12.5px; padding: 6px 14px; text-decoration: none;">
+                    Reconnect ↗
+                  </a>
+                </div>
               </div>
             </div>
           </div>
@@ -395,12 +409,16 @@
       const connected = document.getElementById('github-connected-container');
       const input = document.getElementById('github-token-input');
       const btn = document.getElementById('connect-github-btn');
+      const oauthBtn = document.getElementById('connect-github-oauth-btn');
       if (connected) connected.style.display = 'none';
       if (unconnected) unconnected.style.display = 'block';
       if (input) input.value = '';
       if (btn) {
         btn.disabled = false;
-        btn.textContent = 'Connect GitHub';
+        btn.textContent = 'Save Token';
+      }
+      if (oauthBtn) {
+        oauthBtn.textContent = 'Connect GitHub ↗';
       }
     }
 
@@ -589,6 +607,19 @@
           showGoogleAlert(gMsg || 'Google connection failed or was denied.', 'error');
         }
         // Clean URL without page reload
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
+      // Check URL search params for GitHub OAuth status redirect
+      if (urlParams.has('github_status')) {
+        const ghStatus = urlParams.get('github_status');
+        const ghMsg = urlParams.get('github_message');
+
+        if (ghStatus === 'connected') {
+          showGithubAlert('GitHub account connected successfully! Repository write & commit permissions granted.', 'success');
+        } else if (ghStatus === 'error') {
+          showGithubAlert(ghMsg || 'GitHub connection failed or was denied.', 'error');
+        }
         window.history.replaceState({}, document.title, window.location.pathname);
       }
 
@@ -894,7 +925,49 @@
       }
     });
 
-    // GitHub Connect & Disconnect handlers
+    // Handle 1-Click GitHub OAuth Initiation
+    async function initiateGithubConnect(e) {
+      if (e) e.preventDefault();
+      hideGithubAlert();
+
+      const verificationId = localStorage.getItem(storageKey);
+      if (!verificationId) {
+        showGithubAlert('Please verify your Telegram account first to connect GitHub.', 'error');
+        return;
+      }
+
+      const btn = e?.target || document.getElementById('connect-github-oauth-btn');
+      const originalText = btn ? btn.textContent : 'Connect GitHub ↗';
+      if (btn) {
+        btn.textContent = 'Preparing secure GitHub sign-in...';
+      }
+
+      try {
+        const returnUrl = window.location.origin + window.location.pathname;
+        const res = await window.api.startGithubConnect(verificationId, returnUrl);
+
+        if (res && res.already_connected) {
+          showGithubConnected(res.username || '@github-user');
+          showGithubAlert('GitHub account is already connected.', 'success');
+          if (btn) btn.textContent = originalText;
+          return;
+        }
+
+        if (res && res.auth_url) {
+          window.location.href = res.auth_url;
+        } else {
+          throw new Error('Backend did not return GitHub authorization URL.');
+        }
+      } catch (err) {
+        showGithubAlert(err.message || 'Failed to start GitHub connection. Please try again.', 'error');
+        if (btn) btn.textContent = originalText;
+      }
+    }
+
+    document.getElementById('connect-github-oauth-btn')?.addEventListener('click', initiateGithubConnect);
+    document.getElementById('reconnect-github-oauth-btn')?.addEventListener('click', initiateGithubConnect);
+
+    // GitHub Manual PAT Connect & Disconnect handlers
     document.getElementById('connect-github-btn')?.addEventListener('click', async () => {
       hideGithubAlert();
       const verificationId = localStorage.getItem(storageKey);
@@ -932,7 +1005,7 @@
         showGithubAlert(err.message || 'Failed to connect GitHub. Please check token.', 'error');
         if (btn) {
           btn.disabled = false;
-          btn.textContent = 'Connect GitHub';
+          btn.textContent = 'Save Token';
         }
       }
     });
