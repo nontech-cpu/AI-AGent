@@ -123,7 +123,20 @@ class ListGitHubReposArgs(BaseModel):
     username: Optional[str] = Field(None, description="GitHub username to list repositories for.")
 
 class ListGitHubIssuesArgs(BaseModel):
-    repo: str = Field(..., description="Repository in 'owner/repo' format.")
+    repo: Optional[str] = Field(None, description="Repository in 'owner/repo' or 'repo' format.")
+    username: Optional[str] = Field(None, description="Optional GitHub username.")
+
+class GetGitHubFileArgs(BaseModel):
+    repo: str = Field(..., description="Repository in 'owner/repo' or 'repo' format (e.g. 'php-project' or 'nontech-cpu/php-project').")
+    path: Optional[str] = Field("README.md", description="File or directory path to check/read (e.g. 'README.md', 'index.php', or '' for root).")
+    username: Optional[str] = Field(None, description="Optional GitHub username.")
+
+class UpdateGitHubFileArgs(BaseModel):
+    repo: str = Field(..., description="Repository in 'owner/repo' or 'repo' format.")
+    path: Optional[str] = Field("README.md", description="File path to create or update (e.g. 'README.md').")
+    content: str = Field(..., description="The complete text content to write and commit into the file.")
+    commit_message: Optional[str] = Field("Update file via PeculiarAI", description="Git commit message.")
+    username: Optional[str] = Field(None, description="Optional GitHub username.")
 
 class GeneratePdfArgs(BaseModel):
     title: str = Field(..., description="Title of the PDF.")
@@ -441,6 +454,54 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "username": {"type": ["string", "null"], "description": "GitHub username, or null to check connected account."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_github_file",
+            "description": "Inspect, check existence, or read a file (like README.md, code files) or list directory contents from a GitHub repository.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository name in 'owner/repo' or 'repo' format (e.g. 'php-project' or 'nontech-cpu/php-project')."},
+                    "path": {"type": ["string", "null"], "description": "File or folder path to inspect (defaults to 'README.md', or '' for root directory)."},
+                    "username": {"type": ["string", "null"], "description": "Optional GitHub username."}
+                },
+                "required": ["repo"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_github_file",
+            "description": "Create or update a file (like README.md or code) in a GitHub repository with an autonomous commit.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository name in 'owner/repo' or 'repo' format."},
+                    "path": {"type": "string", "description": "File path to create or update (e.g. 'README.md')."},
+                    "content": {"type": "string", "description": "The complete text content to write and commit to the file."},
+                    "commit_message": {"type": ["string", "null"], "description": "Git commit message."},
+                    "username": {"type": ["string", "null"], "description": "Optional GitHub username."}
+                },
+                "required": ["repo", "path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_github_issues",
+            "description": "List open issues for a specific GitHub repository or the authenticated user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": ["string", "null"], "description": "Repository name in 'owner/repo' or 'repo' format."},
+                    "username": {"type": ["string", "null"], "description": "Optional GitHub username."}
                 }
             }
         }
@@ -1254,9 +1315,9 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             # Check if user has saved GitHub username in user_integrations
             token_row = db.get_user_integration(chat_id, "github")
-            token = token_row.get("api_key") if token_row else None
+            token = token_row if isinstance(token_row, str) else (token_row.get("api_key") if isinstance(token_row, dict) else None)
             saved_username = None
-            if token_row:
+            if isinstance(token_row, dict):
                 try:
                     cfg = json.loads(token_row.get("config_data") or "{}")
                     saved_username = cfg.get("username")
@@ -1293,6 +1354,139 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "username": resolved_user or req_username,
                 "count": len(repo_names),
                 "repositories": repo_names
+            }
+
+        elif tool_name == "get_github_file":
+            args = GetGitHubFileArgs(**arguments)
+            req_repo = args.repo
+            req_path = args.path or "README.md"
+            req_username = args.username
+
+            token_row = db.get_user_integration(chat_id, "github")
+            token = token_row if isinstance(token_row, str) else (token_row.get("api_key") if isinstance(token_row, dict) else None)
+            saved_username = None
+            if isinstance(token_row, dict):
+                try:
+                    cfg = json.loads(token_row.get("config_data") or "{}")
+                    saved_username = cfg.get("username")
+                except Exception:
+                    pass
+
+            if not req_username and saved_username:
+                req_username = saved_username
+
+            if not req_username:
+                try:
+                    from state.active_context import get_active_context
+                    act = get_active_context(chat_id)
+                    if act and act.get("github_username"):
+                        req_username = act.get("github_username")
+                except Exception:
+                    pass
+
+            if not token:
+                token = os.getenv("GITHUB_TOKEN")
+
+            success, file_data = await integrations.get_github_file(
+                token=token,
+                username=req_username,
+                repo=req_repo,
+                file_path=req_path
+            )
+            if not success and req_username:
+                success, file_data = await integrations.get_github_file(
+                    token=None,
+                    username=req_username,
+                    repo=req_repo,
+                    file_path=req_path
+                )
+
+            if not success:
+                return {
+                    "status": "error",
+                    "repo": req_repo,
+                    "message": file_data.get("message") or file_data.get("error") or f"Could not inspect file '{req_path}' in repository '{req_repo}'."
+                }
+
+            file_data["status"] = "success"
+            return file_data
+
+        elif tool_name == "update_github_file":
+            args = UpdateGitHubFileArgs(**arguments)
+            req_repo = args.repo
+            req_path = args.path or "README.md"
+            req_content = args.content
+            commit_msg = args.commit_message or "Update file via PeculiarAI"
+            req_username = args.username
+
+            token_row = db.get_user_integration(chat_id, "github")
+            token = token_row if isinstance(token_row, str) else (token_row.get("api_key") if isinstance(token_row, dict) else None)
+            saved_username = None
+            if isinstance(token_row, dict):
+                try:
+                    cfg = json.loads(token_row.get("config_data") or "{}")
+                    saved_username = cfg.get("username")
+                except Exception:
+                    pass
+
+            if not req_username and saved_username:
+                req_username = saved_username
+
+            if not token:
+                token = os.getenv("GITHUB_TOKEN")
+
+            success, msg, commit_url = await integrations.update_github_file(
+                token=token,
+                repo=req_repo,
+                file_path=req_path,
+                content=req_content,
+                commit_message=commit_msg,
+                username=req_username
+            )
+
+            if not success:
+                return {"status": "error", "repo": req_repo, "message": msg}
+
+            return {
+                "status": "success",
+                "repo": req_repo,
+                "path": req_path,
+                "message": msg,
+                "commit_url": commit_url
+            }
+
+        elif tool_name == "list_github_issues":
+            args = ListGitHubIssuesArgs(**arguments)
+            req_repo = args.repo
+            token_row = db.get_user_integration(chat_id, "github")
+            token = token_row if isinstance(token_row, str) else (token_row.get("api_key") if isinstance(token_row, dict) else None)
+            saved_username = None
+            if isinstance(token_row, dict):
+                try:
+                    cfg = json.loads(token_row.get("config_data") or "{}")
+                    saved_username = cfg.get("username")
+                except Exception:
+                    pass
+
+            if req_repo and "/" not in req_repo and saved_username:
+                req_repo = f"{saved_username}/{req_repo}"
+
+            if not token:
+                token = os.getenv("GITHUB_TOKEN")
+
+            success, issues = await integrations.list_github_issues(token=token, repo=req_repo)
+            if not success:
+                return {"status": "error", "message": f"Could not fetch issues for '{req_repo or 'account'}'."}
+
+            issue_items = [
+                {"number": iss.get("number"), "title": iss.get("title"), "url": iss.get("html_url")}
+                for iss in issues if isinstance(iss, dict)
+            ]
+            return {
+                "status": "success",
+                "repo": req_repo or "user",
+                "count": len(issue_items),
+                "issues": issue_items
             }
 
         elif tool_name == "generate_pdf":

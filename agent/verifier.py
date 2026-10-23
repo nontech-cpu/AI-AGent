@@ -102,18 +102,35 @@ def deterministic_verify(
 
     # 3. Fake GitHub Repositories Check
     if "github" in user_query.lower() or "repo" in user_query.lower():
-        # Check if list_github_repos was called
-        github_tool_res = [tr for tr in tool_results if isinstance(tr, dict) and "repositories" in tr]
+        # Check if any GitHub tool was called
+        github_tool_res = [tr for tr in tool_results if isinstance(tr, dict) and ("repositories" in tr or "repo" in tr)]
         if github_tool_res:
-            raw_repos = github_tool_res[0].get("repositories", [])
-            real_repos = set(str(r).lower() for r in raw_repos)
-            gh_user = (github_tool_res[0].get("username") or "").lower()
-            allowed_tokens = {"peculiarai", "github", "repositories", "repo", "public", "private", "account", "profile", "repos"}
+            real_repos = set()
+            gh_user = ""
+            allowed_tokens = {"peculiarai", "github", "repositories", "repo", "public", "private", "account", "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main", "master"}
+            for gtr in github_tool_res:
+                if "repositories" in gtr:
+                    raw_repos = gtr.get("repositories", [])
+                    real_repos.update(str(r).lower() for r in raw_repos)
+                if "repo" in gtr:
+                    r_str = str(gtr.get("repo")).lower()
+                    real_repos.add(r_str)
+                    if "/" in r_str:
+                        real_repos.add(r_str.split("/")[-1])
+                if gtr.get("username"):
+                    gh_user = gtr.get("username").lower()
+                for fld in ["name", "path", "filename"]:
+                    if gtr.get(fld):
+                        real_repos.add(str(gtr[fld]).lower())
+                for list_fld in ["repo_files", "repo_dirs", "files", "directories"]:
+                    if gtr.get(list_fld) and isinstance(gtr[list_fld], list):
+                        real_repos.update(str(x).lower() for x in gtr[list_fld])
+
             if gh_user:
                 allowed_tokens.add(gh_user)
                 for part in gh_user.split("-"):
                     if part: allowed_tokens.add(part)
-                for r in list(raw_repos):
+                for r in list(real_repos):
                     real_repos.add(f"{gh_user}/{str(r).lower()}")
 
             # Normalize real repos: alphanumeric only lowercase

@@ -49,6 +49,8 @@ GROUNDING & TRUTH CONTRACT:
    - When user confirms connecting an integration (e.g. 'Krdiya h mene', 'connect ho gaya'), look at the MOST RECENT meeting or task requested right before connecting!
    - When user sends a GitHub URL or username (e.g. 'https://github.com/nontech-cpu', 'nontech-cpu') or asks to connect GitHub/Notion, ALWAYS call `connect_integration` with service='github' and the value. NEVER call `save_note_or_fact` for profile URLs or connectors!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
+   - When user asks to check, inspect, or see if a file/README exists in a repo (e.g. 'php-project m readme file h kya dkhkr btaa', 'readme check karo'): ALWAYS call `get_github_file(repo=..., path="README.md")` autonomously! NEVER ask the user to share the file link or copy-paste file content.
+   - When user asks to update, create, or commit a file/README (e.g. 'readme update kar do', 'commit kar do'): ALWAYS call `update_github_file` autonomously.
 10. PROACTIVE TIME CONFLICT DETECTION & ALERTING:
    - When user asks to schedule a reminder, meeting, or event (e.g. '5 bje movie me jana h remind kar dena') and they ALREADY have an event or reminder at that time (visible in Today's / Tomorrow's schedule or tool output has_conflict=True):
    - ALWAYS highlight the clash in your reply! E.g.
@@ -236,7 +238,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Intent 4: GitHub / Notion / Code
     if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|database)\b", low_prompt):
-        selected_tool_names.update(["list_github_repos", "list_github_issues", "update_github_file", "create_notion_page"])
+        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file", "create_notion_page"])
 
     # Intent 5: Lists & Packing
     if re.search(r"\b(pack|packing|list|lists|trip|goa|bag|bags|travel|item|items)\b", low_prompt):
@@ -258,7 +260,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             conn = (act_ctx.get("connector") or "").lower()
             top = (act_ctx.get("focus_topic") or "").lower()
             if "github" in conn or "github" in top or "repo" in top or "issue" in top:
-                selected_tool_names.update(["list_github_repos", "list_github_issues", "update_github_file"])
+                selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
             if "notion" in conn or "notion" in top:
                 selected_tool_names.update(["create_notion_page"])
             if "calendar" in conn or "meeting" in top or "schedule" in top:

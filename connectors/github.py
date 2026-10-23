@@ -35,12 +35,13 @@ class GitHubConnector(Connector):
         row = db.get_user_integration(user_or_chat_id, "github")
         if not row:
             return "not_connected"
-        token = row.get("api_key")
+        token = row if isinstance(row, str) else (row.get("api_key") if isinstance(row, dict) else None)
         config = {}
-        try:
-            config = json.loads(row.get("config_data") or "{}")
-        except Exception:
-            pass
+        if isinstance(row, dict):
+            try:
+                config = json.loads(row.get("config_data") or "{}")
+            except Exception:
+                pass
         if token and token != "public_access" and token.startswith(("ghp_", "github_pat_")):
             return "connected"
         if config.get("username"):
@@ -67,6 +68,35 @@ class GitHubConnector(Connector):
                 kind="read"
             ),
             ToolSpec(
+                name="get_github_file",
+                description="Inspect or check if a file (like README.md) exists in a GitHub repository, or read its contents.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "Repository name in 'owner/repo' or 'repo' format."},
+                        "path": {"type": "string", "description": "File or folder path to inspect (defaults to 'README.md')."},
+                        "username": {"type": "string", "description": "Optional GitHub username."}
+                    },
+                    "required": ["repo"]
+                },
+                kind="read"
+            ),
+            ToolSpec(
+                name="update_github_file",
+                description="Create or update a file (like README.md) in a GitHub repository with a commit.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "Repository name in 'owner/repo' or 'repo' format."},
+                        "path": {"type": "string", "description": "File path to create or update."},
+                        "content": {"type": "string", "description": "New content for the file."},
+                        "commit_message": {"type": "string", "description": "Git commit message."}
+                    },
+                    "required": ["repo", "path", "content"]
+                },
+                kind="write"
+            ),
+            ToolSpec(
                 name="list_github_issues",
                 description="List open issues for a specific GitHub repository.",
                 parameters={
@@ -86,9 +116,9 @@ class GitHubConnector(Connector):
     async def execute(self, user_or_chat_id: int, tool_name: str, args: Dict[str, Any]) -> ToolResult:
         state = self.auth_state(user_or_chat_id)
         token_row = db.get_user_integration(user_or_chat_id, "github")
-        token = token_row.get("api_key") if token_row else None
+        token = token_row if isinstance(token_row, str) else (token_row.get("api_key") if isinstance(token_row, dict) else None)
         saved_username = None
-        if token_row:
+        if isinstance(token_row, dict):
             try:
                 cfg = json.loads(token_row.get("config_data") or "{}")
                 saved_username = cfg.get("username")
@@ -189,6 +219,97 @@ class GitHubConnector(Connector):
                 urls=urls
             )
 
+        elif tool_name == "get_github_file":
+            repo_arg = args.get("repo", "")
+            if not repo_arg:
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.INVALID_ARGS.value,
+                        "message": "Missing 'repo' argument.",
+                        "retryable": False
+                    }
+                )
+            req_username = args.get("username") or saved_username
+            path = args.get("path") or "README.md"
+            sys_token = token if (token and token != "public_access") else os.getenv("GITHUB_TOKEN")
+            ok, file_data = await integrations.get_github_file(
+                token=sys_token,
+                username=req_username,
+                repo=repo_arg,
+                file_path=path
+            )
+            if not ok and req_username:
+                ok, file_data = await integrations.get_github_file(
+                    token=None,
+                    username=req_username,
+                    repo=repo_arg,
+                    file_path=path
+                )
+            if not ok:
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.API_ERROR.value,
+                        "message": file_data.get("error") or file_data.get("message") or "Failed to inspect GitHub file.",
+                        "retryable": True
+                    }
+                )
+            file_data["status"] = "success"
+            return ToolResult(
+                ok=True,
+                data=file_data,
+                urls=[file_data.get("html_url")] if file_data.get("html_url") else []
+            )
+
+        elif tool_name == "update_github_file":
+            repo_arg = args.get("repo", "")
+            path = args.get("path") or "README.md"
+            content = args.get("content", "")
+            if not repo_arg or not content:
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.INVALID_ARGS.value,
+                        "message": "Missing 'repo' or 'content' argument.",
+                        "retryable": False
+                    }
+                )
+            sys_token = token if (token and token != "public_access") else os.getenv("GITHUB_TOKEN")
+            if not sys_token:
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.NOT_CONNECTED.value,
+                        "message": "GitHub Personal Access Token is required to commit changes.",
+                        "retryable": False
+                    }
+                )
+            req_username = args.get("username") or saved_username
+            commit_msg = args.get("commit_message") or "Update file via PeculiarAI"
+            ok, msg, commit_url = await integrations.update_github_file(
+                token=sys_token,
+                repo=repo_arg,
+                file_path=path,
+                content=content,
+                commit_message=commit_msg,
+                username=req_username
+            )
+            if not ok:
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.API_ERROR.value,
+                        "message": msg,
+                        "retryable": True
+                    }
+                )
+            return ToolResult(
+                ok=True,
+                data={"status": "success", "repo": repo_arg, "path": path, "message": msg, "commit_url": commit_url},
+                urls=[commit_url] if commit_url else []
+            )
+
         return ToolResult(
             ok=False,
             error={
@@ -271,6 +392,33 @@ class MockGitHubConnector(GitHubConnector):
                 data={"repo": args.get("repo", "nontech-cpu/PeculliarAI"), "issues": issues, "count": len(issues)},
                 ids=[str(i["number"]) for i in issues],
                 urls=[i["url"] for i in issues]
+            )
+
+        elif tool_name == "get_github_file":
+            return ToolResult(
+                ok=True,
+                data={
+                    "exists": True,
+                    "type": "file",
+                    "name": "README.md",
+                    "path": "README.md",
+                    "repo": args.get("repo", "nontech-cpu/PeculliarAI"),
+                    "content": "# PeculliarAI\nPersonal AI Assistant and Second Brain.",
+                    "html_url": "https://github.com/nontech-cpu/PeculliarAI/blob/main/README.md"
+                },
+                urls=["https://github.com/nontech-cpu/PeculliarAI/blob/main/README.md"]
+            )
+
+        elif tool_name == "update_github_file":
+            return ToolResult(
+                ok=True,
+                data={
+                    "repo": args.get("repo", "nontech-cpu/PeculliarAI"),
+                    "path": args.get("path", "README.md"),
+                    "message": "File updated successfully (Mock)!",
+                    "commit_url": "https://github.com/nontech-cpu/PeculliarAI/commit/123456"
+                },
+                urls=["https://github.com/nontech-cpu/PeculliarAI/commit/123456"]
             )
 
         return ToolResult(ok=False, error={"type": ErrorType.INVALID_ARGS.value, "message": "Unknown mock tool"})

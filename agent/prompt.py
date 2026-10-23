@@ -68,7 +68,7 @@ If asked "tum kya kya kar sakte ho?", give a short, friendly summary tailored st
 
 # 6. UNIVERSAL CONNECTOR METHOD
 1. **Identify connector & object:**
-   - GitHub: "repo", "repository", "issue", "PR", "commit", "gh", "git". To update a README or file, call `update_github_file(repo=..., path="README.md", content=...)`.
+   - GitHub: "repo", "repository", "issue", "PR", "commit", "gh", "git". To check if a file/README exists or read code, call `get_github_file(repo=..., path="README.md")` autonomously (NEVER ask the user to share the link or copy-paste). To create or update a file or README, call `update_github_file(repo=..., path="README.md", content=...)`.
    - Gmail: "email", "mail", "inbox", "reply", "draft".
    - Calendar: "meeting", "event", "invite", "slot", "schedule", "Meet link".
    - Notion: "notion", "page", "notes", "database".
@@ -274,7 +274,7 @@ async def build_runtime_system_prompt(
         "Tasks & Reminders: create_reminder, list_reminders, delete_reminder | "
         "Calendar & Schedule: get_schedule, check_availability, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
-        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, list_github_issues, create_notion_page"
+        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page"
     )
 
     # 9. Active Context

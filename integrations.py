@@ -219,21 +219,34 @@ async def validate_github_token(token: str) -> Tuple[bool, Optional[str]]:
         return False, str(exc)
 
 
-async def list_github_issues(token: str) -> Tuple[bool, list]:
-    """Retrieves recent open issues assigned or created by the user."""
-    clean_token = token.strip()
+async def list_github_issues(token: Optional[str] = None, repo: Optional[str] = None) -> Tuple[bool, list]:
+    """Retrieves recent open issues for a specific repo or assigned/created by the user."""
+    clean_token = token.strip() if token and token != "public_access" else None
+    if not clean_token:
+        clean_token = os.getenv("GITHUB_TOKEN")
+
+    headers = {
+        "User-Agent": "PeculiarAI",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    if clean_token:
+        headers["Authorization"] = f"Bearer {clean_token}"
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            res = await client.get(
-                "https://api.github.com/user/issues?filter=all&state=open&per_page=10",
-                headers={
-                    "Authorization": f"Bearer {clean_token}",
-                    "User-Agent": "PeculiarAI",
-                    "Accept": "application/vnd.github.v3+json"
-                }
-            )
+            if repo and "/" in repo:
+                url = f"https://api.github.com/repos/{repo.strip()}/issues?state=open&per_page=10"
+            elif clean_token:
+                url = "https://api.github.com/user/issues?filter=all&state=open&per_page=10"
+            elif repo:
+                url = f"https://api.github.com/repos/{repo.strip()}/issues?state=open&per_page=10"
+            else:
+                return False, []
+
+            res = await client.get(url, headers=headers)
             if res.status_code == 200:
-                return True, res.json()
+                data = res.json()
+                return True, data if isinstance(data, list) else []
             return False, []
     except Exception:
         return False, []
@@ -288,21 +301,160 @@ async def list_github_repos(token: Optional[str] = None, username: Optional[str]
         return False, [], None
 
 
+async def get_github_file(
+    token: Optional[str] = None,
+    username: Optional[str] = None,
+    repo: str = "",
+    file_path: str = "README.md"
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Inspects or reads a file (like README.md) or lists directory contents from a GitHub repository.
+    Decodes content and handles case-insensitivity or missing files cleanly.
+    """
+    import base64
+    clean_token = token.strip() if token and token != "public_access" else None
+    if not clean_token:
+        clean_token = os.getenv("GITHUB_TOKEN")
+
+    headers = {
+        "User-Agent": "PeculiarAI",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    if clean_token:
+        headers["Authorization"] = f"Bearer {clean_token}"
+
+    clean_repo = repo.strip()
+    clean_path = file_path.strip().lstrip("/") if file_path else ""
+    clean_user = username.strip().lstrip("@") if username else None
+
+    # Resolve full repo path owner/repo if only repo name was given
+    if "/" not in clean_repo:
+        if clean_user:
+            clean_repo = f"{clean_user}/{clean_repo}"
+        elif clean_token:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    user_res = await client.get("https://api.github.com/user", headers=headers)
+                    if user_res.status_code == 200:
+                        login = user_res.json().get("login")
+                        clean_repo = f"{login}/{clean_repo}"
+            except Exception:
+                pass
+
+    if "/" not in clean_repo:
+        return False, {"exists": False, "repo": clean_repo, "error": f"Repository '{clean_repo}' must include owner or user (e.g. 'owner/repo')."}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            url = f"https://api.github.com/repos/{clean_repo}/contents/{clean_path}"
+            res = await client.get(url, headers=headers)
+
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, dict) and data.get("type") == "file":
+                    raw_content = data.get("content", "")
+                    encoding = data.get("encoding", "")
+                    if encoding == "base64":
+                        try:
+                            decoded = base64.b64decode(raw_content).decode("utf-8", errors="replace")
+                        except Exception:
+                            decoded = raw_content
+                    else:
+                        decoded = raw_content
+
+                    return True, {
+                        "exists": True,
+                        "type": "file",
+                        "name": data.get("name"),
+                        "path": data.get("path"),
+                        "size": data.get("size"),
+                        "sha": data.get("sha"),
+                        "html_url": data.get("html_url"),
+                        "content": decoded[:3000],
+                        "truncated": len(decoded) > 3000,
+                        "repo": clean_repo
+                    }
+                elif isinstance(data, list):
+                    files = [item.get("name") for item in data if isinstance(item, dict) and item.get("type") == "file"]
+                    dirs = [item.get("name") for item in data if isinstance(item, dict) and item.get("type") == "dir"]
+                    return True, {
+                        "exists": True,
+                        "type": "dir",
+                        "path": clean_path or "/",
+                        "files": files,
+                        "directories": dirs,
+                        "repo": clean_repo
+                    }
+
+            if res.status_code == 404:
+                root_res = await client.get(f"https://api.github.com/repos/{clean_repo}/contents/", headers=headers)
+                if root_res.status_code == 200:
+                    root_items = root_res.json()
+                    if isinstance(root_items, list):
+                        target_name = clean_path.split("/")[-1].lower() if clean_path else ""
+                        matched_item = None
+                        for item in root_items:
+                            if isinstance(item, dict) and item.get("name", "").lower() == target_name:
+                                matched_item = item
+                                break
+
+                        if matched_item and matched_item.get("url"):
+                            file_res = await client.get(matched_item.get("url"), headers=headers)
+                            if file_res.status_code == 200:
+                                f_data = file_res.json()
+                                raw_c = f_data.get("content", "")
+                                try:
+                                    dec = base64.b64decode(raw_c).decode("utf-8", errors="replace")
+                                except Exception:
+                                    dec = raw_c
+                                return True, {
+                                    "exists": True,
+                                    "type": "file",
+                                    "name": f_data.get("name"),
+                                    "path": f_data.get("path"),
+                                    "size": f_data.get("size"),
+                                    "sha": f_data.get("sha"),
+                                    "html_url": f_data.get("html_url"),
+                                    "content": dec[:3000],
+                                    "truncated": len(dec) > 3000,
+                                    "repo": clean_repo
+                                }
+
+                        files_found = [i.get("name") for i in root_items if isinstance(i, dict) and i.get("type") == "file"]
+                        dirs_found = [i.get("name") for i in root_items if isinstance(i, dict) and i.get("type") == "dir"]
+                        return True, {
+                            "exists": False,
+                            "filename": clean_path or "README.md",
+                            "repo": clean_repo,
+                            "message": f"'{clean_path}' file repository '{clean_repo}' me nahi mili.",
+                            "repo_files": files_found,
+                            "repo_dirs": dirs_found
+                        }
+
+            return False, {"exists": False, "repo": clean_repo, "message": f"Could not access repository '{clean_repo}' (Status {res.status_code})."}
+    except Exception as exc:
+        return False, {"exists": False, "error": str(exc), "repo": clean_repo}
+
+
 async def update_github_file(
-    token: str,
-    repo: str,
-    file_path: str,
-    content: str,
-    commit_message: str = "Update file via PeculiarAI"
+    token: Optional[str] = None,
+    repo: str = "",
+    file_path: str = "README.md",
+    content: str = "",
+    commit_message: str = "Update file via PeculiarAI",
+    username: Optional[str] = None
 ) -> Tuple[bool, str, Optional[str]]:
     """
     Creates or updates a file (like README.md) in a GitHub repository via GitHub REST API.
     Returns (success, message, commit_url).
     """
     import base64
-    clean_token = token.strip() if token else ""
+    clean_token = token.strip() if token and token != "public_access" else None
     if not clean_token:
-        return False, "GitHub personal access token is required to update files.", None
+        clean_token = os.getenv("GITHUB_TOKEN")
+
+    if not clean_token:
+        return False, "GitHub personal access token is required to commit files.", None
 
     headers = {
         "Authorization": f"Bearer {clean_token}",
@@ -311,17 +463,21 @@ async def update_github_file(
     }
 
     clean_repo = repo.strip()
-    clean_path = file_path.strip().lstrip("/")
+    clean_path = file_path.strip().lstrip("/") if file_path else "README.md"
+    clean_user = username.strip().lstrip("@") if username else None
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         # 1. Resolve full repo path owner/repo if only repo name was given
         if "/" not in clean_repo:
-            user_res = await client.get("https://api.github.com/user", headers=headers)
-            if user_res.status_code == 200:
-                login = user_res.json().get("login")
-                clean_repo = f"{login}/{clean_repo}"
+            if clean_user:
+                clean_repo = f"{clean_user}/{clean_repo}"
             else:
-                return False, f"Could not determine owner for repository '{clean_repo}'. Please specify as 'owner/repo'.", None
+                user_res = await client.get("https://api.github.com/user", headers=headers)
+                if user_res.status_code == 200:
+                    login = user_res.json().get("login")
+                    clean_repo = f"{login}/{clean_repo}"
+                else:
+                    return False, f"Could not determine owner for repository '{clean_repo}'. Please specify as 'owner/repo'.", None
 
         # 2. Check if file already exists to obtain its sha
         file_url = f"https://api.github.com/repos/{clean_repo}/contents/{clean_path}"
@@ -329,12 +485,13 @@ async def update_github_file(
         get_res = await client.get(file_url, headers=headers)
         if get_res.status_code == 200:
             file_info = get_res.json()
-            sha = file_info.get("sha")
+            if isinstance(file_info, dict):
+                sha = file_info.get("sha")
 
         # 3. Base64 encode content
         encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
         payload = {
-            "message": commit_message,
+            "message": commit_message or "Update file via PeculiarAI",
             "content": encoded_content
         }
         if sha:
@@ -352,4 +509,5 @@ async def update_github_file(
             except Exception:
                 pass
             return False, f"GitHub error ({put_res.status_code}): {err}", None
+
 
