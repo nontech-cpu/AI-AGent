@@ -194,12 +194,25 @@ async def create_notion_page(token: str, title: str, content: str, parent_id: Op
 # GITHUB INTEGRATION
 # ==============================================================================
 
-async def validate_github_token(token: str) -> Tuple[bool, Optional[str]]:
+def _normalize_github_token(token: Any) -> Optional[str]:
+    """Extracts and cleans raw token string whether passed as a string, dict, or env variable."""
+    if not token:
+        token = os.getenv("GITHUB_TOKEN")
+    if isinstance(token, dict):
+        token = token.get("api_key") or token.get("token") or token.get("access_token")
+    if token and str(token).strip() not in ("", "public_access", "None", "null"):
+        return str(token).strip()
+    return None
+
+
+async def validate_github_token(token: Any) -> Tuple[bool, Optional[str]]:
     """
-    Validates a GitHub Personal Access Token (ghp_... or github_pat_...).
+    Validates a GitHub Personal Access Token or OAuth token.
     Returns (is_valid, username_or_login).
     """
-    clean_token = token.strip()
+    clean_token = _normalize_github_token(token)
+    if not clean_token:
+        return False, "Missing or empty GitHub token"
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             res = await client.get(
@@ -219,11 +232,9 @@ async def validate_github_token(token: str) -> Tuple[bool, Optional[str]]:
         return False, str(exc)
 
 
-async def list_github_issues(token: Optional[str] = None, repo: Optional[str] = None) -> Tuple[bool, list]:
+async def list_github_issues(token: Optional[Any] = None, repo: Optional[str] = None) -> Tuple[bool, list]:
     """Retrieves recent open issues for a specific repo or assigned/created by the user."""
-    clean_token = token.strip() if token and token != "public_access" else None
-    if not clean_token:
-        clean_token = os.getenv("GITHUB_TOKEN")
+    clean_token = _normalize_github_token(token)
 
     headers = {
         "User-Agent": "PeculiarAI",
@@ -252,12 +263,12 @@ async def list_github_issues(token: Optional[str] = None, repo: Optional[str] = 
         return False, []
 
 
-async def list_github_repos(token: Optional[str] = None, username: Optional[str] = None) -> Tuple[bool, list, Optional[str]]:
+async def list_github_repos(token: Optional[Any] = None, username: Optional[str] = None) -> Tuple[bool, list, Optional[str]]:
     """
     Retrieves real repositories for an authenticated user or a specific GitHub username.
     Returns (success, repos_list, resolved_username).
     """
-    clean_token = token.strip() if token else None
+    clean_token = _normalize_github_token(token)
     headers = {
         "User-Agent": "PeculiarAI",
         "Accept": "application/vnd.github.v3+json"
@@ -302,7 +313,7 @@ async def list_github_repos(token: Optional[str] = None, username: Optional[str]
 
 
 async def get_github_file(
-    token: Optional[str] = None,
+    token: Optional[Any] = None,
     username: Optional[str] = None,
     repo: str = "",
     file_path: str = "README.md"
@@ -312,9 +323,7 @@ async def get_github_file(
     Decodes content and handles case-insensitivity or missing files cleanly.
     """
     import base64
-    clean_token = token.strip() if token and token != "public_access" else None
-    if not clean_token:
-        clean_token = os.getenv("GITHUB_TOKEN")
+    clean_token = _normalize_github_token(token)
 
     headers = {
         "User-Agent": "PeculiarAI",
@@ -437,7 +446,7 @@ async def get_github_file(
 
 
 async def update_github_file(
-    token: Optional[str] = None,
+    token: Optional[Any] = None,
     repo: str = "",
     file_path: str = "README.md",
     content: str = "",
@@ -449,9 +458,7 @@ async def update_github_file(
     Returns (success, message, commit_url).
     """
     import base64
-    clean_token = token.strip() if token and token != "public_access" else None
-    if not clean_token:
-        clean_token = os.getenv("GITHUB_TOKEN")
+    clean_token = _normalize_github_token(token)
 
     if not clean_token:
         return False, "GitHub personal access token is required to commit files.", None

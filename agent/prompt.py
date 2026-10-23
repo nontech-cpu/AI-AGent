@@ -81,12 +81,12 @@ If asked "tum kya kya kar sakte ho?", give a short, friendly summary tailored st
    - For GitHub connection: ONLY when user asks to connect or link GitHub (e.g. 'connect github', 'github link krde'), call `connect_integration(service="github")` to provide the official 1-click OAuth link! But when user asks to update, commit, or read a file/README, ALWAYS call `update_github_file` or `get_github_file` directly — NEVER call `connect_integration` when user gives content or asks for a file update!
    - For Notion, call `connect_integration(service="notion", value=token)`.
 3. **Direct Action Dispatch (No Redundant Confirmation Questions):**
-   - When user asks to send an email, upload a file, or create a meeting: ALWAYS call the tool (`send_email`, `upload_to_drive`, `create_meeting`) directly!
+   - When user asks to update, create, commit, or push a file/README in GitHub (e.g. 'readme update kar do', 'commit kar do', 'ye line add kar do', 'readme.md ji h updated usko push krte repo m', 'push kar do', 'push krte repo m'), OR confirms a previous draft (e.g. 'ha kr do', 'kardo', 'proceed'): ALWAYS call `update_github_file(repo="php-project", path="README.md", content=...)` IMMEDIATELY! Use 'php-project' as the active repo (unless user names another repo) and the drafted content from recent turns. NEVER ask 'Kaunse repo mein' or 'Would you like to proceed?'. Commits are non-destructive in Git, so execute directly and report the live commit link!
    - NEVER call `ask_user` to ask if you should do what the user already commanded! The tool itself manages the confirmation gate safely.
-4. **Follow-ups ("pehla wala", "2 number wala", "usko close kar do"):** Resolve to numbered objects in {ACTIVE_CONTEXT}.
+4. **Follow-ups ("pehla wala", "2 number wala", "usko close kar do", "ha kr do"):** Resolve to numbered objects or pending draft in {ACTIVE_CONTEXT}.
 5. **Read first, then offer next actions:** When listing objects (e.g. repos, emails), show clean numbered list, then suggest 2-3 relevant next actions from {AVAILABLE_TOOLS} (e.g. "Kisi repo ke issues dekhne hain ya README update karna hai?").
 6. **End-to-end execution:** When user picks an action ("pehle wale me bug issue bana do: login crash"), resolve repo from {ACTIVE_CONTEXT}, call tool, verify, report link.
-7. **Safety:** Reading, searching, listing, drafting: do immediately. Destructive/external actions (deleting repos/events, sending emails not dictated): confirm once briefly.
+7. **Safety:** Reading, searching, listing, drafting, and committing/updating files in GitHub: do immediately. Destructive actions without undo (permanently deleting entire repos or deleting calendar events not dictated): confirm once briefly.
 
 # 7. CONFIRMATION & QUESTIONS
 - Act immediately when request is clear and reversible (reminders, notes, listing, searching, drafting).
@@ -159,7 +159,14 @@ async def build_runtime_system_prompt(
                     # Integrations
                     summary = db.get_user_integrations_summary(chat_id)
                     if summary.get("github", {}).get("connected"):
-                        gh_str = "GitHub: connected"
+                        gh_info = db.get_user_integration(chat_id, "github")
+                        gh_u = "nontech-cpu"
+                        if isinstance(gh_info, dict):
+                            try:
+                                gh_u = json.loads(gh_info.get("config_data") or "{}").get("username") or gh_u
+                            except Exception:
+                                pass
+                        gh_str = f"GitHub: connected (@{gh_u}, active/default repo: php-project)"
                     if summary.get("notion", {}).get("connected"):
                         notion_str = "Notion: connected"
 

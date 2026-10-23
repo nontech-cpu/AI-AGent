@@ -49,7 +49,7 @@ GROUNDING & TRUTH CONTRACT:
    - When user asks to connect or link GitHub (e.g. 'mera github link krde', 'github link krde', 'connect github', 'github connect kar do') or sends a GitHub profile/token: ALWAYS call `connect_integration` with service='github'! DO NOT call `ask_user` to ask for username or URL — calling `connect_integration(service='github')` immediately returns the official 1-click OAuth link!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
    - When user asks to check, inspect, or see if a file/README exists in a repo (e.g. 'php-project m readme file h kya dkhkr btaa', 'readme check karo'): ALWAYS call `get_github_file(repo=..., path="README.md")` autonomously! NEVER ask the user to share the file link or copy-paste file content.
-   - When user asks to update, create, or commit a file/README (e.g. 'readme update kar do', 'commit kar do'): ALWAYS call `update_github_file` autonomously.
+   - When user asks to update, create, or commit a file/README (e.g. 'readme update kar do', 'commit kar do', 'ye line add kar do'), OR when user confirms a previous draft (e.g. 'ha kr do', 'kardo', 'proceed'): ALWAYS call `update_github_file` autonomously. NEVER ask redundant confirmation questions like 'Would you like to proceed?' or 'Confirm updating?'. The commit is non-destructive, so execute it immediately and report the live commit URL!
 10. PROACTIVE TIME CONFLICT DETECTION & ALERTING:
    - When user asks to schedule a reminder, meeting, or event (e.g. '5 bje movie me jana h remind kar dena') and they ALREADY have an event or reminder at that time (visible in Today's / Tomorrow's schedule or tool output has_conflict=True):
    - ALWAYS highlight the clash in your reply! E.g.
@@ -59,6 +59,42 @@ CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
 - Current Date & Weekday: {current_date_weekday}
 """
+
+def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
+    """
+    Parses fallback XML-style <tool_call> blocks emitted as plain text content by models like gpt-oss-20b.
+    Example:
+    <tool_call>
+    <function=update_github_file>
+    <parameter=content>...</parameter>
+    <parameter=repo>php-project</parameter>
+    </function>
+    </tool_call>
+    """
+    calls = []
+    if not text or "<tool_call>" not in text:
+        return calls
+    tc_blocks = re.findall(r"<tool_call>(.*?)</tool_call>", text, re.DOTALL | re.IGNORECASE)
+    for idx, block in enumerate(tc_blocks):
+        fn_match = re.search(r"<function=([a-zA-Z0-9_-]+)>(.*?)</function>", block, re.DOTALL | re.IGNORECASE)
+        if fn_match:
+            fn_name = fn_match.group(1).strip()
+            body = fn_match.group(2)
+            params = {}
+            for p_match in re.finditer(r"<parameter=([a-zA-Z0-9_-]+)>(.*?)</parameter>", body, re.DOTALL | re.IGNORECASE):
+                p_name = p_match.group(1).strip()
+                p_val = p_match.group(2).strip()
+                params[p_name] = p_val
+            calls.append({
+                "id": f"call_xml_{int(time.time())}_{idx}",
+                "type": "function",
+                "function": {
+                    "name": fn_name,
+                    "arguments": json.dumps(params)
+                }
+            })
+    return calls
+
 
 async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -277,7 +313,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         selected_tool_names.update(["get_contact", "save_contact", "update_contact_commitment", "list_contacts"])
 
     # Intent 4: GitHub / Notion / Code
-    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|database)\b", low_prompt):
+    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|database|push)\b", low_prompt):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file", "create_notion_page"])
 
     # Intent 5: Lists & Packing
@@ -310,14 +346,23 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     except Exception:
         pass
 
+    # Intent 9: Follow-up confirmation / affirmative intent for GitHub / Notion / Meeting actions
+    recent_turns_text = " ".join([t.get("text", "") for t in recent_history[-4:]]).lower()
+    has_recent_github = bool(re.search(r"\b(github|repo|repos|repository|readme|commit|issue|pull|pr|php-project)\b", recent_turns_text))
+    is_affirmative = bool(re.search(r"\b(yes|yeah|haan|ha|han|kar do|kardo|kr do|krdo|confirm|proceed|ok|okay|kar de|karde|kr de|krde|kr bhy|kro|kr)\b", low_prompt))
+
+    if has_recent_github and (is_affirmative or is_action_prompt):
+        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
+
     # Always allow connection / asking user if needed
     selected_tool_names.update(["connect_integration", "check_integrations_status", "ask_user", "search_memory"])
     if is_action_prompt:
         selected_tool_names.discard("connect_integration")
+        selected_tool_names.discard("ask_user")
 
     # If no specific intent was triggered, allow core essentials
     if len(selected_tool_names) <= 4:
-        selected_tool_names.update(["create_reminder", "get_schedule", "get_contact", "save_note_or_fact", "list_github_repos"])
+        selected_tool_names.update(["create_reminder", "get_schedule", "get_contact", "save_note_or_fact", "list_github_repos", "update_github_file"])
 
     effective_tools = [
         t for t in TOOL_DEFINITIONS
@@ -333,10 +378,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "temperature": 0.1,
                 "messages": messages,
             }
-            # Only send tool schemas on the first iteration (or if no tool has run yet).
-            # On follow-up iterations, omitting tool definitions saves ~3,000 tokens per turn
-            # and prevents 429 rate limit exceeded errors completely!
-            if iteration == 0 or not tool_calls_executed:
+            if effective_tools:
                 payload["tools"] = effective_tools
                 payload["tool_choice"] = "auto"
 
@@ -385,6 +427,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             # Check if model wants to call tools
             tool_calls = choice_msg.get("tool_calls")
+            if not tool_calls and choice_msg.get("content"):
+                xml_calls = parse_xml_tool_calls(choice_msg["content"])
+                if xml_calls:
+                    tool_calls = xml_calls
+                    choice_msg["tool_calls"] = xml_calls
+
             if not tool_calls:
                 # No more tools requested; final conversational answer reached
                 final_reply = choice_msg.get("content") or ""
@@ -395,7 +443,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             # Execute every tool call emitted
             for tc in tool_calls:
-                call_id = tc["id"]
+                call_id = tc.get("id") or f"call_{int(time.time())}"
                 fn_name = tc["function"]["name"]
                 raw_args = tc["function"].get("arguments", "{}")
                 tool_calls_executed.append(fn_name)
@@ -422,6 +470,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         if issues:
                             issue_titles = [f"#{iss.get('number', '')} {iss.get('title', '')}" if isinstance(iss, dict) else str(iss) for iss in issues]
                             update_active_context(chat_id, connector="GitHub", topic="issues", objects=issue_titles)
+                    elif fn_name in ("update_github_file", "get_github_file"):
+                        r_name = tool_result.get("repo") or args_dict.get("repo")
+                        if r_name:
+                            update_active_context(chat_id, connector="GitHub", topic=f"repo: {r_name}", objects=["README.md"])
                     elif fn_name == "list_contacts":
                         contacts = tool_result.get("contacts", [])
                         if contacts:
@@ -585,6 +637,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply = "Aapka request note kar liya gaya hai aur update ho gaya hai!"
         else:
             final_reply = "Main aapki reminders, meetings aur contacts track karne me madad karta hu. Aap bataiye kya karna hai?"
+
+    if "<tool_call>" in final_reply:
+        final_reply = re.sub(r"<tool_call>.*?</tool_call>", "", final_reply, flags=re.DOTALL | re.IGNORECASE).strip()
+        if not final_reply and tool_results_list:
+            last_res = tool_results_list[-1]
+            final_reply = last_res.get("message") or "Action successfully complete ho gaya!"
 
     # If user was asking a cross-question during a pending confirmation, append pending reminder
     if is_cross_q and active_pending:

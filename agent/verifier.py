@@ -102,13 +102,22 @@ def deterministic_verify(
 
     # 3. Fake GitHub Repositories Check
     if "github" in user_query.lower() or "repo" in user_query.lower():
-        # Check if any GitHub tool was called
-        github_tool_res = [tr for tr in tool_results if isinstance(tr, dict) and ("repositories" in tr or "repo" in tr)]
-        if github_tool_res:
+        # Check if a GitHub repository listing tool was specifically executed to list user repos
+        has_repo_listing = any(isinstance(tr, dict) and "repositories" in tr for tr in tool_results)
+        is_asking_repos = bool(re.search(r"\b(repo|repos|repository|repositories)\b", user_query, re.I)) and bool(re.search(r"\b(list|show|dikha|bata|kaun|all|mere|my|names|naam)\b", user_query, re.I))
+        if has_repo_listing and is_asking_repos:
             real_repos = set()
             gh_user = ""
-            allowed_tokens = {"peculiarai", "github", "repositories", "repo", "public", "private", "account", "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main", "master"}
-            for gtr in github_tool_res:
+            allowed_tokens = {
+                "peculiarai", "github", "repositories", "repo", "public", "private", "account",
+                "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main",
+                "master", "project", "projects", "tech", "features", "feature", "repository",
+                "author", "stack", "dynamic", "pricing", "overview", "note", "notes", "details",
+                "status", "commit", "url", "code"
+            }
+            for gtr in tool_results:
+                if not isinstance(gtr, dict):
+                    continue
                 if "repositories" in gtr:
                     raw_repos = gtr.get("repositories", [])
                     real_repos.update(str(r).lower() for r in raw_repos)
@@ -133,14 +142,18 @@ def deterministic_verify(
                 for r in list(real_repos):
                     real_repos.add(f"{gh_user}/{str(r).lower()}")
 
+            allowed_tokens.update({"peculiarai", "github", "repositories", "repo", "public", "private", "account", "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main", "master", "commit", "commits", "blob", "tree", "pull", "pulls", "sha", "url", "link", "update", "file"})
             # Normalize real repos: alphanumeric only lowercase
             norm_real_repos = {re.sub(r'[^a-z0-9]', '', r) for r in real_repos}
             norm_allowed = {re.sub(r'[^a-z0-9]', '', a) for a in allowed_tokens}
 
-            # Strip markdown formatting like **, *, [, ]
-            clean_draft = re.sub(r'[*_`\[\]]', '', draft_reply)
+            # Strip URLs and markdown formatting so URLs/commit links are not treated as repo names
+            clean_draft = re.sub(r'https?://[^\s]+', '', draft_reply)
+            clean_draft = re.sub(r'[*_`\[\]()]', '', clean_draft)
             mentioned_items = re.findall(r'(?:[-*•]|\d+\.)\s*([a-zA-Z0-9_\-\/]+)', clean_draft)
             for item in mentioned_items:
+                if any(x in item.lower() for x in ("/commit/", "/blob/", "/pull/", "http", "github.com")):
+                    continue
                 clean_item = item.lower().split('/')[-1]
                 norm_item = re.sub(r'[^a-z0-9]', '', item.lower())
                 norm_clean = re.sub(r'[^a-z0-9]', '', clean_item)

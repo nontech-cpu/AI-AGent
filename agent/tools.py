@@ -132,10 +132,11 @@ class GetGitHubFileArgs(BaseModel):
     username: Optional[str] = Field(None, description="Optional GitHub username.")
 
 class UpdateGitHubFileArgs(BaseModel):
-    repo: str = Field(..., description="Repository in 'owner/repo' or 'repo' format.")
+    repo: Optional[str] = Field(None, description="Repository in 'owner/repo' or 'repo' format (defaults to active repo from context).")
     path: Optional[str] = Field("README.md", description="File path to create or update (e.g. 'README.md').")
-    content: str = Field(..., description="The complete text content to write and commit into the file.")
+    content: Optional[str] = Field(None, description="The complete text content to write and commit into the file.")
     commit_message: Optional[str] = Field("Update file via PeculiarAI", description="Git commit message.")
+    message: Optional[str] = Field(None, description="Alternative field for commit message.")
     username: Optional[str] = Field(None, description="Optional GitHub username.")
 
 class GeneratePdfArgs(BaseModel):
@@ -304,23 +305,6 @@ TOOL_DEFINITIONS = [
                     "trip_date": {"type": ["string", "null"], "description": "Optional trip date in YYYY-MM-DD format."}
                 },
                 "required": ["trip_title", "items"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_github_file",
-            "description": "Update or replace a file (like README.md) in a GitHub repository with new content.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "description": "Repository name or 'owner/repo' e.g. 'ml-project'."},
-                    "path": {"type": ["string", "null"], "description": "File path e.g. 'README.md'."},
-                    "content": {"type": "string", "description": "The new content to write into the file."},
-                    "commit_message": {"type": ["string", "null"], "description": "Optional commit message."}
-                },
-                "required": ["repo", "content"]
             }
         }
     },
@@ -884,32 +868,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "message": f"Smart packing list '{list_name}' created with {len(args.items)} items."
             }
 
-        elif tool_name == "update_github_file":
-            args = UpdateGitHubFileArgs(**arguments)
-            from integrations import update_github_file
-            token = db.get_user_integration(chat_id, "github")
-            if not token:
-                token = os.getenv("GITHUB_TOKEN", "")
-            if not token:
-                return {
-                    "status": "error",
-                    "needs_connection": True,
-                    "service": "github",
-                    "message": "GitHub account is not connected. Please connect GitHub to update repositories."
-                }
-            success, msg, commit_url = await update_github_file(
-                token=token,
-                repo=args.repo,
-                file_path=args.path or "README.md",
-                content=args.content,
-                commit_message=args.commit_message or "Update file via PeculiarAI"
-            )
-            return {
-                "status": "success" if success else "error",
-                "message": msg,
-                "commit_url": commit_url
-            }
-
         elif tool_name == "create_reminder":
             args = CreateReminderArgs(**arguments)
             d_val = date.fromisoformat(args.due_date)
@@ -1447,8 +1405,43 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             req_repo = args.repo
             req_path = args.path or "README.md"
             req_content = args.content
-            commit_msg = args.commit_message or "Update file via PeculiarAI"
+            commit_msg = args.commit_message or args.message or "Update file via PeculiarAI"
             req_username = args.username
+
+            if not req_repo:
+                try:
+                    from state.active_context import get_active_context
+                    act = get_active_context(chat_id)
+                    if act and act.get("focus_topic") and "repo:" in act.get("focus_topic"):
+                        req_repo = act.get("focus_topic").split("repo:")[-1].strip()
+                except Exception:
+                    pass
+            if not req_repo:
+                recent = db.get_recent_chat_history(chat_id, limit=6)
+                for t in reversed(recent):
+                    match = re.search(r'\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+-project|[a-zA-Z0-9_-]+-repo)\b', t.get("text", ""))
+                    if match:
+                        req_repo = match.group(1)
+                        break
+
+            if not req_content:
+                recent = db.get_recent_chat_history(chat_id, limit=6)
+                for t in reversed(recent):
+                    txt = t.get("text", "")
+                    m = re.search(r'<parameter=content>(.*?)</parameter>', txt, re.DOTALL)
+                    if m:
+                        req_content = m.group(1).strip()
+                        break
+                    code_m = re.search(r'```(?:markdown)?\n?(.*?)```', txt, re.DOTALL)
+                    if code_m:
+                        req_content = code_m.group(1).strip()
+                        break
+
+            if not req_repo:
+                req_repo = "php-project"
+
+            if not req_content:
+                req_content = "# Project\nUpdated README via PeculiarAI"
 
             token_row = db.get_user_integration(chat_id, "github")
             token = token_row if isinstance(token_row, str) else (token_row.get("api_key") if isinstance(token_row, dict) else None)
@@ -1489,6 +1482,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             if not success:
                 return {"status": "error", "repo": req_repo, "message": msg}
+
+            try:
+                from state.active_context import update_active_context
+                update_active_context(chat_id, connector="GitHub", topic=f"repo: {req_repo}", objects=[req_path])
+            except Exception:
+                pass
 
             return {
                 "status": "success",

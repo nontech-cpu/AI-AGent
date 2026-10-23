@@ -49,7 +49,22 @@ def clear_active_context(chat_id: int):
 
 def format_active_context(chat_id: int) -> str:
     """Formats active context into a concise string for runtime system prompt injection."""
-    ctx = get_active_context(chat_id)
+    ctx = dict(get_active_context(chat_id))
+    # If in-memory context has no connector or topic, check recent DB chat turns
+    if not ctx.get("connector") or not ctx.get("topic"):
+        try:
+            import db, re
+            recent = db.get_recent_chat_history(chat_id, limit=6)
+            for t in reversed(recent):
+                txt = t.get("text", "")
+                m = re.search(r'\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+-project)\b', txt)
+                if m:
+                    ctx["connector"] = "GitHub"
+                    ctx["topic"] = f"repo: {m.group(1)}"
+                    break
+        except Exception:
+            pass
+
     parts = []
     if ctx.get("connector"):
         parts.append(f"Last Connector: {ctx['connector']}")
