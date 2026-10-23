@@ -566,6 +566,36 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "create_notion_page",
+            "description": "Appends notes into a new or existing section in Notion, or creates a new page. Supports headings and bullet points formatting.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title or section heading for the notes (e.g. 'Project Roadmap', 'Meeting Notes')."},
+                    "content": {"type": "string", "description": "The note content. Can contain markdown headings (#), bullets (-), or numbered lists."},
+                    "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Defaults to general Notes section if null."},
+                    "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'."}
+                },
+                "required": ["title", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_notion_pages",
+            "description": "Lists or searches existing pages and notes in the user's connected Notion workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": ["string", "null"], "description": "Optional search term to filter pages by title."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
             "description": "Ask the user a single structured question when a required parameter is missing or ambiguous.",
             "parameters": {
@@ -1142,14 +1172,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "filename": args.filename,
                 "content": args.content
             }
-
-        elif tool_name == "create_notion_page":
-            args = CreateNotionPageArgs(**arguments)
-            token_row = db.get_user_integration(chat_id, "notion")
-            if not token_row or not token_row.get("api_key"):
-                return {"status": "error", "message": "Notion is not connected. User must connect Notion first."}
-            res = await integrations.create_notion_page(token_row["api_key"], args.title, args.content)
-            return res
 
         elif tool_name == "check_integrations_status":
             args = CheckIntegrationsStatusArgs(**arguments)

@@ -86,6 +86,7 @@ If asked "tum kya kya kar sakte ho?", give a short, friendly summary tailored st
      * DEFAULT SECTION: If user does NOT explicitly specify where to save the notes, pass `target_section=None` — the tool will automatically append a new section under the default 'Notes' page or create one!
      * EXISTING SECTION: If user asks to add to an existing notes section/page (e.g. 'existing notes section me daal do', 'Meeting Notes page par add karo'), pass `target_section='existing notes'` or the page name to append directly into that page.
      * HEADINGS & BULLETS FORMATTING: If user specifies formatting (e.g. 'isko heading rakhna isko bullet rakhna'), format content with `# Heading` or `## Heading` for headings and `- ` for bullet points, and pass `formatting='headings_and_bullets'` or `formatting='bullets'`. Respect the user's formatting instructions precisely!
+     * LISTING / SEARCHING EXISTING NOTES: When user asks if there are any preexisting notes or what pages exist in Notion (e.g. 'mera notion account me koi preexisting notes h toh btao mujhe', 'notion ke pages dikhao', 'notion me kya kya hai'): ALWAYS call `list_notion_pages(query=...)` to retrieve and list the actual pages and notes from their workspace!
 3. **Direct Action Dispatch (No Redundant Confirmation Questions):**
    - When user asks to update, create, commit, or push a file/README in GitHub (e.g. 'readme update kar do', 'commit kar do', 'ye line add kar do', 'readme.md ji h updated usko push krte repo m', 'push kar do', 'push krte repo m'), OR confirms a previous draft (e.g. 'ha kr do', 'kardo', 'proceed'): ALWAYS call `update_github_file(repo="php-project", path="README.md", content=...)` IMMEDIATELY! Use 'php-project' as the active repo (unless user names another repo) and the drafted content from recent turns. NEVER ask 'Kaunse repo mein' or 'Would you like to proceed?'. Commits are non-destructive in Git, so execute directly and report the live commit link!
    - NEVER call `ask_user` to ask if you should do what the user already commanded! The tool itself manages the confirmation gate safely.
@@ -287,7 +288,7 @@ async def build_runtime_system_prompt(
         "Tasks & Reminders: create_reminder, list_reminders, delete_reminder | "
         "Calendar & Schedule: get_schedule, check_availability, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
-        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page"
+        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, list_notion_pages"
     )
 
     # 9. Active Context

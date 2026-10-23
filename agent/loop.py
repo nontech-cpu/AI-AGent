@@ -281,54 +281,63 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     ))
 
     if not is_code_modify and len(words) <= 12:
-        # Regex recognizing connect/connected with common typos (conncetdd, conncted, connectd, accound, etc.)
-        conn_kw_re = r"(conn\w*|link\w*|jod\w*|auth\w*|status|accoun\w*|juda\b|judi\b)"
+        # Regex recognizing connect/connected with common typos (conncetdd, conncted, connectd, etc.)
+        conn_kw_re = r"\b(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login|juda\b|judi\b)"
 
         has_notion = "notion" in low_prompt_raw
         has_github = bool(re.search(r"\b(github|gh|git)\b", low_prompt_raw))
         has_google = bool(re.search(r"\b(google|gmail|calendar|drive|gmeet)\b", low_prompt_raw))
         has_general = bool(re.search(r"\b(connector|connectors|integration|integrations|all\s+accounts)\b", low_prompt_raw))
 
-        # 1. Notion Connection / Status Queries (Only if NOT creating/adding notes)
-        is_note_action = bool(re.search(r"\b(add|save|daal|daalo|dal|bana|banao|bna|bnao|write|create|append|likh|likho|heading|bullet|bullets|points|section)\b", low_prompt_raw))
-        if has_notion and not is_note_action and (re.search(conn_kw_re, low_prompt_raw) or len(words) <= 4 or "?" in low_prompt_raw):
-            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|juda|judi|linked)\b", low_prompt_raw))
-            is_connect_intent = (not is_explicit_status_check) and bool(re.search(r"(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)", low_prompt_raw))
-            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
-            res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
-            if res.get("message"):
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", res["message"])
-                return {
-                    "reply": res["message"],
-                    "tool_calls_executed": [tool_to_call],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
+        # 1. Notion Connection / Status Queries (NEVER intercept if user is asking about notes/pages/content/search/read/list)
+        is_notion_content_query = bool(re.search(
+            r"\b(note|notes|page|pages|content|heading|bullet|bullets|section|add|save|daal|daalo|dal|bana|banao|bna|bnao|write|create|append|likh|likho|read|padh|padho|btao|batao|dikha|dikhao|show|list|search|find|prexcising|preexisting|existing|kya\s+hai|kya\s+h|dekh|dekho|dsa)\b",
+            low_prompt_raw
+        ))
+        if has_notion and not is_notion_content_query:
+            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|conn\w*|juda|judi|linked)\b", low_prompt_raw))
+            is_connect_intent = bool(re.search(r"\b(connect\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)\b", low_prompt_raw))
+            if is_explicit_status_check or is_connect_intent or (len(words) <= 3 and bool(re.search(r"\b(status|connect)\b", low_prompt_raw))):
+                tool_to_call = "connect_integration" if (is_connect_intent and not is_explicit_status_check) else "check_integrations_status"
+                res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
+                if res.get("message"):
+                    db.log_chat_message(chat_id, "user", user_text)
+                    db.log_chat_message(chat_id, "assistant", res["message"])
+                    return {
+                        "reply": res["message"],
+                        "tool_calls_executed": [tool_to_call],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": 0,
+                        "memory_context": {}
+                    }
 
-        # 2. GitHub Queries
-        if has_github and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
-            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|juda|judi|linked)\b", low_prompt_raw))
-            is_connect_intent = (not is_explicit_status_check) and bool(re.search(r"(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)", low_prompt_raw))
-            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
-            res = await execute_tool(chat_id, tool_to_call, {"service": "github"})
-            if res.get("message"):
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", res["message"])
-                return {
-                    "reply": res["message"],
-                    "tool_calls_executed": [tool_to_call],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
+        # 2. GitHub Queries (NEVER intercept if user is asking for repos/files/issues/code)
+        is_github_content_query = bool(re.search(
+            r"\b(repo|repos|repository|repositories|issue|issues|file|files|code|readme|read|commit|commits|push|pull|branch|btao|batao|dikha|dikhao|show|list)\b",
+            low_prompt_raw
+        ))
+        if has_github and not is_github_content_query:
+            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|conn\w*|juda|judi|linked)\b", low_prompt_raw))
+            is_connect_intent = bool(re.search(r"\b(connect\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)\b", low_prompt_raw))
+            if is_explicit_status_check or is_connect_intent or (len(words) <= 3 and bool(re.search(r"\b(status|connect)\b", low_prompt_raw))):
+                tool_to_call = "connect_integration" if (is_connect_intent and not is_explicit_status_check) else "check_integrations_status"
+                res = await execute_tool(chat_id, tool_to_call, {"service": "github"})
+                if res.get("message"):
+                    db.log_chat_message(chat_id, "user", user_text)
+                    db.log_chat_message(chat_id, "assistant", res["message"])
+                    return {
+                        "reply": res["message"],
+                        "tool_calls_executed": [tool_to_call],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": 0,
+                        "memory_context": {}
+                    }
 
         # 3. Google Queries
         if has_google and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
@@ -423,7 +432,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Intent 4: GitHub / Notion / Code / Notes
     if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|pages|database|push|note|notes|heading|bullet|bullets|section)\b", low_prompt):
-        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file", "create_notion_page"])
+        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file", "create_notion_page", "list_notion_pages"])
 
     # Intent 5: Lists & Packing
     if re.search(r"\b(pack|packing|list|lists|trip|goa|bag|bags|travel|item|items)\b", low_prompt):

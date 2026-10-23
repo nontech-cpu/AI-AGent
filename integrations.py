@@ -7,7 +7,7 @@ Handles token validation, workspace searching, and executing actions like:
 import os
 import json
 import httpx
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 
 # ==============================================================================
@@ -281,6 +281,55 @@ async def create_notion_page(
 
 # Alias for clarity
 create_or_append_notion_note = create_notion_page
+
+
+async def list_notion_pages(token: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Lists or searches pages and notes in the user's Notion workspace."""
+    clean_token = (token or "").strip()
+    if not clean_token:
+        clean_token = os.getenv("NOTION_API_KEY", "").strip()
+    if not clean_token:
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {clean_token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    payload: Dict[str, Any] = {
+        "filter": {"value": "page", "property": "object"},
+        "page_size": 25
+    }
+    if query:
+        payload["query"] = str(query).strip()
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post("https://api.notion.com/v1/search", headers=headers, json=payload)
+            if res.status_code != 200:
+                return []
+            data = res.json()
+            results = []
+            for item in data.get("results", []):
+                title_arr = (
+                    item.get("properties", {}).get("title", {}).get("title", []) or
+                    item.get("properties", {}).get("Name", {}).get("title", [])
+                )
+                title = "".join([t.get("plain_text", "") for t in title_arr]).strip() or "Untitled"
+                page_id = item.get("id", "")
+                page_url = item.get("url") or f"https://notion.so/{page_id.replace('-', '')}"
+                results.append({
+                    "id": page_id,
+                    "title": title,
+                    "url": page_url,
+                    "created_time": item.get("created_time"),
+                    "last_edited_time": item.get("last_edited_time")
+                })
+            return results
+    except Exception as exc:
+        print("list_notion_pages error:", repr(exc))
+        return []
+
 
 
 # ==============================================================================

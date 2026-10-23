@@ -9,7 +9,8 @@ import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import notion_auth
-from integrations import parse_content_to_notion_blocks, create_or_append_notion_note, create_notion_page
+import integrations
+from integrations import parse_content_to_notion_blocks, create_or_append_notion_note, create_notion_page, list_notion_pages
 from connectors.notion import NotionConnector
 from connectors.registry import get_connector
 
@@ -215,3 +216,52 @@ async def test_notion_connector_contract_execution():
             target_section="existing notes",
             formatting="bullets"
         )
+
+
+@pytest.mark.asyncio
+async def test_list_notion_pages_integration():
+    """Verifies integrations.list_notion_pages parses pages correctly."""
+    mock_search_data = {
+        "results": [
+            {
+                "id": "page-111",
+                "properties": {
+                    "title": {"title": [{"plain_text": "DSA NOTES"}]}
+                },
+                "url": "https://notion.so/dsa-notes",
+                "last_edited_time": "2026-10-23T20:00:00Z"
+            },
+            {
+                "id": "page-222",
+                "properties": {
+                    "Name": {"title": [{"plain_text": "Project Roadmap"}]}
+                },
+                "url": "https://notion.so/project-roadmap",
+                "last_edited_time": "2026-10-23T21:00:00Z"
+            }
+        ]
+    }
+    with patch("httpx.AsyncClient.post") as mock_post:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = mock_search_data
+        mock_post.return_value = resp
+
+        pages = await integrations.list_notion_pages("secret_mock_123")
+        assert len(pages) == 2
+        assert pages[0]["title"] == "DSA NOTES"
+        assert pages[0]["url"] == "https://notion.so/dsa-notes"
+        assert pages[1]["title"] == "Project Roadmap"
+
+
+@pytest.mark.asyncio
+async def test_notion_connector_list_pages_contract():
+    """Verifies NotionConnector.execute handles list_notion_pages tool."""
+    conn = get_connector("notion")
+    with patch("db.get_user_integration", return_value={"api_key": "secret_mock_123"}), \
+         patch("integrations.list_notion_pages", new_callable=AsyncMock) as mock_list:
+        mock_list.return_value = [{"id": "p1", "title": "My Notes", "url": "https://notion.so/p1"}]
+        res = await conn.execute(1234828592, "list_notion_pages", {})
+        assert res.ok is True
+        assert res.data["count"] == 1
+        assert "My Notes" in res.data["summary"]

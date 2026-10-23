@@ -43,6 +43,7 @@ Generated automatically by `tests/connectors/test_connector_matrix.py`.
 | **notion** | Contract Compliance | ✅ PASS |
 | **notion** | Fake Success Guarded | ✅ PASS |
 | **notion** | Hallucination Canary | ✅ PASS |
+| **notion** | Happy Path Read | ✅ PASS |
 | **notion** | Not Connected Honest Handling | ✅ PASS |
 | **notion** | Prompt Injection Neutralized | ✅ PASS |
 | **notion** | Typo & Hinglish Robustness | ✅ PASS |

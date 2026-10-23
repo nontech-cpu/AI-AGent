@@ -59,6 +59,18 @@ class NotionConnector(Connector):
                 },
                 kind="write",
                 needs_confirmation=False
+            ),
+            ToolSpec(
+                name="list_notion_pages",
+                description="Lists or searches existing pages and notes in the user's connected Notion workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": ["string", "null"], "description": "Optional search term to filter pages by title."}
+                    }
+                },
+                kind="read",
+                needs_confirmation=False
             )
         ]
 
@@ -72,6 +84,30 @@ class NotionConnector(Connector):
                     "message": "Notion is not connected. Connect your Notion workspace token first.",
                     "retryable": False
                 }
+            )
+
+        if tool_name == "list_notion_pages":
+            query = args.get("query")
+            token_row = db.get_user_integration(user_or_chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            pages = await integrations.list_notion_pages(token=api_key, query=query)
+            formatted_lines = []
+            for p in pages:
+                formatted_lines.append(f"• **{p['title']}** - {p['url']}")
+            pages_summary = "\n".join(formatted_lines) if formatted_lines else "Koi existing pages nahi mili."
+            return ToolResult(
+                ok=True,
+                data={
+                    "status": "success",
+                    "count": len(pages),
+                    "pages": pages,
+                    "summary": pages_summary,
+                    "message": f"Found {len(pages)} pages in your Notion workspace."
+                },
+                urls=[p["url"] for p in pages if p.get("url")]
             )
 
         if tool_name == "create_notion_page":
@@ -144,6 +180,15 @@ class MockNotionConnector(NotionConnector):
             return ToolResult(ok=False, error={"type": ErrorType.NOT_CONNECTED.value, "message": "Notion is not connected."})
         if self._forced_state == "expired":
             return ToolResult(ok=False, error={"type": ErrorType.AUTH_EXPIRED.value, "message": "Notion token expired."})
+
+        if tool_name == "list_notion_pages":
+            pages = NOTION_FIXTURES.get("pages", [])
+            return ToolResult(
+                ok=True,
+                data={"status": "success", "count": len(pages), "pages": pages, "workspace": NOTION_FIXTURES.get("workspace", "Mock Notion")},
+                ids=[p["id"] for p in pages],
+                urls=[p["url"] for p in pages]
+            )
 
         if tool_name == "create_notion_page":
             pg = NOTION_FIXTURES["pages"][0]
