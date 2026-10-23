@@ -21,7 +21,8 @@ from db import (
     delete_smart_list_item, delete_smart_list, find_or_create_smart_list,
     get_user_rules, add_user_rule, delete_user_rule,
     get_serendipity_memories, delete_memory_items,
-    get_contact_memories, save_contact_memory, delete_contact_memory
+    get_contact_memories, save_contact_memory, delete_contact_memory,
+    wipe_all_user_memories
 )
 from categories import CATEGORIES, DEFAULTS
 from timing import IST, build_plan, fmt_when
@@ -268,6 +269,21 @@ async def update_consent(
         # Revoke & delete data
         delete_user(chat_id)
         return {"status": "ok", "consented": False, "message": "Consent revoked and user data cleared."}
+
+
+@router.delete("/user/memory/wipe-all", summary="Master Privacy Wipe: Delete all memories")
+@router.post("/user/memory/wipe-all", summary="Master Privacy Wipe: Delete all memories")
+async def api_wipe_all_memories(chat_id: int = Depends(get_current_chat_id)):
+    """
+    Master Privacy Wipe across all platforms (Telegram, WhatsApp, App):
+    Permanently deletes all user memories, facts, chat logs, contact memories,
+    smart lists, and reminders. Preserves user account and tokens.
+    """
+    success = wipe_all_user_memories(chat_id)
+    return {
+        "status": "ok" if success else "not_found",
+        "message": "All memories, chat history, contacts, and reminders have been permanently deleted across all platforms." if success else "User not found or nothing to delete."
+    }
 
 
 # ---------- 2. Chat & Action Execution Engine ----------

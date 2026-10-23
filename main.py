@@ -7,6 +7,7 @@ import hashlib
 import string
 import asyncio
 import httpx
+from typing import Any, Dict
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
@@ -26,7 +27,8 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 find_meetings_before, find_meetings_at_times, find_recent_meetings, delete_memory_items, engine, text,
                 save_contact_memory, get_contact_memories, update_contact_commitment,
                 log_chat_message, get_recent_chat_history, get_chat_turns_mentioning_keyword, save_user_fact, get_user_facts,
-                save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary)
+                save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary,
+                wipe_all_user_memories)
 from integrations import (validate_notion_token, create_notion_page,
                           validate_github_token, list_github_issues, list_github_repos)
 from file_generator import build_contacts_excel, build_styled_pdf
@@ -113,9 +115,11 @@ def _init_web_verify_db():
         conn.commit()
 
 
-# ---------- Texts ----------
+# ---------- Texts & Master Wipe State ----------
 
-WELCOME_CONSENT = (
+PENDING_WIPE_CODES: dict[int, dict[str, Any]] = {}
+
+WELCOME_CONSENT_BASE = (
     "Hi! I'm your personal assistant. I remember important things like bills, "
     "bookings and meetings, and remind you at the right time.\n\n"
     "A few promises:\n"
@@ -124,8 +128,27 @@ WELCOME_CONSENT = (
     "• Your messages and voice notes are processed by an AI provider (Groq) "
     "to understand them. Voice notes are not saved on my side.\n"
     "• You can delete everything anytime.\n\n"
-    "Shall we continue? Reply yes or no."
 )
+
+WELCOME_CONSENT = WELCOME_CONSENT_BASE + "[Recommended: Please connect and link your Google account to ensure a smooth flow]\n\nShall we continue? Reply yes or no."
+
+
+async def get_welcome_consent_text(chat_id: int) -> str:
+    """
+    Builds dynamic onboarding consent greeting:
+    - If user has NOT connected Google on web, displays '[Recommended: Please connect and link your Google account to ensure a smooth flow]'
+    - If user has ALREADY connected Google, the recommendation bracket is omitted.
+    """
+    is_connected = False
+    try:
+        is_connected, _ = await get_valid_google_connection_by_chat_id(chat_id)
+    except Exception:
+        pass
+
+    if not is_connected:
+        return WELCOME_CONSENT_BASE + "[Recommended: Please connect and link your Google account to ensure a smooth flow]\n\nShall we continue? Reply yes or no."
+    return WELCOME_CONSENT_BASE + "Shall we continue? Reply yes or no."
+
 
 PERSONA_TEXT = (
     "What do you do? This helps me track the right things for you.\n\n"
@@ -966,6 +989,35 @@ async def start_email_link(chat_id, addr):
 
 
 async def handle_mail(m):
+    # Master Privacy Wipe Email Verification check (valid 5 mins)
+    import time as _time
+    sender_clean = (m.get("sender") or "").strip().lower()
+    mail_text = ((m.get("subject") or "") + " " + (m.get("body") or "")).lower()
+
+    for p_chat_id, p_info in list(PENDING_WIPE_CODES.items()):
+        p_email = (p_info.get("email") or "").strip().lower()
+        if sender_clean and p_email and (sender_clean == p_email or sender_clean in p_email):
+            p_code = str(p_info.get("code", "")).strip().lower()
+            if p_code and p_code in mail_text:
+                if _time.time() <= p_info.get("expires_at", 0):
+                    PENDING_WIPE_CODES.pop(p_chat_id, None)
+                    set_state(p_chat_id, None)
+                    wipe_all_user_memories(p_chat_id)
+                    await say(
+                        p_chat_id,
+                        "✅ **Master Privacy Wipe Confirmed**: Aapke connected email se OTP verify ho gaya hai. "
+                        "Aapki saari memories, chat history, contacts, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
+                    )
+                    return
+                else:
+                    PENDING_WIPE_CODES.pop(p_chat_id, None)
+                    set_state(p_chat_id, None)
+                    await say(
+                        p_chat_id,
+                        "⚠️ Verification code expire ho chuka tha (5 minutes exceeded). Memory delete nahi hui."
+                    )
+                    return
+
     link = get_link_by_email(m["sender"])
     if link is None:
         return  # unknown sender: ignore
@@ -2223,7 +2275,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if st is None:
         ensure_user(chat_id)
         set_state(chat_id, "consent")
-        await say(chat_id, WELCOME_CONSENT)
+        await say(chat_id, await get_welcome_consent_text(chat_id))
         return
     state, data = st
 
@@ -2247,14 +2299,14 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 await say(chat_id, "Okay, nothing has been saved. Message me anytime if you change your mind.")
                 return
             elif cmd_token in {"/start", "start"}:
-                await say(chat_id, WELCOME_CONSENT)
+                await say(chat_id, await get_welcome_consent_text(chat_id))
                 return
             else:
                 await say(chat_id, "Shall we continue? Please reply yes or no.")
                 return
         else:
             set_state(chat_id, "consent")
-            await say(chat_id, WELCOME_CONSENT)
+            await say(chat_id, await get_welcome_consent_text(chat_id))
             return
 
     # Top-level command interruptions should ALWAYS be respected and immediately reset state and pending actions!
@@ -2271,6 +2323,141 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if cmd_token in {"/help", "help", "/menu", "menu"}:
         set_state(chat_id, None)
         await say(chat_id, HELP_TEXT)
+        return
+
+    # Master Privacy Wipe State Handling
+    if state == "confirm_master_wipe":
+        yn = yes_no(clean)
+        if yn is None:
+            yn = await classify_yes_no_any_language(
+                clean, "The user is asked whether they want to permanently wipe all their memories and data."
+            )
+        if yn is False:
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            await say(chat_id, "Theek hai, memory wipe cancel kar diya gaya hai. Aapka saara data safe hai.")
+            return
+        elif yn is True:
+            import time as _time
+            code = "".join(secrets.choice("0123456789") for _ in range(6))
+            expires_at = _time.time() + 300  # 5 minutes
+
+            connected_email = None
+            try:
+                is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
+                if is_conn and g_email:
+                    connected_email = g_email.strip().lower()
+            except Exception:
+                pass
+            if not connected_email:
+                try:
+                    linked = get_linked_email(chat_id)
+                    if linked and linked[0]:
+                        connected_email = linked[0].strip().lower()
+                except Exception:
+                    pass
+
+            if connected_email:
+                PENDING_WIPE_CODES[chat_id] = {
+                    "code": code,
+                    "expires_at": expires_at,
+                    "email": connected_email
+                }
+                set_state(chat_id, "awaiting_wipe_email_verification", {"code": code, "expires_at": expires_at, "email": connected_email})
+                await say(
+                    chat_id,
+                    f"🔐 **Security Verification Required (Valid for 5 mins)**\n\n"
+                    f"Aapki privacy aur security ke liye, maine ek verification code generate kiya hai:\n\n"
+                    f"🔑 **Verification Code: `{code}`**\n\n"
+                    f"Kripya agle 5 minute ke andar apne connected email (`{connected_email}`) se bot ki email (`{BOT_EMAIL}`) par ye code Subject ya Body me likh kar email send karein.\n\n"
+                    f"Jaise hi bot ko aapke connected email se OTP verify hoga, aapki Telegram, WhatsApp aur App ki saari memory permanently wipe kar di jayegi.\n"
+                    f"(Ya reply `cancel` to abort)"
+                )
+                return
+            else:
+                PENDING_WIPE_CODES[chat_id] = {
+                    "code": code,
+                    "expires_at": expires_at,
+                    "email": None
+                }
+                set_state(chat_id, "awaiting_wipe_chat_otp", {"code": code, "expires_at": expires_at})
+                await say(
+                    chat_id,
+                    f"🔐 **Security Verification (Valid for 5 mins)**\n\n"
+                    f"Aapka Google account linked nahi hai. Saari memory permanently delete karne ke liye agle 5 minute ke andar ye 6-digit verification code yahan chat me reply karein:\n\n"
+                    f"🔑 **Verification Code: `{code}`**\n\n"
+                    f"Reply `cancel` to abort."
+                )
+                return
+        else:
+            await say(chat_id, "Please reply **yes** to proceed with master memory deletion or **cancel** to abort.")
+            return
+
+    if state == "awaiting_wipe_email_verification":
+        import time as _time
+        if cmd_token in {"/cancel", "cancel"} or clean_lower in {"cancel", "rehne do", "chhoro", "no", "nahi"}:
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            await say(chat_id, "Memory wipe verification cancel kar di gayi hai. Aapka data safe hai.")
+            return
+        pending_info = PENDING_WIPE_CODES.get(chat_id) or (data if isinstance(data, dict) else {})
+        if pending_info and _time.time() > pending_info.get("expires_at", 0):
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            await say(chat_id, "⏳ Verification code expire ho gaya hai (5 minutes exceeded). Memory delete nahi hui. Agar wipe karna chahte hain to dobara request karein.")
+            return
+        email_addr = pending_info.get("email", "connected email")
+        code_str = pending_info.get("code", "")
+        await say(
+            chat_id,
+            f"Aapki memory wipe request pending hai. Kripya apne connected email (`{email_addr}`) se `{BOT_EMAIL}` par code `{code_str}` bhejein, ya 'cancel' likhein."
+        )
+        return
+
+    if state == "awaiting_wipe_chat_otp":
+        import time as _time
+        if cmd_token in {"/cancel", "cancel"} or clean_lower in {"cancel", "rehne do", "chhoro", "no", "nahi"}:
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            await say(chat_id, "Memory wipe cancel kar di gayi hai. Aapka data safe hai.")
+            return
+        pending_info = PENDING_WIPE_CODES.get(chat_id) or (data if isinstance(data, dict) else {})
+        if pending_info and _time.time() > pending_info.get("expires_at", 0):
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            await say(chat_id, "⏳ Verification code expire ho gaya hai (5 minutes exceeded). Memory delete nahi hui. Agar wipe karna chahte hain to dobara request karein.")
+            return
+        expected_code = str(pending_info.get("code", "")).strip()
+        if expected_code and expected_code in clean:
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            wipe_all_user_memories(chat_id)
+            await say(
+                chat_id,
+                "✅ **Privacy Wipe Complete**: Aapki saari memories, chat history, contacts, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
+            )
+            return
+        else:
+            await say(chat_id, f"Invalid code. Kripya 6-digit code `{expected_code}` enter karein ya 'cancel' likhein.")
+            return
+
+    # Master Privacy Wipe Request Trigger: "dlt my memoryy", "delete my memory", "wipe everything", etc.
+    wipe_match = re.search(
+        r'\b(delete\s*(all\s*)?(my\s*)?memor(y|ies)|wipe\s*(all\s*)?(my\s*)?(data|memory|records|everything)|'
+        r'saari\s*memory\s*delete|sab\s*kuch\s*delete|puri\s*memory\s*delete|wipe\s*everything|'
+        r'sarre?\s*memory\s*dlet|saara\s*data\s*delete|dlt\s*(my\s*)?memory|delete\s*everything)\b',
+        clean_lower
+    )
+    if wipe_match:
+        set_state(chat_id, "confirm_master_wipe")
+        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
+        await say(
+            chat_id,
+            "⚠️ **Security & Privacy Warning**:\n\n"
+            "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
+            "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
+            "Reply **yes/haan** to confirm ya **no/cancel** to abort."
+        )
         return
 
     if cmd_token in {"/clear", "/reset", "clear", "reset"} or any(phrase in clean_lower for phrase in ("chat history delete", "chat histroy delete", "chat clear", "saari chat delete", "sarre chat histroy delete", "chat history mita")):
@@ -2620,7 +2807,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     # Normal (active) user
     if not has_consent(chat_id):
         set_state(chat_id, "consent")
-        await say(chat_id, WELCOME_CONSENT)
+        await say(chat_id, await get_welcome_consent_text(chat_id))
         return
     if not get_persona(chat_id):
         set_state(chat_id, "persona")
@@ -2706,7 +2893,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
         else:
             set_state(chat_id, "consent")
-            await say(chat_id, WELCOME_CONSENT)
+            await say(chat_id, await get_welcome_consent_text(chat_id))
         return
     await handle_active(chat_id, clean)
 
@@ -2720,7 +2907,7 @@ async def process_voice(chat_id, voice):
         if st is None:
             ensure_user(chat_id)
             set_state(chat_id, "consent")
-            await say(chat_id, WELCOME_CONSENT)
+            await say(chat_id, await get_welcome_consent_text(chat_id))
             return
 
         reply_lang.set(get_language(chat_id))
@@ -2790,7 +2977,7 @@ async def process_photo(chat_id, photo_list, caption=""):
         if st is None:
             ensure_user(chat_id)
             set_state(chat_id, "consent")
-            await say(chat_id, WELCOME_CONSENT)
+            await say(chat_id, await get_welcome_consent_text(chat_id))
             return
 
         reply_lang.set(get_language(chat_id))
@@ -2871,7 +3058,7 @@ async def process_document(chat_id, doc, caption=""):
         if st is None:
             ensure_user(chat_id)
             set_state(chat_id, "consent")
-            await say(chat_id, WELCOME_CONSENT)
+            await say(chat_id, await get_welcome_consent_text(chat_id))
             return
 
         reply_lang.set(get_language(chat_id))

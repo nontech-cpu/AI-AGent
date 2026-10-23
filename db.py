@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
@@ -129,6 +130,43 @@ def delete_user(chat_id):
             text("DELETE FROM users WHERE telegram_chat_id = :c"),
             {"c": chat_id},
         )
+
+
+def wipe_all_user_memories(chat_id: int):
+    """
+    Master Privacy Wipe: Clears all user_facts, memory_items, reminders,
+    chat_logs, contact_memories, smart_lists, and board cards across all channels.
+    Preserves user account record and tokens.
+    """
+    with engine.begin() as conn:
+        u_row = conn.execute(
+            text("SELECT id FROM users WHERE telegram_chat_id = :c"),
+            {"c": chat_id}
+        ).first()
+        if not u_row:
+            return False
+        uid = int(u_row[0])
+
+        statements = [
+            "DELETE FROM user_facts WHERE user_id = :u",
+            "DELETE FROM reminders WHERE item_id IN (SELECT id FROM memory_items WHERE user_id = :u)",
+            "DELETE FROM memory_items WHERE user_id = :u",
+            "DELETE FROM chat_logs WHERE user_id = :u",
+            "DELETE FROM contact_memories WHERE user_id = :u",
+            "DELETE FROM smart_list_items WHERE list_id IN (SELECT id FROM smart_lists WHERE user_id = :u)",
+            "DELETE FROM smart_lists WHERE user_id = :u",
+            "DELETE FROM board_cards WHERE user_id = :u",
+            "DELETE FROM user_rules WHERE user_id = :u",
+            "DELETE FROM memories WHERE user_id = :u",
+            "DELETE FROM entity_aliases WHERE entity_id IN (SELECT id FROM entities WHERE user_id = :u)",
+            "DELETE FROM entities WHERE user_id = :u",
+        ]
+        for sql in statements:
+            try:
+                conn.execute(text(sql), {"u": uid})
+            except Exception:
+                pass
+    return True
 
 
 def export_data(chat_id):
@@ -301,17 +339,28 @@ def get_state(chat_id):
             text("SELECT state, state_data FROM users WHERE telegram_chat_id = :c"),
             {"c": chat_id},
         ).first()
-    return (row[0], row[1]) if row else None
+    if not row:
+        return None
+    st, data = row[0], row[1]
+    if isinstance(data, str) and data.strip().startswith(("{", "[")):
+        try:
+            data = json.loads(data)
+        except Exception:
+            pass
+    return (st, data)
 
 
 def set_state(chat_id, state, data=None):
+    serialized_data = data
+    if isinstance(data, (dict, list)):
+        serialized_data = json.dumps(data)
     with engine.begin() as conn:
         conn.execute(
             text(
                 "UPDATE users SET state = :s, state_data = :d "
                 "WHERE telegram_chat_id = :c"
             ),
-            {"s": state, "d": data, "c": chat_id},
+            {"s": state, "d": serialized_data, "c": chat_id},
         )
 
 

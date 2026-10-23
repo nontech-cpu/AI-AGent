@@ -111,6 +111,31 @@ def init_test_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS contact_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                company TEXT,
+                role_title TEXT,
+                email TEXT,
+                phone TEXT,
+                met_at TEXT,
+                context_notes TEXT,
+                commitments TEXT,
+                last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chat_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
     yield
 
 
@@ -322,3 +347,86 @@ async def test_update_github_file_tool():
         assert res["status"] == "success"
         assert "README.md" in res["message"]
         assert "https://github.com" in res["commit_url"]
+
+
+# --------------------------------------------------------------------------
+# Onboarding Greeting: Conditional Google Recommendation Test
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_onboarding_conditional_google_recommendation():
+    from main import get_welcome_consent_text
+    chat_id = 998877008
+    db.ensure_user(chat_id)
+
+    # 1. Unlinked user -> MUST include [Recommended: Please connect and link your Google account to ensure a smooth flow]
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)):
+        text_unlinked = await get_welcome_consent_text(chat_id)
+        assert "[Recommended: Please connect and link your Google account to ensure a smooth flow]" in text_unlinked
+        assert "Shall we continue? Reply yes or no." in text_unlinked
+
+    # 2. Already linked user on web -> MUST NOT include [Recommended:
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "connected_user@gmail.com")):
+        text_linked = await get_welcome_consent_text(chat_id)
+        assert "[Recommended:" not in text_linked
+        assert "Shall we continue? Reply yes or no." in text_linked
+
+
+# --------------------------------------------------------------------------
+# Master Privacy Wipe via Email OTP Flow Test
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_master_privacy_wipe_flow():
+    from main import handle_user_text, handle_mail, PENDING_WIPE_CODES
+    chat_id = 998877009
+    db.ensure_user(chat_id)
+    db.give_consent(chat_id)
+    db.set_persona(chat_id, "Job")
+
+    # Seed data: facts, chat logs, memory items, contact
+    db.save_user_fact(chat_id, "work", "Senior Architect")
+    db.log_chat_message(chat_id, "user", "secret meeting notes")
+    db.save_contact_memory(chat_id, "Alice Boss", "Acme Corp")
+
+    sent_messages = []
+    async def mock_say(cid, text):
+        sent_messages.append((cid, text))
+
+    connected_email = "alice.architect@gmail.com"
+
+    with patch("main.say", side_effect=mock_say), \
+         patch("main.get_valid_google_connection_by_chat_id", return_value=(True, connected_email)):
+
+        # Step 1: User requests master memory wipe
+        await handle_user_text(chat_id, "delete my memory everything")
+        assert any("Security & Privacy Warning" in msg[1] for msg in sent_messages)
+        assert db.get_state(chat_id)[0] == "confirm_master_wipe"
+
+        # Step 2: User confirms with "yes"
+        sent_messages.clear()
+        await handle_user_text(chat_id, "yes")
+        assert chat_id in PENDING_WIPE_CODES
+        otp_info = PENDING_WIPE_CODES[chat_id]
+        code = otp_info["code"]
+        assert len(code) == 6
+        assert any(code in msg[1] for msg in sent_messages)
+        assert db.get_state(chat_id)[0] == "awaiting_wipe_email_verification"
+
+        # Step 3: Connected email sends mail with OTP to bot
+        sent_messages.clear()
+        mail_payload = {
+            "sender": connected_email,
+            "subject": f"Verification Code: {code}",
+            "body": f"Please wipe my memory, code is {code}",
+            "authenticated": True
+        }
+        await handle_mail(mail_payload)
+
+        # Verification: Wipe executed across all tables
+        assert chat_id not in PENDING_WIPE_CODES
+        assert any("Master Privacy Wipe Confirmed" in msg[1] for msg in sent_messages)
+
+        # Ensure facts, chat logs, contacts are wiped
+        facts = db.get_user_facts(chat_id)
+        assert len(facts) == 0
+        contacts = db.get_contact_memories(chat_id)
+        assert len(contacts) == 0
