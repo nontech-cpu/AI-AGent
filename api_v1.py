@@ -617,7 +617,7 @@ async def get_free_weather(city: str = "Delhi") -> Optional[Dict[str, Any]]:
                 lat, lon, name = res["latitude"], res["longitude"], res.get("name", city)
 
                 w_res = await client.get(
-                    f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min&timezone=auto"
+                    f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,uv_index_max&hourly=uv_index&timezone=auto"
                 )
                 if w_res.status_code == 200:
                     data = w_res.json()
@@ -625,13 +625,28 @@ async def get_free_weather(city: str = "Delhi") -> Optional[Dict[str, Any]]:
                     daily = data.get("daily", {})
                     max_temp = daily.get("temperature_2m_max", [cw.get("temperature")])[0]
                     min_temp = daily.get("temperature_2m_min", [cw.get("temperature")])[0]
+                    uv_max_list = daily.get("uv_index_max", [0.0])
+                    uv_max = float(uv_max_list[0]) if uv_max_list else 0.0
+
+                    if uv_max >= 8:
+                        uv_alert = "Very High (Sunglasses & high SPF sunscreen recommended)"
+                    elif uv_max >= 6:
+                        uv_alert = "High (Sunscreen recommended during midday)"
+                    elif uv_max >= 3:
+                        uv_alert = "Moderate"
+                    else:
+                        uv_alert = "Low"
+
                     return {
                         "city": name,
                         "temperature": cw.get("temperature"),
                         "max_temp": max_temp,
                         "min_temp": min_temp,
                         "windspeed": cw.get("windspeed"),
-                        "condition_code": cw.get("weathercode", 0)
+                        "condition_code": cw.get("weathercode", 0),
+                        "uv_index_max": uv_max,
+                        "uv_peak_hours": "11:30 AM - 02:30 PM",
+                        "uv_alert": uv_alert
                     }
     except Exception as exc:
         print("[api_v1] weather fetch error:", repr(exc))
@@ -1180,17 +1195,22 @@ async def get_morning_briefing(
     now = datetime.now(IST)
     today = now.date()
 
-    # 1. Weather
+    # 1. Weather with UV Index
     weather = await get_free_weather(city or "Delhi")
-    weather_text = f"{weather.get('temperature')}°C in {weather.get('city')}" if weather else "Pleasant weather"
+    uv_max = weather.get("uv_index_max", 0.0) if weather else 0.0
+    uv_info = f"Max UV: {uv_max} ({weather.get('uv_alert', '')}, Peak: {weather.get('uv_peak_hours', '')})" if weather else ""
+    weather_text = f"{weather.get('temperature')}°C in {weather.get('city')}, {uv_info}" if weather else "Pleasant weather"
 
     # 2. Today's items from DB
     raw_today = items_for_date(chat_id, today)
     agenda_str = ", ".join([f"{r[1]} ({r[0]})" for r in raw_today[:5]]) if raw_today else "No immediate pending tasks"
 
-    # 3. Google Calendar
+    # 3. Google Calendar & Adaptive Early Wake-up Check
     cal_str = "No meetings scheduled"
+    earliest_event_dt = None
+    has_travel = False
     db_user_id = get_db_user_id(chat_id)
+
     if db_user_id:
         token_info = get_google_token(db_user_id)
         if token_info:
@@ -1200,16 +1220,48 @@ async def get_morning_briefing(
                 events = await list_calendar_events(db_user_id, min_time=today_start, max_time=today_end)
                 if events:
                     cal_str = ", ".join([f"{e.get('summary')} at {e.get('start', {}).get('dateTime', 'TBD')}" for e in events[:3]])
+                    for ev in events:
+                        ev_start_raw = ev.get("start", {}).get("dateTime")
+                        if ev_start_raw:
+                            try:
+                                dt = datetime.fromisoformat(ev_start_raw.replace("Z", "+00:00")).astimezone(IST)
+                                if earliest_event_dt is None or dt < earliest_event_dt:
+                                    earliest_event_dt = dt
+                            except Exception:
+                                pass
+                        ev_summary = (ev.get("summary") or "").lower()
+                        if any(w in ev_summary for w in ("flight", "travel", "trip", "goa", "ticket", "plane", "airport")):
+                            has_travel = True
             except Exception:
                 pass
+
+    # Check agenda for travel mentions too
+    if not has_travel and any(w in agenda_str.lower() for w in ("flight", "travel", "trip", "goa", "ticket", "plane", "airport")):
+        has_travel = True
+
+    # Adaptive Briefing Time calculation:
+    # Default is 08:00 AM IST. If user has an event before 08:00 AM, send briefing 1 hour before!
+    target_send_time = "08:00 AM"
+    is_early_wake_up = False
+    if earliest_event_dt and earliest_event_dt.time() < time(8, 0):
+        early_dt = earliest_event_dt - timedelta(hours=1)
+        target_send_time = early_dt.strftime("%I:%M %p")
+        is_early_wake_up = True
+
+    travel_checklist = []
+    travel_prompt_snippet = ""
+    if has_travel:
+        travel_checklist = ["Aadhaar Card", "Passport / Photo ID", "Boarding Pass / Flight Ticket", "Phone Charger", "Wallet & Cards"]
+        travel_prompt_snippet = "\nTRAVEL ALERT: User is traveling today/tomorrow. Specifically remind them to carry their Aadhaar card, Passport/ID, and Flight Ticket/Boarding Pass!"
 
     prompt = (
         f"Generate a crisp, motivating 3-sentence Daily Morning Executive Briefing for an ambitious professional.\n"
         f"Date: {today.strftime('%A, %d %B %Y')}\n"
-        f"Weather: {weather_text}\n"
+        f"Weather & UV: {weather_text}\n"
         f"Calendar: {cal_str}\n"
         f"Pending Tasks: {agenda_str}\n"
-        f"Tone: Energetic, concise, professional executive assistant. Return in Hinglish or English."
+        f"{travel_prompt_snippet}\n"
+        f"Tone: Energetic, concise, professional executive assistant. Mention UV sunscreen alert if high. Return in Hinglish or English."
     )
 
     try:
@@ -1225,7 +1277,8 @@ async def get_morning_briefing(
             )
             briefing_text = resp.json()["choices"][0]["message"]["content"].strip()
     except Exception:
-        briefing_text = f"Good morning! Today is {today.strftime('%A, %d %b')}. You have {len(raw_today)} active tasks scheduled. Weather: {weather_text}. Stay focused!"
+        travel_suffix = " Don't forget your Aadhaar card and boarding pass!" if has_travel else ""
+        briefing_text = f"Good morning! Today is {today.strftime('%A, %d %b')}. You have {len(raw_today)} active tasks scheduled. Weather: {weather_text}.{travel_suffix} Stay focused!"
 
     return {
         "date": today.isoformat(),
@@ -1233,7 +1286,10 @@ async def get_morning_briefing(
         "weather": weather,
         "briefing_text": briefing_text,
         "agenda_count": len(raw_today),
-        "meetings_summary": cal_str
+        "meetings_summary": cal_str,
+        "target_send_time": target_send_time,
+        "is_early_wake_up": is_early_wake_up,
+        "travel_checklist": travel_checklist
     }
 
 

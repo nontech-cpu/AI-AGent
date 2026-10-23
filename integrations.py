@@ -287,3 +287,69 @@ async def list_github_repos(token: Optional[str] = None, username: Optional[str]
         print("list_github_repos error:", repr(exc))
         return False, [], None
 
+
+async def update_github_file(
+    token: str,
+    repo: str,
+    file_path: str,
+    content: str,
+    commit_message: str = "Update file via PeculiarAI"
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Creates or updates a file (like README.md) in a GitHub repository via GitHub REST API.
+    Returns (success, message, commit_url).
+    """
+    import base64
+    clean_token = token.strip() if token else ""
+    if not clean_token:
+        return False, "GitHub personal access token is required to update files.", None
+
+    headers = {
+        "Authorization": f"Bearer {clean_token}",
+        "User-Agent": "PeculiarAI",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    clean_repo = repo.strip()
+    clean_path = file_path.strip().lstrip("/")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        # 1. Resolve full repo path owner/repo if only repo name was given
+        if "/" not in clean_repo:
+            user_res = await client.get("https://api.github.com/user", headers=headers)
+            if user_res.status_code == 200:
+                login = user_res.json().get("login")
+                clean_repo = f"{login}/{clean_repo}"
+            else:
+                return False, f"Could not determine owner for repository '{clean_repo}'. Please specify as 'owner/repo'.", None
+
+        # 2. Check if file already exists to obtain its sha
+        file_url = f"https://api.github.com/repos/{clean_repo}/contents/{clean_path}"
+        sha = None
+        get_res = await client.get(file_url, headers=headers)
+        if get_res.status_code == 200:
+            file_info = get_res.json()
+            sha = file_info.get("sha")
+
+        # 3. Base64 encode content
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        payload = {
+            "message": commit_message,
+            "content": encoded_content
+        }
+        if sha:
+            payload["sha"] = sha
+
+        put_res = await client.put(file_url, headers=headers, json=payload)
+        if put_res.status_code in (200, 201):
+            res_data = put_res.json()
+            commit_html = res_data.get("commit", {}).get("html_url")
+            return True, f"File '{clean_path}' in '{clean_repo}' successfully updated!", commit_html
+        else:
+            err = put_res.text
+            try:
+                err = put_res.json().get("message", err)
+            except Exception:
+                pass
+            return False, f"GitHub error ({put_res.status_code}): {err}", None
+

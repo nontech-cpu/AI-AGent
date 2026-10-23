@@ -53,6 +53,20 @@ class SaveNoteOrFactArgs(BaseModel):
 class ClearChatHistoryArgs(BaseModel):
     confirm: Optional[bool] = Field(True, description="Confirmation flag to delete chat history.")
 
+class DeleteNoteOrFactArgs(BaseModel):
+    query: str = Field(..., description="Keywords or topic of the note, fact, booking, or ticket to delete from memory e.g. 'ticket', 'flight', 'hotel'.")
+
+class UpdateGitHubFileArgs(BaseModel):
+    repo: str = Field(..., description="Repository in 'owner/repo' format or repo name e.g. 'ml-project' or 'username/ml-project'.")
+    path: Optional[str] = Field("README.md", description="File path within the repository e.g. 'README.md'.")
+    content: str = Field(..., description="New or updated content for the file.")
+    commit_message: Optional[str] = Field("Update file via PeculiarAI", description="Git commit message.")
+
+class CreatePackingListArgs(BaseModel):
+    trip_title: str = Field(..., description="Title of the trip or packing list e.g. 'Goa Trip'.")
+    items: List[str] = Field(..., description="List of items to pack e.g. ['Passport', 'Aadhaar Card', 'Photo', 'Charger'].")
+    trip_date: Optional[str] = Field(None, description="Date of the trip in YYYY-MM-DD format if known.")
+
 class CreateReminderArgs(BaseModel):
     title: str = Field(..., description="Title of the reminder or task.")
     due_date: str = Field(..., description="Due date in YYYY-MM-DD format.")
@@ -247,6 +261,53 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "confirm": {"type": ["boolean", "null"], "description": "Set to true to clear chat history."}
                 }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_note_or_fact",
+            "description": "Delete a specific note, memory fact, flight ticket, or booking when user asks to remove it (e.g. 'is ticket ko memory se hata do').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keywords of the ticket, flight, booking, or fact to delete from memory."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_packing_list",
+            "description": "Create a smart packing/travel checklist for a trip (e.g. 'Goa trip packing: passport, photo, Aadhaar card') and sets a reminder the evening before.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "trip_title": {"type": "string", "description": "Trip or packing list name e.g. 'Goa Trip'."},
+                    "items": {"type": "array", "items": {"type": "string"}, "description": "Items to pack e.g. ['Passport', 'Aadhaar Card', 'Photo']."},
+                    "trip_date": {"type": ["string", "null"], "description": "Optional trip date in YYYY-MM-DD format."}
+                },
+                "required": ["trip_title", "items"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_github_file",
+            "description": "Update or replace a file (like README.md) in a GitHub repository with new content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "Repository name or 'owner/repo' e.g. 'ml-project'."},
+                    "path": {"type": ["string", "null"], "description": "File path e.g. 'README.md'."},
+                    "content": {"type": "string", "description": "The new content to write into the file."},
+                    "commit_message": {"type": ["string", "null"], "description": "Optional commit message."}
+                },
+                "required": ["repo", "content"]
             }
         }
     },
@@ -708,6 +769,84 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             return {
                 "status": "success",
                 "message": "Chat history has been successfully cleared."
+            }
+
+        elif tool_name == "delete_note_or_fact":
+            args = DeleteNoteOrFactArgs(**arguments)
+            deleted = db.delete_matching_user_facts(chat_id, args.query)
+            try:
+                from memory.store import resolve_user_id
+                uid = resolve_user_id(chat_id)
+                with db.engine.begin() as conn:
+                    conn.execute(
+                        db.text("DELETE FROM memory_items WHERE user_id = :u AND LOWER(content) LIKE LOWER(:q)"),
+                        {"u": uid, "q": f"%{args.query.strip()}%"}
+                    )
+            except Exception:
+                pass
+            return {
+                "status": "success",
+                "deleted": True,
+                "query": args.query,
+                "message": f"Ticket/Fact matching '{args.query}' has been successfully deleted from memory."
+            }
+
+        elif tool_name == "create_packing_list":
+            args = CreatePackingListArgs(**arguments)
+            # Create a persistent Smart List for the trip
+            list_name = f"{args.trip_title} Packing"
+            lid = db.find_or_create_smart_list(chat_id, list_name, category="travel")
+            for itm in args.items:
+                db.add_smart_list_item(chat_id, lid, itm)
+
+            # If trip date specified, schedule reminder for 1 day prior at 7:30 PM
+            if args.trip_date:
+                try:
+                    t_date = date.fromisoformat(args.trip_date)
+                    day_before = t_date - timedelta(days=1)
+                    db.save_memory(
+                        chat_id,
+                        category="appointments",
+                        title=f"Check {list_name}: {', '.join(args.items[:3])}",
+                        due_date=day_before,
+                        due_time=dtime(19, 30)
+                    )
+                except Exception:
+                    pass
+
+            return {
+                "status": "success",
+                "list_id": lid,
+                "list_name": list_name,
+                "items_count": len(args.items),
+                "items": args.items,
+                "message": f"Smart packing list '{list_name}' created with {len(args.items)} items."
+            }
+
+        elif tool_name == "update_github_file":
+            args = UpdateGitHubFileArgs(**arguments)
+            from integrations import update_github_file
+            token = db.get_user_integration(chat_id, "github")
+            if not token:
+                token = os.getenv("GITHUB_TOKEN", "")
+            if not token:
+                return {
+                    "status": "error",
+                    "needs_connection": True,
+                    "service": "github",
+                    "message": "GitHub account is not connected. Please connect GitHub to update repositories."
+                }
+            success, msg, commit_url = await update_github_file(
+                token=token,
+                repo=args.repo,
+                file_path=args.path or "README.md",
+                content=args.content,
+                commit_message=args.commit_message or "Update file via PeculiarAI"
+            )
+            return {
+                "status": "success" if success else "error",
+                "message": msg,
+                "commit_url": commit_url
             }
 
         elif tool_name == "create_reminder":

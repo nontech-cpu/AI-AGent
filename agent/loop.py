@@ -179,6 +179,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         elif intent == "cross_question":
             is_cross_q = True
 
+    # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
+    try:
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if tg_token and chat_id and chat_id > 0:
+            async def _typing():
+                try:
+                    async with httpx.AsyncClient(timeout=2.0) as c:
+                        await c.post(f"https://api.telegram.org/bot{tg_token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
+                except Exception:
+                    pass
+            asyncio.create_task(_typing())
+    except Exception:
+        pass
+
     # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
     mem_ctx = assemble_memory_context(chat_id, user_text)
 
@@ -205,10 +219,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     active_connector_tools = get_available_tools(chat_id, user_text)
     active_conn_tool_names = {t.name for t in active_connector_tools}
     CORE_TOOL_NAMES = {
-        "search_memory", "save_note_or_fact", "save_contact", "get_contact",
-        "update_contact_commitment", "list_contacts", "save_reminder",
-        "list_reminders", "delete_reminders", "connect_integration",
-        "check_integrations_status", "ask_user"
+        "search_memory", "save_note_or_fact", "delete_note_or_fact", "save_contact", "get_contact",
+        "update_contact_commitment", "list_contacts", "create_reminder", "save_reminder",
+        "list_reminders", "delete_reminder", "delete_reminders", "create_packing_list",
+        "update_github_file", "connect_integration", "check_integrations_status", "ask_user"
     }
     effective_tools = [
         t for t in TOOL_DEFINITIONS

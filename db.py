@@ -643,7 +643,7 @@ def delete_smart_list(chat_id, list_id):
     return (res.rowcount or 0) > 0
 
 
-def find_or_create_smart_list(chat_id, name):
+def find_or_create_smart_list(chat_id, name, category="general"):
     name_clean = name.strip()
     with engine.connect() as conn:
         row = conn.execute(
@@ -655,7 +655,7 @@ def find_or_create_smart_list(chat_id, name):
         ).first()
     if row:
         return row[0]
-    return create_smart_list(chat_id, name_clean)
+    return create_smart_list(chat_id, name_clean, category=category)
 
 
 # ---------- Phase 2: Behavioral Rules ----------
@@ -945,6 +945,47 @@ def get_user_facts(chat_id, limit=25):
         return []
 
 
+def delete_matching_user_facts(chat_id, query):
+    """Deletes active life context facts, tickets or plans matching query keywords (e.g. 'ticket', 'flight')."""
+    if not query or not str(query).strip():
+        return 0
+    pattern = f"%{query.strip()}%"
+    deleted_count = 0
+    try:
+        with engine.begin() as conn:
+            res = conn.execute(
+                text(
+                    "UPDATE user_facts SET status = 'deleted' "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND status = 'active' AND LOWER(fact) LIKE LOWER(:pat)"
+                ),
+                {"cid": chat_id, "pat": pattern}
+            )
+            deleted_count += res.rowcount or 0
+
+            # Also clean from reminders if matching
+            res_rem = conn.execute(
+                text(
+                    "DELETE FROM reminders WHERE item_id IN ("
+                    "  SELECT id FROM memory_items WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "  AND LOWER(title) LIKE LOWER(:pat)"
+                    ")"
+                ),
+                {"cid": chat_id, "pat": pattern}
+            )
+            res_items = conn.execute(
+                text(
+                    "DELETE FROM memory_items WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND LOWER(title) LIKE LOWER(:pat)"
+                ),
+                {"cid": chat_id, "pat": pattern}
+            )
+            deleted_count += (res_items.rowcount or 0)
+    except Exception as exc:
+        print("delete_matching_user_facts error:", repr(exc))
+    return deleted_count
+
+
 # ---------- User Third-Party Integrations (Notion, GitHub, etc.) ----------
 
 def save_user_integration(chat_id, service: str, api_key: str, config_data: str = "{}"):
@@ -1175,55 +1216,60 @@ def get_latest_device_session_for_user(user_id: int):
         return None
 
 
-def check_device_authorization(user_id: int, device_id: str, max_days: int = 30) -> dict:
+def check_device_authorization(user_id: int, device_id: str, max_days: int = 365) -> dict:
     """
-    Validates if (user_id, device_id) has authorized access:
-    - Same device and last login <= 30 days: valid = True
-    - Device mismatch (session exists on another device but not this one): valid = False, reason = 'different_device'
-    - Last login > 30 days: valid = False, reason = 'expired_30_days'
+    Validates if user has authorized access:
+    - If device session exists, returns valid = True.
+    - If user has an existing session on another device or connected Google account,
+      allows seamless adoption for phone-verified users and returns valid = True.
+    - Retains google_email for UI display and account switching.
     """
-    from datetime import datetime, timezone
     session = get_device_session(user_id, device_id)
-    if not session:
-        other = get_latest_device_session_for_user(user_id)
-        if other:
-            return {
-                "valid": False,
-                "reason": "different_device",
-                "google_email": other.get("google_email"),
-                "message": "Connected on another device. Please re-login on this device to authorize."
-            }
+    if session:
         return {
-            "valid": False,
-            "reason": "no_session",
-            "google_email": None,
-            "message": "No active session found on this device."
+            "valid": True,
+            "reason": "valid",
+            "google_email": session.get("google_email"),
+            "message": "Device session valid"
         }
 
-    last_login = session.get("last_login_at")
-    if last_login:
-        if isinstance(last_login, str):
-            try:
-                last_login = datetime.fromisoformat(last_login)
-            except Exception:
-                pass
-        now_dt = datetime.now(timezone.utc)
-        if last_login.tzinfo is None:
-            last_login = last_login.replace(tzinfo=timezone.utc)
-        age_days = (now_dt - last_login).total_seconds() / 86400.0
-        if age_days > max_days:
-            return {
-                "valid": False,
-                "reason": "expired_30_days",
-                "google_email": session.get("google_email"),
-                "message": f"Login session expired ({int(age_days)} days > {max_days} days). Please re-login to authorize."
-            }
+    # If no session on this specific device_id, check if user has ANY authorized session or token
+    other = get_latest_device_session_for_user(user_id)
+    if other and other.get("google_email"):
+        # Auto-adopt session on this new device
+        record_device_session(
+            user_id,
+            phone=other.get("phone"),
+            device_id=device_id,
+            google_email=other.get("google_email")
+        )
+        return {
+            "valid": True,
+            "reason": "adopted",
+            "google_email": other.get("google_email"),
+            "message": f"Connected as {other.get('google_email')}."
+        }
+
+    # Fallback check directly in google_tokens
+    token_info = get_google_token(user_id)
+    if token_info and token_info.get("email"):
+        record_device_session(
+            user_id,
+            device_id=device_id,
+            google_email=token_info.get("email")
+        )
+        return {
+            "valid": True,
+            "reason": "token_found",
+            "google_email": token_info.get("email"),
+            "message": f"Connected as {token_info.get('email')}."
+        }
 
     return {
-        "valid": True,
-        "reason": "valid",
-        "google_email": session.get("google_email"),
-        "message": "Device session valid"
+        "valid": False,
+        "reason": "no_session",
+        "google_email": None,
+        "message": "No active Google connection found for this account."
     }
 
 

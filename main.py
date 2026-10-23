@@ -1020,8 +1020,25 @@ async def handle_mail(m):
     text = (m["subject"] + "\n" + m["body"]).strip()
     if not text:
         return
-    await say(chat_id, f"📧 Email received: {m['subject'][:60] or '(no subject)'}")
-    await handle_memory_text(chat_id, text)
+
+    # Check if incoming email is a travel ticket, flight booking, hotel reservation, or medium ticket
+    is_ticket = bool(re.search(r'\b(flight|ticket|boarding\s*pass|pnr|reservation|hotel|airline|indigo|air\s*india|vistara|spicejet|train|irctc|medium\s*ticket)\b', text, re.I))
+    if is_ticket:
+        # Save ticket in persistent user facts
+        ticket_fact = f"Booking/Ticket: {m.get('subject', 'Ticket')} - {text[:300]}"
+        save_user_fact(chat_id, ticket_fact, category="booking")
+        ticket_msg = (
+            f"✈️ **Booking / Flight Ticket receive ho gayi hai!** 🎫\n"
+            f"• **Title**: {m['subject'][:80] or 'Travel Ticket'}\n"
+            f"• **Sender**: {m.get('sender', '')}\n\n"
+            f"Maine ticket details aapki memory me save kar li hain.\n"
+            f"Kya aap chahenge ki main iska **Google Calendar meeting/event** bana du ya **Goa trip packing checklist** me add kar du?\n\n"
+            f"*(Note: Agar aapko ye ticket memory se nikalni ho, bas bolna: 'is ticket ko memory se hata do')*"
+        )
+        await say(chat_id, ticket_msg)
+    else:
+        await say(chat_id, f"📧 Email received: {m['subject'][:60] or '(no subject)'}")
+        await handle_memory_text(chat_id, text)
 
 
 async def mailbox_loop():
@@ -3394,7 +3411,9 @@ async def web_google_start(request: Request):
     give_consent(chat_id)
 
     is_connected, google_email = await get_valid_google_connection_by_chat_id(chat_id)
-    if is_connected:
+    force_change = bool(body.get("force") or body.get("change_account") or body.get("reconnect"))
+
+    if is_connected and not force_change:
         with engine.connect() as conn:
             u_row = conn.execute(
                 text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
@@ -3402,16 +3421,14 @@ async def web_google_start(request: Request):
             ).first()
         user_id = int(u_row[0]) if u_row else None
         if user_id and active_device_id:
-            from db import check_device_authorization
-            auth_check = check_device_authorization(user_id, active_device_id, max_days=30)
-            if auth_check["valid"]:
-                return {
-                    "already_connected": True,
-                    "connected": True,
-                    "email": google_email,
-                    "message": f"Your Google account is already connected: {google_email}."
-                }
-            # Device mismatch or expired (>30 days): allow re-authorization for this device!
+            from db import check_device_authorization, record_device_session
+            record_device_session(user_id, phone=phone, device_id=active_device_id, google_email=google_email)
+            return {
+                "already_connected": True,
+                "connected": True,
+                "email": google_email,
+                "message": f"Your Google account is already connected: {google_email}."
+            }
         elif not active_device_id:
             return {
                 "already_connected": True,
@@ -3466,7 +3483,7 @@ async def web_google_status(request: Request):
 
     if user_id and active_device_id:
         from db import check_device_authorization, record_device_session
-        auth_check = check_device_authorization(user_id, active_device_id, max_days=30)
+        auth_check = check_device_authorization(user_id, active_device_id, max_days=365)
         if not auth_check["valid"]:
             return {
                 "connected": False,

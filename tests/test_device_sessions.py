@@ -78,32 +78,20 @@ def test_device_session_db_helpers():
     assert sess1 is not None
     assert sess1["google_email"] == "user1@gmail.com"
 
-    # Same device within 30 days -> valid
-    check2 = check_device_authorization(user_id, dev1, max_days=30)
+    # Same device -> valid
+    check2 = check_device_authorization(user_id, dev1)
     assert check2["valid"] is True
     assert check2["reason"] == "valid"
 
-    # Different device (dev2) -> invalid with different_device reason
-    check3 = check_device_authorization(user_id, dev2, max_days=30)
-    assert check3["valid"] is False
-    assert check3["reason"] == "different_device"
+    # Different device (dev2) -> adopts existing authorized session for this phone user
+    check3 = check_device_authorization(user_id, dev2)
+    assert check3["valid"] is True
+    assert check3["reason"] in ("valid", "adopted")
     assert check3["google_email"] == "user1@gmail.com"
-
-    # Simulate dev1 expired (>30 days ago)
-    old_time = datetime.now(timezone.utc) - timedelta(days=35)
-    with engine.begin() as conn:
-        conn.execute(
-            text("UPDATE user_device_sessions SET last_login_at = :t WHERE user_id = :u AND device_id = :d"),
-            {"t": old_time, "u": user_id, "d": dev1}
-        )
-
-    check4 = check_device_authorization(user_id, dev1, max_days=30)
-    assert check4["valid"] is False
-    assert check4["reason"] == "expired_30_days"
 
 
 def test_web_google_status_device_isolation(client):
-    """Test /web/google/status enforcing phone number isolation and device check."""
+    """Test /web/google/status enforcing phone number isolation and seamless device access."""
     # User A setup
     chat_a = 888111001
     ensure_user(chat_a)
@@ -140,14 +128,13 @@ def test_web_google_status_device_isolation(client):
         assert data1["email"] == "usera@example.com"
         assert data1["requires_relogin"] is False
 
-        # 2. User A opens from different device (device_phone) -> requires_relogin: True
+        # 2. User A opens from different device (device_phone) -> automatically adopts User A's connected account!
         res2 = client.post("/web/google/status", json={"verification_id": token_a, "device_id": "device_phone"})
         assert res2.status_code == 200
         data2 = res2.json()
-        assert data2["connected"] is False
-        assert data2["requires_relogin"] is True
-        assert data2["reason"] == "different_device"
+        assert data2["connected"] is True
         assert data2["email"] == "usera@example.com"
+        assert data2["requires_relogin"] is False
 
         # 3. Friend (User B) logs in with friend's phone number on the same device (device_laptop)
         chat_b = 888111002
