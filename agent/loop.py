@@ -78,8 +78,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
     now_ist = datetime.now(IST)
+    from memory.retrieval import assemble_memory_context
+    mem_ctx = assemble_memory_context(chat_id, user_text)
+
     from agent.prompt import build_runtime_system_prompt
-    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system)
+    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     # Check if user sent just a raw email address (e.g. attempting to link Google)
     trimmed_text = user_text.strip()
@@ -196,9 +199,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             asyncio.create_task(_typing())
     except Exception:
         pass
-
-    # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
-    mem_ctx = assemble_memory_context(chat_id, user_text)
 
     # Context assembly: recent conversation turns (compact 6 turns to avoid prompt bloat)
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]

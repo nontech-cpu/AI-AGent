@@ -7,6 +7,7 @@ Includes transparent fallback and SQLite-compatibility for test suite isolation.
 import json
 import logging
 import difflib
+import time
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy import text
 import db
@@ -240,6 +241,7 @@ def save_entity(
     if len(parts) > 1 and len(parts[0]) >= 3:
         add_entity_alias(entity_id, parts[0])
 
+    invalidate_entity_cache(user_id)
     return entity_id
 
 
@@ -274,116 +276,83 @@ def add_entity_alias(entity_id: int, alias: str):
         conn.commit()
 
 
+_USER_ENTITIES_CACHE: Dict[int, Any] = {}
+
+def invalidate_entity_cache(user_id: int):
+    _USER_ENTITIES_CACHE.pop(user_id, None)
+
+
 def find_entity(user_id: int, query: str, threshold: float = 0.22) -> Optional[Dict[str, Any]]:
     """
     Finds an entity by exact match, prefix, trigram similarity, or difflib fallback.
-    Handles fast-typed Hinglish typos (e.g. 'annaya', 'ananay', 'ananya roy').
+    Cached in-memory per user for 45s for ultra-fast (sub-millisecond) retrieval.
     """
     _init_sqlite_if_needed()
     q_clean = query.strip().lower()
     if not q_clean:
         return None
 
-    is_pg = db.engine.dialect.name == "postgresql"
+    now_ts = time.time()
+    cached = _USER_ENTITIES_CACHE.get(user_id)
+    if not cached or (now_ts - cached["ts"] > 45.0):
+        try:
+            with db.engine.connect() as conn:
+                all_records = conn.execute(
+                    text("""
+                        SELECT e.id, e.name, e.entity_type, e.primary_alias, e.attributes, a.alias_clean
+                        FROM entities e
+                        LEFT JOIN entity_aliases a ON a.entity_id = e.id
+                        WHERE e.user_id = :uid
+                    """),
+                    {"uid": user_id}
+                ).fetchall()
+            _USER_ENTITIES_CACHE[user_id] = {"ts": now_ts, "records": all_records}
+        except Exception as exc:
+            print("find_entity cache fetch error:", repr(exc))
+            all_records = cached.get("records", []) if cached else []
+    else:
+        all_records = cached["records"]
 
-    with db.engine.connect() as conn:
-        # 1. Exact match on entity name or primary alias
-        row = conn.execute(
-            text("""
-                SELECT id, name, entity_type, primary_alias, attributes
-                FROM entities
-                WHERE user_id = :uid AND (lower(name) = :q OR lower(primary_alias) = :q)
-                LIMIT 1
-            """),
-            {"uid": user_id, "q": q_clean}
-        ).fetchone()
+    if not all_records:
+        return None
 
-        if row:
-            raw_attrs = row[4]
+    # 1. Exact match on name, primary_alias, or alias_clean
+    for r in all_records:
+        name_l = (r[1] or "").lower()
+        p_alias_l = (r[3] or "").lower()
+        alias_l = (r[5] or "").lower()
+        if q_clean in (name_l, p_alias_l, alias_l):
+            raw_attrs = r[4]
             attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
             return {
-                "id": row[0],
-                "name": row[1],
-                "entity_type": row[2],
-                "primary_alias": row[3],
-                "attributes": attrs
-            }
-
-        # 2. Exact match on alias in entity_aliases
-        row = conn.execute(
-            text("""
-                SELECT e.id, e.name, e.entity_type, e.primary_alias, e.attributes
-                FROM entity_aliases a
-                JOIN entities e ON e.id = a.entity_id
-                WHERE e.user_id = :uid AND a.alias_clean = :q
-                LIMIT 1
-            """),
-            {"uid": user_id, "q": q_clean}
-        ).fetchone()
-
-        if row:
-            raw_attrs = row[4]
-            attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
-            return {
-                "id": row[0],
-                "name": row[1],
-                "entity_type": row[2],
-                "primary_alias": row[3],
-                "attributes": attrs
-            }
-
-        # 3. Trigram similarity match on aliases (PostgreSQL only)
-        if is_pg:
-            row = conn.execute(
-                text("""
-                    SELECT e.id, e.name, e.entity_type, e.primary_alias, e.attributes,
-                           similarity(a.alias_clean, :q) AS sim
-                    FROM entity_aliases a
-                    JOIN entities e ON e.id = a.entity_id
-                    WHERE e.user_id = :uid AND similarity(a.alias_clean, :q) >= :thresh
-                    ORDER BY sim DESC
-                    LIMIT 1
-                """),
-                {"uid": user_id, "q": q_clean, "thresh": threshold}
-            ).fetchone()
-
-            if row:
-                raw_attrs = row[4]
-                attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
-                return {
-                    "id": row[0],
-                    "name": row[1],
-                    "entity_type": row[2],
-                    "primary_alias": row[3],
-                    "attributes": attrs,
-                    "match_similarity": float(row[5])
-                }
-
-        # 4. Difflib fallback for tricky transpositions (e.g. annaya vs ananya)
-        all_aliases = conn.execute(
-            text("""
-                SELECT a.alias_clean, e.id, e.name, e.entity_type, e.primary_alias, e.attributes
-                FROM entity_aliases a
-                JOIN entities e ON e.id = a.entity_id
-                WHERE e.user_id = :uid
-            """),
-            {"uid": user_id}
-        ).fetchall()
-
-        alias_map = {r[0]: r for r in all_aliases}
-        close_matches = difflib.get_close_matches(q_clean, alias_map.keys(), n=1, cutoff=0.68)
-        if close_matches:
-            best = alias_map[close_matches[0]]
-            raw_attrs = best[5]
-            attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
-            return {
-                "id": best[1],
-                "name": best[2],
-                "entity_type": best[3],
-                "primary_alias": best[4],
+                "id": r[0],
+                "name": r[1],
+                "entity_type": r[2],
+                "primary_alias": r[3],
                 "attributes": attrs,
-                "match_similarity": 0.85
+                "match_similarity": 1.0
             }
+
+    # 2. Fuzzy / Difflib match on all alias strings
+    alias_dict = {}
+    for r in all_records:
+        if r[5]: alias_dict[r[5].lower()] = r
+        if r[1]: alias_dict[r[1].lower()] = r
+        if r[3]: alias_dict[r[3].lower()] = r
+
+    close_matches = difflib.get_close_matches(q_clean, alias_dict.keys(), n=1, cutoff=0.68)
+    if close_matches:
+        best_rec = alias_dict[close_matches[0]]
+        raw_attrs = best_rec[4]
+        attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
+        return {
+            "id": best_rec[0],
+            "name": best_rec[1],
+            "entity_type": best_rec[2],
+            "primary_alias": best_rec[3],
+            "attributes": attrs,
+            "match_similarity": 0.85
+        }
 
     return None
 

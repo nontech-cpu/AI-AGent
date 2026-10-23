@@ -857,11 +857,32 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 h, m = map(int, args.due_time.split(":")[:2])
                 t_val = dtime(h, m)
 
-            # Check for existing events/reminders conflict on the same date and time
+            # Check if this is a reschedule / time update for an existing reminder on this date
+            stop_kw = {"meeting", "reminder", "call", "task", "with", "ke", "saath", "ko", "time", "aaj", "kal", "par", "pe"}
+            arg_tokens = set(re.findall(r'[a-zA-Z0-9]+', args.title.lower())) - stop_kw
+
             existing_items = db.items_for_date(chat_id, d_val)
+            matched_existing_ids = []
+
+            for row in existing_items:
+                row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
+                row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
+                row_tokens = set(re.findall(r'[a-zA-Z0-9]+', row_title.lower())) - stop_kw
+                if arg_tokens and row_tokens and (arg_tokens & row_tokens):
+                    matched_existing_ids.append((row_id, row_title))
+
+            matched_id_set = {mid for mid, _ in matched_existing_ids if mid is not None}
+
+            # Check for conflict against other distinct events/reminders on the same date and time
             conflicts = []
             for row in existing_items:
                 row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
+                row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
+                if row_id in matched_id_set:
+                    continue
+                row_tokens = set(re.findall(r'[a-zA-Z0-9]+', row_title.lower())) - stop_kw
+                if arg_tokens and row_tokens and (arg_tokens & row_tokens):
+                    continue
                 row_time = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
                 if t_val and row_time:
                     try:
@@ -887,15 +908,49 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             except Exception:
                 pass
 
-            db.save_memory(chat_id, args.category, args.title, amount=None, due_date=d_val, due_time=t_val)
-            res = {
-                "status": "success",
-                "title": args.title,
-                "due_date": args.due_date,
-                "due_time": args.due_time,
-                "conflicts": conflicts,
-                "has_conflict": len(conflicts) > 0
-            }
+            if matched_existing_ids:
+                primary_id, primary_title = matched_existing_ids[0]
+                # Update existing memory item
+                db.update_memory_time(chat_id, primary_id, t_val)
+                try:
+                    from timing import build_plan
+                    from db import add_reminders
+                    with db.engine.begin() as conn:
+                        conn.execute(db.text("DELETE FROM reminders WHERE item_id = :id"), {"id": primary_id})
+                        if len(matched_existing_ids) > 1:
+                            for extra_id, _ in matched_existing_ids[1:]:
+                                if extra_id:
+                                    conn.execute(db.text("DELETE FROM reminders WHERE item_id = :eid"), {"eid": extra_id})
+                                    conn.execute(db.text("DELETE FROM memory_items WHERE id = :eid"), {"eid": extra_id})
+                    plan = build_plan(d_val, t_val)
+                    if plan.get("reminders"):
+                        add_reminders(primary_id, plan["reminders"])
+                except Exception:
+                    pass
+
+                time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
+                res = {
+                    "status": "success",
+                    "title": primary_title or args.title,
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
+                    "rescheduled": True,
+                    "conflicts": conflicts,
+                    "has_conflict": len(conflicts) > 0,
+                    "message": f"Done! '{primary_title or args.title}' ka reminder {time_str} par shift kar diya hai."
+                }
+            else:
+                db.save_memory(chat_id, args.category, args.title, amount=None, due_date=d_val, due_time=t_val)
+                res = {
+                    "status": "success",
+                    "title": args.title,
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
+                    "rescheduled": False,
+                    "conflicts": conflicts,
+                    "has_conflict": len(conflicts) > 0
+                }
+
             if conflicts:
                 res["conflict_warning"] = (
                     f"⚠️ Time Conflict Alert: Is samay par already {', '.join(conflicts)} scheduled hai!"

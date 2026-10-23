@@ -4128,6 +4128,24 @@ async def telegram_otp_webhook(request: Request):
     return {"ok": True}
 
 
+async def _safe_handle_user_text(chat_id: int, incoming_text: str):
+    try:
+        await handle_user_text(chat_id, incoming_text)
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        print("Webhook handle_user_text error:", repr(exc))
+        import traceback
+        traceback.print_exc()
+        try:
+            recent = db.get_recent_chat_history(chat_id, limit=2)
+            has_recent_reply = any(r.get("role") == "assistant" for r in recent[-1:])
+            if not has_recent_reply:
+                await say(chat_id, "Kripya ek baar dobara batayein ki aap kya schedule ya update karna chahte hain? 🙂")
+        except Exception:
+            pass
+
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
@@ -4170,16 +4188,9 @@ async def telegram_webhook(
                 pass
         if "text" in message:
             incoming_text = message["text"].strip()
-            try:
-                await handle_user_text(chat_id, incoming_text)
-            except Exception as exc:
-                print("Webhook handle_user_text error:", repr(exc))
-                import traceback
-                traceback.print_exc()
-                try:
-                    await say(chat_id, "Sorry, ek technical error aa gaya tha. Kripya dobara try karein!")
-                except Exception:
-                    pass
+            task = asyncio.create_task(_safe_handle_user_text(chat_id, incoming_text))
+            BG_TASKS.add(task)
+            task.add_done_callback(BG_TASKS.discard)
         elif "voice" in message:
             # Voice me time lagta hai: background me chalao, Telegram ko turant 200 do
             task = asyncio.create_task(process_voice(chat_id, message["voice"]))

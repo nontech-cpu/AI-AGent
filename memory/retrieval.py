@@ -24,9 +24,14 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "bolo", "batao", "batana", "meeting", "reminder", "today", "tomorrow", "time",
         "contact", "save", "phone", "email", "role", "lead", "designer", "example", "com",
         "bhejo", "rakh", "rakhna", "karna", "number", "notes", "detail", "details",
-        "info", "information", "dekh", "dekho", "please", "help", "with", "from"
+        "info", "information", "dekh", "dekho", "please", "help", "with", "from",
+        "toh", "bje", "baje", "krdo", "kardo", "krna", "mtlb", "matlab", "diff", "phrk",
+        "fark", "set", "jana", "aana", "aaj", "kal", "parso", "subah", "shaam", "sham",
+        "dopahar", "raat", "sthh", "sth", "saath", "sath", "bhi", "yeh", "kuch", "shmko",
+        "movie", "dinner", "lunch", "kisko", "uska", "uski", "unka", "unki", "pehle",
+        "baad", "waqt", "nhi", "nahi", "nahin", "hain", "naam", "sirf"
     }
-    candidates = [w for w in words if w not in stopwords][:4]
+    candidates = [w for w in words if w not in stopwords][:3]
     return candidates
 
 
@@ -61,9 +66,9 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             ent["commitments"] = ent_commitments
             matched_entities.append(ent)
 
-    # 2. Hybrid search for relevant memories (only for informational queries, skipping for simple imperatives)
+    # 2. Hybrid search for relevant memories (only for recall/episodic queries, skipping for simple imperatives)
     relevant_mems = []
-    if re.search(r"\b(search|yaad|dhundo|kya|batao|pata|fact|preference|info|ticket|booking|flight|hotel)\b", user_text, re.I):
+    if re.search(r"\b(search|yaad|dhundo|kya tha|pata karo|purani|ticket number|pnr|flight number)\b", user_text, re.I):
         try:
             relevant_mems = search_memories_hybrid(user_id, user_text, limit=3)
         except Exception:

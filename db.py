@@ -121,7 +121,7 @@ def items_for_date(chat_id, d):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT m.category, m.title, m.amount, m.due_time "
+                "SELECT m.category, m.title, m.amount, m.due_time, m.id "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.due_date = :d "
                 "ORDER BY m.due_time NULLS FIRST, m.id"
@@ -129,6 +129,21 @@ def items_for_date(chat_id, d):
             {"c": chat_id, "d": d_val},
         ).fetchall()
     return rows
+
+
+def update_memory_time(chat_id, item_id, new_due_time):
+    tm = new_due_time
+    if engine.dialect.name == "sqlite" and hasattr(new_due_time, "strftime"):
+        tm = new_due_time.strftime("%H:%M:%S")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE memory_items SET due_time = :tm "
+                "WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"
+            ),
+            {"tm": tm, "id": item_id, "c": chat_id}
+        )
+
 
 
 def delete_user(chat_id):
