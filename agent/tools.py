@@ -493,6 +493,23 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "create_notion_page",
+            "description": "Appends notes into a new or existing section in Notion, or creates a new page. Supports headings and bullet points formatting.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title or section heading for the notes (e.g. 'Project Roadmap', 'Meeting Notes')."},
+                    "content": {"type": "string", "description": "The note content. Can contain markdown headings (#), bullets (-), or numbered lists."},
+                    "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Defaults to general Notes section if null."},
+                    "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'."}
+                },
+                "required": ["title", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_pdf",
             "description": "Generate and send a styled PDF document to the user.",
             "parameters": {
@@ -1372,6 +1389,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         }
 
             elif svc == "notion":
+                from notion_auth import is_notion_oauth_configured, build_notion_auth_url
                 clean_val = val.strip()
                 if clean_val.startswith("secret_") or clean_val.startswith("ntn_"):
                     is_valid, name = await integrations.validate_notion_token(clean_val)
@@ -1385,19 +1403,71 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         }
                     else:
                         return {"status": "error", "message": f"⚠️ Invalid Notion token: {name}"}
-                else:
-                    return {
-                        "status": "success",
-                        "service": "notion",
-                        "message": (
-                            "Notion account connect karne ke liye:\n\n"
-                            "1. [Notion My Integrations](https://www.notion.so/my-integrations) par jakar 'New integration' create karein.\n"
-                            "2. Integration Secret token copy karein (jo `ntn_` ya `secret_` se shuru hota hai).\n"
-                            "3. Apna token seedha yahan chat mein bhej dijiye (jaise `ntn_...`). Main verify karke turant connect kar dunga!"
-                        )
-                    }
 
-            return {"status": "error", "message": f"Unsupported service '{svc}'."}
+                if is_notion_oauth_configured():
+                    try:
+                        auth_url = build_notion_auth_url(int(chat_id), source="tg")
+                        return {
+                            "status": "success",
+                            "service": "notion",
+                            "auth_url": auth_url,
+                            "message": (
+                                f"Notion workspace connect karne ke liye is secure official link par click karke login & authorize karein:\n\n"
+                                f"👉 {auth_url}\n\n"
+                                f"Authorize karte hi aapka Notion workspace automatically link ho jayega!"
+                            )
+                        }
+                    except Exception:
+                        pass
+
+                return {
+                    "status": "success",
+                    "service": "notion",
+                    "message": (
+                        "Notion account connect karne ke do options hain:\n\n"
+                        "1. **Direct Token:** [Notion My Integrations](https://www.notion.so/my-integrations) par jakar 'New integration' banayein aur apna integration token (`ntn_...` ya `secret_...`) seedha yahan chat mein bhej dein.\n\n"
+                        "2. **OAuth App:** Render environment mein `NOTION_CLIENT_ID` aur `NOTION_CLIENT_SECRET` add kar dijiye official 1-click login ke liye.\n\n"
+                        "👉 Web portal link: https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html"
+                    )
+                }
+
+        elif tool_name == "create_notion_page":
+            title = arguments.get("title", "")
+            content = arguments.get("content", "")
+            target_section = arguments.get("target_section")
+            formatting = arguments.get("formatting")
+
+            if not title or not content:
+                return {"status": "error", "message": "Missing 'title' or 'content' for Notion page."}
+
+            token_row = db.get_user_integration(chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            if not api_key:
+                return {
+                    "status": "error",
+                    "message": "Notion is not connected. Type 'connect notion' ya apna Notion token ('ntn_...' ya 'secret_...') bhej kar connect karein."
+                }
+
+            ok, msg, pg_url = await integrations.create_or_append_notion_note(
+                token=api_key,
+                title=title,
+                content=content,
+                target_section=target_section,
+                formatting=formatting
+            )
+            if ok:
+                link_str = f"\n\n🔗 Link: {pg_url}" if pg_url else ""
+                return {
+                    "status": "success",
+                    "title": title,
+                    "url": pg_url or "",
+                    "message": f"✅ {msg}{link_str}"
+                }
+            else:
+                return {"status": "error", "message": msg}
 
         elif tool_name == "list_github_repos":
             args = ListGitHubReposArgs(**arguments)

@@ -4224,6 +4224,150 @@ async def web_github_start(request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ---------- Notion OAuth Endpoints ----------
+
+@app.get("/auth/notion/callback", response_class=HTMLResponse)
+@app.get("/notion/callback", response_class=HTMLResponse)
+async def notion_oauth_callback(request: Request):
+    """Notion OAuth redirect endpoint. Exchanges code for workspace access token."""
+    from notion_auth import verify_state_payload, exchange_notion_code
+    params = request.query_params
+    code = params.get("code")
+    state = params.get("state")
+    error = params.get("error")
+
+    state_data = {}
+    is_web = False
+    return_url = None
+    chat_id = None
+    if state:
+        try:
+            state_data = verify_state_payload(state)
+            chat_id = state_data.get("user_id")
+            is_web = (state_data.get("source") == "web")
+            return_url = state_data.get("return_url")
+        except Exception:
+            pass
+
+    bot_user = os.getenv("TELEGRAM_BOT_USERNAME", "PeculiarAIBOT")
+
+    if error:
+        err_desc = params.get("error_description", "Notion authorization was cancelled.")
+        if is_web and return_url:
+            target_url = _safe_web_redirect(return_url, f"notion_status=error&notion_message={err_desc}")
+            return _github_callback_page("Notion connection cancelled", err_desc, success=False, redirect_url=target_url)
+        return _github_callback_page("Notion connection cancelled", err_desc, success=False, bot_username=bot_user)
+
+    if not code or not chat_id:
+        return _github_callback_page("Invalid request", "Missing authorization code or session state.", success=False, bot_username=bot_user)
+
+    try:
+        ensure_user(chat_id)
+        if is_web and not has_consent(chat_id):
+            give_consent(chat_id)
+
+        token_data = await exchange_notion_code(code)
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise RuntimeError("Notion did not return an access token.")
+
+        workspace_name = token_data.get("workspace_name") or "Notion Workspace"
+        bot_id = token_data.get("bot_id", "")
+        workspace_icon = token_data.get("workspace_icon", "")
+
+        config_json = json.dumps({
+            "workspace_name": workspace_name,
+            "bot_id": bot_id,
+            "workspace_icon": workspace_icon,
+            "token_type": token_data.get("token_type", "bearer")
+        })
+        save_user_integration(chat_id, "notion", access_token, config_json)
+
+        # Notify user on Telegram if initiated from TG
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if tg_token and not is_web:
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": (
+                                f"✅ **Notion connected successfully!** 📝\n\n"
+                                f"Workspace: **{workspace_name}**\n"
+                                f"Ab aap mujhe bol sakte hain:\n"
+                                f"• *'ye notes mere Notion mein save kar do'*\n"
+                                f"• *'meeting summary Notion mein daal do'*\n"
+                                f"• *'existing notes section mein ye points add karo'*"
+                            ),
+                            "parse_mode": "Markdown"
+                        }
+                    )
+            except Exception as e:
+                print("Failed to send Telegram Notion notification:", repr(e))
+
+        success_msg = f"Your Notion workspace '{workspace_name}' has been securely linked to PeculiarAI."
+        if is_web and return_url:
+            target_url = _safe_web_redirect(return_url, f"notion_status=connected&workspace={workspace_name}")
+            return _github_callback_page("Notion Connected!", success_msg, success=True, redirect_url=target_url)
+
+        return _github_callback_page("Notion Connected!", success_msg, success=True, bot_username=bot_user)
+    except Exception as exc:
+        print("Notion OAuth callback error:", repr(exc))
+        if is_web and return_url:
+            target_url = _safe_web_redirect(return_url, f"notion_status=error&notion_message={str(exc)}")
+            return _github_callback_page("Notion connection failed", str(exc), success=False, redirect_url=target_url)
+        return _github_callback_page("Notion connection failed", str(exc), success=False, bot_username=bot_user)
+
+
+@app.get("/auth/notion/start")
+@app.get("/notion/start")
+async def notion_oauth_start(request: Request):
+    """Initiates 1-click Notion OAuth via direct browser GET redirect."""
+    from notion_auth import is_notion_oauth_configured, build_notion_auth_url
+    chat_id_raw = request.query_params.get("chat_id")
+    source = request.query_params.get("source", "tg")
+    return_url = request.query_params.get("return_url")
+
+    if not chat_id_raw or not chat_id_raw.isdigit():
+        raise HTTPException(status_code=400, detail="Valid chat_id query parameter is required.")
+
+    if not is_notion_oauth_configured():
+        raise HTTPException(status_code=503, detail="Notion OAuth is not configured on this server.")
+
+    chat_id = int(chat_id_raw)
+    ensure_user(chat_id)
+    try:
+        auth_url = build_notion_auth_url(chat_id, source=source, return_url=return_url)
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=auth_url, status_code=307)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/web/notion/start")
+async def web_notion_start(request: Request):
+    """Initiates 1-click Notion OAuth for a web session."""
+    from notion_auth import is_notion_oauth_configured, build_notion_auth_url
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    verification_id = str(body.get("verification_id", "")).strip()
+    return_url = str(body.get("return_url", "")).strip() or None
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    if not is_notion_oauth_configured():
+        raise HTTPException(status_code=503, detail="Notion OAuth is not configured on this server.")
+
+    try:
+        auth_url = build_notion_auth_url(chat_id, source="web", return_url=return_url)
+        return {"auth_url": auth_url, "already_connected": False}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "app": "PeculiarAI Backend API", "health": "/health"}

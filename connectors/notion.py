@@ -39,12 +39,14 @@ class NotionConnector(Connector):
         return [
             ToolSpec(
                 name="create_notion_page",
-                description="Appends or creates a new page in the connected Notion workspace.",
+                description="Appends notes into a new or existing section in Notion, or creates a new page. Supports headings and bullet points formatting.",
                 parameters={
                     "type": "object",
                     "properties": {
-                        "title": {"type": "string", "description": "Title of the Notion page"},
-                        "content": {"type": "string", "description": "Markdown or text body content"}
+                        "title": {"type": "string", "description": "Title or section heading for the notes (e.g. 'Project Roadmap', 'Meeting Notes')."},
+                        "content": {"type": "string", "description": "The note content. Can contain markdown headings (#), bullets (-), or numbered lists."},
+                        "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Defaults to general Notes section if null."},
+                        "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'."}
                     },
                     "required": ["title", "content"]
                 },
@@ -68,6 +70,9 @@ class NotionConnector(Connector):
         if tool_name == "create_notion_page":
             title = args.get("title", "")
             content = args.get("content", "")
+            target_section = args.get("target_section")
+            formatting = args.get("formatting")
+
             if not title or not content:
                 return ToolResult(
                     ok=False,
@@ -75,19 +80,27 @@ class NotionConnector(Connector):
                 )
 
             token_row = db.get_user_integration(user_or_chat_id, "notion")
-            api_key = token_row.get("api_key") if token_row else None
-            res = await integrations.create_notion_page(api_key, title, content)
-            if res.get("status") == "success":
-                pg_url = res.get("url") or ""
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            ok, msg, pg_url = await integrations.create_or_append_notion_note(
+                token=api_key,
+                title=title,
+                content=content,
+                target_section=target_section,
+                formatting=formatting
+            )
+            if ok:
                 return ToolResult(
                     ok=True,
-                    data={"status": "success", "title": title, "url": pg_url},
+                    data={"status": "success", "title": title, "url": pg_url or "", "message": msg},
                     urls=[pg_url] if pg_url else []
                 )
             else:
                 return ToolResult(
                     ok=False,
-                    error={"type": ErrorType.API_ERROR.value, "message": res.get("message", "Notion creation failed.")}
+                    error={"type": ErrorType.API_ERROR.value, "message": msg}
                 )
 
         return ToolResult(ok=False, error={"type": ErrorType.INVALID_ARGS.value, "message": f"Unknown tool '{tool_name}'"})

@@ -289,8 +289,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         has_google = bool(re.search(r"\b(google|gmail|calendar|drive|gmeet)\b", low_prompt_raw))
         has_general = bool(re.search(r"\b(connector|connectors|integration|integrations|all\s+accounts)\b", low_prompt_raw))
 
-        # 1. Notion Queries
-        if has_notion and (re.search(conn_kw_re, low_prompt_raw) or len(words) <= 4 or "?" in low_prompt_raw):
+        # 1. Notion Connection / Status Queries (Only if NOT creating/adding notes)
+        is_note_action = bool(re.search(r"\b(add|save|daal|daalo|dal|bana|banao|bna|bnao|write|create|append|likh|likho|heading|bullet|bullets|points|section)\b", low_prompt_raw))
+        if has_notion and not is_note_action and (re.search(conn_kw_re, low_prompt_raw) or len(words) <= 4 or "?" in low_prompt_raw):
             is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
             tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
             res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
@@ -417,8 +418,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if re.search(r"\b(contact|contacts|number|phone|bhejna|bhejo|send|promise|commitment|commitments|lead|designer|ananya|annaya|devender|rahul)\b", low_prompt):
         selected_tool_names.update(["get_contact", "save_contact", "update_contact_commitment", "list_contacts"])
 
-    # Intent 4: GitHub / Notion / Code
-    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|database|push)\b", low_prompt):
+    # Intent 4: GitHub / Notion / Code / Notes
+    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|pages|database|push|note|notes|heading|bullet|bullets|section)\b", low_prompt):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file", "create_notion_page"])
 
     # Intent 5: Lists & Packing
