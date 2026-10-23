@@ -223,35 +223,57 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     selected_tool_names = set()
 
     # Intent 1: Calendar / Meetings / Schedule
-    if re.search(r"\b(meeting|schedule|call|meet|slot|free|busy|appointment|aaj|kal|plan)\b", low_prompt):
+    if re.search(r"\b(meeting|meetings|schedule|call|calls|meet|slot|slots|free|busy|appointment|appointments|aaj|kal|parso|plan|plans|calendar|event|events|timing|time)\b", low_prompt):
         selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting", "create_reminder"])
 
     # Intent 2: Reminders / Tasks
-    if re.search(r"\b(remind|yaad|task|movie|dinner|lunch|gym|workout|doctor|ticket|pnr)\b", low_prompt):
+    if re.search(r"\b(remind|reminder|reminders|yaad|task|tasks|movie|dinner|lunch|gym|workout|doctor|ticket|pnr|flight|hotel|booking|to-do|todo)\b", low_prompt):
         selected_tool_names.update(["create_reminder", "list_reminders", "delete_reminder"])
 
     # Intent 3: Contacts & Commitments
-    if re.search(r"\b(contact|number|phone|email|bhejna|promise|commitment|lead|designer|ananya|annaya|devender|rahul)\b", low_prompt):
+    if re.search(r"\b(contact|contacts|number|phone|bhejna|bhejo|send|promise|commitment|commitments|lead|designer|ananya|annaya|devender|rahul)\b", low_prompt):
         selected_tool_names.update(["get_contact", "save_contact", "update_contact_commitment", "list_contacts"])
 
-    # Intent 4: GitHub / Notion
-    if re.search(r"\b(github|repo|issue|notion|commit|code)\b", low_prompt):
+    # Intent 4: GitHub / Notion / Code
+    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|database)\b", low_prompt):
         selected_tool_names.update(["list_github_repos", "list_github_issues", "update_github_file", "create_notion_page"])
 
     # Intent 5: Lists & Packing
-    if re.search(r"\b(pack|packing|list|trip|goa|bag)\b", low_prompt):
+    if re.search(r"\b(pack|packing|list|lists|trip|goa|bag|bags|travel|item|items)\b", low_prompt):
         selected_tool_names.update(["create_packing_list"])
 
-    # Intent 6: Memory deletion
-    if re.search(r"\b(delete|hata|remove|wipe)\b", low_prompt):
-        selected_tool_names.update(["delete_note_or_fact", "delete_reminder"])
+    # Intent 6: Memory deletion & clearing
+    if re.search(r"\b(delete|hata|remove|wipe|clear|bhul|bhula|erase)\b", low_prompt):
+        selected_tool_names.update(["delete_note_or_fact", "delete_reminder", "clear_chat_history"])
+
+    # Intent 7: Email / Drive / Documents / Export
+    if re.search(r"\b(email|mail|gmail|inbox|drive|file|upload|pdf|excel|sheet|spreadsheet|export|document|docs)\b", low_prompt):
+        selected_tool_names.update(["send_email", "upload_to_drive", "generate_pdf", "generate_excel"])
+
+    # Intent 8: Inherit tools from active conversation context
+    try:
+        from state.active_context import get_active_context
+        act_ctx = get_active_context(chat_id)
+        if act_ctx:
+            conn = (act_ctx.get("connector") or "").lower()
+            top = (act_ctx.get("focus_topic") or "").lower()
+            if "github" in conn or "github" in top or "repo" in top or "issue" in top:
+                selected_tool_names.update(["list_github_repos", "list_github_issues", "update_github_file"])
+            if "notion" in conn or "notion" in top:
+                selected_tool_names.update(["create_notion_page"])
+            if "calendar" in conn or "meeting" in top or "schedule" in top:
+                selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting"])
+            if "gmail" in conn or "email" in top:
+                selected_tool_names.update(["send_email"])
+    except Exception:
+        pass
 
     # Always allow connection / asking user if needed
     selected_tool_names.update(["connect_integration", "check_integrations_status", "ask_user", "search_memory"])
 
     # If no specific intent was triggered, allow core essentials
     if len(selected_tool_names) <= 4:
-        selected_tool_names.update(["create_reminder", "get_schedule", "get_contact", "save_note_or_fact"])
+        selected_tool_names.update(["create_reminder", "get_schedule", "get_contact", "save_note_or_fact", "list_github_repos"])
 
     effective_tools = [
         t for t in TOOL_DEFINITIONS
