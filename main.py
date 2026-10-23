@@ -4027,6 +4027,175 @@ async def google_callback(request: Request):
         )
 
 
+def _github_callback_page(title, message, success=False, redirect_url=None, bot_username=None):
+    import html as _html
+    colour = "#16803c" if success else "#b42318"
+    safe_title = _html.escape(title)
+    safe_message = _html.escape(message)
+    redirect_script = ""
+    redirect_link = "<p>You can close this page and return to your chat.</p>"
+    if redirect_url:
+        safe_url = _html.escape(redirect_url)
+        redirect_script = f"""
+        <meta http-equiv="refresh" content="2;url={safe_url}">
+        <script>setTimeout(function() {{ window.location.href = "{safe_url}"; }}, 1500);</script>
+        """
+        redirect_link = f"""
+        <p style="margin-top:20px;">
+          <a href="{safe_url}" style="display:inline-block;padding:10px 20px;background:#24292f;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">
+            Return to PeculiarAI Website &rarr;
+          </a>
+        </p>
+        <p style="font-size:13px;color:#64748b;">Redirecting automatically in 2 seconds...</p>
+        """
+    elif bot_username:
+        clean_user = bot_username.lstrip("@")
+        tg_url = f"https://t.me/{clean_user}"
+        redirect_link = f"""
+        <p style="margin-top:20px;">
+          <a href="{tg_url}" style="display:inline-block;padding:10px 20px;background:#24292f;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">
+            Open Telegram Chat &rarr;
+          </a>
+        </p>
+        """
+    return HTMLResponse(
+        f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>{safe_title}</title>{redirect_script}</head>
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:620px;margin:12vh auto;padding:24px;line-height:1.6;background:#f8fafc;color:#1e293b;">
+        <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;padding:32px;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+        <h2 style="color:{colour};margin-top:0;">{safe_title}</h2>
+        <p style="font-size:15px;color:#334155;">{safe_message}</p>
+        {redirect_link}
+        </div>
+        </body></html>"""
+    )
+
+
+@app.get("/auth/github/callback", response_class=HTMLResponse)
+@app.get("/github/callback", response_class=HTMLResponse)
+async def github_oauth_callback(request: Request):
+    """GitHub OAuth redirect endpoint. Exchanges code for full repo/user access token."""
+    from github_auth import verify_state_payload, exchange_github_code, get_github_user_profile
+    params = request.query_params
+    code = params.get("code")
+    state = params.get("state")
+    error = params.get("error")
+
+    state_data = {}
+    is_web = False
+    return_url = None
+    chat_id = None
+    if state:
+        try:
+            state_data = verify_state_payload(state)
+            chat_id = state_data.get("user_id")
+            is_web = (state_data.get("source") == "web")
+            return_url = state_data.get("return_url")
+        except Exception:
+            pass
+
+    bot_user = os.getenv("TELEGRAM_BOT_USERNAME", "PeculiarAIBOT")
+
+    if error:
+        err_desc = params.get("error_description", "GitHub authorization was cancelled.")
+        if is_web and return_url:
+            target_url = _safe_web_redirect(return_url, f"github_status=error&github_message={err_desc}")
+            return _github_callback_page("GitHub connection cancelled", err_desc, success=False, redirect_url=target_url)
+        return _github_callback_page("GitHub connection cancelled", err_desc, success=False, bot_username=bot_user)
+
+    if not code or not chat_id:
+        return _github_callback_page("Invalid request", "Missing authorization code or session state.", success=False, bot_username=bot_user)
+
+    try:
+        ensure_user(chat_id)
+        if is_web and not has_consent(chat_id):
+            give_consent(chat_id)
+
+        token_data = await exchange_github_code(code)
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise RuntimeError("GitHub did not return an access token.")
+
+        profile = await get_github_user_profile(access_token)
+        login = profile.get("login") or "GitHub User"
+        public_repos = profile.get("public_repos", 0)
+
+        config_json = json.dumps({
+            "username": login,
+            "profile_url": profile.get("html_url") or f"https://github.com/{login}",
+            "public_repos": public_repos,
+            "scopes": token_data.get("scope", "repo")
+        })
+        save_user_integration(chat_id, "github", access_token, config_json)
+
+        # Notify user on Telegram if initiated from TG
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if tg_token and not is_web:
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": (
+                                f"✅ **GitHub connected successfully!**\n\n"
+                                f"Account: @{login}\n"
+                                f"Ab main aapke repositories me files check, read aur directly commits push kar sakta hoon."
+                            ),
+                            "parse_mode": "Markdown"
+                        }
+                    )
+            except Exception as tg_err:
+                print("Error sending Telegram GitHub confirmation:", repr(tg_err))
+
+        if is_web and return_url:
+            target_url = _safe_web_redirect(return_url, f"github_status=connected&github_user={login}")
+            return _github_callback_page(
+                "GitHub connected successfully",
+                f"Connected GitHub account: @{login}. Your assistant now has access to check and commit to repositories.",
+                success=True,
+                redirect_url=target_url
+            )
+
+        return _github_callback_page(
+            "GitHub connected successfully",
+            f"Connected GitHub account: @{login}. You can return to your Telegram chat to inspect files and commit changes.",
+            success=True,
+            bot_username=bot_user
+        )
+
+    except Exception as exc:
+        print("GitHub OAuth callback error:", repr(exc))
+        if is_web and return_url:
+            from urllib.parse import quote
+            target_url = _safe_web_redirect(return_url, f"github_status=error&github_message={quote(str(exc)[:100])}")
+            return _github_callback_page("GitHub connection failed", str(exc), success=False, redirect_url=target_url)
+        return _github_callback_page("GitHub connection failed", str(exc), success=False, bot_username=bot_user)
+
+
+@app.post("/web/github/start")
+async def web_github_start(request: Request):
+    """Initiates 1-click GitHub OAuth for a web session."""
+    from github_auth import is_github_oauth_configured, build_github_auth_url
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    verification_id = str(body.get("verification_id", "")).strip()
+    return_url = str(body.get("return_url", "")).strip() or None
+    chat_id = _resolve_web_session(verification_id)
+    ensure_user(chat_id)
+
+    if not is_github_oauth_configured():
+        raise HTTPException(status_code=503, detail="GitHub OAuth is not configured on this server.")
+
+    try:
+        auth_url = build_github_auth_url(chat_id, source="web", return_url=return_url)
+        return {"auth_url": auth_url, "already_connected": False}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "app": "PeculiarAI Backend API", "health": "/health"}

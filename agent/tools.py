@@ -1245,6 +1245,23 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             elif svc == "github":
                 clean_user = val
+                from github_auth import is_github_oauth_configured, build_github_auth_url
+                if (clean_user in ("connect", "", "login", "link", "oauth")) and is_github_oauth_configured():
+                    try:
+                        auth_url = build_github_auth_url(int(chat_id), source="tg")
+                        return {
+                            "status": "success",
+                            "service": "github",
+                            "auth_url": auth_url,
+                            "message": (
+                                f"GitHub account connect karne ke liye is secure official link par click karke authorize karein:\n\n"
+                                f"{auth_url}\n\n"
+                                f"Authorize karte hi aapke account ke repositories ka access aur write/commit permission automatically ready ho jayegi!"
+                            )
+                        }
+                    except Exception as exc:
+                        pass
+
                 if "github.com/" in clean_user:
                     parts = clean_user.split("github.com/")[-1].strip("/").split("/")
                     if parts:

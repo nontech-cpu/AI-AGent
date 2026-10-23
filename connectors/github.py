@@ -49,6 +49,13 @@ class GitHubConnector(Connector):
         return "not_connected"
 
     def connect_instructions(self, user_or_chat_id: int) -> str:
+        from github_auth import is_github_oauth_configured, build_github_auth_url
+        if is_github_oauth_configured():
+            try:
+                url = build_github_auth_url(int(user_or_chat_id), source="tg")
+                return f"Apna GitHub account 1-click mein connect karne ke liye is link par authorize karein:\n{url}"
+            except Exception:
+                pass
         return "Apna GitHub account connect karne ke liye profile link (jaise `https://github.com/username`) ya personal access token bhej dijiye."
 
     def tools(self) -> List[ToolSpec]:

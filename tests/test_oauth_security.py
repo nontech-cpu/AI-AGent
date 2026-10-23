@@ -78,3 +78,57 @@ def test_fernet_token_encryption_and_isolation():
     # Empty token fails validation
     with pytest.raises(ValueError, match="Cannot encrypt an empty token"):
         google_auth.encrypt_token("")
+
+
+def test_github_oauth_state_hmac_integrity():
+    import github_auth
+    chat_id = 998877665
+    state = github_auth.create_state(chat_id, source="tg")
+    assert "." in state
+
+    payload = github_auth.verify_state_payload(state)
+    assert payload["user_id"] == chat_id
+    assert payload["source"] == "tg"
+
+    # Tampered signature fails
+    tampered_sig = state[:-4] + "0000"
+    with pytest.raises(ValueError, match="signature is invalid"):
+        github_auth.verify_state_payload(tampered_sig)
+
+
+def test_github_auth_url_construction():
+    import github_auth
+    from unittest.mock import patch
+
+    with patch.dict("os.environ", {"GITHUB_CLIENT_ID": "mock_gh_client_123"}):
+        url = github_auth.build_github_auth_url(123456, source="tg")
+        assert "https://github.com/login/oauth/authorize" in url
+        assert "client_id=mock_gh_client_123" in url
+        assert "scope=repo+read%3Auser" in url or "scope=repo%20read%3Auser" in url
+        assert "state=" in url
+
+
+@pytest.mark.asyncio
+async def test_github_callback_endpoint():
+    from unittest.mock import patch, AsyncMock
+    from fastapi.testclient import TestClient
+    from main import app
+    import github_auth
+
+    client = TestClient(app)
+    chat_id = 77112233
+    state = github_auth.create_state(chat_id, source="tg")
+
+    mock_token_data = {"access_token": "gho_mock_access_token_12345", "scope": "repo,read:user"}
+    mock_profile_data = {"login": "testdev", "html_url": "https://github.com/testdev", "public_repos": 10}
+
+    with patch("github_auth.exchange_github_code", new_callable=AsyncMock, return_value=mock_token_data), \
+         patch("github_auth.get_github_user_profile", new_callable=AsyncMock, return_value=mock_profile_data), \
+         patch("main.save_user_integration") as mock_save:
+
+        res = client.get(f"/auth/github/callback?code=mock_code&state={state}")
+        assert res.status_code == 200
+        assert "GitHub connected successfully" in res.text
+        assert "@testdev" in res.text
+        mock_save.assert_called_once()
+
