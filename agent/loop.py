@@ -187,39 +187,46 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         elif intent == "cross_question":
             is_cross_q = True
 
-    # Fast-path for 1-click connector requests (zero latency, zero hallucination)
+    # Fast-path for 1-click connector requests (ONLY if user is explicitly asking to connect/link, not performing repo/file actions)
     low_prompt_raw = user_text.lower().strip()
-    if any(k in low_prompt_raw for k in ("github", "git", "gh")) and any(k in low_prompt_raw for k in ("link", "connect", "jod", "jodo", "authorize", "login", "oauth")):
-        res = await execute_tool(chat_id, "connect_integration", {"service": "github"})
-        if res.get("status") == "success" and res.get("message"):
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", res["message"])
-            return {
-                "reply": res["message"],
-                "tool_calls_executed": ["connect_integration"],
-                "pending_action": None,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
+    words = low_prompt_raw.split()
+    is_action_prompt = bool(re.search(
+        r"\b(readme|update|commit|push|file|files|issue|issues|pr|prs|repo|repos|repository|repositories|replace|change|edit|check|dikh|btao|batao|kya hai|add|create|code|diff)\b",
+        low_prompt_raw
+    ))
 
-    if any(k in low_prompt_raw for k in ("google", "gmail", "calendar")) and any(k in low_prompt_raw for k in ("link", "connect", "jod", "jodo", "authorize", "login", "oauth")):
-        res = await execute_tool(chat_id, "connect_integration", {"service": "google"})
-        if res.get("status") == "success" and res.get("message"):
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", res["message"])
-            return {
-                "reply": res["message"],
-                "tool_calls_executed": ["connect_integration"],
-                "pending_action": None,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
+    if len(words) <= 8 and not is_action_prompt:
+        if re.search(r"\b(github|gh|git)\b", low_prompt_raw) and re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw):
+            res = await execute_tool(chat_id, "connect_integration", {"service": "github"})
+            if res.get("status") == "success" and res.get("message"):
+                db.log_chat_message(chat_id, "user", user_text)
+                db.log_chat_message(chat_id, "assistant", res["message"])
+                return {
+                    "reply": res["message"],
+                    "tool_calls_executed": ["connect_integration"],
+                    "pending_action": None,
+                    "is_grounded": True,
+                    "violations": [],
+                    "latency_ms": int((time.time() - start_ts) * 1000),
+                    "tokens_used": 0,
+                    "memory_context": {}
+                }
+
+        if re.search(r"\b(google|gmail|calendar)\b", low_prompt_raw) and re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw):
+            res = await execute_tool(chat_id, "connect_integration", {"service": "google"})
+            if res.get("status") == "success" and res.get("message"):
+                db.log_chat_message(chat_id, "user", user_text)
+                db.log_chat_message(chat_id, "assistant", res["message"])
+                return {
+                    "reply": res["message"],
+                    "tool_calls_executed": ["connect_integration"],
+                    "pending_action": None,
+                    "is_grounded": True,
+                    "violations": [],
+                    "latency_ms": int((time.time() - start_ts) * 1000),
+                    "tokens_used": 0,
+                    "memory_context": {}
+                }
 
     # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
     try:

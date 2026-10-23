@@ -1463,6 +1463,18 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             if not req_username and saved_username:
                 req_username = saved_username
 
+            if not req_username:
+                try:
+                    from state.active_context import get_active_context
+                    act = get_active_context(chat_id)
+                    if act and act.get("github_username"):
+                        req_username = act.get("github_username")
+                except Exception:
+                    pass
+
+            if req_username and "/" not in req_repo:
+                req_repo = f"{req_username}/{req_repo}"
+
             if not token:
                 token = os.getenv("GITHUB_TOKEN")
 
