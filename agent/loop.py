@@ -46,8 +46,7 @@ GROUNDING & TRUTH CONTRACT:
    - NEVER ask the user for their Google email address or password to connect Google! Google OAuth requires the user to click the official authorization link.
    - If the user sends an email address (e.g. 'xyz@gmail.com') wishing to connect Google, DO NOT say you cannot connect Google! Call `connect_integration` with service='google' and return the official OAuth link so the user can authorize.
    - When user asks to send an email, upload a file, or create a calendar event: ALWAYS call the respective tool (send_email, upload_to_drive, create_meeting) directly! NEVER call `ask_user` to ask whether you should execute what the user just asked for.
-   - When user confirms connecting an integration (e.g. 'Krdiya h mene', 'connect ho gaya'), look at the MOST RECENT meeting or task requested right before connecting!
-   - When user sends a GitHub URL or username (e.g. 'https://github.com/nontech-cpu', 'nontech-cpu') or asks to connect GitHub/Notion, ALWAYS call `connect_integration` with service='github' and the value. NEVER call `save_note_or_fact` for profile URLs or connectors!
+   - When user asks to connect or link GitHub (e.g. 'mera github link krde', 'github link krde', 'connect github', 'github connect kar do') or sends a GitHub profile/token: ALWAYS call `connect_integration` with service='github'! DO NOT call `ask_user` to ask for username or URL — calling `connect_integration(service='github')` immediately returns the official 1-click OAuth link!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
    - When user asks to check, inspect, or see if a file/README exists in a repo (e.g. 'php-project m readme file h kya dkhkr btaa', 'readme check karo'): ALWAYS call `get_github_file(repo=..., path="README.md")` autonomously! NEVER ask the user to share the file link or copy-paste file content.
    - When user asks to update, create, or commit a file/README (e.g. 'readme update kar do', 'commit kar do'): ALWAYS call `update_github_file` autonomously.
@@ -187,6 +186,40 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             }
         elif intent == "cross_question":
             is_cross_q = True
+
+    # Fast-path for 1-click connector requests (zero latency, zero hallucination)
+    low_prompt_raw = user_text.lower().strip()
+    if any(k in low_prompt_raw for k in ("github", "git", "gh")) and any(k in low_prompt_raw for k in ("link", "connect", "jod", "jodo", "authorize", "login", "oauth")):
+        res = await execute_tool(chat_id, "connect_integration", {"service": "github"})
+        if res.get("status") == "success" and res.get("message"):
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", res["message"])
+            return {
+                "reply": res["message"],
+                "tool_calls_executed": ["connect_integration"],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+
+    if any(k in low_prompt_raw for k in ("google", "gmail", "calendar")) and any(k in low_prompt_raw for k in ("link", "connect", "jod", "jodo", "authorize", "login", "oauth")):
+        res = await execute_tool(chat_id, "connect_integration", {"service": "google"})
+        if res.get("status") == "success" and res.get("message"):
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", res["message"])
+            return {
+                "reply": res["message"],
+                "tool_calls_executed": ["connect_integration"],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
 
     # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
     try:

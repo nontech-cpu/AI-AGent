@@ -1244,9 +1244,23 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     return {"status": "error", "message": f"Could not generate Google auth URL: {exc}"}
 
             elif svc == "github":
-                clean_user = val
                 from github_auth import is_github_oauth_configured, build_github_auth_url
-                if (clean_user in ("connect", "", "login", "link", "oauth")) and is_github_oauth_configured():
+                clean_user = str(val or "").strip()
+
+                if clean_user.startswith("ghp_") or clean_user.startswith("github_pat_"):
+                    is_valid, login = await integrations.validate_github_token(clean_user)
+                    if is_valid:
+                        db.save_user_integration(chat_id, "github", clean_user, json.dumps({"username": login}))
+                        return {
+                            "status": "success",
+                            "service": "github",
+                            "username": login,
+                            "message": f"GitHub personal token validated! Account @{login} connected successfully."
+                        }
+                    else:
+                        return {"status": "error", "message": f"Invalid GitHub token: {login}"}
+
+                if is_github_oauth_configured():
                     try:
                         auth_url = build_github_auth_url(int(chat_id), source="tg")
                         return {
@@ -1255,8 +1269,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                             "auth_url": auth_url,
                             "message": (
                                 f"GitHub account connect karne ke liye is secure official link par click karke authorize karein:\n\n"
-                                f"{auth_url}\n\n"
-                                f"Authorize karte hi aapke account ke repositories ka access aur write/commit permission automatically ready ho jayegi!"
+                                f"👉 {auth_url}\n\n"
+                                f"Authorize karte hi aapke repositories ka access aur write/commit permission automatically ready ho jayegi!"
                             )
                         }
                     except Exception as exc:
