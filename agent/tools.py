@@ -1136,16 +1136,86 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "check_integrations_status":
             args = CheckIntegrationsStatusArgs(**arguments)
-            summary = db.get_user_integrations_summary(chat_id)
+            s_key = (args.service or "").strip().lower()
 
+            if s_key in ("notion",):
+                notion_row = db.get_user_integration(chat_id, "notion")
+                notion_ws = None
+                if notion_row:
+                    try:
+                        cfg = json.loads(notion_row.get("config_data") or "{}")
+                        notion_ws = cfg.get("workspace_name") or "Connected"
+                    except Exception:
+                        notion_ws = "Connected"
+                if notion_row:
+                    msg = f"✅ Aapka Notion account connected hai! (Workspace: {notion_ws})"
+                else:
+                    msg = "❌ Aapka Notion account abhi connect nahi hai. Connect karne ke liye apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                return {
+                    "status": "success",
+                    "service": "notion",
+                    "connected": bool(notion_row),
+                    "workspace": notion_ws,
+                    "message": msg
+                }
+
+            if s_key in ("github", "git"):
+                summary = db.get_user_integrations_summary(chat_id)
+                gh_row = db.get_user_integration(chat_id, "github")
+                gh_username = None
+                if gh_row:
+                    try:
+                        cfg = json.loads(gh_row.get("config_data") or "{}")
+                        gh_username = cfg.get("username")
+                    except Exception:
+                        pass
+                if gh_username or summary.get("github", {}).get("connected"):
+                    u_display = f"@{gh_username}" if gh_username else "Active"
+                    msg = f"✅ Aapka GitHub account connected hai ({u_display})!"
+                else:
+                    msg = "❌ Aapka GitHub account abhi connect nahi hai. 'connect github' likhein ya auth link par approve karein."
+                return {
+                    "status": "success",
+                    "service": "github",
+                    "connected": bool(gh_username or summary.get("github", {}).get("connected")),
+                    "username": gh_username,
+                    "message": msg
+                }
+
+            if s_key in ("google", "gmail", "calendar", "drive"):
+                google_conn = False
+                google_email = None
+                try:
+                    from main import get_valid_google_connection_by_chat_id
+                    is_g_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
+                    google_conn = bool(is_g_conn)
+                    if google_conn and g_email:
+                        google_email = g_email if isinstance(g_email, str) else g_email.get("google_email")
+                except Exception:
+                    pass
+                if google_conn:
+                    e_display = f" ({google_email})" if google_email else ""
+                    msg = f"✅ Aapka Google account connected hai{e_display}! (Calendar, Meet, Gmail, Drive active)"
+                else:
+                    msg = "❌ Aapka Google account abhi connect nahi hai. 'connect google' likhkar official link se authorize karein."
+                return {
+                    "status": "success",
+                    "service": "google",
+                    "connected": google_conn,
+                    "email": google_email,
+                    "message": msg
+                }
+
+            # If general summary requested, query all
+            summary = db.get_user_integrations_summary(chat_id)
             google_conn = False
             google_email = None
             try:
                 from main import get_valid_google_connection_by_chat_id
-                is_g_conn, g_conn_row = await get_valid_google_connection_by_chat_id(chat_id)
+                is_g_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
                 google_conn = bool(is_g_conn)
-                if google_conn and g_conn_row:
-                    google_email = g_conn_row.get("google_email")
+                if google_conn and g_email:
+                    google_email = g_email if isinstance(g_email, str) else g_email.get("google_email")
             except Exception:
                 pass
 
@@ -1158,15 +1228,36 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 except Exception:
                     pass
 
+            notion_row = db.get_user_integration(chat_id, "notion")
+            notion_ws = None
+            if notion_row:
+                try:
+                    cfg = json.loads(notion_row.get("config_data") or "{}")
+                    notion_ws = cfg.get("workspace_name") or "Connected"
+                except Exception:
+                    notion_ws = "Connected"
+
+            # All services summary
+            lines = [
+                "🔌 **Aapke Accounts / Integrations ka Status:**\n",
+                f"• **GitHub:** {'✅ Connected (@' + gh_username + ')' if gh_username else ('✅ Connected' if summary.get('github', {}).get('connected') else '❌ Not connected')}",
+                f"• **Notion:** {'✅ Connected (' + notion_ws + ')' if notion_row else '❌ Not connected'}",
+                f"• **Google:** {'✅ Connected' + (f' ({google_email})' if google_email else '') if google_conn else '❌ Not connected'}"
+            ]
+            full_msg = "\n".join(lines)
+
             status = {
+                "status": "success",
+                "message": full_msg,
                 "github": {
                     "connected": bool(summary.get("github", {}).get("connected") or gh_username),
                     "username": gh_username,
                     "details": summary.get("github", {}).get("details", "")
                 },
                 "notion": {
-                    "connected": bool(summary.get("notion", {}).get("connected")),
-                    "details": summary.get("notion", {}).get("details", "")
+                    "connected": bool(notion_row),
+                    "workspace": notion_ws,
+                    "details": f"Connected ({notion_ws})" if notion_row else "Not connected"
                 },
                 "google": {
                     "connected": google_conn,
@@ -1174,9 +1265,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "services": ["Google Calendar", "Google Meet", "Gmail", "Google Drive"] if google_conn else []
                 }
             }
-            if args.service:
-                s_key = args.service.strip().lower()
-                return {s_key: status.get(s_key, {"connected": False, "details": "Unknown service"})}
             return status
 
         elif tool_name == "connect_integration":
@@ -1284,17 +1372,30 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         }
 
             elif svc == "notion":
-                is_valid, name = await integrations.validate_notion_token(val)
-                if is_valid:
-                    db.save_user_integration(chat_id, "notion", val, json.dumps({"workspace_name": name}))
+                clean_val = val.strip()
+                if clean_val.startswith("secret_") or clean_val.startswith("ntn_"):
+                    is_valid, name = await integrations.validate_notion_token(clean_val)
+                    if is_valid:
+                        db.save_user_integration(chat_id, "notion", clean_val, json.dumps({"workspace_name": name}))
+                        return {
+                            "status": "success",
+                            "service": "notion",
+                            "workspace": name,
+                            "message": f"✅ Notion workspace '{name}' connected successfully! Ab aap summaries ya notes Notion me add kar sakte hain."
+                        }
+                    else:
+                        return {"status": "error", "message": f"⚠️ Invalid Notion token: {name}"}
+                else:
                     return {
                         "status": "success",
                         "service": "notion",
-                        "workspace": name,
-                        "message": f"Notion workspace '{name}' connected successfully."
+                        "message": (
+                            "Notion account connect karne ke liye:\n\n"
+                            "1. [Notion My Integrations](https://www.notion.so/my-integrations) par jakar 'New integration' create karein.\n"
+                            "2. Integration Secret token copy karein (jo `ntn_` ya `secret_` se shuru hota hai).\n"
+                            "3. Apna token seedha yahan chat mein bhej dijiye (jaise `ntn_...`). Main verify karke turant connect kar dunga!"
+                        )
                     }
-                else:
-                    return {"status": "error", "message": f"Invalid Notion token: {name}"}
 
             return {"status": "error", "message": f"Unsupported service '{svc}'."}
 

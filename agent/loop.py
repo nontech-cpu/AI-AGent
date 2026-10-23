@@ -115,11 +115,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
     now_ist = datetime.now(IST)
-    from memory.retrieval import assemble_memory_context
-    mem_ctx = assemble_memory_context(chat_id, user_text)
-
-    from agent.prompt import build_runtime_system_prompt
-    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     # Check if user sent just a raw email address (e.g. attempting to link Google)
     trimmed_text = user_text.strip()
@@ -149,6 +144,60 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 }
             except Exception as exc:
                 print("Email auth url generation error:", repr(exc))
+
+    # Fast-path for raw Notion tokens (secret_... or ntn_...)
+    if (trimmed_text.startswith("secret_") or trimmed_text.startswith("ntn_")) and len(trimmed_text) > 15:
+        import integrations
+        is_valid, ws_name = await integrations.validate_notion_token(trimmed_text)
+        if is_valid:
+            db.save_user_integration(chat_id, "notion", trimmed_text, json.dumps({"workspace_name": ws_name}))
+            reply_msg = (
+                f"✅ **Notion Workspace successfully connect ho gaya!** 📝\n"
+                f"Workspace: **{ws_name}**\n\n"
+                f"Ab aap mujhe bol sakte hain:\n"
+                f"• *'ye summary Notion mein save kar do'*\n"
+                f"• *'meeting notes Notion page par add kar do'*"
+            )
+        else:
+            reply_msg = f"⚠️ Notion token validation failed: {ws_name}. Kripya check karein ki token sahi hai."
+        db.log_chat_message(chat_id, "user", user_text)
+        db.log_chat_message(chat_id, "assistant", reply_msg)
+        return {
+            "reply": reply_msg,
+            "tool_calls_executed": ["connect_integration"],
+            "pending_action": None,
+            "is_grounded": True,
+            "violations": [],
+            "latency_ms": int((time.time() - start_ts) * 1000),
+            "tokens_used": 0,
+            "memory_context": {}
+        }
+
+    # Fast-path for raw GitHub tokens (ghp_... or github_pat_...)
+    if (trimmed_text.startswith("ghp_") or trimmed_text.startswith("github_pat_")) and len(trimmed_text) > 20:
+        import integrations
+        is_valid, gh_user = await integrations.validate_github_token(trimmed_text)
+        if is_valid:
+            db.save_user_integration(chat_id, "github", trimmed_text, json.dumps({"username": gh_user}))
+            reply_msg = (
+                f"✅ **GitHub successfully connect ho gaya!** 🐙\n"
+                f"Account: **@{gh_user}**\n\n"
+                f"Aapke repositories aur code access ab live hain."
+            )
+        else:
+            reply_msg = f"⚠️ GitHub token validation failed: {gh_user}."
+        db.log_chat_message(chat_id, "user", user_text)
+        db.log_chat_message(chat_id, "assistant", reply_msg)
+        return {
+            "reply": reply_msg,
+            "tool_calls_executed": ["connect_integration"],
+            "pending_action": None,
+            "is_grounded": True,
+            "violations": [],
+            "latency_ms": int((time.time() - start_ts) * 1000),
+            "tokens_used": 0,
+            "memory_context": {}
+        }
 
     # Check for active pending action (Phase 5: Persistent Multi-Turn State)
     from state.pending import (
@@ -223,23 +272,34 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         elif intent == "cross_question":
             is_cross_q = True
 
-    # Fast-path for 1-click connector requests (ONLY if user is explicitly asking to connect/link, not performing repo/file actions)
+    # Fast-path for 1-click connector requests & status queries (typo tolerant, resilient)
     low_prompt_raw = user_text.lower().strip()
     words = low_prompt_raw.split()
-    is_action_prompt = bool(re.search(
-        r"\b(readme|update|commit|push|file|files|issue|issues|pr|prs|repo|repos|repository|repositories|replace|change|edit|check|dikh|btao|batao|kya hai|add|create|code|diff)\b",
+    is_code_modify = bool(re.search(
+        r"\b(readme|commit|push|pull|branch|diff|edit\s+file|modify\s+file|change\s+file|update\s+file|replace\s+in)\b",
         low_prompt_raw
     ))
 
-    if len(words) <= 8 and not is_action_prompt:
-        if re.search(r"\b(github|gh|git)\b", low_prompt_raw) and re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw):
-            res = await execute_tool(chat_id, "connect_integration", {"service": "github"})
-            if res.get("status") == "success" and res.get("message"):
+    if not is_code_modify and len(words) <= 12:
+        # Regex recognizing connect/connected with common typos (conncetdd, conncted, connectd, accound, etc.)
+        conn_kw_re = r"(conn\w*|link\w*|jod\w*|auth\w*|status|accoun\w*|juda\b|judi\b)"
+
+        has_notion = "notion" in low_prompt_raw
+        has_github = bool(re.search(r"\b(github|gh|git)\b", low_prompt_raw))
+        has_google = bool(re.search(r"\b(google|gmail|calendar|drive|gmeet)\b", low_prompt_raw))
+        has_general = bool(re.search(r"\b(connector|connectors|integration|integrations|all\s+accounts)\b", low_prompt_raw))
+
+        # 1. Notion Queries
+        if has_notion and (re.search(conn_kw_re, low_prompt_raw) or len(words) <= 4 or "?" in low_prompt_raw):
+            is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
+            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
+            res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
+            if res.get("message"):
                 db.log_chat_message(chat_id, "user", user_text)
                 db.log_chat_message(chat_id, "assistant", res["message"])
                 return {
                     "reply": res["message"],
-                    "tool_calls_executed": ["connect_integration"],
+                    "tool_calls_executed": [tool_to_call],
                     "pending_action": None,
                     "is_grounded": True,
                     "violations": [],
@@ -248,14 +308,53 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "memory_context": {}
                 }
 
-        if re.search(r"\b(google|gmail|calendar)\b", low_prompt_raw) and re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw):
-            res = await execute_tool(chat_id, "connect_integration", {"service": "google"})
-            if res.get("status") == "success" and res.get("message"):
+        # 2. GitHub Queries
+        if has_github and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
+            is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
+            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
+            res = await execute_tool(chat_id, tool_to_call, {"service": "github"})
+            if res.get("message"):
                 db.log_chat_message(chat_id, "user", user_text)
                 db.log_chat_message(chat_id, "assistant", res["message"])
                 return {
                     "reply": res["message"],
-                    "tool_calls_executed": ["connect_integration"],
+                    "tool_calls_executed": [tool_to_call],
+                    "pending_action": None,
+                    "is_grounded": True,
+                    "violations": [],
+                    "latency_ms": int((time.time() - start_ts) * 1000),
+                    "tokens_used": 0,
+                    "memory_context": {}
+                }
+
+        # 3. Google Queries
+        if has_google and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
+            is_connect_intent = bool(re.search(r"\b(connect|link|jod|jodo|authorize|oauth)\b", low_prompt_raw)) and not bool(re.search(r"\b(is|kya|hai|h|status|check|already)\b", low_prompt_raw))
+            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
+            res = await execute_tool(chat_id, tool_to_call, {"service": "google"})
+            if res.get("message"):
+                db.log_chat_message(chat_id, "user", user_text)
+                db.log_chat_message(chat_id, "assistant", res["message"])
+                return {
+                    "reply": res["message"],
+                    "tool_calls_executed": [tool_to_call],
+                    "pending_action": None,
+                    "is_grounded": True,
+                    "violations": [],
+                    "latency_ms": int((time.time() - start_ts) * 1000),
+                    "tokens_used": 0,
+                    "memory_context": {}
+                }
+
+        # 4. General Connector / All Integrations Status
+        if has_general and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw or len(words) <= 3):
+            res = await execute_tool(chat_id, "check_integrations_status", {})
+            if res.get("message"):
+                db.log_chat_message(chat_id, "user", user_text)
+                db.log_chat_message(chat_id, "assistant", res["message"])
+                return {
+                    "reply": res["message"],
+                    "tool_calls_executed": ["check_integrations_status"],
                     "pending_action": None,
                     "is_grounded": True,
                     "violations": [],
@@ -278,7 +377,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     except Exception:
         pass
 
-    # Context assembly: recent conversation turns (compact 6 turns to avoid prompt bloat)
+    # Context assembly: assemble memory & system prompt (only needed for turns that proceed to the LLM)
+    from memory.retrieval import assemble_memory_context
+    mem_ctx = assemble_memory_context(chat_id, user_text)
+
+    from agent.prompt import build_runtime_system_prompt
+    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
+
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
     recent_history = db.get_recent_chat_history(chat_id, limit=6)
     for turn in recent_history:
@@ -351,12 +456,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     has_recent_github = bool(re.search(r"\b(github|repo|repos|repository|readme|commit|issue|pull|pr|php-project)\b", recent_turns_text))
     is_affirmative = bool(re.search(r"\b(yes|yeah|haan|ha|han|kar do|kardo|kr do|krdo|confirm|proceed|ok|okay|kar de|karde|kr de|krde|kr bhy|kro|kr)\b", low_prompt))
 
-    if has_recent_github and (is_affirmative or is_action_prompt):
+    if has_recent_github and (is_affirmative or is_code_modify):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
 
     # Always allow connection / asking user if needed
     selected_tool_names.update(["connect_integration", "check_integrations_status", "ask_user", "search_memory"])
-    if is_action_prompt:
+    if is_code_modify:
         selected_tool_names.discard("connect_integration")
         selected_tool_names.discard("ask_user")
 
@@ -390,7 +495,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             # Multi-tier auto-fallback on 429 Rate Limit (e.g. 8k TPM limit on gpt-oss models)
             if resp.status_code == 429:
-                for fb_model in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                for fb_model in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
                     if current_model != fb_model:
                         print(f"Agent Loop 429 Rate Limit on {current_model}. Switching to fallback model {fb_model}...")
                         current_model = fb_model
@@ -406,7 +511,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             if resp.status_code != 200:
                 print("Agent Loop Groq Error:", resp.status_code, resp.text[:300])
-                for fb_model in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                for fb_model in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
                     if current_model != fb_model:
                         current_model = fb_model
                         payload["model"] = current_model
@@ -613,30 +718,45 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not final_reply:
         if tool_results_list:
             last_res = tool_results_list[-1]
-            if last_res.get("status") == "success" and "message" in last_res:
+            if isinstance(last_res, dict) and last_res.get("message"):
                 final_reply = last_res["message"]
-            elif "commitment" in last_res:
+            elif isinstance(last_res, dict) and ("github" in last_res or "notion" in last_res or "google" in last_res):
+                lines = []
+                if "github" in last_res:
+                    gh = last_res["github"]
+                    u = f" (@{gh['username']})" if gh.get("username") else ""
+                    lines.append(f"• GitHub: {'✅ Connected' + u if gh.get('connected') else '❌ Not connected'}")
+                if "notion" in last_res:
+                    nt = last_res["notion"]
+                    ws = f" ({nt['workspace']})" if nt.get("workspace") else ""
+                    lines.append(f"• Notion: {'✅ Connected' + ws if nt.get('connected') else '❌ Not connected'}")
+                if "google" in last_res:
+                    gg = last_res["google"]
+                    em = f" ({gg['email']})" if gg.get("email") else ""
+                    lines.append(f"• Google: {'✅ Connected' + em if gg.get('connected') else '❌ Not connected'}")
+                final_reply = "🔌 **Aapke Accounts Status:**\n" + "\n".join(lines)
+            elif isinstance(last_res, dict) and "commitment" in last_res:
                 c_name = last_res.get("contact", "Contact")
                 final_reply = f"{c_name} ke liye note/commitment save kar liya gaya hai: '{last_res.get('commitment')}'."
-            elif last_res.get("found") and last_res.get("phone"):
+            elif isinstance(last_res, dict) and last_res.get("found") and last_res.get("phone"):
                 final_reply = f"{last_res.get('name', 'Contact')} ka phone number **{last_res.get('phone')}** hai."
-            elif last_res.get("found") and last_res.get("email"):
+            elif isinstance(last_res, dict) and last_res.get("found") and last_res.get("email"):
                 final_reply = f"{last_res.get('name', 'Contact')} ka email **{last_res.get('email')}** hai."
-            elif last_res.get("status") == "success" and last_res.get("title"):
+            elif isinstance(last_res, dict) and last_res.get("status") == "success" and last_res.get("title"):
                 t_name = last_res.get("title", "Item")
                 t_time = last_res.get("due_time") or ""
                 t_date = last_res.get("due_date") or ""
                 time_part = f" at {t_time}" if t_time else ""
                 date_part = f" ({t_date})" if t_date else ""
                 final_reply = f"Reminder set ho gaya hai! 📅 **{t_name}**{date_part}{time_part}."
-            elif last_res.get("trip_title"):
+            elif isinstance(last_res, dict) and last_res.get("trip_title"):
                 final_reply = f"Packing list '{last_res.get('trip_title')}' create kar di gayi hai!"
-            elif last_res.get("status") == "error" and "message" in last_res:
+            elif isinstance(last_res, dict) and last_res.get("status") == "error" and "message" in last_res:
                 final_reply = last_res["message"]
             else:
-                final_reply = "Aapka request note kar liya gaya hai aur update ho gaya hai!"
+                final_reply = "Aapka request process kar liya gaya hai."
         else:
-            final_reply = "Main aapki reminders, meetings aur contacts track karne me madad karta hu. Aap bataiye kya karna hai?"
+            final_reply = "Main aapki reminders, meetings, code aur accounts track karne me madad karta hu. Aap bataiye kya karna hai?"
 
     if "<tool_call>" in final_reply:
         final_reply = re.sub(r"<tool_call>.*?</tool_call>", "", final_reply, flags=re.DOTALL | re.IGNORECASE).strip()
