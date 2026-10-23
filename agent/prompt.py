@@ -144,8 +144,26 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
 
     async def fetch_sched(d):
         try:
+            from schedule.intervals import get_unified_daily_schedule
+            daily = await get_unified_daily_schedule(chat_id, d)
+            if daily:
+                return daily
+        except Exception:
+            pass
+        try:
             from main import items_for_date
-            rems = items_for_date(chat_id, d)
+            raw_rems = items_for_date(chat_id, d)
+            rems = []
+            for r in raw_rems:
+                if isinstance(r, dict):
+                    rems.append(r)
+                else:
+                    rems.append({
+                        "category": r[0] if len(r) > 0 else "appointments",
+                        "title": r[1] if len(r) > 1 else "Reminder",
+                        "amount": r[2] if len(r) > 2 else None,
+                        "due_time": r[3] if len(r) > 3 else None,
+                    })
             return {"reminders": rems}
         except Exception:
             return {}
@@ -217,11 +235,21 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
     mem_ctx = assemble_memory_context(chat_id, user_text)
     memory_block = mem_ctx.get("formatted_block") or "No specific entity/promise retrieved for this turn."
 
+    def _format_rem_item(r):
+        if isinstance(r, dict):
+            title = r.get("title", "Reminder")
+            d_time = r.get("due_time")
+        else:
+            title = r[1] if len(r) > 1 else "Reminder"
+            d_time = r[3] if len(r) > 3 else None
+        time_str = d_time.strftime("%I:%M %p") if hasattr(d_time, "strftime") else (str(d_time) if d_time else "all day")
+        return f"{title} ({time_str})"
+
     # 7. Today's and Tomorrow's Unified Schedule
     schedule_parts = []
     # Today summary
     t_evs = [ev.get("summary", "Meeting") for ev in today_sched.get("calendar_events", [])]
-    t_rems = [f"{r['title']} ({r.get('due_time') or 'all day'})" for r in today_sched.get("reminders", [])]
+    t_rems = [_format_rem_item(r) for r in today_sched.get("reminders", [])]
     t_comms = [f"{c['name']}: {c['commitment']}" for c in today_sched.get("commitments", [])]
     today_line = f"Today ({today_d.strftime('%A, %d %b')}): " + (f"Calendar: {', '.join(t_evs)} | " if t_evs else "") + (f"Reminders: {', '.join(t_rems)} | " if t_rems else "") + (f"Commitments: {', '.join(t_comms)}" if t_comms else "")
     if not (t_evs or t_rems or t_comms):
@@ -230,7 +258,7 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
 
     # Tomorrow summary
     tm_evs = [ev.get("summary", "Meeting") for ev in tomorrow_sched.get("calendar_events", [])]
-    tm_rems = [f"{r['title']} ({r.get('due_time') or 'all day'})" for r in tomorrow_sched.get("reminders", [])]
+    tm_rems = [_format_rem_item(r) for r in tomorrow_sched.get("reminders", [])]
     tm_comms = [f"{c['name']}: {c['commitment']}" for c in tomorrow_sched.get("commitments", [])]
     tm_line = f"Tomorrow ({tomorrow_d.strftime('%A, %d %b')}): " + (f"Calendar: {', '.join(tm_evs)} | " if tm_evs else "") + (f"Reminders: {', '.join(tm_rems)} | " if tm_rems else "") + (f"Commitments: {', '.join(tm_comms)}" if tm_comms else "")
     if not (tm_evs or tm_rems or tm_comms):

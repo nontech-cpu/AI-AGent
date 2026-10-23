@@ -856,8 +856,51 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             if args.due_time:
                 h, m = map(int, args.due_time.split(":")[:2])
                 t_val = dtime(h, m)
+
+            # Check for existing events/reminders conflict on the same date and time
+            existing_items = db.items_for_date(chat_id, d_val)
+            conflicts = []
+            for row in existing_items:
+                row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
+                row_time = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
+                if t_val and row_time:
+                    try:
+                        r_h = row_time.hour if hasattr(row_time, "hour") else int(str(row_time).split(":")[0])
+                        r_m = row_time.minute if hasattr(row_time, "minute") else int(str(row_time).split(":")[1])
+                        diff_mins = abs((t_val.hour * 60 + t_val.minute) - (r_h * 60 + r_m))
+                        if diff_mins < 60:
+                            conflicts.append(f"'{row_title}' at {r_h:02d}:{r_m:02d}")
+                    except Exception:
+                        pass
+
+            # Also check Google Calendar for conflicts if connected
+            try:
+                from main import get_unified_schedule
+                sched = await get_unified_schedule(chat_id, d_val)
+                for ev in sched.get("calendar_events", []):
+                    raw_start = ev.get("start", {}).get("dateTime")
+                    if raw_start and t_val:
+                        ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(IST)
+                        diff_mins = abs((t_val.hour * 60 + t_val.minute) - (ev_dt.hour * 60 + ev_dt.minute))
+                        if diff_mins < 60:
+                            conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' at {ev_dt.strftime('%I:%M %p')}")
+            except Exception:
+                pass
+
             db.save_memory(chat_id, args.category, args.title, amount=None, due_date=d_val, due_time=t_val)
-            return {"status": "success", "title": args.title, "due_date": args.due_date, "due_time": args.due_time}
+            res = {
+                "status": "success",
+                "title": args.title,
+                "due_date": args.due_date,
+                "due_time": args.due_time,
+                "conflicts": conflicts,
+                "has_conflict": len(conflicts) > 0
+            }
+            if conflicts:
+                res["conflict_warning"] = (
+                    f"⚠️ Time Conflict Alert: Is samay par already {', '.join(conflicts)} scheduled hai!"
+                )
+            return res
 
         elif tool_name == "list_reminders":
             args = ListRemindersArgs(**arguments)

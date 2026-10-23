@@ -49,6 +49,10 @@ GROUNDING & TRUTH CONTRACT:
    - When user confirms connecting an integration (e.g. 'Krdiya h mene', 'connect ho gaya'), look at the MOST RECENT meeting or task requested right before connecting!
    - When user sends a GitHub URL or username (e.g. 'https://github.com/nontech-cpu', 'nontech-cpu') or asks to connect GitHub/Notion, ALWAYS call `connect_integration` with service='github' and the value. NEVER call `save_note_or_fact` for profile URLs or connectors!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
+10. PROACTIVE TIME CONFLICT DETECTION & ALERTING:
+   - When user asks to schedule a reminder, meeting, or event (e.g. '5 bje movie me jana h remind kar dena') and they ALREADY have an event or reminder at that time (visible in Today's / Tomorrow's schedule or tool output has_conflict=True):
+   - ALWAYS highlight the clash in your reply! E.g.
+     "Reminder set kar diya hai! 🎬\n⚠️ **Time Conflict Warning:** Bhai, aaj shaam 5:00 PM par already aapka 'Meeting' scheduled hai! Kya aap movie ka time change karna chahenge ya meeting reschedule karein?"
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
@@ -247,35 +251,35 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 json=payload
             )
 
-            # Auto-fallback on 429 Rate Limit (e.g. 8k TPM limit on 120b)
+            # Multi-tier auto-fallback on 429 Rate Limit (e.g. 8k TPM limit on gpt-oss models)
             if resp.status_code == 429:
-                print(f"Agent Loop 429 Rate Limit on {current_model}. Switching to fallback model openai/gpt-oss-20b...")
-                if current_model != "openai/gpt-oss-20b":
-                    current_model = "openai/gpt-oss-20b"
-                    payload["model"] = current_model
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json=payload
-                    )
-                if resp.status_code == 429:
-                    await asyncio.sleep(2.0)
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json=payload
-                    )
+                for fb_model in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                    if current_model != fb_model:
+                        print(f"Agent Loop 429 Rate Limit on {current_model}. Switching to fallback model {fb_model}...")
+                        current_model = fb_model
+                        payload["model"] = current_model
+                        await asyncio.sleep(1.0)
+                        resp = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {groq_key}"},
+                            json=payload
+                        )
+                        if resp.status_code == 200:
+                            break
 
             if resp.status_code != 200:
                 print("Agent Loop Groq Error:", resp.status_code, resp.text[:300])
-                if current_model != "openai/gpt-oss-20b":
-                    current_model = "openai/gpt-oss-20b"
-                    payload["model"] = current_model
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json=payload
-                    )
+                for fb_model in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                    if current_model != fb_model:
+                        current_model = fb_model
+                        payload["model"] = current_model
+                        resp = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {groq_key}"},
+                            json=payload
+                        )
+                        if resp.status_code == 200:
+                            break
                 if resp.status_code != 200:
                     break
 
@@ -482,6 +486,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if is_cross_q and active_pending:
         p_title = active_pending.get("payload", {}).get("title") or "Meeting"
         final_reply += f"\n\n📌 **Pending Confirmation:** Aapka '{p_title}' schedule karne ka request abhi bhi waiting hai. Kya main ise confirm kar doon? (Reply 'yes' ya 'cancel')"
+
+    # Proactive Time Conflict Alert: Ensure conflict warnings from tools are NEVER missed
+    for tr in tool_results_list:
+        if isinstance(tr, dict) and tr.get("has_conflict") and tr.get("conflict_warning"):
+            cw = tr["conflict_warning"]
+            if not any(w in final_reply.lower() for w in ("conflict", "clash", "already", "pehle se", "booked")):
+                final_reply += f"\n\n{cw} Kya aap iska time aage-peeche karna chahenge?"
 
     # Phase 3: Zero-Unsupported-Claims Grounding Verifier Pass
     is_grounded, verified_reply, violations = await verify_and_ground_reply(

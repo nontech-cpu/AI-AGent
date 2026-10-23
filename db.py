@@ -80,6 +80,13 @@ def get_categories(chat_id):
 
 
 def save_memory(chat_id, category, title, amount, due_date, due_time):
+    tm = due_time
+    d = due_date
+    if engine.dialect.name == "sqlite":
+        if hasattr(due_time, "strftime"):
+            tm = due_time.strftime("%H:%M:%S")
+        if hasattr(due_date, "isoformat"):
+            d = due_date.isoformat()
     with engine.begin() as conn:
         row = conn.execute(
             text(
@@ -88,8 +95,8 @@ def save_memory(chat_id, category, title, amount, due_date, due_time):
                 "SELECT id, :cat, :t, :a, :d, :tm FROM users "
                 "WHERE telegram_chat_id = :c RETURNING id"
             ),
-            {"cat": category, "t": title, "a": amount, "d": due_date,
-             "tm": due_time, "c": chat_id},
+            {"cat": category, "t": title, "a": amount, "d": d,
+             "tm": tm, "c": chat_id},
         ).first()
     return row[0] if row else None
 
@@ -110,6 +117,7 @@ def list_memories(chat_id):
 
 
 def items_for_date(chat_id, d):
+    d_val = d.isoformat() if hasattr(d, "isoformat") and engine.dialect.name == "sqlite" else d
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -118,7 +126,7 @@ def items_for_date(chat_id, d):
                 "WHERE u.telegram_chat_id = :c AND m.due_date = :d "
                 "ORDER BY m.due_time NULLS FIRST, m.id"
             ),
-            {"c": chat_id, "d": d},
+            {"c": chat_id, "d": d_val},
         ).fetchall()
     return rows
 

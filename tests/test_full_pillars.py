@@ -136,6 +136,19 @@ def init_test_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS board_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'queue',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                due_date DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
     yield
 
 
@@ -430,3 +443,60 @@ async def test_master_privacy_wipe_flow():
         assert len(facts) == 0
         contacts = db.get_contact_memories(chat_id)
         assert len(contacts) == 0
+
+
+@pytest.mark.asyncio
+async def test_reminder_conflict_detection():
+    chat_id = 998877010
+    db.ensure_user(chat_id)
+    db.give_consent(chat_id)
+
+    today_str = date.today().isoformat()
+
+    # Step 1: Create a 5:00 PM Meeting reminder
+    res1 = await execute_tool(chat_id, "create_reminder", {
+        "title": "Meeting",
+        "due_date": today_str,
+        "due_time": "17:00:00"
+    })
+    assert res1.get("status") == "success"
+    assert res1.get("has_conflict") is False
+
+    # Step 2: Try creating another reminder at 5:00 PM for "movie"
+    res2 = await execute_tool(chat_id, "create_reminder", {
+        "title": "Movie with friends",
+        "due_date": today_str,
+        "due_time": "17:00:00"
+    })
+    assert res2.get("status") == "success"
+    assert res2.get("has_conflict") is True
+    assert "conflict_warning" in res2
+    assert "Meeting" in res2["conflict_warning"] or len(res2["conflicts"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_detect_meeting_conflicts_dict_and_tuple():
+    chat_id = 998877011
+    # Test with dict reminders
+    sched_dict = {
+        "calendar_events": [],
+        "reminders": [
+            {"category": "reminder", "title": "Client Sync", "amount": None, "due_time": time(17, 15)}
+        ],
+        "commitments": []
+    }
+    with patch("main.get_unified_schedule", return_value=sched_dict):
+        conflicts_dict, _ = await detect_meeting_conflicts(chat_id, "2026-10-23T17:00:00+05:30", 30)
+        assert any("Client Sync" in c for c in conflicts_dict)
+
+    # Test with tuple reminders (raw DB rows)
+    sched_tuple = {
+        "calendar_events": [],
+        "reminders": [
+            ("reminder", "Team Standup", None, time(17, 0))
+        ],
+        "commitments": []
+    }
+    with patch("main.get_unified_schedule", return_value=sched_tuple):
+        conflicts_tuple, _ = await detect_meeting_conflicts(chat_id, "2026-10-23T17:00:00+05:30", 30)
+        assert any("Team Standup" in c for c in conflicts_tuple)

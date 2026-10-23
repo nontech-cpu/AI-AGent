@@ -393,7 +393,18 @@ async def get_unified_schedule(chat_id: int, target_date: date):
     date_iso = target_date.isoformat()
 
     # 1. Reminders
-    reminders = items_for_date(chat_id, target_date)
+    raw_rems = items_for_date(chat_id, target_date)
+    reminders = []
+    for r in raw_rems:
+        if isinstance(r, dict):
+            reminders.append(r)
+        else:
+            reminders.append({
+                "category": r[0] if len(r) > 0 else "appointments",
+                "title": r[1] if len(r) > 1 else "Reminder",
+                "amount": r[2] if len(r) > 2 else None,
+                "due_time": r[3] if len(r) > 3 else None,
+            })
 
     # 2. Google Calendar
     calendar_events = []
@@ -477,7 +488,15 @@ async def detect_meeting_conflicts(chat_id: int, start_iso: str, duration_minute
                 pass
 
     # Check Reminders within 30 mins
-    for cat, title, amt, d_time in sched.get("reminders", []):
+    for rem in sched.get("reminders", []):
+        if isinstance(rem, dict):
+            title = rem.get("title", "Reminder")
+            d_time = rem.get("due_time")
+        elif isinstance(rem, (list, tuple)):
+            title = rem[1] if len(rem) > 1 else "Reminder"
+            d_time = rem[3] if len(rem) > 3 else None
+        else:
+            continue
         if d_time:
             rem_dt = datetime.combine(target_date, d_time, tzinfo=IST)
             if abs((rem_dt - start_dt).total_seconds()) < 1800:
