@@ -265,3 +265,152 @@ async def test_notion_connector_list_pages_contract():
         assert res.ok is True
         assert res.data["count"] == 1
         assert "My Notes" in res.data["summary"]
+
+
+def test_parse_content_markdown_table_to_notion_table():
+    """Verifies markdown tables parse into native Notion table blocks with headers."""
+    table_text = """
+**2. Overfitting vs Underfitting**
+
+| Overfitting | Underfitting |
+| --- | --- |
+| Training data ko closely learn karta hai | Patterns properly learn nahi karta |
+| Training high, test low | Both training and test low |
+"""
+    blocks = parse_content_to_notion_blocks(table_text)
+    types = [b["type"] for b in blocks]
+    assert "heading_2" in types
+    assert "table" in types
+
+    table_block = next(b for b in blocks if b["type"] == "table")
+    assert table_block["table"]["table_width"] == 2
+    assert table_block["table"]["has_column_header"] is True
+    assert len(table_block["table"]["children"]) == 3  # 1 header + 2 data rows
+
+    header_cells = table_block["table"]["children"][0]["table_row"]["cells"]
+    assert header_cells[0][0]["text"]["content"] == "Overfitting"
+    assert header_cells[0][0]["annotations"]["bold"] is True
+
+
+def test_parse_content_wrapped_bold_headings_and_inline_bold():
+    """Verifies bold-wrapped titles become headings and inline bold in bullets does not leak asterisks."""
+    content = """
+**AI & ML Notes**
+
+- **Features (X):** Input variables, jaise age, salary.
+- **Target (y):** Output jo predict karna hai.
+"""
+    blocks = parse_content_to_notion_blocks(content)
+    assert blocks[0]["type"] == "heading_1"
+    assert blocks[0]["heading_1"]["rich_text"][0]["text"]["content"] == "AI & ML Notes"
+    assert blocks[0]["heading_1"]["rich_text"][0]["annotations"]["bold"] is True
+
+    bullet = blocks[1]
+    assert bullet["type"] == "bulleted_list_item"
+    rt = bullet["bulleted_list_item"]["rich_text"]
+    assert rt[0]["text"]["content"] == "Features (X):"
+    assert rt[0]["annotations"]["bold"] is True
+    assert "Input variables" in rt[1]["text"]["content"]
+    assert rt[1]["annotations"]["bold"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_notion_page_explicit_new_creates_workspace_page():
+    """When target_section='new' or 'alg se', it creates a new page under workspace parent, not DSA NOTES."""
+    mock_search_results = {
+        "results": [
+            {
+                "id": "dsa-page-id",
+                "object": "page",
+                "url": "https://notion.so/dsa-notes",
+                "properties": {
+                    "title": {"title": [{"plain_text": "DSA NOTES"}]}
+                }
+            }
+        ]
+    }
+    with patch("httpx.AsyncClient.post") as mock_post, \
+         patch("httpx.AsyncClient.patch") as mock_patch:
+
+        def fake_post(url, **kwargs):
+            resp = MagicMock()
+            if "search" in url:
+                resp.status_code = 200
+                resp.json.return_value = mock_search_results
+            elif "pages" in url:
+                resp.status_code = 200
+                resp.json.return_value = {"id": "new-page-id", "url": "https://notion.so/new-page-id"}
+            return resp
+
+        mock_post.side_effect = fake_post
+
+        ok, msg, url = await create_or_append_notion_note(
+            token="secret_mock_123",
+            title="AI & ML Notes",
+            content="# AI Notes\n- Point 1",
+            target_section="new"
+        )
+        assert ok is True
+        assert "New Notion page 'AI & ML Notes' successfully created" in msg
+        assert url == "https://notion.so/new-page-id"
+        # Ensure patch was NOT called to append to DSA NOTES
+        assert not mock_patch.called
+
+        # Ensure page creation used parent workspace: True
+        create_payload = [call for call in mock_post.call_args_list if "pages" in call[0][0]][0][1]["json"]
+        assert create_payload["parent"] == {"workspace": True}
+
+
+@pytest.mark.asyncio
+async def test_list_notion_pages_filters_archived_and_database_rows():
+    """Verifies list_notion_pages excludes archived pages and internal database rows."""
+    mock_search_data = {
+        "results": [
+            {
+                "id": "p1",
+                "parent": {"type": "workspace", "workspace": True},
+                "archived": False,
+                "in_trash": False,
+                "properties": {"title": {"title": [{"plain_text": "DSA NOTES"}]}},
+                "url": "https://notion.so/dsa"
+            },
+            {
+                "id": "p2",
+                "parent": {"type": "database_id", "database_id": "db123"},
+                "archived": False,
+                "in_trash": False,
+                "properties": {"Name": {"title": [{"plain_text": "Internal Row"}]}},
+                "url": "https://notion.so/internal"
+            },
+            {
+                "id": "p3",
+                "parent": {"type": "workspace", "workspace": True},
+                "archived": True,
+                "in_trash": False,
+                "properties": {"title": {"title": [{"plain_text": "Old Deleted Page"}]}},
+                "url": "https://notion.so/old"
+            },
+            {
+                "id": "p4",
+                "parent": {"type": "workspace", "workspace": True},
+                "archived": False,
+                "in_trash": False,
+                "properties": {"title": {"title": [{"plain_text": "Welcome to Notion"}]}},
+                "url": "https://notion.so/welcome"
+            }
+        ]
+    }
+    with patch("httpx.AsyncClient.post") as mock_post:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = mock_search_data
+        mock_post.return_value = resp
+
+        pages = await list_notion_pages("secret_token")
+        assert len(pages) == 2
+        titles = [p["title"] for p in pages]
+        assert "DSA NOTES" in titles
+        assert "Welcome to Notion" in titles
+        assert "Internal Row" not in titles
+        assert "Old Deleted Page" not in titles
+

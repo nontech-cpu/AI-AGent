@@ -41,90 +41,252 @@ async def validate_notion_token(token: str) -> Tuple[bool, Optional[str]]:
         return False, str(exc)
 
 
+def text_to_notion_rich_text(text: str, default_bold: bool = False) -> list:
+    """
+    Parses a string into Notion rich_text objects, supporting:
+    - **bold text**
+    - *italic text*
+    - `inline code`
+    - [link text](url)
+    - default_bold (for headings requested with bold styling)
+    """
+    import re
+    if not text:
+        return []
+
+    # Pattern to match [link](url), **bold**, `code`, *italic*
+    pattern = re.compile(r'(\[.+?\]\(https?://[^\s\)]+\)|\*\*.+?\*\*|`[^`]+`|\*[^\*]+?\*)')
+    tokens = pattern.split(text)
+    rich_text_list = []
+
+    for t in tokens:
+        if not t:
+            continue
+        link_m = re.match(r'^\[(.+?)\]\((https?://[^\s\)]+)\)$', t)
+        if link_m:
+            rich_text_list.append({
+                "type": "text",
+                "text": {"content": link_m.group(1)[:1800], "link": {"url": link_m.group(2)}},
+                "annotations": {"bold": default_bold, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+            })
+            continue
+        if t.startswith("**") and t.endswith("**") and len(t) >= 4:
+            rich_text_list.append({
+                "type": "text",
+                "text": {"content": t[2:-2][:1800]},
+                "annotations": {"bold": True, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+            })
+            continue
+        if t.startswith("`") and t.endswith("`") and len(t) >= 2:
+            rich_text_list.append({
+                "type": "text",
+                "text": {"content": t[1:-1][:1800]},
+                "annotations": {"bold": default_bold, "italic": False, "strikethrough": False, "underline": False, "code": True, "color": "default"}
+            })
+            continue
+        if t.startswith("*") and t.endswith("*") and len(t) >= 2:
+            rich_text_list.append({
+                "type": "text",
+                "text": {"content": t[1:-1][:1800]},
+                "annotations": {"bold": default_bold, "italic": True, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+            })
+            continue
+        rich_text_list.append({
+            "type": "text",
+            "text": {"content": t[:1800]},
+            "annotations": {"bold": default_bold, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+        })
+
+    return rich_text_list if rich_text_list else [{
+        "type": "text",
+        "text": {"content": text[:1800]},
+        "annotations": {"bold": default_bold, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}
+    }]
+
+
 def parse_content_to_notion_blocks(content: str, default_formatting: Optional[str] = None) -> list:
     """
     Parses unstructured or markdown text into typed Notion block objects:
-    - #, ##, ### or 'Heading:' -> heading_1, heading_2, heading_3
-    - -, *, •, ◦ -> bulleted_list_item
+    - #, ##, ### or 'Heading:' or **Title** -> heading_1 (font size ~30), heading_2, heading_3 with bold
+    - -, *, •, ◦ -> bulleted_list_item with inline rich text formatting
     - 1., 2. -> numbered_list_item
+    - Markdown tables (| col1 | col2 |) -> native Notion table block
     - [ ], [x] -> to_do
     - --- -> divider
     - plain lines -> paragraph
     """
     import re
     blocks = []
-    lines = [l.strip() for l in content.split("\n") if l.strip()]
+    lines = [l.strip() for l in content.split("\n")]
     force_bullets = (default_formatting == "bullets")
 
-    for line in lines[:40]:  # Cap blocks
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+
+        # 1) Markdown tables: | col1 | col2 |
+        if line.startswith("|") and line.endswith("|") and line.count("|") >= 2:
+            table_lines = []
+            while i < n and lines[i].strip().startswith("|") and lines[i].strip().endswith("|") and lines[i].strip().count("|") >= 2:
+                table_lines.append(lines[i].strip())
+                i += 1
+            
+            rows_cells = []
+            for tl in table_lines:
+                cells = [c.strip() for c in tl.split("|")[1:-1]]
+                if cells and all(re.match(r'^:?-+:?$', c) for c in cells):
+                    continue
+                rows_cells.append(cells)
+
+            if rows_cells:
+                max_cols = max(len(r) for r in rows_cells)
+                if max_cols > 0:
+                    notion_rows = []
+                    for row_idx, r in enumerate(rows_cells):
+                        padded = r + [""] * (max_cols - len(r))
+                        is_header = (row_idx == 0)
+                        cell_blocks = [
+                            text_to_notion_rich_text(c, default_bold=is_header) for c in padded
+                        ]
+                        notion_rows.append({
+                            "type": "table_row",
+                            "table_row": {"cells": cell_blocks}
+                        })
+                    blocks.append({
+                        "object": "block",
+                        "type": "table",
+                        "table": {
+                            "table_width": max_cols,
+                            "has_column_header": True,
+                            "has_row_header": False,
+                            "children": notion_rows
+                        }
+                    })
+            continue
+
+        # 2) Headings
+        # # Heading 1 (Font size 30 bold)
         if line.startswith("# "):
+            clean_head = line[2:].strip()
             blocks.append({
                 "object": "block",
                 "type": "heading_1",
-                "heading_1": {"rich_text": [{"type": "text", "text": {"content": line[2:].strip()[:1800]}}]}
+                "heading_1": {"rich_text": text_to_notion_rich_text(clean_head, default_bold=True)}
             })
-        elif line.startswith("## "):
+            i += 1
+            continue
+
+        # ## Heading 2
+        if line.startswith("## "):
+            clean_head = line[3:].strip()
             blocks.append({
                 "object": "block",
                 "type": "heading_2",
-                "heading_2": {"rich_text": [{"type": "text", "text": {"content": line[3:].strip()[:1800]}}]}
+                "heading_2": {"rich_text": text_to_notion_rich_text(clean_head, default_bold=True)}
             })
-        elif line.startswith("### "):
+            i += 1
+            continue
+
+        # ### Heading 3
+        if line.startswith("### "):
+            clean_head = line[4:].strip()
             blocks.append({
                 "object": "block",
                 "type": "heading_3",
-                "heading_3": {"rich_text": [{"type": "text", "text": {"content": line[4:].strip()[:1800]}}]}
+                "heading_3": {"rich_text": text_to_notion_rich_text(clean_head, default_bold=True)}
             })
-        elif re.match(r"^(heading|title)\s*:\s*", line, re.I):
+            i += 1
+            continue
+
+        # Heading: or Title:
+        if re.match(r"^(heading|title)\s*:\s*", line, re.I):
             head_text = re.sub(r"^(heading|title)\s*:\s*", "", line, flags=re.I).strip()
             blocks.append({
                 "object": "block",
-                "type": "heading_2",
-                "heading_2": {"rich_text": [{"type": "text", "text": {"content": head_text[:1800]}}]}
+                "type": "heading_1",
+                "heading_1": {"rich_text": text_to_notion_rich_text(head_text, default_bold=True)}
             })
-        elif line.startswith(("- ", "* ", "• ", "◦ ")):
+            i += 1
+            continue
+
+        # Lines wrapped entirely in **Heading** (e.g. **AI & ML Notes**, **1. Core ML Terminology**)
+        bold_line_match = re.match(r"^\*\*(.+?)\*\*$", line)
+        if bold_line_match:
+            inner = bold_line_match.group(1).strip()
+            if len(inner) < 120 and (not inner.endswith(".") or re.match(r"^\d+[\.\)]", inner)):
+                b_type = "heading_2" if re.match(r"^\d+[\.\)]", inner) else "heading_1"
+                blocks.append({
+                    "object": "block",
+                    "type": b_type,
+                    b_type: {"rich_text": text_to_notion_rich_text(inner, default_bold=True)}
+                })
+                i += 1
+                continue
+
+        # 3) Bulleted list items
+        if line.startswith(("- ", "* ", "• ", "◦ ")):
             clean_item = re.sub(r"^[-*•◦]\s*", "", line).strip()
             blocks.append({
                 "object": "block",
                 "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": clean_item[:1800]}}]}
+                "bulleted_list_item": {"rich_text": text_to_notion_rich_text(clean_item)}
             })
-        elif re.match(r"^\d+\.\s+", line):
-            clean_num = re.sub(r"^\d+\.\s+", "", line).strip()
+            i += 1
+            continue
+
+        # 4) Numbered list items
+        if re.match(r"^\d+(?:\\\.|\.)\s+", line):
+            clean_num = re.sub(r"^\d+(?:\\\.|\.)\s+", "", line).strip()
             blocks.append({
                 "object": "block",
                 "type": "numbered_list_item",
-                "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": clean_num[:1800]}}]}
+                "numbered_list_item": {"rich_text": text_to_notion_rich_text(clean_num)}
             })
-        elif line.startswith(("[ ] ", "[x] ", "[X] ")):
+            i += 1
+            continue
+
+        # 5) To-do items
+        if line.startswith(("[ ] ", "[x] ", "[X] ")):
             is_checked = line.startswith(("[x] ", "[X] "))
             clean_todo = line[4:].strip()
             blocks.append({
                 "object": "block",
                 "type": "to_do",
-                "to_do": {"rich_text": [{"type": "text", "text": {"content": clean_todo[:1800]}}], "checked": is_checked}
+                "to_do": {"rich_text": text_to_notion_rich_text(clean_todo), "checked": is_checked}
             })
-        elif line in ("---", "***", "___"):
+            i += 1
+            continue
+
+        # 6) Dividers
+        if line in ("---", "***", "___"):
             blocks.append({"object": "block", "type": "divider", "divider": {}})
+            i += 1
+            continue
+
+        # 7) Paragraphs
+        if force_bullets:
+            blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": text_to_notion_rich_text(line)}
+            })
         else:
-            if force_bullets:
-                blocks.append({
-                    "object": "block",
-                    "type": "bulleted_list_item",
-                    "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": line[:1800]}}]}
-                })
-            else:
-                blocks.append({
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": line[:1800]}}]}
-                })
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": text_to_notion_rich_text(line)}
+            })
+        i += 1
 
     if not blocks:
         blocks.append({
             "object": "block",
             "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": content[:1800]}}]}
+            "paragraph": {"rich_text": text_to_notion_rich_text(content)}
         })
 
     return blocks
@@ -140,9 +302,10 @@ async def create_notion_page(
 ) -> Tuple[bool, str, Optional[str]]:
     """
     Creates a new page or appends a new section in the user's Notion workspace.
-    - If target_section or 'existing notes' is requested, searches and appends blocks directly to that page.
-    - If not specified, checks for a default 'Notes' page to append into, or creates a new page.
-    - Respects heading and bullet formatting requests.
+    - If user asks for separate/new page ('alg se', 'alag se', 'new', 'separate'), creates a new top-level page.
+    - If user explicitly names an existing page, appends directly to that page.
+    - If not specified, checks ONLY for a dedicated bot scratchpad ('PeculiarAI Notes'), else creates a new page.
+    - Full structured blocks without block truncation limits (batches > 100 blocks).
     Returns (success, message, page_url).
     """
     clean_token = token.strip() if token else ""
@@ -158,59 +321,107 @@ async def create_notion_page(
     clean_title = title.strip() or "PeculiarAI Note"
     parsed_blocks = parse_content_to_notion_blocks(content, default_formatting=formatting)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         # Search for accessible pages in the workspace
         search_res = await client.post(
             "https://api.notion.com/v1/search",
             headers=headers,
-            json={"filter": {"value": "page", "property": "object"}, "page_size": 20}
+            json={"filter": {"value": "page", "property": "object"}, "page_size": 25}
         )
         page_results = search_res.json().get("results", []) if search_res.status_code == 200 else []
 
-        target_existing_page = None
         target_name_query = (target_section or "").strip().lower()
+        is_explicit_new = bool(target_name_query in ("new", "separate", "alg", "alag", "new_page", "none", "create_new"))
 
-        # Check if user explicitly asked for existing section/page
-        if target_name_query and target_name_query not in ("default", "new", "none"):
+        target_existing_page = None
+        # Check if user explicitly asked to append to an existing page by name
+        if not is_explicit_new and target_name_query and target_name_query not in ("default",):
             for r in page_results:
+                if r.get("archived") or r.get("in_trash"):
+                    continue
                 title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
-                p_title = "".join([t.get("plain_text", "") for t in title_arr])
-                if target_name_query in p_title.lower() or ("note" in target_name_query and "note" in p_title.lower()):
+                p_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                if not p_title:
+                    continue
+                if target_name_query in p_title.lower() or p_title.lower() in target_name_query:
                     target_existing_page = r
                     break
 
-        # If user did NOT specify where, check if a default Notes page exists to append a new section
+        # If user did NOT specify where, check ONLY for a dedicated PeculiarAI scratchpad page
+        # NEVER hijack user's personal pages (like DSA NOTES)!
         if not target_existing_page and not target_section:
             for r in page_results:
+                if r.get("archived") or r.get("in_trash"):
+                    continue
                 title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
-                p_title = "".join([t.get("plain_text", "") for t in title_arr])
-                if any(w in p_title.lower() for w in ("note", "notes", "peculiar", "scratchpad")):
+                p_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                if any(w in p_title.lower() for w in ("peculiarai notes", "peculiar notes", "scratchpad")):
                     target_existing_page = r
                     break
 
-        # If an existing page was found, append a new section with divider + heading + blocks
+        # If an existing page was found, append a new section
         if target_existing_page:
             p_id = target_existing_page.get("id")
             title_arr = target_existing_page.get("properties", {}).get("title", {}).get("title", []) or target_existing_page.get("properties", {}).get("Name", {}).get("title", [])
             existing_title = "".join([t.get("plain_text", "") for t in title_arr]) or "Notes"
 
-            append_payload = {
-                "children": [
-                    {"object": "block", "type": "divider", "divider": {}},
-                    {
-                        "object": "block",
-                        "type": "heading_2",
-                        "heading_2": {"rich_text": [{"type": "text", "text": {"content": clean_title[:200]}}]}
-                    },
-                    *parsed_blocks
-                ]
-            }
-            append_res = await client.patch(f"https://api.notion.com/v1/blocks/{p_id}/children", headers=headers, json=append_payload)
+            all_append_blocks = [
+                {"object": "block", "type": "divider", "divider": {}},
+                {
+                    "object": "block",
+                    "type": "heading_2",
+                    "heading_2": {"rich_text": text_to_notion_rich_text(clean_title, default_bold=True)}
+                },
+                *parsed_blocks
+            ]
+
+            first_batch = all_append_blocks[:100]
+            append_res = await client.patch(
+                f"https://api.notion.com/v1/blocks/{p_id}/children",
+                headers=headers,
+                json={"children": first_batch}
+            )
+
             if append_res.status_code in (200, 201):
+                # Append subsequent batches if content > 100 blocks
+                for idx in range(100, len(all_append_blocks), 100):
+                    nxt_batch = all_append_blocks[idx:idx+100]
+                    await client.patch(
+                        f"https://api.notion.com/v1/blocks/{p_id}/children",
+                        headers=headers,
+                        json={"children": nxt_batch}
+                    )
                 p_url = target_existing_page.get("url") or f"https://notion.so/{p_id.replace('-', '')}"
                 return True, f"Notes successfully added under section '{clean_title}' in your Notion page '{existing_title}'!", p_url
 
-        # Otherwise, create a new page in the workspace
+        # Otherwise, create a brand-new page
+        first_page_blocks = parsed_blocks[:100]
+
+        # 1. First attempt: Create as top-level workspace page
+        if not parent_id:
+            top_level_payload = {
+                "parent": {"workspace": True},
+                "properties": {
+                    "title": [{"text": {"content": clean_title[:200]}}]
+                },
+                "children": first_page_blocks
+            }
+            create_res = await client.post("https://api.notion.com/v1/pages", headers=headers, json=top_level_payload)
+            if create_res.status_code in (200, 201):
+                created_data = create_res.json()
+                page_id = created_data.get("id")
+                page_url = created_data.get("url") or f"https://notion.so/{page_id.replace('-', '')}"
+                # Append remaining blocks if total > 100
+                for idx in range(100, len(parsed_blocks), 100):
+                    nxt_batch = parsed_blocks[idx:idx+100]
+                    await client.patch(
+                        f"https://api.notion.com/v1/blocks/{page_id}/children",
+                        headers=headers,
+                        json={"children": nxt_batch}
+                    )
+                return True, f"New Notion page '{clean_title}' successfully created with formatted notes!", page_url
+
+        # 2. Fallback: Nest under explicit parent_id, or first accessible parent
         target_parent = None
         target_type = None
 
@@ -219,14 +430,10 @@ async def create_notion_page(
             target_type = "page_id"
         else:
             for r in page_results:
-                if r.get("parent", {}).get("type") in ("workspace", "page_id"):
+                if not r.get("archived") and not r.get("in_trash"):
                     target_parent = r.get("id")
                     target_type = "page_id"
                     break
-
-            if not target_parent and page_results:
-                target_parent = page_results[0].get("id")
-                target_type = "page_id"
 
             if not target_parent:
                 # Check accessible databases
@@ -237,8 +444,7 @@ async def create_notion_page(
                 )
                 db_results = db_res.json().get("results", []) if db_res.status_code == 200 else []
                 for d in db_results:
-                    d_title = "".join([t.get("plain_text", "") for t in d.get("title", [])])
-                    if d_title.lower() not in ("people", "members", "users", "directory"):
+                    if not d.get("archived") and not d.get("in_trash"):
                         target_parent = d.get("id")
                         target_type = "database_id"
                         break
@@ -254,7 +460,7 @@ async def create_notion_page(
                         "title": [{"text": {"content": clean_title[:200]}}]
                     }
                 },
-                "children": parsed_blocks
+                "children": first_page_blocks
             }
         else:
             payload = {
@@ -262,13 +468,21 @@ async def create_notion_page(
                 "properties": {
                     "title": [{"text": {"content": clean_title[:200]}}]
                 },
-                "children": parsed_blocks
+                "children": first_page_blocks
             }
 
         create_res = await client.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
         if create_res.status_code in (200, 201):
             created_data = create_res.json()
-            page_url = created_data.get("url")
+            page_id = created_data.get("id")
+            page_url = created_data.get("url") or f"https://notion.so/{page_id.replace('-', '')}"
+            for idx in range(100, len(parsed_blocks), 100):
+                nxt_batch = parsed_blocks[idx:idx+100]
+                await client.patch(
+                    f"https://api.notion.com/v1/blocks/{page_id}/children",
+                    headers=headers,
+                    json={"children": nxt_batch}
+                )
             return True, f"New Notion page '{clean_title}' successfully created with formatted notes!", page_url
         else:
             err_detail = create_res.text
@@ -284,7 +498,11 @@ create_or_append_notion_note = create_notion_page
 
 
 async def list_notion_pages(token: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Lists or searches pages and notes in the user's Notion workspace."""
+    """
+    Lists or searches active pages in the user's Notion workspace.
+    Filters out archived pages, trash pages, and internal database rows so only
+    true top-level pages visible in the user's sidebar are returned.
+    """
     clean_token = (token or "").strip()
     if not clean_token:
         clean_token = os.getenv("NOTION_API_KEY", "").strip()
@@ -298,7 +516,7 @@ async def list_notion_pages(token: str, query: Optional[str] = None) -> List[Dic
     }
     payload: Dict[str, Any] = {
         "filter": {"value": "page", "property": "object"},
-        "page_size": 25
+        "page_size": 50
     }
     if query:
         payload["query"] = str(query).strip()
@@ -311,11 +529,23 @@ async def list_notion_pages(token: str, query: Optional[str] = None) -> List[Dic
             data = res.json()
             results = []
             for item in data.get("results", []):
+                # Filter out archived and trash items
+                if item.get("archived") or item.get("in_trash"):
+                    continue
+
+                # Filter out internal database rows (e.g. parent.type == 'database_id')
+                parent_type = item.get("parent", {}).get("type")
+                if parent_type == "database_id":
+                    continue
+
                 title_arr = (
                     item.get("properties", {}).get("title", {}).get("title", []) or
                     item.get("properties", {}).get("Name", {}).get("title", [])
                 )
-                title = "".join([t.get("plain_text", "") for t in title_arr]).strip() or "Untitled"
+                title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                if not title or title.lower() == "untitled":
+                    continue
+
                 page_id = item.get("id", "")
                 page_url = item.get("url") or f"https://notion.so/{page_id.replace('-', '')}"
                 results.append({
