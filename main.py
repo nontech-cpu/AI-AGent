@@ -4176,6 +4176,31 @@ async def github_oauth_callback(request: Request):
         return _github_callback_page("GitHub connection failed", str(exc), success=False, bot_username=bot_user)
 
 
+@app.get("/auth/github/start")
+@app.get("/github/start")
+async def github_oauth_start(request: Request):
+    """Initiates 1-click GitHub OAuth via direct browser GET redirect."""
+    from github_auth import is_github_oauth_configured, build_github_auth_url
+    chat_id_raw = request.query_params.get("chat_id")
+    source = request.query_params.get("source", "tg")
+    return_url = request.query_params.get("return_url")
+
+    if not chat_id_raw or not chat_id_raw.isdigit():
+        raise HTTPException(status_code=400, detail="Valid chat_id query parameter is required.")
+
+    if not is_github_oauth_configured():
+        raise HTTPException(status_code=503, detail="GitHub OAuth is not configured on this server.")
+
+    chat_id = int(chat_id_raw)
+    ensure_user(chat_id)
+    try:
+        auth_url = build_github_auth_url(chat_id, source=source, return_url=return_url)
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=auth_url, status_code=307)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/web/github/start")
 async def web_github_start(request: Request):
     """Initiates 1-click GitHub OAuth for a web session."""

@@ -116,7 +116,7 @@ def verify_state_payload(state: str) -> dict:
 
 def build_github_auth_url(user_id: int, source: str = "tg", return_url: Optional[str] = None) -> str:
     """Generate the GitHub 1-click authorization URL requesting repo write permissions."""
-    client_id = GITHUB_CLIENT_ID or os.getenv("GITHUB_CLIENT_ID", "").strip()
+    client_id = os.getenv("GITHUB_CLIENT_ID", "").strip() or GITHUB_CLIENT_ID
     if not client_id:
         raise RuntimeError("GITHUB_CLIENT_ID is not configured in .env.")
 
@@ -132,8 +132,8 @@ def build_github_auth_url(user_id: int, source: str = "tg", return_url: Optional
 
 async def exchange_github_code(code: str) -> Dict[str, Any]:
     """Exchanges GitHub authorization code for access token."""
-    client_id = GITHUB_CLIENT_ID or os.getenv("GITHUB_CLIENT_ID", "").strip()
-    client_secret = GITHUB_CLIENT_SECRET or os.getenv("GITHUB_CLIENT_SECRET", "").strip()
+    client_id = os.getenv("GITHUB_CLIENT_ID", "").strip() or GITHUB_CLIENT_ID
+    client_secret = os.getenv("GITHUB_CLIENT_SECRET", "").strip() or GITHUB_CLIENT_SECRET
 
     if not client_id or not client_secret:
         raise RuntimeError("GitHub OAuth Client ID or Secret missing.")
