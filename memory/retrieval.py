@@ -61,8 +61,13 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             ent["commitments"] = ent_commitments
             matched_entities.append(ent)
 
-    # 2. Hybrid search for relevant memories
-    relevant_mems = search_memories_hybrid(user_id, user_text, limit=3)
+    # 2. Hybrid search for relevant memories (only for informational queries, skipping for simple imperatives)
+    relevant_mems = []
+    if re.search(r"\b(search|yaad|dhundo|kya|batao|pata|fact|preference|info|ticket|booking|flight|hotel)\b", user_text, re.I):
+        try:
+            relevant_mems = search_memories_hybrid(user_id, user_text, limit=3)
+        except Exception:
+            relevant_mems = []
 
     # 3. User facts
     facts = get_user_semantic_facts(user_id)[:3]

@@ -7,6 +7,7 @@ import os
 import json
 import re
 import asyncio
+import time
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, Optional
 from sqlalchemy import text
@@ -112,47 +113,79 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
     now_ist = datetime.now(IST)
     weekday = now_ist.strftime("%A")
     now_ist_str = now_ist.strftime("%I:%M %p, %d %B %Y")
-
-    # 1. User profile details
-    user_name = "Nirav"
     lang_style = "Hinglish (natural Roman Hindi/English mix)"
-    try:
-        with db.engine.begin() as conn:
-            row = conn.execute(
-                text("SELECT first_name, username, persona FROM users WHERE telegram_chat_id = :cid"),
-                {"cid": chat_id}
-            ).fetchone()
-            if row and (row[0] or row[1]):
-                user_name = row[0] or f"@{row[1]}"
-    except Exception as exc:
-        print("User profile fetch in prompt builder error:", repr(exc))
 
-    # 2. Async lookups in parallel (Google status & unified schedules)
-    async def fetch_google():
+    # In-memory user metadata cache (60s TTL) to eliminate heavy remote DB round-trips
+    global _USER_META_CACHE
+    if "_USER_META_CACHE" not in globals():
+        _USER_META_CACHE = {}
+
+    cached_meta = _USER_META_CACHE.get(chat_id)
+    now_ts = time.time()
+    if cached_meta and (now_ts - cached_meta["ts"] < 60.0):
+        user_name = cached_meta["user_name"]
+        connected_integrations_str = cached_meta["integrations_str"]
+        rules_str = cached_meta["rules_str"]
+    else:
+        user_name = "Nirav"
+        google_str = "Google: not connected"
+        gh_str = "GitHub: not connected"
+        notion_str = "Notion: not connected"
+        rules_str = "None defined"
         try:
-            from db import get_google_token
             with db.engine.connect() as conn:
-                row = conn.execute(text("SELECT id FROM users WHERE telegram_chat_id = :c"), {"c": chat_id}).first()
-            if not row:
-                return False, None
-            token = get_google_token(int(row[0]))
-            if token and token.get("refresh_token_enc"):
-                return True, token.get("email") or "Active"
-            return False, None
-        except Exception:
-            return False, None
+                u_row = conn.execute(
+                    text("""
+                        SELECT u.id, u.first_name, u.username,
+                               gt.email as google_email, gt.refresh_token_enc
+                        FROM users u
+                        LEFT JOIN google_tokens gt ON gt.user_id = u.id
+                        WHERE u.telegram_chat_id = :cid
+                    """),
+                    {"cid": chat_id}
+                ).first()
 
-    async def fetch_sched(d):
+                if u_row:
+                    uid = u_row[0]
+                    user_name = u_row[1] or (f"@{u_row[2]}" if u_row[2] else "User")
+                    if u_row[3] and u_row[4]:
+                        google_str = f"Google: connected ({u_row[3]})"
+
+                    # Integrations
+                    summary = db.get_user_integrations_summary(chat_id)
+                    if summary.get("github", {}).get("connected"):
+                        gh_str = "GitHub: connected"
+                    if summary.get("notion", {}).get("connected"):
+                        notion_str = "Notion: connected"
+
+                    # Rules
+                    try:
+                        r_rows = conn.execute(
+                            text("SELECT rule_text FROM user_rules WHERE user_id = :uid AND is_active = true"),
+                            {"uid": uid}
+                        ).fetchall()
+                        if r_rows:
+                            rules_str = "; ".join([r[0] for r in r_rows])
+                    except Exception:
+                        pass
+        except Exception as exc:
+            print("Prompt user meta fetch error:", repr(exc))
+
+        connected_integrations_str = f"{google_str} | {gh_str} | {notion_str}"
+        _USER_META_CACHE[chat_id] = {
+            "ts": now_ts,
+            "user_name": user_name,
+            "integrations_str": connected_integrations_str,
+            "rules_str": rules_str
+        }
+
+    # 2. Today's and Tomorrow's Reminders (Direct DB lookup - fast)
+    today_d = now_ist.date()
+    tomorrow_d = today_d + timedelta(days=1)
+
+    def fetch_day_rems(d):
         try:
-            from schedule.intervals import get_unified_daily_schedule
-            daily = await get_unified_daily_schedule(chat_id, d)
-            if daily:
-                return daily
-        except Exception:
-            pass
-        try:
-            from main import items_for_date
-            raw_rems = items_for_date(chat_id, d)
+            raw_rems = db.items_for_date(chat_id, d)
             rems = []
             for r in raw_rems:
                 if isinstance(r, dict):
@@ -166,46 +199,10 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
                     })
             return {"reminders": rems}
         except Exception:
-            return {}
+            return {"reminders": []}
 
-    today_d = now_ist.date()
-    tomorrow_d = today_d + timedelta(days=1)
-
-    (is_g, g_row), today_sched, tomorrow_sched = await asyncio.gather(
-        fetch_google(),
-        fetch_sched(today_d),
-        fetch_sched(tomorrow_d)
-    )
-
-    integrations_parts = []
-    if is_g and g_row:
-        email = g_row.get("google_email", "Active") if isinstance(g_row, dict) else str(g_row)
-        integrations_parts.append(f"Google: connected ({email})")
-    else:
-        integrations_parts.append("Google: not connected")
-
-    try:
-        summary = db.get_user_integrations_summary(chat_id)
-        gh_row = db.get_user_integration(chat_id, "github")
-        gh_user = None
-        if gh_row:
-            try:
-                gh_user = json.loads(gh_row.get("config_data") or "{}").get("username")
-            except Exception:
-                pass
-        if summary.get("github", {}).get("connected") or gh_user:
-            integrations_parts.append(f"GitHub: connected ({'@' + gh_user if gh_user else 'Active'})")
-        else:
-            integrations_parts.append("GitHub: not connected")
-
-        if summary.get("notion", {}).get("connected"):
-            integrations_parts.append("Notion: connected")
-        else:
-            integrations_parts.append("Notion: not connected")
-    except Exception as exc:
-        print("Integrations summary in prompt builder error:", repr(exc))
-
-    connected_integrations_str = " | ".join(integrations_parts) if integrations_parts else "None connected"
+    today_sched = fetch_day_rems(today_d)
+    tomorrow_sched = fetch_day_rems(tomorrow_d)
 
     # 3. Pending Actions
     pending_str = "None"
@@ -217,23 +214,19 @@ async def build_runtime_system_prompt(chat_id: int, user_text: str, custom_syste
     except Exception:
         pass
 
-    # 4. User Rules & Preferences
-    rules_str = "None defined"
-    try:
-        rules = db.get_user_rules(chat_id)
-        active_rules = [r["rule"] for r in rules if r.get("active")]
-        if active_rules:
-            rules_str = "; ".join(active_rules)
-    except Exception:
-        pass
+    # 4. Context Memory Block (fast path: only run full search if query needs info)
+    memory_block = "No specific entity/promise retrieved for this turn."
+    is_info_query = bool(re.search(r"\b(kya|batao|kaun|who|detail|promise|commitment|bhejna|kisko|ticket|flight|search|yaad)\b", user_text, re.I))
+    if is_info_query or any(k in user_text.lower() for k in ("annaya", "ananya", "devender", "rahul")):
+        try:
+            from memory.retrieval import assemble_memory_context
+            mem_ctx = assemble_memory_context(chat_id, user_text)
+            memory_block = mem_ctx.get("formatted_block") or memory_block
+        except Exception as exc:
+            print("Memory retrieval in prompt error:", repr(exc))
 
-    # 5. Conversation Summary (older turns)
     conv_summary = "Recent conversation active in chat dialogue."
 
-    # 6. Retrieved Memory Block
-    from memory.retrieval import assemble_memory_context
-    mem_ctx = assemble_memory_context(chat_id, user_text)
-    memory_block = mem_ctx.get("formatted_block") or "No specific entity/promise retrieved for this turn."
 
     def _format_rem_item(r):
         if isinstance(r, dict):

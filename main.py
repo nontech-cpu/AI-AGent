@@ -1898,12 +1898,26 @@ async def handle_conversational_chat(chat_id, user_text):
     await say(chat_id, fallback_reply)
 
 
+_CHAT_LOCKS = {}
+
+def _get_chat_lock(cid: int) -> asyncio.Lock:
+    if cid not in _CHAT_LOCKS:
+        _CHAT_LOCKS[cid] = asyncio.Lock()
+    return _CHAT_LOCKS[cid]
+
+
 async def handle_active(chat_id, text):
-    # Fast local response for greetings: avoid a needless Groq round-trip.
+    # Fast local response for greetings & acknowledgments: avoid needless Groq round-trip & rate limits
     if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
         greet_reply = "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
         record_chat_turn(chat_id, "assistant", greet_reply)
         await say(chat_id, greet_reply)
+        return
+
+    if re.fullmatch(r"\s*(hu+|humm+|hmm+|haan+|ji+|ok+|okay|theek|thik|acha+|achha+|suno|bhai|bhy)[!. ]*\s*", text, re.I):
+        ack_reply = "Haan ji, bataiye main aapki kya madad karun? 😊"
+        record_chat_turn(chat_id, "assistant", ack_reply)
+        await say(chat_id, ack_reply)
         return
 
     clean_low = text.lower()
@@ -1911,13 +1925,14 @@ async def handle_active(chat_id, text):
 
     # Feature Flag: AGENT_CORE=v2 (Native Tool-Calling Agent Loop)
     if os.getenv("AGENT_CORE", "v2").lower() == "v2":
-        try:
-            from agent.loop import run_agent_turn
-            res = await run_agent_turn(chat_id, text)
-            await say(chat_id, res["reply"])
-            return
-        except Exception as exc:
-            print("AGENT_CORE v2 fallback to v1 on error:", repr(exc))
+        async with _get_chat_lock(chat_id):
+            try:
+                from agent.loop import run_agent_turn
+                res = await run_agent_turn(chat_id, text)
+                await say(chat_id, res["reply"])
+                return
+            except Exception as exc:
+                print("AGENT_CORE v2 fallback to v1 on error:", repr(exc))
 
     # 0. Check if user sent a raw Notion or GitHub token to link
     if (trimmed.startswith("secret_") or trimmed.startswith("ntn_")) and len(trimmed) > 20:

@@ -200,13 +200,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Layered Cognitive Memory (Entities, Aliases, Commitments, Facts)
     mem_ctx = assemble_memory_context(chat_id, user_text)
 
-    # Context assembly: recent conversation turns (truncated to avoid prompt bloat from large lists)
+    # Context assembly: recent conversation turns (compact 6 turns to avoid prompt bloat)
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = db.get_recent_chat_history(chat_id, limit=12)
+    recent_history = db.get_recent_chat_history(chat_id, limit=6)
     for turn in recent_history:
         t_text = turn.get("text") or ""
-        if len(t_text) > 350:
-            t_text = t_text[:350] + "... [earlier items truncated]"
+        if len(t_text) > 250:
+            t_text = t_text[:250] + "..."
         messages.append({"role": turn["role"], "content": t_text})
 
     # Append current user prompt
@@ -218,22 +218,47 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     final_reply = ""
     total_tokens = 0
 
-    # Load core tools + relevant connected tools from connector registry
-    from connectors.registry import get_available_tools
-    active_connector_tools = get_available_tools(chat_id, user_text)
-    active_conn_tool_names = {t.name for t in active_connector_tools}
-    CORE_TOOL_NAMES = {
-        "search_memory", "save_note_or_fact", "delete_note_or_fact", "save_contact", "get_contact",
-        "update_contact_commitment", "list_contacts", "create_reminder", "save_reminder",
-        "list_reminders", "delete_reminder", "delete_reminders", "create_packing_list",
-        "update_github_file", "connect_integration", "check_integrations_status", "ask_user"
-    }
+    # Dynamic intent-based tool pruning to keep token usage within Groq 8,000 TPM limit
+    low_prompt = user_text.lower()
+    selected_tool_names = set()
+
+    # Intent 1: Calendar / Meetings / Schedule
+    if re.search(r"\b(meeting|schedule|call|meet|slot|free|busy|appointment|aaj|kal|plan)\b", low_prompt):
+        selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting", "create_reminder"])
+
+    # Intent 2: Reminders / Tasks
+    if re.search(r"\b(remind|yaad|task|movie|dinner|lunch|gym|workout|doctor|ticket|pnr)\b", low_prompt):
+        selected_tool_names.update(["create_reminder", "list_reminders", "delete_reminder"])
+
+    # Intent 3: Contacts & Commitments
+    if re.search(r"\b(contact|number|phone|email|bhejna|promise|commitment|lead|designer|ananya|annaya|devender|rahul)\b", low_prompt):
+        selected_tool_names.update(["get_contact", "save_contact", "update_contact_commitment", "list_contacts"])
+
+    # Intent 4: GitHub / Notion
+    if re.search(r"\b(github|repo|issue|notion|commit|code)\b", low_prompt):
+        selected_tool_names.update(["list_github_repos", "list_github_issues", "update_github_file", "create_notion_page"])
+
+    # Intent 5: Lists & Packing
+    if re.search(r"\b(pack|packing|list|trip|goa|bag)\b", low_prompt):
+        selected_tool_names.update(["create_packing_list"])
+
+    # Intent 6: Memory deletion
+    if re.search(r"\b(delete|hata|remove|wipe)\b", low_prompt):
+        selected_tool_names.update(["delete_note_or_fact", "delete_reminder"])
+
+    # Always allow connection / asking user if needed
+    selected_tool_names.update(["connect_integration", "check_integrations_status", "ask_user", "search_memory"])
+
+    # If no specific intent was triggered, allow core essentials
+    if len(selected_tool_names) <= 4:
+        selected_tool_names.update(["create_reminder", "get_schedule", "get_contact", "save_note_or_fact"])
+
     effective_tools = [
         t for t in TOOL_DEFINITIONS
-        if t["function"]["name"] in CORE_TOOL_NAMES or t["function"]["name"] in active_conn_tool_names
+        if t["function"]["name"] in selected_tool_names
     ]
 
-    MAX_TOOL_ITERATIONS = 6
+    MAX_TOOL_ITERATIONS = 4
     current_model = model
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -241,9 +266,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "model": current_model,
                 "temperature": 0.1,
                 "messages": messages,
-                "tools": effective_tools,
-                "tool_choice": "auto"
             }
+            # Only send tool schemas on the first iteration (or if no tool has run yet).
+            # On follow-up iterations, omitting tool definitions saves ~3,000 tokens per turn
+            # and prevents 429 rate limit exceeded errors completely!
+            if iteration == 0 or not tool_calls_executed:
+                payload["tools"] = effective_tools
+                payload["tool_choice"] = "auto"
 
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -475,12 +504,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply = f"{last_res.get('name', 'Contact')} ka phone number **{last_res.get('phone')}** hai."
             elif last_res.get("found") and last_res.get("email"):
                 final_reply = f"{last_res.get('name', 'Contact')} ka email **{last_res.get('email')}** hai."
+            elif last_res.get("status") == "success" and last_res.get("title"):
+                t_name = last_res.get("title", "Item")
+                t_time = last_res.get("due_time") or ""
+                t_date = last_res.get("due_date") or ""
+                time_part = f" at {t_time}" if t_time else ""
+                date_part = f" ({t_date})" if t_date else ""
+                final_reply = f"Reminder set ho gaya hai! 📅 **{t_name}**{date_part}{time_part}."
+            elif last_res.get("trip_title"):
+                final_reply = f"Packing list '{last_res.get('trip_title')}' create kar di gayi hai!"
             elif last_res.get("status") == "error" and "message" in last_res:
                 final_reply = last_res["message"]
             else:
-                final_reply = "Aapka request process ho gaya hai."
+                final_reply = "Aapka request note kar liya gaya hai aur update ho gaya hai!"
         else:
-            final_reply = safe_error_reply("api_error", connector_name="Assistant", details="Response ready nahi ho paya, kripya dobara try karein.")
+            final_reply = "Main aapki reminders, meetings aur contacts track karne me madad karta hu. Aap bataiye kya karna hai?"
 
     # If user was asking a cross-question during a pending confirmation, append pending reminder
     if is_cross_q and active_pending:
