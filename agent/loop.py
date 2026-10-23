@@ -312,6 +312,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Always allow connection / asking user if needed
     selected_tool_names.update(["connect_integration", "check_integrations_status", "ask_user", "search_memory"])
+    if is_action_prompt:
+        selected_tool_names.discard("connect_integration")
 
     # If no specific intent was triggered, allow core essentials
     if len(selected_tool_names) <= 4:
