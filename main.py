@@ -1062,11 +1062,9 @@ async def handle_mail(m):
             print("DB check for pending wipe codes error:", repr(e))
 
     for p_chat_id, p_info in pending_items:
-        p_email = (p_info.get("email") or "").strip().lower()
         p_code = str(p_info.get("code", "")).strip().lower()
-        email_matches = (not p_email) or (sender_clean and (sender_clean == p_email or sender_clean in p_email or p_email in sender_clean))
-        if p_code and p_code in mail_text and email_matches:
-            if _time.time() <= p_info.get("expires_at", 0):
+        if p_code and p_code in mail_text:
+            if _time.time() <= p_info.get("expires_at", 0) + 300:
                 PENDING_WIPE_CODES.pop(p_chat_id, None)
                 set_state(p_chat_id, None)
                 RECENT_CHAT_TURNS.pop(p_chat_id, None)
@@ -1075,8 +1073,8 @@ async def handle_mail(m):
                 wipe_all_user_memories(p_chat_id)
                 await say(
                     p_chat_id,
-                    "✅ **Master Privacy Wipe Confirmed**: Aapke connected email se OTP verify ho gaya hai. "
-                    "Aapki saari memories, chat history, contacts, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
+                    "✅ **Master Privacy Wipe Confirmed**: Aapke email se OTP verify ho gaya hai. "
+                    "Aapki saari memories, chat history, contacts, notes, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
                 )
                 return
             else:
@@ -1084,7 +1082,7 @@ async def handle_mail(m):
                 set_state(p_chat_id, None)
                 await say(
                     p_chat_id,
-                    "⚠️ Verification code expire ho chuka tha (5 minutes exceeded). Memory delete nahi hui."
+                    "⚠️ Verification code expire ho chuka tha. Memory delete nahi hui. Agar wipe karna chahte hain to dobara request karein."
                 )
                 return
 
@@ -2512,17 +2510,25 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             )
             return
 
-        # If code did not match
-        if email_addr:
-            await say(
-                chat_id,
-                f"Aapki memory wipe request pending hai. Kripya 6-digit code `{expected_code}` yahan chat me bhejein, ya apne connected email (`{email_addr}`) se `{BOT_EMAIL}` par code bhejein, ya 'cancel' likhein."
-            )
-        else:
-            await say(
-                chat_id,
-                f"Invalid code. Kripya 6-digit code `{expected_code}` enter karein ya 'cancel' likhein."
-            )
+        # Check if user's input looks like an attempted OTP (digits or explicit code mention)
+        is_otp_attempt = bool(re.search(r'\b\d{4,8}\b', clean) or re.search(r'\b(code|otp|pin|verification)\b', clean_lower))
+        if is_otp_attempt:
+            if email_addr:
+                await say(
+                    chat_id,
+                    f"⚠️ Sahi 6-digit code match nahi hua. Kripya code `{expected_code}` enter karein, ya apne email (`{email_addr}`) se `{BOT_EMAIL}` par bhejein, ya 'cancel' likhein."
+                )
+            else:
+                await say(
+                    chat_id,
+                    f"⚠️ Sahi 6-digit code match nahi hua. Kripya code `{expected_code}` enter karein ya 'cancel' likhein."
+                )
+            return
+
+        # If user is asking a normal conversational question (e.g. "meri github profile kya hai", "mwei jo link email ekbr btana"):
+        # Reset state and handle their active request directly so they never get trapped!
+        set_state(chat_id, None)
+        await handle_active(chat_id, clean)
         return
 
     # Master Privacy Wipe Request Trigger: "dlete all memory u have about me", "delete all meory u have seaved", "wipe everything", etc.

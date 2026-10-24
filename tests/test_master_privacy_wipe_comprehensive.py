@@ -162,3 +162,33 @@ async def test_agent_tool_request_master_privacy_wipe():
     assert res.get("status") == "confirmation_required"
     assert "Security & Privacy Warning" in res.get("message", "")
     assert db.get_state(chat_id)[0] == "confirm_master_wipe"
+
+
+@pytest.mark.asyncio
+async def test_cross_question_does_not_block_user_during_wipe_pending():
+    """While wipe is pending, asking a normal question should not get locked in an infinite repetitive error loop."""
+    chat_id = 998877106
+    db.ensure_user(chat_id)
+    db.give_consent(chat_id)
+
+    sent_messages = []
+    async def mock_say(cid, text):
+        sent_messages.append((cid, text))
+
+    with patch("main.say", side_effect=mock_say), \
+         patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "user@example.com")):
+
+        await handle_user_text(chat_id, "delete all my memory")
+        await handle_user_text(chat_id, "yes")
+        assert db.get_state(chat_id)[0] == "awaiting_wipe_email_verification"
+
+        # User asks a normal question instead of entering code
+        sent_messages.clear()
+        with patch("main.handle_active", new_callable=AsyncMock) as mock_active:
+            await handle_user_text(chat_id, "meri github profile kya hai")
+            # Must NOT output repetitive canned rejection message
+            assert not any("Aapki memory wipe request pending hai" in msg[1] for msg in sent_messages)
+            assert not any("Invalid code" in msg[1] for msg in sent_messages)
+            # Must have routed to normal conversational handling
+            mock_active.assert_called_once()
+
