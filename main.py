@@ -4129,6 +4129,36 @@ async def google_callback(request: Request):
             except Exception as exc:
                 print("Error recording device session in google callback:", repr(exc))
 
+        # Notify user on Telegram if initiated from TG
+        tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if tg_token and not is_web and chat_id:
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": (
+                                f"✅ **Google account successfully connect ho gaya!** 🌐\n\n"
+                                f"📧 **Connected Email**: `{email}`\n"
+                                f"📅 Google Calendar & Meet: Active\n"
+                                f"📁 Google Drive: Active\n"
+                                f"✉️ Gmail & Autonomous Intelligence: Active\n\n"
+                                f"Ab aap mujhe bol sakte hain jaise: *'meri meetings check karo'*, *'kal 4 bje meeting schedule kar do'*, ya *'Drive par file save kar do'*."
+                            ),
+                            "parse_mode": "Markdown"
+                        }
+                    )
+            except Exception as e:
+                print("Failed to send Telegram Google notification:", repr(e))
+
+        # Invalidate prompt cache so immediate next messages know Google is connected
+        try:
+            from agent.prompt import _USER_META_CACHE
+            _USER_META_CACHE.pop(chat_id, None)
+        except Exception:
+            pass
+
         if is_web:
             target_url = _safe_web_redirect(return_url, "google_status=connected")
             return _google_callback_page(

@@ -1354,6 +1354,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             val = (args.value or "connect").strip()
 
             if svc in ("google", "gmail", "calendar", "google_calendar", "drive", "google_drive"):
+                from main import get_valid_google_connection_by_chat_id
+                is_g_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
+                if is_g_conn:
+                    return {
+                        "status": "success",
+                        "service": "google",
+                        "connected": True,
+                        "email": g_email,
+                        "message": (
+                            f"✅ Aapka Google account **pehle se connected hai** ({g_email})!\n\n"
+                            f"Google Calendar, Meet, Gmail aur Drive active hain. Aapko dobara connect karne ki zaroorat nahi hai."
+                        )
+                    }
                 from google_auth import build_auth_url
                 try:
                     auth_url = build_auth_url(int(chat_id), source="tg")
