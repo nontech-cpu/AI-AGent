@@ -97,12 +97,24 @@ async def _chat_json(system, user_text):
             if r.status_code == 200:
                 raw_content = r.json()["choices"][0]["message"]["content"]
                 return json.loads(raw_content)
-            elif r.status_code in (429, 500, 502, 503, 504) and attempt == 0:
-                await asyncio.sleep(1.0)
-                continue
-            else:
+            elif r.status_code == 429:
+                for fb in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                    if payload["model"] != fb:
+                        payload["model"] = fb
+                        async with httpx.AsyncClient(timeout=15.0) as client_fb:
+                            r_fb = await client_fb.post(
+                                "https://api.groq.com/openai/v1/chat/completions",
+                                headers={"Authorization": f"Bearer {groq_key}"},
+                                json=payload,
+                            )
+                        if r_fb.status_code == 200:
+                            raw_content = r_fb.json()["choices"][0]["message"]["content"]
+                            return json.loads(raw_content)
                 print("GROQ ERROR:", r.status_code, r.text[:300])
                 r.raise_for_status()
+            elif r.status_code in (500, 502, 503, 504) and attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
         except (httpx.TimeoutException, httpx.NetworkError) as net_err:
             last_err = net_err
             if attempt == 0:
