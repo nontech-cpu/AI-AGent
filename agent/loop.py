@@ -282,9 +282,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     if not is_code_modify and len(words) <= 12:
         # Regex recognizing connect/connected with common typos (conncetdd, conncted, connectd, etc.)
-        conn_kw_re = r"\b(conn\w*|link\w*|jod\w*|auth\w*|oauth\w*|login|juda\b|judi\b)"
+        conn_kw_re = r"\b(conn\w*|conct\w*|link\w*|jod\w*|auth\w*|oauth\w*|login|juda\b|judi\b)"
 
-        has_notion = "notion" in low_prompt_raw
+        has_notion = bool(re.search(r"\b(notion|noion|noiton|notinn|notn)\b", low_prompt_raw))
         has_github = bool(re.search(r"\b(github|gh|git)\b", low_prompt_raw))
         has_google = bool(re.search(r"\b(google|gmail|calendar|drive|gmeet)\b", low_prompt_raw))
         has_general = bool(re.search(r"\b(connector|connectors|integration|integrations|all\s+accounts)\b", low_prompt_raw))
@@ -295,9 +295,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             low_prompt_raw
         ))
         if has_notion and not is_notion_content_query:
-            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|conn\w*|juda|judi|linked)\b", low_prompt_raw))
-            is_connect_intent = bool(re.search(r"\b(connect\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)\b", low_prompt_raw))
-            if is_explicit_status_check or is_connect_intent or (len(words) <= 3 and bool(re.search(r"\b(status|connect)\b", low_prompt_raw))):
+            is_explicit_status_check = bool(re.search(r"\b(is|kya|status|check|already)\b", low_prompt_raw)) and bool(re.search(r"\b(connected|conn\w*|conct\w*|juda|judi|linked)\b", low_prompt_raw))
+            is_connect_intent = bool(re.search(r"\b(connect\w*|conct\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)\b", low_prompt_raw))
+            if is_explicit_status_check or is_connect_intent or (len(words) <= 3 and bool(re.search(r"\b(status|connect|conct)\b", low_prompt_raw))):
                 tool_to_call = "connect_integration" if (is_connect_intent and not is_explicit_status_check) else "check_integrations_status"
                 res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
                 if res.get("message"):
