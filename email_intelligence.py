@@ -198,7 +198,32 @@ def _heuristic_analyze(sender: str, subject: str, body: str) -> Dict[str, Any]:
             "details": {"service": service, "otp": otp_val},
         }
 
-    # 5. Check if purely promotional
+    # 5. Attached document / PDF / ticket received
+    if "[attached document:" in combined_lower or ".pdf" in combined_lower or "ticket" in combined_lower or "slip" in combined_lower:
+        doc_name_m = re.search(r"\[attached document:\s*([^\]]+)\]", combined_lower)
+        doc_name = doc_name_m.group(1).strip() if doc_name_m else "Document.pdf"
+        if any(w in combined_lower for w in ("ticket", "train", "flight", "irctc", "pnr", "boarding", "station", "junction", "express")):
+            pnr_val = pnr_match.group(1) if pnr_match else "See Attachment"
+            return {
+                "is_important": True,
+                "category": "ticket_booking",
+                "carrier": "IRCTC / Travel" if "irctc" in combined_lower or "train" in combined_lower else "Travel Provider",
+                "pnr": pnr_val,
+                "route": "Details in ticket attachment",
+                "datetime_str": "See booking attachment",
+                "document_title": doc_name,
+                "details": {"document_title": doc_name, "subject": subject},
+            }
+        return {
+            "is_important": True,
+            "category": "document_received",
+            "document_title": doc_name,
+            "document_type": "PDF",
+            "summary": f"Document received: {doc_name}",
+            "details": {"document_title": doc_name, "subject": subject},
+        }
+
+    # 6. Check if purely promotional
     if PROMOTIONAL_REGEX.search(combined):
         return {
             "is_important": False,
@@ -427,8 +452,16 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
                     llm_result["pnr"] = pnr_match.group(1)
 
                 is_imp = bool(llm_result.get("is_important"))
-                if llm_result.get("category") == "promotional":
+                cat = str(llm_result.get("category") or "").lower()
+                if cat in ("ticket_booking", "interview", "bill_payment", "document_received", "delivery_urgent"):
+                    is_imp = True
+                elif cat == "promotional":
                     is_imp = False
+
+                if "[attached document:" in body.lower() or ".pdf" in body.lower():
+                    is_imp = True
+                    if not cat or cat == "promotional":
+                        llm_result["category"] = "document_received"
 
                 llm_result["is_important"] = is_imp
                 alert = _format_alert(llm_result) if is_imp else None

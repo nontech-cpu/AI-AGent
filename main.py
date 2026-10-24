@@ -2088,7 +2088,18 @@ def _get_chat_lock(cid: int) -> asyncio.Lock:
 
 
 async def handle_active(chat_id, text):
-    # Fast local response for greetings & acknowledgments: avoid needless Groq round-trip & rate limits
+    # Feature Flag: AGENT_CORE=v2 (Native Tool-Calling Agent Loop)
+    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
+        async with _get_chat_lock(chat_id):
+            try:
+                from agent.loop import run_agent_turn
+                res = await run_agent_turn(chat_id, text)
+                await say(chat_id, res["reply"])
+                return
+            except Exception as exc:
+                print("AGENT_CORE v2 fallback to v1 on error:", repr(exc))
+
+    # Fast local response for greetings & acknowledgments in legacy v1 mode
     if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
         greet_reply = "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
         record_chat_turn(chat_id, "assistant", greet_reply)
@@ -2103,17 +2114,6 @@ async def handle_active(chat_id, text):
 
     clean_low = text.lower()
     trimmed = text.strip()
-
-    # Feature Flag: AGENT_CORE=v2 (Native Tool-Calling Agent Loop)
-    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
-        async with _get_chat_lock(chat_id):
-            try:
-                from agent.loop import run_agent_turn
-                res = await run_agent_turn(chat_id, text)
-                await say(chat_id, res["reply"])
-                return
-            except Exception as exc:
-                print("AGENT_CORE v2 fallback to v1 on error:", repr(exc))
 
     # 0. Check if user sent a raw Notion or GitHub token to link
     if (trimmed.startswith("secret_") or trimmed.startswith("ntn_")) and len(trimmed) > 20:
