@@ -568,6 +568,76 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     }
 
 
+    # 0. Instant Follow-up Link Resolver ("link dena iska", "iska link do", "link do", "url bhejo", "link")
+    low_prompt = user_text.lower().strip()
+    is_link_query = bool(
+        re.search(r"\b(link|url)\b", low_prompt)
+        and (
+            any(w in low_prompt for w in ("iska", "uska", "ye", "yeh", "do", "dena", "dedo", "bhejo", "bhj", "bhej", "mujh", "mujhe", "kaha", "kahan", "bhai", "bhy", "share", "de", "notion", "meet"))
+            or len(low_prompt.split()) <= 4
+        )
+    )
+
+    if is_link_query:
+        from state.active_context import get_active_url, update_active_context
+        act_url_info = get_active_url(chat_id)
+        
+        # If in-memory/DB active context has the URL, return it immediately
+        if act_url_info and act_url_info.get("url"):
+            u = act_url_info["url"]
+            t = act_url_info.get("title") or "Page"
+            c = act_url_info.get("connector") or "Integration"
+            link_reply = f"Ye raha aapka {c} page '{t}' ka direct link: 🔗\n{u}"
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", link_reply)
+            return {
+                "reply": link_reply,
+                "tool_calls_executed": [],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+
+        # Otherwise, check connected Notion directly for the latest created page
+        token_row = db.get_user_integration(chat_id, "notion")
+        api_key = token_row.get("api_key") if isinstance(token_row, dict) else token_row
+        if api_key:
+            try:
+                headers = {"Authorization": f"Bearer {api_key}", "Notion-Version": "2022-06-28"}
+                async with httpx.AsyncClient(timeout=4.0) as cl:
+                    r = await cl.post(
+                        "https://api.notion.com/v1/search",
+                        headers=headers,
+                        json={"filter": {"value": "page", "property": "object"}, "page_size": 5}
+                    )
+                    if r.status_code == 200:
+                        results = r.json().get("results", [])
+                        if results:
+                            latest = results[0]
+                            u = latest.get("url")
+                            title_arr = latest.get("properties", {}).get("title", {}).get("title", []) or latest.get("properties", {}).get("Name", {}).get("title", [])
+                            t = "".join([x.get("plain_text", "") for x in title_arr]).strip() or "Notion Page"
+                            if u:
+                                link_reply = f"Ye raha aapka Notion page '{t}' ka direct link: 🔗\n{u}"
+                                update_active_context(chat_id, connector="Notion", topic=t, url=u)
+                                db.log_chat_message(chat_id, "user", user_text)
+                                db.log_chat_message(chat_id, "assistant", link_reply)
+                                return {
+                                    "reply": link_reply,
+                                    "tool_calls_executed": [],
+                                    "pending_action": None,
+                                    "is_grounded": True,
+                                    "violations": [],
+                                    "latency_ms": int((time.time() - start_ts) * 1000),
+                                    "tokens_used": 0,
+                                    "memory_context": {}
+                                }
+            except Exception as exc:
+                print("Notion search fallback error:", repr(exc))
+
     # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
     try:
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -644,7 +714,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         act_ctx = get_active_context(chat_id)
         if act_ctx:
             conn = (act_ctx.get("connector") or "").lower()
-            top = (act_ctx.get("focus_topic") or "").lower()
+            top = (act_ctx.get("topic") or act_ctx.get("focus_topic") or "").lower()
             if "github" in conn or "github" in top or "repo" in top or "issue" in top:
                 selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
             if "notion" in conn or "notion" in top:
@@ -659,10 +729,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Intent 9: Follow-up confirmation / affirmative intent for GitHub / Notion / Meeting actions
     recent_turns_text = " ".join([t.get("text", "") for t in recent_history[-4:]]).lower()
     has_recent_github = bool(re.search(r"\b(github|repo|repos|repository|readme|commit|issue|pull|pr|php-project)\b", recent_turns_text))
+    has_recent_notion = bool(re.search(r"\b(notion|notes|note|page)\b", recent_turns_text))
     is_affirmative = bool(re.search(r"\b(yes|yeah|haan|ha|han|kar do|kardo|kr do|krdo|confirm|proceed|ok|okay|kar de|karde|kr de|krde|kr bhy|kro|kr)\b", low_prompt))
 
     if has_recent_github and (is_affirmative or is_code_modify):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
+    if has_recent_notion:
+        selected_tool_names.update(["create_notion_page"])
 
     # Always allow connection / search memory (conversational questions are answered directly in chat text without ask_user dummy tool)
     selected_tool_names.update(["connect_integration", "check_integrations_status", "search_memory"])
@@ -800,13 +873,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         if c_name:
                             update_active_context(chat_id, connector="Contacts", topic=c_name)
                     elif fn_name in ("create_meeting", "check_availability", "get_schedule"):
-                        update_active_context(chat_id, connector="Google Calendar", topic="schedule")
+                        m_title = tool_result.get("title", "Meeting")
+                        m_url = tool_result.get("meet_url") or tool_result.get("hangoutLink") or ""
+                        update_active_context(chat_id, connector="Google Calendar", topic=m_title, url=m_url)
                     elif fn_name == "send_email":
                         to_email = args_dict.get("to")
                         update_active_context(chat_id, connector="Gmail", topic=f"email to {to_email}" if to_email else "email")
                     elif fn_name == "create_notion_page":
-                        n_title = args_dict.get("title", "Notion page")
-                        update_active_context(chat_id, connector="Notion", topic=n_title, objects=[n_title])
+                        n_title = tool_result.get("title") or args_dict.get("title", "Notion page")
+                        p_url = tool_result.get("url") or ""
+                        update_active_context(chat_id, connector="Notion", topic=n_title, objects=[n_title], url=p_url)
                 except Exception as ctx_err:
                     print("Active context update error:", repr(ctx_err))
 
@@ -964,13 +1040,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             else:
                 final_reply = "Bataiye, is baare me main aapki kya madad karun ya schedule me koi change karna hai?"
         else:
-            final_reply = "Main aapki reminders, meetings, code aur accounts track karne me madad karta hu. Aap bataiye kya karna hai?"
+            final_reply = "Bataiye bhai, main aapki kya madad karun? Kisi reminder, meeting schedule, ya notes ke baare me kuch update karna hai?"
 
     if "<tool_call>" in final_reply:
         final_reply = re.sub(r"<tool_call>.*?</tool_call>", "", final_reply, flags=re.DOTALL | re.IGNORECASE).strip()
         if not final_reply and tool_results_list:
             last_res = tool_results_list[-1]
             final_reply = last_res.get("message") or "Action successfully complete ho gaya!"
+
+    # Proactive URL Attachment: If any tool created a URL (Notion, Google Meet, GitHub) and final_reply forgot it, attach it!
+    for tr in tool_results_list:
+        if isinstance(tr, dict) and tr.get("url") and tr.get("url").startswith("http"):
+            tr_url = tr["url"]
+            if tr_url not in final_reply:
+                final_reply += f"\n\n🔗 **Link:** {tr_url}"
 
     # If user was asking a cross-question during a pending confirmation, append pending reminder
     if is_cross_q and active_pending:

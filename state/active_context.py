@@ -17,31 +17,71 @@ def get_active_context(chat_id: int) -> Dict[str, Any]:
         return {
             "connector": None,
             "topic": None,
+            "focus_topic": None,
             "objects": [],
+            "last_url": None,
             "updated_at": None
         }
+    if "focus_topic" not in ctx:
+        ctx["focus_topic"] = ctx.get("topic")
     return ctx
 
 def update_active_context(
     chat_id: int,
     connector: Optional[str] = None,
     topic: Optional[str] = None,
-    objects: Optional[List[str]] = None
+    objects: Optional[List[str]] = None,
+    url: Optional[str] = None
 ):
     """Updates the active focus when a tool emits results or topic changes."""
     ctx = _ACTIVE_CONTEXT_STORE.setdefault(chat_id, {
         "connector": None,
         "topic": None,
+        "focus_topic": None,
         "objects": [],
+        "last_url": None,
         "updated_at": None
     })
     if connector is not None:
         ctx["connector"] = connector
     if topic is not None:
         ctx["topic"] = topic
+        ctx["focus_topic"] = topic
     if objects is not None:
         ctx["objects"] = objects[:15]
+    if url is not None:
+        ctx["last_url"] = url
     ctx["updated_at"] = datetime.now(IST).isoformat()
+
+def get_active_url(chat_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieves the last active URL (Notion page, Meet link, GitHub file, Drive doc)."""
+    ctx = get_active_context(chat_id)
+    if ctx.get("last_url"):
+        return {
+            "url": ctx["last_url"],
+            "title": ctx.get("topic") or "Document/Page",
+            "connector": ctx.get("connector") or "Integration"
+        }
+
+    # Fallback: scan recent assistant messages in DB for created Notion / GitHub / Meet links
+    try:
+        import db, re
+        recent = db.get_recent_chat_history(chat_id, limit=8)
+        for t in reversed(recent):
+            txt = t.get("text", "")
+            # Look for explicit Markdown or plaintext URLs
+            m = re.search(r'(https?://[^\s)\]]+)', txt)
+            if m:
+                u = m.group(1).rstrip(".,;")
+                # Ignore OAuth / connect auth URLs
+                if "oauth" not in u.lower() and "authorize" not in u.lower() and "connect.html" not in u.lower():
+                    title_match = re.search(r"'(.*?)'", txt) or re.search(r'"(.*?)"', txt)
+                    t_name = title_match.group(1) if title_match else "Item"
+                    conn = "Notion" if "notion" in u.lower() else ("GitHub" if "github" in u.lower() else "Meeting/Link")
+                    return {"url": u, "title": t_name, "connector": conn}
+    except Exception:
+        pass
+    return None
 
 def clear_active_context(chat_id: int):
     """Clears context when user explicitly switches topic."""
@@ -70,6 +110,8 @@ def format_active_context(chat_id: int) -> str:
         parts.append(f"Last Connector: {ctx['connector']}")
     if ctx.get("topic"):
         parts.append(f"Focus Topic/Person: {ctx['topic']}")
+    if ctx.get("last_url"):
+        parts.append(f"Last Created URL/Link: {ctx['last_url']}")
     if ctx.get("objects"):
         obj_list = ", ".join([f"[{i+1}] {obj}" for i, obj in enumerate(ctx["objects"])])
         parts.append(f"Last Displayed Objects: {obj_list}")

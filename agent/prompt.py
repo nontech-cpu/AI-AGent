@@ -222,11 +222,25 @@ async def build_runtime_system_prompt(
     today_d = now_ist.date()
     tomorrow_d = today_d + timedelta(days=1)
 
+    # In-memory 60s cache to avoid blocking prompt generation on slow Google token/network calls
+    if not hasattr(build_runtime_system_prompt, "_sched_cache"):
+        build_runtime_system_prompt._sched_cache = {}
+    _sched_cache = build_runtime_system_prompt._sched_cache
+
     async def fetch_full_sched(d):
+        cache_key = f"{chat_id}_{d.isoformat()}"
+        cached = _sched_cache.get(cache_key)
+        now_ts = time.time()
+        if cached and (now_ts - cached["ts"]) < 60:
+            return cached["data"]
         try:
             from main import get_unified_schedule
-            return await get_unified_schedule(chat_id, d)
+            data = await asyncio.wait_for(get_unified_schedule(chat_id, d), timeout=2.5)
+            _sched_cache[cache_key] = {"data": data, "ts": now_ts}
+            return data
         except Exception:
+            if cached:
+                return cached["data"]
             return {"calendar_events": [], "reminders": [], "commitments": []}
 
     today_sched, tomorrow_sched = await asyncio.gather(
