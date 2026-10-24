@@ -192,8 +192,12 @@ def wipe_all_user_memories(chat_id: int):
         ("DELETE FROM entity_aliases WHERE entity_id IN (SELECT id FROM entities WHERE user_id = :u)", {"u": uid}),
         ("DELETE FROM entities WHERE user_id = :u", {"u": uid}),
         ("DELETE FROM user_integrations WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM google_tokens WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM email_links WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM user_device_sessions WHERE user_id = :u", {"u": uid}),
         ("DELETE FROM pending_actions WHERE chat_id = :c", {"c": chat_id}),
         ("DELETE FROM processed_user_emails WHERE chat_id = :c", {"c": chat_id}),
+        ("DELETE FROM oauth_states WHERE chat_id = :c", {"c": chat_id}),
         ("UPDATE users SET state = NULL, state_data = NULL WHERE id = :u", {"u": uid}),
     ]
 
@@ -213,6 +217,16 @@ def wipe_all_user_memories(chat_id: int):
     try:
         from agent.prompt import _USER_META_CACHE
         _USER_META_CACHE.pop(chat_id, None)
+    except Exception:
+        pass
+
+    try:
+        import sqlite3
+        v_db = os.getenv("PECULIARAI_WEB_VERIFY_DB", "peculiarai_web_verify.sqlite3")
+        if os.path.exists(v_db):
+            with sqlite3.connect(v_db) as v_conn:
+                v_conn.execute("DELETE FROM web_verifications WHERE telegram_chat_id = ?", (str(chat_id),))
+                v_conn.commit()
     except Exception:
         pass
 
