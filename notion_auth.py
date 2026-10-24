@@ -17,8 +17,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID", "").strip()
-NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET", "").strip()
+NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID", "").strip() or "403d872b-594c-812f-b76e-00379795d784"
+NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET", "").strip() or "secret_aiYGwhBhQ5fQkaaZSIfprulF3z3KlNaB0IhWgwm4lhB"
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
@@ -36,9 +36,9 @@ def is_notion_oauth_configured() -> bool:
 
 
 def clean_public_base_url(url: Optional[str] = None) -> str:
-    raw = (url or os.getenv("PUBLIC_BASE_URL", "") or PUBLIC_BASE_URL).strip()
+    raw = (url or os.getenv("RENDER_EXTERNAL_URL", "") or os.getenv("PUBLIC_BASE_URL", "") or PUBLIC_BASE_URL or "https://peculiar-ai-backend.onrender.com").strip()
     if not raw:
-        return ""
+        return "https://peculiar-ai-backend.onrender.com"
     if not raw.startswith(("http://", "https://")):
         raw = "https://" + raw
 
