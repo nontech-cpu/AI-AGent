@@ -277,6 +277,76 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         elif intent == "cross_question":
             is_cross_q = True
 
+    # 0. Instant Follow-up Link & URL Resolver (PRIORITY: Never intercept as account connection check)
+    low_prompt = user_text.lower().strip()
+    is_link_query = bool(
+        re.search(r"\b(link|url)\b", low_prompt)
+        and (
+            any(w in low_prompt for w in ("iska", "uska", "ye", "yeh", "do", "dena", "dedo", "bhejo", "bhj", "bhej", "mujh", "mujhe", "kaha", "kahan", "bhai", "bhy", "share", "de", "notion", "noitn", "noiton", "notn", "page", "meet", "chahiye"))
+            or len(low_prompt.split()) <= 4
+        )
+    )
+
+    if is_link_query:
+        from state.active_context import get_active_url, update_active_context
+        act_url_info = get_active_url(chat_id)
+        
+        # If in-memory/DB active context has the URL, return it immediately
+        if act_url_info and act_url_info.get("url"):
+            u = act_url_info["url"]
+            t = act_url_info.get("title") or "Page"
+            c = act_url_info.get("connector") or "Integration"
+            link_reply = f"Ye raha aapka {c} page '{t}' ka direct link: 🔗\n{u}"
+            db.log_chat_message(chat_id, "user", user_text)
+            db.log_chat_message(chat_id, "assistant", link_reply)
+            return {
+                "reply": link_reply,
+                "tool_calls_executed": [],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+
+        # Otherwise, check connected Notion directly for the latest created page
+        token_row = db.get_user_integration(chat_id, "notion")
+        api_key = token_row.get("api_key") if isinstance(token_row, dict) else token_row
+        if api_key:
+            try:
+                headers = {"Authorization": f"Bearer {api_key}", "Notion-Version": "2022-06-28"}
+                async with httpx.AsyncClient(timeout=4.0) as cl:
+                    r = await cl.post(
+                        "https://api.notion.com/v1/search",
+                        headers=headers,
+                        json={"filter": {"value": "page", "property": "object"}, "page_size": 5}
+                    )
+                    if r.status_code == 200:
+                        results = r.json().get("results", [])
+                        if results:
+                            latest = results[0]
+                            u = latest.get("url")
+                            title_arr = latest.get("properties", {}).get("title", {}).get("title", []) or latest.get("properties", {}).get("Name", {}).get("title", [])
+                            t = "".join([x.get("plain_text", "") for x in title_arr]).strip() or "Notion Page"
+                            if u:
+                                link_reply = f"Ye raha aapka Notion page '{t}' ka direct link: 🔗\n{u}"
+                                update_active_context(chat_id, connector="Notion", topic=t, url=u)
+                                db.log_chat_message(chat_id, "user", user_text)
+                                db.log_chat_message(chat_id, "assistant", link_reply)
+                                return {
+                                    "reply": link_reply,
+                                    "tool_calls_executed": [],
+                                    "pending_action": None,
+                                    "is_grounded": True,
+                                    "violations": [],
+                                    "latency_ms": int((time.time() - start_ts) * 1000),
+                                    "tokens_used": 0,
+                                    "memory_context": {}
+                                }
+            except Exception as exc:
+                print("Notion search fallback error:", repr(exc))
+
     # Fast-path for 1-click connector requests & status queries (typo tolerant, resilient)
     low_prompt_raw = user_text.lower().strip()
     words = low_prompt_raw.split()
@@ -284,17 +354,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         r"\b(readme|commit|push|pull|branch|diff|edit\s+file|modify\s+file|change\s+file|update\s+file|replace\s+in)\b",
         low_prompt_raw
     ))
+    is_link_delivery_request = bool(
+        re.search(r"\b(link|url)\b", low_prompt_raw)
+        and re.search(r"\b(de|dedo|dena|do|bhej|bhejo|bhj|bhjdo|share|dikha|dikhao|send|give|chahiye|iska|uska|unka)\b", low_prompt_raw)
+    )
 
-    if not is_code_modify and len(words) <= 12:
+    if not is_code_modify and not is_link_delivery_request and len(words) <= 12:
         # Regex recognizing connect/connected with common typos (conncetdd, conncted, connectd, etc.)
         conn_kw_re = r"\b(conn\w*|conct\w*|link\w*|jod\w*|auth\w*|oauth\w*|login|juda\b|judi\b)"
 
-        has_notion = bool(re.search(r"\b(notion|noion|noiton|notinn|notn)\b", low_prompt_raw))
+        has_notion = bool(re.search(r"\b(notion|noion|noiton|notinn|notn|noitn|noton)\b", low_prompt_raw))
         has_github = bool(re.search(r"\b(github|gh|git)\b", low_prompt_raw))
         has_google = bool(re.search(r"\b(google|gmail|calendar|drive|gmeet)\b", low_prompt_raw))
         has_general = bool(
             re.search(r"\b(connector|connectors|integration|integrations|account|accounts|all\s+accounts)\b", low_prompt_raw)
-            or (re.search(r"\b(link|linked|connected|connect)\b", low_prompt_raw) and ("?" in low_prompt_raw or re.search(r"\b(h\b|hai\b|ni\b|nahi\b|kya\b|ab\b)", low_prompt_raw)))
+            or (re.search(r"\b(connected|connect)\b", low_prompt_raw) and ("?" in low_prompt_raw or re.search(r"\b(h\b|hai\b|ni\b|nahi\b|kya\b|ab\b)", low_prompt_raw)))
         )
 
         # 1. Notion Connection / Status Queries (NEVER intercept if user is asking about notes/pages/content/search/read/list)
@@ -567,76 +641,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         "memory_context": {}
                     }
 
-
-    # 0. Instant Follow-up Link Resolver ("link dena iska", "iska link do", "link do", "url bhejo", "link")
-    low_prompt = user_text.lower().strip()
-    is_link_query = bool(
-        re.search(r"\b(link|url)\b", low_prompt)
-        and (
-            any(w in low_prompt for w in ("iska", "uska", "ye", "yeh", "do", "dena", "dedo", "bhejo", "bhj", "bhej", "mujh", "mujhe", "kaha", "kahan", "bhai", "bhy", "share", "de", "notion", "meet"))
-            or len(low_prompt.split()) <= 4
-        )
-    )
-
-    if is_link_query:
-        from state.active_context import get_active_url, update_active_context
-        act_url_info = get_active_url(chat_id)
-        
-        # If in-memory/DB active context has the URL, return it immediately
-        if act_url_info and act_url_info.get("url"):
-            u = act_url_info["url"]
-            t = act_url_info.get("title") or "Page"
-            c = act_url_info.get("connector") or "Integration"
-            link_reply = f"Ye raha aapka {c} page '{t}' ka direct link: 🔗\n{u}"
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", link_reply)
-            return {
-                "reply": link_reply,
-                "tool_calls_executed": [],
-                "pending_action": None,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
-
-        # Otherwise, check connected Notion directly for the latest created page
-        token_row = db.get_user_integration(chat_id, "notion")
-        api_key = token_row.get("api_key") if isinstance(token_row, dict) else token_row
-        if api_key:
-            try:
-                headers = {"Authorization": f"Bearer {api_key}", "Notion-Version": "2022-06-28"}
-                async with httpx.AsyncClient(timeout=4.0) as cl:
-                    r = await cl.post(
-                        "https://api.notion.com/v1/search",
-                        headers=headers,
-                        json={"filter": {"value": "page", "property": "object"}, "page_size": 5}
-                    )
-                    if r.status_code == 200:
-                        results = r.json().get("results", [])
-                        if results:
-                            latest = results[0]
-                            u = latest.get("url")
-                            title_arr = latest.get("properties", {}).get("title", {}).get("title", []) or latest.get("properties", {}).get("Name", {}).get("title", [])
-                            t = "".join([x.get("plain_text", "") for x in title_arr]).strip() or "Notion Page"
-                            if u:
-                                link_reply = f"Ye raha aapka Notion page '{t}' ka direct link: 🔗\n{u}"
-                                update_active_context(chat_id, connector="Notion", topic=t, url=u)
-                                db.log_chat_message(chat_id, "user", user_text)
-                                db.log_chat_message(chat_id, "assistant", link_reply)
-                                return {
-                                    "reply": link_reply,
-                                    "tool_calls_executed": [],
-                                    "pending_action": None,
-                                    "is_grounded": True,
-                                    "violations": [],
-                                    "latency_ms": int((time.time() - start_ts) * 1000),
-                                    "tokens_used": 0,
-                                    "memory_context": {}
-                                }
-            except Exception as exc:
-                print("Notion search fallback error:", repr(exc))
 
     # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
     try:
