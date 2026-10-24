@@ -28,7 +28,8 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 save_contact_memory, get_contact_memories, update_contact_commitment,
                 log_chat_message, get_recent_chat_history, get_chat_turns_mentioning_keyword, save_user_fact, get_user_facts,
                 save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary,
-                wipe_all_user_memories)
+                wipe_all_user_memories, get_all_connected_google_users,
+                is_user_email_processed, record_processed_user_email)
 from integrations import (validate_notion_token, create_notion_page,
                           validate_github_token, list_github_issues, list_github_repos)
 from file_generator import build_contacts_excel, build_styled_pdf
@@ -39,6 +40,7 @@ from llm import (extract, understand, guess_persona, is_sensitive, parse_followu
 from nlu import yes_no, match_persona, PERSONA_LABELS
 from timing import IST, build_plan, fmt_when, event_over
 from inbox import fetch_unseen
+from email_intelligence import analyze_incoming_email
 from lang import (reply_lang, detect_text_language, language_from_whisper,
                   get_language, set_language, localize)
 from voice import transcribe_telegram_voice
@@ -57,6 +59,7 @@ from google_services import (
     find_calendar_event as google_find_calendar_event,
     list_calendar_events as google_list_calendar_events,
     list_drive_folders,
+    fetch_user_inbox_messages,
 )
 from google_auth import (
     build_auth_url,
@@ -1171,6 +1174,84 @@ async def mailbox_loop():
             print("mailbox error:", e)
         # Check frequently so website email-link status normally updates within 5-10 seconds.
         await asyncio.sleep(5)
+
+
+async def connected_user_gmail_monitor_loop():
+    """
+    Autonomously monitors incoming unread emails in users' connected Google accounts.
+    Intelligently identifies important emails (interviews/meetings with video links,
+    ticket bookings with PNR, credit card / utility bills with due dates, and urgent deliveries),
+    extracts key details, and instantly notifies the user on Telegram.
+    """
+    await asyncio.sleep(10)
+    while True:
+        try:
+            connected_users = await asyncio.to_thread(get_all_connected_google_users)
+            for u in connected_users:
+                chat_id_raw = u.get("telegram_chat_id")
+                if not chat_id_raw:
+                    continue
+                try:
+                    chat_id = int(chat_id_raw)
+                except (ValueError, TypeError):
+                    continue
+
+                try:
+                    messages = await fetch_user_inbox_messages(chat_id, max_results=5, query="is:unread")
+                except Exception as fetch_err:
+                    continue
+
+                for msg in messages:
+                    email_id = msg.get("id")
+                    if not email_id:
+                        continue
+
+                    # Check deduplication
+                    already_processed = await asyncio.to_thread(is_user_email_processed, chat_id, email_id)
+                    if already_processed:
+                        continue
+
+                    sender = msg.get("sender", "")
+                    subject = msg.get("subject", "")
+                    body = msg.get("body", "")
+
+                    try:
+                        analysis = await analyze_incoming_email(sender, subject, body)
+                    except Exception as err:
+                        print("analyze_incoming_email error:", repr(err))
+                        analysis = None
+
+                    if analysis and analysis.get("is_important") and analysis.get("alert_text"):
+                        await asyncio.to_thread(
+                            record_processed_user_email,
+                            chat_id,
+                            email_id,
+                            sender=sender,
+                            subject=subject,
+                            category=analysis.get("category", ""),
+                            is_important=True
+                        )
+                        alert_text = analysis["alert_text"]
+                        try:
+                            reply_lang.set(get_language(chat_id))
+                            await say_raw(chat_id, alert_text)
+                        except Exception as send_err:
+                            print(f"Failed to send email alert to {chat_id}:", send_err)
+                    else:
+                        cat = (analysis or {}).get("category", "promotional")
+                        await asyncio.to_thread(
+                            record_processed_user_email,
+                            chat_id,
+                            email_id,
+                            sender=sender,
+                            subject=subject,
+                            category=cat,
+                            is_important=False
+                        )
+        except Exception as loop_err:
+            print("connected_user_gmail_monitor_loop error:", repr(loop_err))
+
+        await asyncio.sleep(30)
 
 
 # ---------- Google connection ----------
@@ -3230,8 +3311,11 @@ async def reminder_loop():
 
 @asynccontextmanager
 async def lifespan(app):
-    tasks = [asyncio.create_task(reminder_loop()),
-             asyncio.create_task(mailbox_loop())]
+    tasks = [
+        asyncio.create_task(reminder_loop()),
+        asyncio.create_task(mailbox_loop()),
+        asyncio.create_task(connected_user_gmail_monitor_loop()),
+    ]
     yield
     for t in tasks:
         t.cancel()

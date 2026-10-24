@@ -193,6 +193,7 @@ def wipe_all_user_memories(chat_id: int):
         ("DELETE FROM entities WHERE user_id = :u", {"u": uid}),
         ("DELETE FROM user_integrations WHERE user_id = :u", {"u": uid}),
         ("DELETE FROM pending_actions WHERE chat_id = :c", {"c": chat_id}),
+        ("DELETE FROM processed_user_emails WHERE chat_id = :c", {"c": chat_id}),
         ("UPDATE users SET state = NULL, state_data = NULL WHERE id = :u", {"u": uid}),
     ]
 
@@ -1359,5 +1360,128 @@ def check_device_authorization(user_id: int, device_id: str, max_days: int = 365
         "google_email": None,
         "message": "No active Google connection found for this account."
     }
+
+
+def _init_processed_user_emails_table():
+    """Ensure the processed_user_emails table exists for deduplication."""
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS processed_user_emails (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        email_id TEXT NOT NULL,
+                        sender TEXT,
+                        subject TEXT,
+                        category TEXT,
+                        is_important BOOLEAN DEFAULT FALSE,
+                        processed_at TIMESTAMPTZ DEFAULT now(),
+                        CONSTRAINT uq_chat_user_email UNIQUE (chat_id, email_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_processed_user_emails ON processed_user_emails(chat_id, email_id);
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS processed_user_emails (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER NOT NULL,
+                        email_id TEXT NOT NULL,
+                        sender TEXT,
+                        subject TEXT,
+                        category TEXT,
+                        is_important BOOLEAN DEFAULT 0,
+                        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (chat_id, email_id)
+                    )
+                """))
+    except Exception as exc:
+        print("init_processed_user_emails_table error:", repr(exc))
+
+
+def is_user_email_processed(chat_id: int, email_id: str) -> bool:
+    """Check if a specific email ID has already been inspected for this user."""
+    if not chat_id or not email_id:
+        return True
+    _init_processed_user_emails_table()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT id FROM processed_user_emails WHERE chat_id = :c AND email_id = :e"),
+                {"c": chat_id, "e": email_id}
+            ).first()
+            return row is not None
+    except Exception as exc:
+        print("is_user_email_processed error:", repr(exc))
+        return False
+
+
+def record_processed_user_email(
+    chat_id: int,
+    email_id: str,
+    sender: str = "",
+    subject: str = "",
+    category: str = "",
+    is_important: bool = False,
+):
+    """Mark an incoming email as processed to prevent duplicate alerts."""
+    if not chat_id or not email_id:
+        return
+    _init_processed_user_emails_table()
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(
+                    text("""
+                        INSERT INTO processed_user_emails (chat_id, email_id, sender, subject, category, is_important, processed_at)
+                        VALUES (:c, :e, :s, :sub, :cat, :imp, now())
+                        ON CONFLICT (chat_id, email_id) DO NOTHING
+                    """),
+                    {
+                        "c": chat_id,
+                        "e": email_id,
+                        "s": (sender or "")[:255],
+                        "sub": (subject or "")[:500],
+                        "cat": (category or "")[:50],
+                        "imp": is_important,
+                    }
+                )
+            else:
+                conn.execute(
+                    text("""
+                        INSERT OR IGNORE INTO processed_user_emails (chat_id, email_id, sender, subject, category, is_important, processed_at)
+                        VALUES (:c, :e, :s, :sub, :cat, :imp, CURRENT_TIMESTAMP)
+                    """),
+                    {
+                        "c": chat_id,
+                        "e": email_id,
+                        "s": (sender or "")[:255],
+                        "sub": (subject or "")[:500],
+                        "cat": (category or "")[:50],
+                        "imp": 1 if is_important else 0,
+                    }
+                )
+    except Exception as exc:
+        print("record_processed_user_email error:", repr(exc))
+
+
+def get_all_connected_google_users() -> list[dict]:
+    """Return all users who have an active Google connection linked to a Telegram chat."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT u.id AS user_id, u.telegram_chat_id, gt.email, gt.refresh_token_enc, gt.scopes
+                FROM users u
+                JOIN google_tokens gt ON u.id = gt.user_id
+                WHERE u.telegram_chat_id IS NOT NULL 
+                  AND gt.refresh_token_enc IS NOT NULL
+            """)).mappings().all()
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        print("get_all_connected_google_users error:", repr(exc))
+        return []
+
 
 

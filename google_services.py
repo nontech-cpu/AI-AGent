@@ -1,6 +1,7 @@
 """Minimal Google API service layer for the assistant.
 All write operations are called only after explicit user confirmation in main.py.
 """
+import re
 import base64
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -303,4 +304,95 @@ async def delete_calendar_event(chat_id, event_id):
     access, _ = await access_token_for_chat(chat_id)
     await _request('DELETE', f'{GOOGLE}/calendar/v3/calendars/primary/events/{event_id}', access)
     return {'id': event_id, 'status': 'deleted'}
+
+
+def _extract_body_from_gmail_payload(payload: dict) -> str:
+    """Extract plain text or cleaned HTML body from a Gmail message payload."""
+    plain_text = ""
+    html_text = ""
+
+    def walk_parts(part):
+        nonlocal plain_text, html_text
+        mime_type = part.get("mimeType", "")
+        body = part.get("body", {})
+        data = body.get("data")
+        if data:
+            try:
+                padding = "=" * ((4 - len(data) % 4) % 4)
+                decoded = base64.urlsafe_b64decode(data + padding).decode("utf-8", errors="replace")
+                if mime_type == "text/plain" and not plain_text:
+                    plain_text = decoded
+                elif mime_type == "text/html" and not html_text:
+                    html_text = decoded
+            except Exception:
+                pass
+
+        for sub_part in part.get("parts", []):
+            walk_parts(sub_part)
+
+    walk_parts(payload)
+    if plain_text:
+        return re.sub(r"\s+", " ", plain_text).strip()
+    if html_text:
+        html = re.sub(r"(?is)<(style|script).*?</\1>", " ", html_text)
+        return re.sub(r"\s+", " ", re.sub(r"(?s)<[^>]+>", " ", html)).strip()
+    return ""
+
+
+async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: str = "is:unread") -> list[dict]:
+    """Fetch recent messages from the user's connected Gmail inbox."""
+    try:
+        access, account = await access_token_for_chat(chat_id)
+    except Exception as exc:
+        return []
+
+    try:
+        data = await _request(
+            'GET',
+            f'{GOOGLE}/gmail/v1/users/me/messages',
+            access,
+            params={'q': query, 'maxResults': max_results}
+        )
+    except Exception as exc:
+        print(f"fetch_user_inbox_messages list failed for chat {chat_id}:", repr(exc))
+        return []
+
+    msg_stubs = data.get('messages', [])
+    messages = []
+    for stub in msg_stubs:
+        m_id = stub.get('id')
+        if not m_id:
+            continue
+        try:
+            full = await _request(
+                'GET',
+                f'{GOOGLE}/gmail/v1/users/me/messages/{m_id}',
+                access,
+                params={'format': 'full'}
+            )
+            payload = full.get('payload', {})
+            headers = {h.get('name', '').lower(): h.get('value', '') for h in payload.get('headers', [])}
+            subject = headers.get('subject', '')
+            sender = headers.get('from', '')
+            date_str = headers.get('date', '')
+            to_str = headers.get('to', '')
+            snippet = full.get('snippet', '')
+            body = _extract_body_from_gmail_payload(payload) or snippet
+
+            messages.append({
+                'id': m_id,
+                'thread_id': full.get('threadId'),
+                'subject': subject,
+                'sender': sender,
+                'date': date_str,
+                'to': to_str,
+                'snippet': snippet,
+                'body': body[:4000],
+            })
+        except Exception as exc:
+            print(f"fetch_user_inbox_messages get message {m_id} failed:", repr(exc))
+            continue
+
+    return messages
+
 
