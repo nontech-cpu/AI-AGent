@@ -183,6 +183,8 @@ def wipe_all_user_memories(chat_id: int):
             "DELETE FROM memories WHERE user_id = :u",
             "DELETE FROM entity_aliases WHERE entity_id IN (SELECT id FROM entities WHERE user_id = :u)",
             "DELETE FROM entities WHERE user_id = :u",
+            "DELETE FROM pending_actions WHERE user_id = :u",
+            "UPDATE users SET state = NULL, state_data = NULL WHERE id = :u",
         ]
         for sql in statements:
             try:

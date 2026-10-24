@@ -119,6 +119,31 @@ def _init_web_verify_db():
 
 PENDING_WIPE_CODES: dict[int, dict[str, Any]] = {}
 
+
+def is_master_wipe_request(text: str) -> bool:
+    clean = text.strip().lower()
+    # Normalize common abbreviations and typos
+    norm = re.sub(r'\b(dlete|delet|dlet|dlte|dlt|del)\b', 'delete', clean)
+    norm = re.sub(r'\b(meory|memry|mmoery|memor)\b', 'memory', norm)
+    norm = re.sub(r'\b(seaved|seve|savd)\b', 'saved', norm)
+
+    # Patterns matching user intent to delete all memory or wipe data
+    patterns = [
+        r'\b(delete|wipe|clear|erase|remove|forget|destroy|flush)\b.*\b(memor(y|ies)|data|history|records|facts|everything)\b',
+        r'\b(memor(y|ies)|data|history|records|facts|everything)\b.*\b(delete|wipe|clear|erase|remove|forget|destroy|flush|mita|saaf|khatam|hata)\b',
+        r'\b(saari|sab\s*kuch|puri|sarre|sari|meri|mera)\b.*\b(memory|yaad|yaadein|data|history)\b.*\b(delete|wipe|mita|saaf|khatam|hata)\b',
+        r'\b(delete|wipe|mita|saaf|khatam|hata)\b.*\b(saari|sab\s*kuch|puri|sarre|sari|meri|mera)\b.*\b(memory|yaad|yaadein|data|history)\b',
+        r'\b(sab\s*kuch|saara\s*kuch)\b.*\b(delete|wipe|mita|saaf|khatam|hata)\b',
+        r'\b(delete|wipe|mita|saaf|khatam|hata)\b.*\b(sab\s*kuch|saara\s*kuch)\b',
+        r'\b(delete|wipe|clear|erase)\s*(all\s*)?(saved\s*)?(about\s*me\s*)?(everything|data|memories|memory)\b',
+        r'\b(forget|wipe|clear)\s*everything\b',
+    ]
+    for p in patterns:
+        if re.search(p, norm, re.I):
+            return True
+    return False
+
+
 WELCOME_CONSENT_BASE = (
     "Hi! I'm your personal assistant. I remember important things like bills, "
     "bookings and meetings, and remind you at the right time.\n\n"
@@ -1016,29 +1041,52 @@ async def handle_mail(m):
     sender_clean = (m.get("sender") or "").strip().lower()
     mail_text = ((m.get("subject") or "") + " " + (m.get("body") or "")).lower()
 
-    for p_chat_id, p_info in list(PENDING_WIPE_CODES.items()):
+    pending_items = list(PENDING_WIPE_CODES.items())
+    if not pending_items:
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text("SELECT telegram_chat_id, state_data FROM users WHERE state IN ('awaiting_wipe_verification', 'awaiting_wipe_email_verification', 'awaiting_wipe_chat_otp')")
+                ).fetchall()
+                for r in rows:
+                    c_id = r[0]
+                    s_data = r[1]
+                    if isinstance(s_data, str):
+                        try:
+                            s_data = json.loads(s_data)
+                        except Exception:
+                            s_data = {}
+                    if isinstance(s_data, dict) and "code" in s_data:
+                        pending_items.append((c_id, s_data))
+        except Exception as e:
+            print("DB check for pending wipe codes error:", repr(e))
+
+    for p_chat_id, p_info in pending_items:
         p_email = (p_info.get("email") or "").strip().lower()
-        if sender_clean and p_email and (sender_clean == p_email or sender_clean in p_email):
-            p_code = str(p_info.get("code", "")).strip().lower()
-            if p_code and p_code in mail_text:
-                if _time.time() <= p_info.get("expires_at", 0):
-                    PENDING_WIPE_CODES.pop(p_chat_id, None)
-                    set_state(p_chat_id, None)
-                    wipe_all_user_memories(p_chat_id)
-                    await say(
-                        p_chat_id,
-                        "✅ **Master Privacy Wipe Confirmed**: Aapke connected email se OTP verify ho gaya hai. "
-                        "Aapki saari memories, chat history, contacts, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
-                    )
-                    return
-                else:
-                    PENDING_WIPE_CODES.pop(p_chat_id, None)
-                    set_state(p_chat_id, None)
-                    await say(
-                        p_chat_id,
-                        "⚠️ Verification code expire ho chuka tha (5 minutes exceeded). Memory delete nahi hui."
-                    )
-                    return
+        p_code = str(p_info.get("code", "")).strip().lower()
+        email_matches = (not p_email) or (sender_clean and (sender_clean == p_email or sender_clean in p_email or p_email in sender_clean))
+        if p_code and p_code in mail_text and email_matches:
+            if _time.time() <= p_info.get("expires_at", 0):
+                PENDING_WIPE_CODES.pop(p_chat_id, None)
+                set_state(p_chat_id, None)
+                RECENT_CHAT_TURNS.pop(p_chat_id, None)
+                RECENT_DOCS.pop(p_chat_id, None)
+                PENDING_GOOGLE_ACTIONS.pop(p_chat_id, None)
+                wipe_all_user_memories(p_chat_id)
+                await say(
+                    p_chat_id,
+                    "✅ **Master Privacy Wipe Confirmed**: Aapke connected email se OTP verify ho gaya hai. "
+                    "Aapki saari memories, chat history, contacts, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
+                )
+                return
+            else:
+                PENDING_WIPE_CODES.pop(p_chat_id, None)
+                set_state(p_chat_id, None)
+                await say(
+                    p_chat_id,
+                    "⚠️ Verification code expire ho chuka tha (5 minutes exceeded). Memory delete nahi hui."
+                )
+                return
 
     link = get_link_by_email(m["sender"])
     if link is None:
@@ -2406,8 +2454,10 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                     f"🔐 **Security Verification Required (Valid for 5 mins)**\n\n"
                     f"Aapki privacy aur security ke liye, maine ek verification code generate kiya hai:\n\n"
                     f"🔑 **Verification Code: `{code}`**\n\n"
-                    f"Kripya agle 5 minute ke andar apne connected email (`{connected_email}`) se bot ki email (`{BOT_EMAIL}`) par ye code Subject ya Body me likh kar email send karein.\n\n"
-                    f"Jaise hi bot ko aapke connected email se OTP verify hoga, aapki Telegram, WhatsApp aur App ki saari memory permanently wipe kar di jayegi.\n"
+                    f"Aap ise 2 tareeqon me se kisi ek se verify kar sakte hain:\n"
+                    f"1️⃣ **Yahan Chat Me**: Seedha ye code `{code}` yahan chat me reply karein.\n"
+                    f"2️⃣ **Email Se**: Apne connected email (`{connected_email}`) se bot ki email (`{BOT_EMAIL}`) par ye code Subject ya Body me bhej kar verify karein.\n\n"
+                    f"Code verify hote hi aapki Telegram, WhatsApp aur App ki saari memory permanently wipe kar di jayegi.\n"
                     f"(Ya reply `cancel` to abort)"
                 )
                 return
@@ -2421,7 +2471,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 await say(
                     chat_id,
                     f"🔐 **Security Verification (Valid for 5 mins)**\n\n"
-                    f"Aapka Google account linked nahi hai. Saari memory permanently delete karne ke liye agle 5 minute ke andar ye 6-digit verification code yahan chat me reply karein:\n\n"
+                    f"Saari memory permanently delete karne ke liye agle 5 minute ke andar ye 6-digit verification code yahan chat me reply karein ya bot ki email (`{BOT_EMAIL}`) par bhejein:\n\n"
                     f"🔑 **Verification Code: `{code}`**\n\n"
                     f"Reply `cancel` to abort."
                 )
@@ -2430,62 +2480,53 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say(chat_id, "Please reply **yes** to proceed with master memory deletion or **cancel** to abort.")
             return
 
-    if state == "awaiting_wipe_email_verification":
+    if state in ("awaiting_wipe_email_verification", "awaiting_wipe_chat_otp", "awaiting_wipe_verification"):
         import time as _time
-        if cmd_token in {"/cancel", "cancel"} or clean_lower in {"cancel", "rehne do", "chhoro", "no", "nahi"}:
+        if cmd_token in {"/cancel", "cancel"} or clean_lower in {"cancel", "rehne do", "chhoro", "no", "nahi", "abort", "stop"}:
             set_state(chat_id, None)
             PENDING_WIPE_CODES.pop(chat_id, None)
             await say(chat_id, "Memory wipe verification cancel kar di gayi hai. Aapka data safe hai.")
             return
-        pending_info = PENDING_WIPE_CODES.get(chat_id) or (data if isinstance(data, dict) else {})
-        if pending_info and _time.time() > pending_info.get("expires_at", 0):
-            set_state(chat_id, None)
-            PENDING_WIPE_CODES.pop(chat_id, None)
-            await say(chat_id, "⏳ Verification code expire ho gaya hai (5 minutes exceeded). Memory delete nahi hui. Agar wipe karna chahte hain to dobara request karein.")
-            return
-        email_addr = pending_info.get("email", "connected email")
-        code_str = pending_info.get("code", "")
-        await say(
-            chat_id,
-            f"Aapki memory wipe request pending hai. Kripya apne connected email (`{email_addr}`) se `{BOT_EMAIL}` par code `{code_str}` bhejein, ya 'cancel' likhein."
-        )
-        return
 
-    if state == "awaiting_wipe_chat_otp":
-        import time as _time
-        if cmd_token in {"/cancel", "cancel"} or clean_lower in {"cancel", "rehne do", "chhoro", "no", "nahi"}:
-            set_state(chat_id, None)
-            PENDING_WIPE_CODES.pop(chat_id, None)
-            await say(chat_id, "Memory wipe cancel kar di gayi hai. Aapka data safe hai.")
-            return
         pending_info = PENDING_WIPE_CODES.get(chat_id) or (data if isinstance(data, dict) else {})
         if pending_info and _time.time() > pending_info.get("expires_at", 0):
             set_state(chat_id, None)
             PENDING_WIPE_CODES.pop(chat_id, None)
             await say(chat_id, "⏳ Verification code expire ho gaya hai (5 minutes exceeded). Memory delete nahi hui. Agar wipe karna chahte hain to dobara request karein.")
             return
+
         expected_code = str(pending_info.get("code", "")).strip()
-        if expected_code and expected_code in clean:
+        email_addr = pending_info.get("email")
+
+        # Allow user to reply directly with the OTP in chat!
+        if expected_code and (expected_code in clean or clean.strip() == expected_code):
             set_state(chat_id, None)
             PENDING_WIPE_CODES.pop(chat_id, None)
+            RECENT_CHAT_TURNS.pop(chat_id, None)
+            RECENT_DOCS.pop(chat_id, None)
+            PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
             wipe_all_user_memories(chat_id)
             await say(
                 chat_id,
                 "✅ **Privacy Wipe Complete**: Aapki saari memories, chat history, contacts, smart lists aur reminders permanently delete kar diye gaye hain (Telegram, WhatsApp aur App sabhi jagah se)."
             )
             return
-        else:
-            await say(chat_id, f"Invalid code. Kripya 6-digit code `{expected_code}` enter karein ya 'cancel' likhein.")
-            return
 
-    # Master Privacy Wipe Request Trigger: "dlt my memoryy", "delete my memory", "wipe everything", etc.
-    wipe_match = re.search(
-        r'\b(delete\s*(all\s*)?(my\s*)?memor(y|ies)|wipe\s*(all\s*)?(my\s*)?(data|memory|records|everything)|'
-        r'saari\s*memory\s*delete|sab\s*kuch\s*delete|puri\s*memory\s*delete|wipe\s*everything|'
-        r'sarre?\s*memory\s*dlet|saara\s*data\s*delete|dlt\s*(my\s*)?memory|delete\s*everything)\b',
-        clean_lower
-    )
-    if wipe_match:
+        # If code did not match
+        if email_addr:
+            await say(
+                chat_id,
+                f"Aapki memory wipe request pending hai. Kripya 6-digit code `{expected_code}` yahan chat me bhejein, ya apne connected email (`{email_addr}`) se `{BOT_EMAIL}` par code bhejein, ya 'cancel' likhein."
+            )
+        else:
+            await say(
+                chat_id,
+                f"Invalid code. Kripya 6-digit code `{expected_code}` enter karein ya 'cancel' likhein."
+            )
+        return
+
+    # Master Privacy Wipe Request Trigger: "dlete all memory u have about me", "delete all meory u have seaved", "wipe everything", etc.
+    if is_master_wipe_request(clean):
         set_state(chat_id, "confirm_master_wipe")
         PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
         await say(

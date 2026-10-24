@@ -53,6 +53,9 @@ class SaveNoteOrFactArgs(BaseModel):
 class ClearChatHistoryArgs(BaseModel):
     confirm: Optional[bool] = Field(True, description="Confirmation flag to delete chat history.")
 
+class RequestMasterPrivacyWipeArgs(BaseModel):
+    confirm: Optional[bool] = Field(True, description="Confirmation flag to initiate master privacy wipe and permanent memory deletion.")
+
 class DeleteNoteOrFactArgs(BaseModel):
     query: str = Field(..., description="Keywords or topic of the note, fact, booking, or ticket to delete from memory e.g. 'ticket', 'flight', 'hotel'.")
 
@@ -274,6 +277,19 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "confirm": {"type": ["boolean", "null"], "description": "Set to true to clear chat history."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_master_privacy_wipe",
+            "description": "Initiate permanent master privacy wipe to delete all user memories, facts, notes, contacts, and reminders across all platforms with secure OTP confirmation. Use this whenever the user asks to delete all memory or wipe saved data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": ["boolean", "null"], "description": "Confirmation flag."}
                 }
             }
         }
@@ -861,6 +877,18 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             return {
                 "status": "success",
                 "message": "Chat history has been successfully cleared."
+            }
+
+        elif tool_name == "request_master_privacy_wipe":
+            db.set_state(chat_id, "confirm_master_wipe")
+            return {
+                "status": "confirmation_required",
+                "message": (
+                    "⚠️ **Security & Privacy Warning**:\n\n"
+                    "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
+                    "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
+                    "Reply **yes/haan** to confirm ya **no/cancel** to abort."
+                )
             }
 
         elif tool_name == "delete_note_or_fact":
