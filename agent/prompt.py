@@ -218,30 +218,21 @@ async def build_runtime_system_prompt(
             "rules_str": rules_str
         }
 
-    # 2. Today's and Tomorrow's Reminders (Direct DB lookup - fast)
+    # 2. Today's and Tomorrow's Unified Schedule (Google Calendar + Reminders + Commitments)
     today_d = now_ist.date()
     tomorrow_d = today_d + timedelta(days=1)
 
-    def fetch_day_rems(d):
+    async def fetch_full_sched(d):
         try:
-            raw_rems = db.items_for_date(chat_id, d)
-            rems = []
-            for r in raw_rems:
-                if isinstance(r, dict):
-                    rems.append(r)
-                else:
-                    rems.append({
-                        "category": r[0] if len(r) > 0 else "appointments",
-                        "title": r[1] if len(r) > 1 else "Reminder",
-                        "amount": r[2] if len(r) > 2 else None,
-                        "due_time": r[3] if len(r) > 3 else None,
-                    })
-            return {"reminders": rems}
+            from main import get_unified_schedule
+            return await get_unified_schedule(chat_id, d)
         except Exception:
-            return {"reminders": []}
+            return {"calendar_events": [], "reminders": [], "commitments": []}
 
-    today_sched = fetch_day_rems(today_d)
-    tomorrow_sched = fetch_day_rems(tomorrow_d)
+    today_sched, tomorrow_sched = await asyncio.gather(
+        fetch_full_sched(today_d),
+        fetch_full_sched(tomorrow_d)
+    )
 
     # 3. Pending Actions
     pending_str = "None"
@@ -280,10 +271,24 @@ async def build_runtime_system_prompt(
         time_str = d_time.strftime("%I:%M %p") if hasattr(d_time, "strftime") else (str(d_time) if d_time else "all day")
         return f"{title} ({time_str})"
 
+    def _format_cal_event(ev):
+        if not isinstance(ev, dict):
+            return str(ev)
+        summ = ev.get("summary") or "Meeting"
+        st_str = ev.get("start", {}).get("dateTime")
+        if st_str:
+            try:
+                st_dt = datetime.fromisoformat(st_str)
+                st_ist = st_dt.astimezone(IST)
+                return f"{summ} ({st_ist.strftime('%I:%M %p')})"
+            except Exception:
+                pass
+        return summ
+
     # 7. Today's and Tomorrow's Unified Schedule
     schedule_parts = []
     # Today summary
-    t_evs = [ev.get("summary", "Meeting") for ev in today_sched.get("calendar_events", [])]
+    t_evs = [_format_cal_event(ev) for ev in today_sched.get("calendar_events", [])]
     t_rems = [_format_rem_item(r) for r in today_sched.get("reminders", [])]
     t_comms = [f"{c['name']}: {c['commitment']}" for c in today_sched.get("commitments", [])]
     today_line = f"Today ({today_d.strftime('%A, %d %b')}): " + (f"Calendar: {', '.join(t_evs)} | " if t_evs else "") + (f"Reminders: {', '.join(t_rems)} | " if t_rems else "") + (f"Commitments: {', '.join(t_comms)}" if t_comms else "")
@@ -292,7 +297,7 @@ async def build_runtime_system_prompt(
     schedule_parts.append(today_line)
 
     # Tomorrow summary
-    tm_evs = [ev.get("summary", "Meeting") for ev in tomorrow_sched.get("calendar_events", [])]
+    tm_evs = [_format_cal_event(ev) for ev in tomorrow_sched.get("calendar_events", [])]
     tm_rems = [_format_rem_item(r) for r in tomorrow_sched.get("reminders", [])]
     tm_comms = [f"{c['name']}: {c['commitment']}" for c in tomorrow_sched.get("commitments", [])]
     tm_line = f"Tomorrow ({tomorrow_d.strftime('%A, %d %b')}): " + (f"Calendar: {', '.join(tm_evs)} | " if tm_evs else "") + (f"Reminders: {', '.join(tm_rems)} | " if tm_rems else "") + (f"Commitments: {', '.join(tm_comms)}" if tm_comms else "")
