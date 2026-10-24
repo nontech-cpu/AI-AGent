@@ -1,7 +1,10 @@
 import os
 import json
+import logging
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 raw_db_url = os.getenv("DATABASE_URL") or "sqlite:///:memory:"
@@ -158,39 +161,60 @@ def delete_user(chat_id):
 def wipe_all_user_memories(chat_id: int):
     """
     Master Privacy Wipe: Clears all user_facts, memory_items, reminders,
-    chat_logs, contact_memories, smart_lists, and board cards across all channels.
-    Preserves user account record and tokens.
+    chat_logs, contact_memories, smart_lists, board_cards, user_rules,
+    memories, entities, entity_aliases, user_integrations, and pending_actions.
+    Each table is deleted in its own isolated transaction so that a failure or
+    missing table/column never rolls back deletions from other tables.
     """
-    with engine.begin() as conn:
+    uid = None
+    with engine.connect() as conn:
         u_row = conn.execute(
             text("SELECT id FROM users WHERE telegram_chat_id = :c"),
             {"c": chat_id}
         ).first()
-        if not u_row:
-            return False
-        uid = int(u_row[0])
+        if u_row:
+            uid = int(u_row[0])
 
-        statements = [
-            "DELETE FROM user_facts WHERE user_id = :u",
-            "DELETE FROM reminders WHERE item_id IN (SELECT id FROM memory_items WHERE user_id = :u)",
-            "DELETE FROM memory_items WHERE user_id = :u",
-            "DELETE FROM chat_logs WHERE user_id = :u",
-            "DELETE FROM contact_memories WHERE user_id = :u",
-            "DELETE FROM smart_list_items WHERE list_id IN (SELECT id FROM smart_lists WHERE user_id = :u)",
-            "DELETE FROM smart_lists WHERE user_id = :u",
-            "DELETE FROM board_cards WHERE user_id = :u",
-            "DELETE FROM user_rules WHERE user_id = :u",
-            "DELETE FROM memories WHERE user_id = :u",
-            "DELETE FROM entity_aliases WHERE entity_id IN (SELECT id FROM entities WHERE user_id = :u)",
-            "DELETE FROM entities WHERE user_id = :u",
-            "DELETE FROM pending_actions WHERE user_id = :u",
-            "UPDATE users SET state = NULL, state_data = NULL WHERE id = :u",
-        ]
-        for sql in statements:
-            try:
-                conn.execute(text(sql), {"u": uid})
-            except Exception:
-                pass
+    if not uid:
+        return False
+
+    deletions = [
+        ("DELETE FROM user_facts WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM reminders WHERE item_id IN (SELECT id FROM memory_items WHERE user_id = :u)", {"u": uid}),
+        ("DELETE FROM memory_items WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM chat_logs WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM contact_memories WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM smart_list_items WHERE list_id IN (SELECT id FROM smart_lists WHERE user_id = :u)", {"u": uid}),
+        ("DELETE FROM smart_lists WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM board_cards WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM user_rules WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM memories WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM entity_aliases WHERE entity_id IN (SELECT id FROM entities WHERE user_id = :u)", {"u": uid}),
+        ("DELETE FROM entities WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM user_integrations WHERE user_id = :u", {"u": uid}),
+        ("DELETE FROM pending_actions WHERE chat_id = :c", {"c": chat_id}),
+        ("UPDATE users SET state = NULL, state_data = NULL WHERE id = :u", {"u": uid}),
+    ]
+
+    for sql, params in deletions:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(sql), params)
+        except Exception as e:
+            logger.warning(f"wipe_all_user_memories non-fatal error executing '{sql}': {e}")
+
+    try:
+        from state.active_context import clear_active_context
+        clear_active_context(chat_id)
+    except Exception:
+        pass
+
+    try:
+        from agent.prompt import _USER_META_CACHE
+        _USER_META_CACHE.pop(chat_id, None)
+    except Exception:
+        pass
+
     return True
 
 
@@ -1104,18 +1128,6 @@ def get_user_integration(chat_id, service: str):
                 {"cid": chat_id, "svc": svc}
             ).first()
         if not row:
-            if svc == "notion" and os.getenv("NOTION_API_KEY"):
-                return {
-                    "api_key": os.getenv("NOTION_API_KEY").strip(),
-                    "config_data": json.dumps({"workspace_name": "buisiness"}),
-                    "is_active": True
-                }
-            if svc == "github" and os.getenv("GITHUB_TOKEN"):
-                return {
-                    "api_key": os.getenv("GITHUB_TOKEN").strip(),
-                    "config_data": json.dumps({"username": "nontech-cpu"}),
-                    "is_active": True
-                }
             return None
         decrypted_key = decrypt_any(row[0])
         return {
@@ -1171,11 +1183,6 @@ def get_user_integrations_summary(chat_id):
                 }
     except Exception as exc:
         print("get_user_integrations_summary error:", repr(exc))
-
-    if not integrations["notion"]["connected"] and os.getenv("NOTION_API_KEY"):
-        integrations["notion"] = {"connected": True, "details": "Connected via workspace NOTION_API_KEY"}
-    if not integrations["github"]["connected"] and os.getenv("GITHUB_TOKEN"):
-        integrations["github"] = {"connected": True, "details": "Connected via workspace GITHUB_TOKEN"}
 
     return integrations
 

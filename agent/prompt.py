@@ -169,13 +169,13 @@ async def build_runtime_system_prompt(
                     summary = db.get_user_integrations_summary(chat_id)
                     if summary.get("github", {}).get("connected"):
                         gh_info = db.get_user_integration(chat_id, "github")
-                        gh_u = "nontech-cpu"
+                        gh_u = None
                         if isinstance(gh_info, dict):
                             try:
-                                gh_u = json.loads(gh_info.get("config_data") or "{}").get("username") or gh_u
+                                gh_u = json.loads(gh_info.get("config_data") or "{}").get("username")
                             except Exception:
                                 pass
-                        gh_str = f"GitHub: connected (@{gh_u}, active/default repo: php-project)"
+                        gh_str = f"GitHub: connected (@{gh_u})" if gh_u else "GitHub: connected"
                     if summary.get("notion", {}).get("connected"):
                         notion_str = "Notion: connected"
 
