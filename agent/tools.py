@@ -149,6 +149,10 @@ class GeneratePdfArgs(BaseModel):
 class GenerateExcelArgs(BaseModel):
     data_type: Optional[str] = Field("contacts", description="Type of data to export: 'contacts' or 'reminders'.")
 
+class SearchUserEmailsArgs(BaseModel):
+    query: Optional[str] = Field("in:inbox", description="Query to filter emails or documents e.g. 'ticket', 'flight', 'train', 'interview', 'bill', or 'in:inbox'.")
+    max_results: Optional[int] = Field(5, description="Number of recent emails to retrieve and inspect.")
+
 class CheckIntegrationsStatusArgs(BaseModel):
     service: Optional[str] = Field(None, description="Optional service name filter e.g. 'github', 'notion', 'google'.")
 
@@ -547,6 +551,20 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "data_type": {"type": "string", "description": "'contacts' or 'reminders'."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_user_emails",
+            "description": "Search and inspect recent emails and attached documents (train/flight tickets with PNR, booking confirmations, interview invites, bills, receipts) from the user's connected Gmail inbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": ["string", "null"], "description": "Search query or category e.g. 'ticket', 'train', 'flight', 'interview', 'bill', or 'in:inbox'."},
+                    "max_results": {"type": ["integer", "null"], "description": "Number of emails to inspect (default 5)."}
                 }
             }
         }
@@ -1801,6 +1819,50 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             contacts = db.get_contact_memories(chat_id)
             excel_bytes = build_contacts_excel(contacts)
             return {"status": "ready_for_dispatch", "type": "excel", "filename": "contacts.xlsx", "bytes": len(excel_bytes)}
+
+        elif tool_name == "search_user_emails":
+            args = SearchUserEmailsArgs(**arguments)
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "connected": False,
+                    "message": "Aapka Google account abhi connected nahi hai. Connect karne ke liye 'connect google' bole."
+                }
+
+            user_q = (args.query or "").strip()
+            gmail_query = user_q if user_q else "in:inbox"
+            messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query=gmail_query)
+            if not messages and gmail_query != "in:inbox":
+                messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query="in:inbox")
+
+            results = []
+            from email_intelligence import analyze_incoming_email
+            for m in messages:
+                analysis = await analyze_incoming_email(m.get("sender", ""), m.get("subject", ""), m.get("body", ""))
+                results.append({
+                    "id": m.get("id"),
+                    "sender": m.get("sender"),
+                    "subject": m.get("subject"),
+                    "date": m.get("date"),
+                    "is_important": analysis.get("is_important", False),
+                    "category": analysis.get("category", "general"),
+                    "alert_text": analysis.get("alert_text"),
+                    "details": analysis.get("raw_data") or {},
+                    "body_snippet": m.get("body", "")[:1000]
+                })
+
+            saved_facts = db.get_user_facts(chat_id) or []
+            booking_facts = [f for f in saved_facts if any(k in f.get("fact", "").lower() for k in ("booking", "ticket", "pnr", "train", "flight"))]
+
+            return {
+                "status": "success",
+                "count": len(results),
+                "emails": results,
+                "saved_booking_facts": [f.get("fact") for f in booking_facts],
+                "message": f"Found {len(results)} email(s) in connected mailbox."
+            }
 
         elif tool_name == "ask_user":
             args = AskUserArgs(**arguments)

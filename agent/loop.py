@@ -385,6 +385,45 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "memory_context": {}
                 }
 
+        # 5. Connected Mailbox Ticket / Document / Email Search Fast-Path
+        has_mail_mention = bool(re.search(r"\b(mail|email|gmail|inbox)\b", low_prompt_raw))
+        has_ticket_doc_mention = bool(re.search(r"\b(ticket|tickets|booking|pnr|flight|train|irctc|document|documents|bill|interview|doc|pdf)\b", low_prompt_raw))
+
+        if (has_mail_mention and has_ticket_doc_mention) or (has_ticket_doc_mention and bool(re.search(r"\b(kya|btao|batao|bata|bta|check|dekho|dekh|dikhao|dikha|aaye|aaya|aayi|status|find|search|show|tell)\b", low_prompt_raw)) and ("mail" in low_prompt_raw or "email" in low_prompt_raw or "gmail" in low_prompt_raw)):
+            res = await execute_tool(chat_id, "search_user_emails", {"query": "ticket", "max_results": 5})
+            if res.get("status") == "success":
+                emails = res.get("emails", [])
+                important_emails = [e for e in emails if e.get("is_important")]
+                saved_facts = res.get("saved_booking_facts", [])
+
+                reply_text = None
+                if important_emails:
+                    alerts = [e.get("alert_text") for e in important_emails if e.get("alert_text")]
+                    if alerts:
+                        reply_text = "Haanji, aapke connected mail par ye details mili hain:\n\n" + "\n\n".join(alerts)
+                elif saved_facts:
+                    reply_text = "Aapke booking / ticket ke baare me saved details:\n\n" + "\n".join([f"• {f}" for f in saved_facts])
+                elif emails:
+                    top_msg = emails[0]
+                    subj = top_msg.get("subject") or "No Subject"
+                    sender = top_msg.get("sender") or "Unknown"
+                    snip = top_msg.get("snippet") or ""
+                    reply_text = f"Aapke mail par recent message mila hai:\n\n📧 **From**: {sender}\n📌 **Subject**: {subj}\n📝 **Snippet**: {snip}"
+
+                if reply_text:
+                    db.log_chat_message(chat_id, "user", user_text)
+                    db.log_chat_message(chat_id, "assistant", reply_text)
+                    return {
+                        "reply": reply_text,
+                        "tool_calls_executed": ["search_user_emails"],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": 0,
+                        "memory_context": {}
+                    }
+
     # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
     try:
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -452,8 +491,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         selected_tool_names.update(["delete_note_or_fact", "delete_reminder", "clear_chat_history"])
 
     # Intent 7: Email / Drive / Documents / Export
-    if re.search(r"\b(email|mail|gmail|inbox|drive|file|upload|pdf|excel|sheet|spreadsheet|export|document|docs)\b", low_prompt):
-        selected_tool_names.update(["send_email", "upload_to_drive", "generate_pdf", "generate_excel"])
+    if re.search(r"\b(email|mail|gmail|inbox|drive|file|upload|pdf|excel|sheet|spreadsheet|export|document|docs|ticket|train|flight|booking|pnr)\b", low_prompt):
+        selected_tool_names.update(["search_user_emails", "send_email", "upload_to_drive", "generate_pdf", "generate_excel"])
 
     # Intent 8: Inherit tools from active conversation context
     try:

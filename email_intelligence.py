@@ -242,13 +242,38 @@ def _format_alert(data: Dict[str, Any]) -> Optional[str]:
         pnr = data.get("pnr") or "Confirmed"
         route = data.get("route") or "Details in email"
         dt = data.get("datetime_str") or "Details in email"
+        seats = data.get("seats")
+        passengers = data.get("passengers")
+        amount = data.get("amount")
+        summary = data.get("summary")
+
+        lines = [
+            f"🎫 <b>Ticket / Booking Confirmed!</b>\n",
+            f"🚆 <b>Service/Provider</b>: {carrier}",
+            f"🔢 <b>PNR / Booking ID</b>: <code>{pnr}</code>",
+            f"📍 <b>Route / Venue</b>: {route}",
+            f"📅 <b>Travel Date</b>: {dt}",
+        ]
+        if seats:
+            lines.append(f"💺 <b>Seat/Berth</b>: {seats}")
+        if passengers:
+            lines.append(f"👥 <b>Passengers</b>: {passengers}")
+        if amount:
+            lines.append(f"💰 <b>Total Fare</b>: {amount}")
+        if summary and summary != route and len(summary) > 10:
+            lines.append(f"\n📋 <b>Details</b>: {summary}")
+        lines.append(f"\n💡 <i>Booking confirm ho gayi hai! Agar travel reminder ya calendar entry lagani ho toh mujhe bata dein.</i>")
+        return "\n".join(lines)
+
+    elif category == "document_received":
+        doc_title = data.get("document_title") or data.get("role_or_title") or "Document / Attachment"
+        doc_type = data.get("document_type") or "Document"
+        summary = data.get("summary") or "Attached document received in email"
         return (
-            f"🎫 <b>Ticket / Booking Confirmed!</b>\n\n"
-            f"✈️ <b>Service/Provider</b>: {carrier}\n"
-            f"🔢 <b>PNR / Booking ID</b>: <code>{pnr}</code>\n"
-            f"📍 <b>Route / Venue</b>: {route}\n"
-            f"📅 <b>Travel Date</b>: {dt}\n\n"
-            f"💡 <i>Booking confirm ho gayi hai! Agar travel reminder lagana ho toh mujhe bata dein.</i>"
+            f"📄 <b>New Document Received!</b>\n\n"
+            f"📑 <b>Title/Type</b>: {doc_title} ({doc_type})\n"
+            f"📝 <b>Summary & Highlights</b>: {summary}\n\n"
+            f"💡 <i>Aap is document ke baare me koi bhi sawaal mujhse pooch sakte hain!</i>"
         )
 
     elif category == "bill_payment":
@@ -298,7 +323,7 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
     combined_sample = f"{sender} {subject} {body[:500]}".casefold()
     has_critical_token = any(
         k in combined_sample
-        for k in ("interview", "meet.google.com", "zoom.us", "teams.microsoft.com", "pnr", "booking confirmed", "due date", "statement", "out for delivery")
+        for k in ("interview", "meet.google.com", "zoom.us", "teams.microsoft.com", "pnr", "booking confirmed", "due date", "statement", "out for delivery", "attached document", "ticket.pdf")
     )
     if not has_critical_token and any(p in combined_sample for p in ("unsubscribe", "flash sale", "newsletter", "50% off", "promo code")):
         return {
@@ -316,17 +341,18 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
 
             system_prompt = (
                 "You are an expert AI email intelligence assistant for a user's personal mailbox. "
-                "Analyze the email and determine if it is HIGH IMPORTANCE and requires an instant user notification.\n\n"
+                "Analyze the email and attached documents, and determine if it is HIGH IMPORTANCE and requires an instant user notification.\n\n"
                 "Allowed categories:\n"
                 "- 'interview': Job interview, HR screening, technical interview, client video call with recruiter/company. Contains company name, date/time, and video link (Google Meet, Zoom, Teams).\n"
-                "- 'ticket_booking': Flight, train (IRCTC), bus, movie, or hotel booking confirmation with PNR, booking ID, route, date.\n"
+                "- 'ticket_booking': Flight, train (IRCTC / Indian Railways), bus, movie, or hotel booking confirmation with PNR, booking ID, train/flight number, route, travel date, passengers, seats, fare.\n"
+                "- 'document_received': Any important attached file or document (PDF, agreement, resume, certificate, invoice, medical report, admission letter) that the user should know about.\n"
                 "- 'bill_payment': Credit card statement, electricity bill, mobile recharge/utility bill with total amount due and due date.\n"
                 "- 'delivery_urgent': Order out for delivery today with a delivery OTP/PIN or urgent delivery status.\n"
                 "- 'promotional': Sales, marketing, discounts, newsletters, social media digests (LinkedIn, Twitter), spam. Set is_important=false.\n\n"
                 "Return JSON ONLY in this schema:\n"
                 "{\n"
                 '  "is_important": boolean,\n'
-                '  "category": "interview" | "ticket_booking" | "bill_payment" | "delivery_urgent" | "promotional",\n'
+                '  "category": "interview" | "ticket_booking" | "document_received" | "bill_payment" | "delivery_urgent" | "promotional",\n'
                 '  "company": string or null,\n'
                 '  "role_or_title": string or null,\n'
                 '  "datetime_str": string or null,\n'
@@ -335,17 +361,21 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
                 '  "carrier": string or null,\n'
                 '  "pnr": string or null,\n'
                 '  "route": string or null,\n'
-                '  "biller": string or null,\n'
+                '  "passengers": string or null,\n'
+                '  "seats": string or null,\n'
                 '  "amount": string or null,\n'
+                '  "document_title": string or null,\n'
+                '  "document_type": string or null,\n'
+                '  "biller": string or null,\n'
                 '  "due_date": string or null,\n'
                 '  "service": string or null,\n'
                 '  "otp": string or null,\n'
                 '  "summary": string or null\n'
                 "}\n"
-                "Do NOT hallucinate. If details are not in the email, use null. Set is_important to false for marketing, advertisements, newsletters, or generic notifications."
+                "Do NOT hallucinate. Extract exact data from the text and attachments. Set is_important to false for marketing, advertisements, newsletters, or generic notifications."
             )
 
-            email_content = f"From: {sender}\nSubject: {subject}\nBody:\n{body[:2500]}"
+            email_content = f"From: {sender}\nSubject: {subject}\nBody:\n{body[:3500]}"
             llm_result = await _chat_json(system_prompt, email_content)
 
             if isinstance(llm_result, dict) and "is_important" in llm_result:

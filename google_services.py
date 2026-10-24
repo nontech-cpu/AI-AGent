@@ -379,6 +379,45 @@ async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: s
             snippet = full.get('snippet', '')
             body = _extract_body_from_gmail_payload(payload) or snippet
 
+            # Check for attachments (PDFs, images, tickets, invoices)
+            attachment_texts = []
+
+            async def extract_attachments(part):
+                fn = part.get('filename')
+                att_id = part.get('body', {}).get('attachmentId')
+                if fn and att_id:
+                    try:
+                        att_res = await _request(
+                            'GET',
+                            f'{GOOGLE}/gmail/v1/users/me/messages/{m_id}/attachments/{att_id}',
+                            access
+                        )
+                        att_b64 = att_res.get('data', '')
+                        if att_b64:
+                            pad = '=' * ((4 - len(att_b64) % 4) % 4)
+                            att_bytes = base64.urlsafe_b64decode(att_b64 + pad)
+                            lower_fn = fn.lower()
+                            if lower_fn.endswith('.pdf'):
+                                from multimodal import extract_text_from_pdf
+                                txt = extract_text_from_pdf(att_bytes)
+                                if txt:
+                                    attachment_texts.append(f"[Attached Document: {fn}]\n{txt}")
+                            elif any(lower_fn.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.webp')):
+                                from multimodal import analyze_image_with_groq
+                                img_txt = await analyze_image_with_groq(att_bytes, caption=f"Email attachment {fn}")
+                                if img_txt:
+                                    attachment_texts.append(f"[Attached Image: {fn}]\n{img_txt}")
+                    except Exception as att_err:
+                        print(f"Error fetching attachment {fn} in message {m_id}:", att_err)
+
+                for sub in part.get('parts', []):
+                    await extract_attachments(sub)
+
+            await extract_attachments(payload)
+            if attachment_texts:
+                att_combined = "\n\n".join(attachment_texts)
+                body = f"{body}\n\n{att_combined}".strip() if body else att_combined
+
             messages.append({
                 'id': m_id,
                 'thread_id': full.get('threadId'),
@@ -387,7 +426,7 @@ async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: s
                 'date': date_str,
                 'to': to_str,
                 'snippet': snippet,
-                'body': body[:4000],
+                'body': body[:6000],
             })
         except Exception as exc:
             print(f"fetch_user_inbox_messages get message {m_id} failed:", repr(exc))

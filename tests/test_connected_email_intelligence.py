@@ -284,3 +284,54 @@ async def test_connected_user_gmail_monitor_loop_end_to_end():
     # Nothing should be called because they are already marked processed!
     assert mock_say.call_count == 0
 
+
+@pytest.mark.asyncio
+async def test_search_user_emails_tool():
+    from agent.tools import execute_tool
+
+    chat_id = 998877
+    mock_messages = [
+        {
+            "id": "email_tkt_123",
+            "sender": "irctc@indianrail.gov.in",
+            "subject": "E-Ticket Confirmation",
+            "date": "24 Oct 2026",
+            "body": "Train 20495 / JU HDP SF EXP. PNR: 2524281551. Route: Jodhpur to Abu Road. 2 passengers. Total fare: Rs 599.0."
+        }
+    ]
+
+    with patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
+         patch("google_services.fetch_user_inbox_messages", AsyncMock(return_value=mock_messages)):
+
+        res = await execute_tool(chat_id, "search_user_emails", {"query": "ticket"})
+        assert res["status"] == "success"
+        assert res["count"] == 1
+        assert res["emails"][0]["id"] == "email_tkt_123"
+        assert res["emails"][0]["is_important"] is True
+        assert "2524281551" in (res["emails"][0]["alert_text"] or "")
+
+
+@pytest.mark.asyncio
+async def test_ticket_email_fast_path():
+    from agent.loop import run_agent_turn
+
+    chat_id = 998877
+    mock_messages = [
+        {
+            "id": "email_tkt_123",
+            "sender": "irctc@indianrail.gov.in",
+            "subject": "E-Ticket Confirmation",
+            "date": "24 Oct 2026",
+            "body": "Train 20495 / JU HDP SF EXP. PNR: 2524281551. Route: Jodhpur to Abu Road. 2 passengers. Total fare: Rs 599.0."
+        }
+    ]
+
+    with patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
+         patch("google_services.fetch_user_inbox_messages", AsyncMock(return_value=mock_messages)):
+
+        turn = await run_agent_turn(chat_id, "mere ticket aaye h kuch btao usme se mail pr")
+        assert "search_user_emails" in turn["tool_calls_executed"]
+        assert "2524281551" in turn["reply"]
+        assert "Ticket / Booking Confirmed" in turn["reply"]
+
+

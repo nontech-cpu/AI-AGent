@@ -1197,7 +1197,7 @@ async def connected_user_gmail_monitor_loop():
                     continue
 
                 try:
-                    messages = await fetch_user_inbox_messages(chat_id, max_results=5, query="is:unread")
+                    messages = await fetch_user_inbox_messages(chat_id, max_results=10, query="in:inbox")
                 except Exception as fetch_err:
                     continue
 
@@ -1232,6 +1232,41 @@ async def connected_user_gmail_monitor_loop():
                             is_important=True
                         )
                         alert_text = analysis["alert_text"]
+
+                        # Save structured fact to user cognitive memory
+                        cat = analysis.get("category", "email")
+                        raw = analysis.get("raw_data") or {}
+                        fact_text = ""
+                        if cat == "ticket_booking":
+                            pnr_str = raw.get("pnr") or ""
+                            route_str = raw.get("route") or ""
+                            dt_str = raw.get("datetime_str") or ""
+                            carrier_str = raw.get("carrier") or "Travel"
+                            seats_str = raw.get("seats") or ""
+                            pax_str = raw.get("passengers") or ""
+                            fact_text = f"Booking/Ticket: {carrier_str} | PNR: {pnr_str} | Route: {route_str} | Date: {dt_str} | Seats: {seats_str} | Passengers: {pax_str}"
+                        elif cat == "interview":
+                            comp_str = raw.get("company") or ""
+                            role_str = raw.get("role_or_title") or ""
+                            dt_str = raw.get("datetime_str") or ""
+                            meet_str = raw.get("meet_link") or ""
+                            fact_text = f"Interview/Meeting: {comp_str} | Role: {role_str} | Date: {dt_str} | Link: {meet_str}"
+                        elif cat == "document_received":
+                            title_str = raw.get("document_title") or raw.get("role_or_title") or subject
+                            summary_str = raw.get("summary") or ""
+                            fact_text = f"Received Document: {title_str} - {summary_str}"
+                        elif cat == "bill_payment":
+                            biller_str = raw.get("biller") or ""
+                            amount_str = raw.get("amount") or ""
+                            due_str = raw.get("due_date") or ""
+                            fact_text = f"Bill Due: {biller_str} | Amount: {amount_str} | Due Date: {due_str}"
+
+                        if fact_text:
+                            try:
+                                await asyncio.to_thread(save_user_fact, chat_id, fact_text, category=cat)
+                            except Exception as f_err:
+                                print(f"Error saving user fact from email for {chat_id}:", f_err)
+
                         try:
                             reply_lang.set(get_language(chat_id))
                             await say_raw(chat_id, alert_text)
