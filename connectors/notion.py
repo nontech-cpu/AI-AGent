@@ -40,7 +40,8 @@ class NotionConnector(Connector):
                 return f"Apna Notion workspace 1-click mein connect karne ke liye is link par authorize karein:\n👉 {url}"
             except Exception:
                 pass
-        return "Notion connect karne ke liye apna Notion integration token (`secret_...` ya `ntn_...`) chat mein bhej dijiye."
+        frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
+        return f"Apna Notion workspace connect karne ke liye is secure link par jayein:\n👉 {frontend_connect}"
 
     def tools(self) -> List[ToolSpec]:
         return [

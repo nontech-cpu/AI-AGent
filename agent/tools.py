@@ -1218,19 +1218,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     msg = f"✅ Aapka Notion account connected hai! (Workspace: {notion_ws})"
                 else:
                     from notion_auth import is_notion_oauth_configured, build_notion_auth_url
+                    frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
                     if is_notion_oauth_configured():
                         try:
                             auth_url = build_notion_auth_url(int(chat_id), source="tg")
                             msg = (
                                 f"❌ Aapka Notion account abhi connect nahi hai.\n\n"
-                                f"👉 1-Click Login: Is secure link par click karke workspace authorize karein:\n"
+                                f"👉 1-Click Login: Is secure official link par click karke workspace authorize karein:\n"
                                 f"{auth_url}\n\n"
-                                f"Ya apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                                f"Authorize karte hi aapka Notion workspace automatically link ho jayega!"
                             )
                         except Exception:
-                            msg = "❌ Aapka Notion account abhi connect nahi hai. Connect karne ke liye apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                            msg = f"❌ Aapka Notion account abhi connect nahi hai.\n\n👉 1-Click Connect Link:\n{frontend_connect}"
                     else:
-                        msg = "❌ Aapka Notion account abhi connect nahi hai. Connect karne ke liye apna Notion integration token (`ntn_...` ya `secret_...`) yahan bhej sakte hain."
+                        msg = f"❌ Aapka Notion account abhi connect nahi hai.\n\n👉 1-Click Connect Link:\n{frontend_connect}"
                 return {
                     "status": "success",
                     "service": "notion",
@@ -1495,14 +1496,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     except Exception:
                         pass
 
+                frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
                 return {
                     "status": "success",
                     "service": "notion",
                     "message": (
-                        "Notion account connect karne ke do options hain:\n\n"
-                        "1. **Direct Token:** [Notion My Integrations](https://www.notion.so/my-integrations) par jakar 'New integration' banayein aur apna integration token (`ntn_...` ya `secret_...`) seedha yahan chat mein bhej dein.\n\n"
-                        "2. **OAuth App:** Render environment mein `NOTION_CLIENT_ID` aur `NOTION_CLIENT_SECRET` add kar dijiye official 1-click login ke liye.\n\n"
-                        "👉 Web portal link: https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html"
+                        f"Notion workspace connect karne ke liye niche diye gaye 1-click link par jayein:\n\n"
+                        f"👉 {frontend_connect}\n\n"
+                        f"Authorize karte hi aapka Notion workspace link ho jayega!"
                     )
                 }
 
