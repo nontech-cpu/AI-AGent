@@ -400,7 +400,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 if important_emails:
                     alerts = [e.get("alert_text") for e in important_emails if e.get("alert_text")]
                     if alerts:
-                        reply_text = "Haanji, aapke connected mail par ye details mili hain:\n\n" + "\n\n".join(alerts)
+                        reply_text = "Haanji, aapke connected mail par details mil gayi hain:\n\n" + alerts[0]
                 elif saved_facts:
                     reply_text = "Aapke booking / ticket ke baare me saved details:\n\n" + "\n".join([f"• {f}" for f in saved_facts])
                 elif emails:
@@ -408,9 +408,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     subj = top_msg.get("subject") or "No Subject"
                     sender = top_msg.get("sender") or "Unknown"
                     snip = top_msg.get("snippet") or ""
-                    reply_text = f"Aapke mail par recent message mila hai:\n\n📧 **From**: {sender}\n📌 **Subject**: {subj}\n📝 **Snippet**: {snip}"
+                    reply_text = f"Aapke mail par recent message mila hai:\n\n📧 From: {sender}\n📌 Subject: {subj}\n📝 Snippet: {snip}"
 
                 if reply_text:
+                    from main import clean_html_to_text
+                    reply_text = clean_html_to_text(reply_text)
                     db.log_chat_message(chat_id, "user", user_text)
                     db.log_chat_message(chat_id, "assistant", reply_text)
                     return {

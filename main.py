@@ -221,6 +221,19 @@ def record_chat_turn(chat_id: int, role: str, text: str):
 
 # ---------- Telegram helpers (WhatsApp ke time sirf ye 3 badlenge) ----------
 
+def clean_html_to_text(s: str) -> str:
+    """Strips any raw HTML tags (e.g. <b>, <code>, <i>) so text renders cleanly for humans."""
+    if not isinstance(s, str):
+        return s
+    s = re.sub(r"</?(?:b|strong)>", "", s, flags=re.I)
+    s = re.sub(r"</?(?:i|em)>", "", s, flags=re.I)
+    s = re.sub(r"</?code>", "", s, flags=re.I)
+    s = re.sub(r"</?pre>", "", s, flags=re.I)
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    return s
+
+
 async def tg(method, payload):
     async with httpx.AsyncClient() as client:
         await client.post(f"{API}/{method}", json=payload)
@@ -228,6 +241,7 @@ async def tg(method, payload):
 
 async def say_raw(chat_id, text):
     """Bina translate kiye bhejta hai (jaise voice ka transcript)."""
+    text = clean_html_to_text(text)
     record_chat_turn(chat_id, "assistant", text)
     await tg("sendMessage", {"chat_id": chat_id, "text": text})
 
@@ -235,8 +249,10 @@ async def say_raw(chat_id, text):
 async def say(chat_id, text):
     """User ki language me (agar English nahi hai) bhejta hai."""
     text = await localize(text, reply_lang.get())
+    text = clean_html_to_text(text)
     record_chat_turn(chat_id, "assistant", text)
     await tg("sendMessage", {"chat_id": chat_id, "text": text})
+
 
 
 async def send_file(chat_id, filename, content_bytes, caption, mime_type="application/octet-stream"):

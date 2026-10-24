@@ -214,8 +214,42 @@ def _heuristic_analyze(sender: str, subject: str, body: str) -> Dict[str, Any]:
     }
 
 
+def _format_human_date(dt_str: Optional[str]) -> str:
+    """Converts ISO and technical timestamps (e.g. 2026-09-03T22:00:00) into human-friendly dates."""
+    if not dt_str:
+        return "Check email for date & time"
+    clean = str(dt_str).strip()
+    if clean.lower().startswith("check") or clean.lower().startswith("see") or clean.lower().startswith("details"):
+        return clean
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(clean[:19], fmt)
+            if "T" in clean or ":" in clean:
+                return d.strftime("%d %b %Y, %I:%M %p")
+            return d.strftime("%d %b %Y")
+        except Exception:
+            pass
+    return clean
+
+
+def _format_amount(amt_str: Optional[str]) -> str:
+    """Formats raw numbers like '599.0' or '14850.00' into clean rupee amounts like '₹599'."""
+    if not amt_str:
+        return ""
+    clean = str(amt_str).strip()
+    if clean.lower().startswith("see") or clean.lower().startswith("check"):
+        return clean
+    s = clean.replace("INR", "").replace("Rs.", "").replace("Rs", "").replace("₹", "").replace("$", "").strip()
+    try:
+        val = float(s.replace(",", ""))
+        return f"₹{int(val):,}" if val.is_integer() else f"₹{val:,.2f}"
+    except Exception:
+        return f"₹{clean}" if not clean.startswith("₹") else clean
+
+
+
 def _format_alert(data: Dict[str, Any]) -> Optional[str]:
-    """Format structured alert message with clean emojis and actionable guidance."""
+    """Format structured alert message in clean, human-readable text without raw HTML tags."""
     if not data or not data.get("is_important"):
         return None
 
@@ -224,45 +258,46 @@ def _format_alert(data: Dict[str, Any]) -> Optional[str]:
     if category == "interview":
         comp = data.get("company") or "Company"
         role = data.get("role_or_title") or "Meeting / Discussion"
-        dt = data.get("datetime_str") or "Check email for date & time"
+        dt = _format_human_date(data.get("datetime_str"))
         link = data.get("meet_link") or "Link in email"
         sender = data.get("interviewer") or "Recruiter"
         return (
-            f"💼 <b>Interview / Meeting Scheduled!</b>\n\n"
-            f"🏢 <b>Company/Organizer</b>: {comp}\n"
-            f"📌 <b>Topic/Role</b>: {role}\n"
-            f"📅 <b>Date & Time</b>: {dt}\n"
-            f"🔗 <b>Meeting Link</b>: {link}\n"
-            f"👤 <b>From</b>: {sender}\n\n"
-            f"💡 <i>Tip: Aap chahein toh 'Add this interview to calendar' bol kar calendar me schedule karwa sakte hain.</i>"
+            f"💼 Interview / Meeting Scheduled!\n\n"
+            f"🏢 Company: {comp}\n"
+            f"📌 Role/Topic: {role}\n"
+            f"📅 Date & Time: {dt}\n"
+            f"🔗 Meeting Link: {link}\n"
+            f"👤 From: {sender}\n\n"
+            f"💡 Tip: Aap chahein toh 'Add this interview to calendar' bol kar calendar me schedule karwa sakte hain."
         )
 
     elif category == "ticket_booking":
         carrier = data.get("carrier") or "Travel Provider"
         pnr = data.get("pnr") or "Confirmed"
         route = data.get("route") or "Details in email"
-        dt = data.get("datetime_str") or "Details in email"
+        dt = _format_human_date(data.get("datetime_str"))
         seats = data.get("seats")
         passengers = data.get("passengers")
-        amount = data.get("amount")
+        raw_amt = data.get("amount")
+        amount = _format_amount(raw_amt) if raw_amt else None
         summary = data.get("summary")
 
         lines = [
-            f"🎫 <b>Ticket / Booking Confirmed!</b>\n",
-            f"🚆 <b>Service/Provider</b>: {carrier}",
-            f"🔢 <b>PNR / Booking ID</b>: <code>{pnr}</code>",
-            f"📍 <b>Route / Venue</b>: {route}",
-            f"📅 <b>Travel Date</b>: {dt}",
+            f"🎫 Ticket / Booking Confirmed!\n",
+            f"🚆 Provider: {carrier}",
+            f"🔢 PNR: {pnr}",
+            f"📍 Route: {route}",
+            f"📅 Travel Date: {dt}",
         ]
-        if seats:
-            lines.append(f"💺 <b>Seat/Berth</b>: {seats}")
         if passengers:
-            lines.append(f"👥 <b>Passengers</b>: {passengers}")
+            lines.append(f"👥 Passengers: {passengers}")
+        if seats:
+            lines.append(f"💺 Seat/Berth: {seats}")
         if amount:
-            lines.append(f"💰 <b>Total Fare</b>: {amount}")
+            lines.append(f"💰 Total Fare: {amount}")
         if summary and summary != route and len(summary) > 10:
-            lines.append(f"\n📋 <b>Details</b>: {summary}")
-        lines.append(f"\n💡 <i>Booking confirm ho gayi hai! Agar travel reminder ya calendar entry lagani ho toh mujhe bata dein.</i>")
+            lines.append(f"\n📋 Details: {summary}")
+        lines.append(f"\n💡 Booking confirm ho gayi hai! Agar travel reminder ya calendar entry lagani ho toh mujhe bata dein.")
         return "\n".join(lines)
 
     elif category == "document_received":
@@ -270,37 +305,39 @@ def _format_alert(data: Dict[str, Any]) -> Optional[str]:
         doc_type = data.get("document_type") or "Document"
         summary = data.get("summary") or "Attached document received in email"
         return (
-            f"📄 <b>New Document Received!</b>\n\n"
-            f"📑 <b>Title/Type</b>: {doc_title} ({doc_type})\n"
-            f"📝 <b>Summary & Highlights</b>: {summary}\n\n"
-            f"💡 <i>Aap is document ke baare me koi bhi sawaal mujhse pooch sakte hain!</i>"
+            f"📄 New Document Received!\n\n"
+            f"📑 Title: {doc_title} ({doc_type})\n"
+            f"📝 Summary: {summary}\n\n"
+            f"💡 Aap is document ke baare me koi bhi sawaal mujhse pooch sakte hain!"
         )
 
     elif category == "bill_payment":
         biller = data.get("biller") or "Biller"
-        amount = data.get("amount") or "See statement"
-        due_date = data.get("due_date") or "See statement"
+        raw_amt = data.get("amount")
+        amount = _format_amount(raw_amt) if raw_amt else "See statement"
+        due_date = _format_human_date(data.get("due_date"))
         return (
-            f"💳 <b>Bill Payment / Due Date Alert!</b>\n\n"
-            f"🏦 <b>Biller/Bank</b>: {biller}\n"
-            f"💰 <b>Total Amount Due</b>: {amount}\n"
-            f"⏳ <b>Payment Due Date</b>: {due_date}\n\n"
-            f"⚠️ <i>Late fees se bachne ke liye due date se pehle payment kar lein.</i>"
+            f"💳 Bill Payment / Due Date Alert!\n\n"
+            f"🏦 Bank/Biller: {biller}\n"
+            f"💰 Total Amount Due: {amount}\n"
+            f"⏳ Payment Due Date: {due_date}\n\n"
+            f"⚠️ Late fees se bachne ke liye due date se pehle payment kar lein."
         )
 
     elif category == "delivery_urgent":
         service = data.get("service") or "Delivery"
         otp = data.get("otp")
         summary = data.get("summary") or "Package arriving today"
-        otp_line = f"🔑 <b>Delivery OTP/PIN</b>: <code>{otp}</code>\n" if otp else ""
+        otp_line = f"🔑 Delivery OTP/PIN: {otp}\n" if otp else ""
         return (
-            f"📦 <b>Urgent Delivery / Order Update!</b>\n\n"
-            f"🚚 <b>Merchant/Courier</b>: {service}\n"
+            f"📦 Urgent Delivery / Order Update!\n\n"
+            f"🚚 Merchant: {service}\n"
             f"{otp_line}"
-            f"📋 <b>Status</b>: {summary}\n"
+            f"📋 Status: {summary}\n"
         )
 
     return None
+
 
 
 async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[str, Any]:
