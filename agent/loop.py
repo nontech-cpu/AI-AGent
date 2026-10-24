@@ -118,7 +118,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
-    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+    model = os.getenv("GROQ_MODEL") or "qwen/qwen3.8-27b"
     now_ist = datetime.now(IST)
 
     # Check if user sent just a raw email address (e.g. attempting to link Google)
@@ -664,8 +664,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if has_recent_github and (is_affirmative or is_code_modify):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
 
-    # Always allow connection / asking user if needed
-    selected_tool_names.update(["connect_integration", "check_integrations_status", "ask_user", "search_memory"])
+    # Always allow connection / search memory (conversational questions are answered directly in chat text without ask_user dummy tool)
+    selected_tool_names.update(["connect_integration", "check_integrations_status", "search_memory"])
+    selected_tool_names.discard("ask_user")
     if is_code_modify:
         selected_tool_names.discard("connect_integration")
         selected_tool_names.discard("ask_user")
@@ -956,10 +957,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply = f"Reminder set ho gaya hai! 📅 **{t_name}**{date_part}{time_part}."
             elif isinstance(last_res, dict) and last_res.get("trip_title"):
                 final_reply = f"Packing list '{last_res.get('trip_title')}' create kar di gayi hai!"
+            elif isinstance(last_res, dict) and last_res.get("question"):
+                final_reply = last_res["question"]
             elif isinstance(last_res, dict) and last_res.get("status") == "error" and "message" in last_res:
                 final_reply = last_res["message"]
             else:
-                final_reply = "Aapka request process kar liya gaya hai."
+                final_reply = "Bataiye, is baare me main aapki kya madad karun ya schedule me koi change karna hai?"
         else:
             final_reply = "Main aapki reminders, meetings, code aur accounts track karne me madad karta hu. Aap bataiye kya karna hai?"
 

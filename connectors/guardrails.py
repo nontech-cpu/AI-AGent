@@ -86,17 +86,7 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
 
 def check_repeat_guard(chat_id: int, candidate_reply: str) -> str:
     """
-    Suppresses identical consecutive replies. If identical to last turn, provides a fresh, actionable variation.
+    Returns candidate_reply cleanly without appending robotic filler suffixes.
     """
-    try:
-        recent = db.get_recent_chat_history(chat_id, limit=2)
-        if recent:
-            last_assistant = next((r["text"] for r in reversed(recent) if r.get("role") == "assistant"), None)
-            if last_assistant:
-                # Compare similarity
-                ratio = difflib.SequenceMatcher(None, candidate_reply.strip().lower(), last_assistant.strip().lower()).ratio()
-                if ratio > 0.88:
-                    return f"{candidate_reply.strip()}\n\n(Aap chahein toh agla step bataiye ya koi doosra option try karein.)"
-    except Exception:
-        pass
     return candidate_reply
+

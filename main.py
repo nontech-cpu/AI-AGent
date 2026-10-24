@@ -531,7 +531,7 @@ async def detect_meeting_conflicts(chat_id: int, start_iso: str, duration_minute
             except Exception:
                 pass
 
-    # Check Reminders within 30 mins
+    # Check Reminders with realistic interval reasoning (travel takes 3-4h, movies ~3h, doctor ~2h)
     for rem in sched.get("reminders", []):
         if isinstance(rem, dict):
             title = rem.get("title", "Reminder")
@@ -543,8 +543,26 @@ async def detect_meeting_conflicts(chat_id: int, start_iso: str, duration_minute
             continue
         if d_time:
             rem_dt = datetime.combine(target_date, d_time, tzinfo=IST)
-            if abs((rem_dt - start_dt).total_seconds()) < 1800:
-                time_conflicts.append(f"Reminder: '{title}' ({d_time.strftime('%H:%M')})")
+            low_t = title.lower()
+            is_travel = any(w in low_t for w in ("travel", "train", "flight", "journey", "trip", "bus", "drive", "yatra", "safar"))
+            is_movie = any(w in low_t for w in ("movie", "cinema", "film", "theatre"))
+            is_doctor = any(w in low_t for w in ("doctor", "hospital", "clinic", "dentist", "appointment"))
+
+            if is_travel:
+                travel_end = rem_dt + timedelta(hours=4)
+                if (rem_dt - timedelta(hours=1)) <= start_dt < travel_end:
+                    time_conflicts.append(f"Train/Travel Reminder: '{title}' ({d_time.strftime('%I:%M %p')}) — safar ke dauran meeting attend karna mushkil hoga")
+            elif is_movie:
+                movie_end = rem_dt + timedelta(hours=3)
+                if rem_dt <= start_dt < movie_end:
+                    time_conflicts.append(f"Movie Reminder: '{title}' ({d_time.strftime('%I:%M %p')})")
+            elif is_doctor:
+                doc_end = rem_dt + timedelta(hours=2)
+                if rem_dt <= start_dt < doc_end:
+                    time_conflicts.append(f"Doctor Appointment: '{title}' ({d_time.strftime('%I:%M %p')})")
+            else:
+                if abs((rem_dt - start_dt).total_seconds()) < 3600:
+                    time_conflicts.append(f"Reminder: '{title}' ({d_time.strftime('%I:%M %p')})")
 
     # Day commitments
     day_commitments = [
