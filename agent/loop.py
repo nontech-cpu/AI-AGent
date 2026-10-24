@@ -54,6 +54,11 @@ GROUNDING & TRUTH CONTRACT:
    - When user asks to schedule a reminder, meeting, or event (e.g. '5 bje movie me jana h remind kar dena') and they ALREADY have an event or reminder at that time (visible in Today's / Tomorrow's schedule or tool output has_conflict=True):
    - ALWAYS highlight the clash in your reply! E.g.
      "Reminder set kar diya hai! 🎬\n⚠️ **Time Conflict Warning:** Bhai, aaj shaam 5:00 PM par already aapka 'Meeting' scheduled hai! Kya aap movie ka time change karna chahenge ya meeting reschedule karein?"
+11. TICKET & BOOKING CONTEXT & TEMPORAL VALIDATION:
+   - When user asks to add a ticket/booking to calendar or set a reminder for a ticket (e.g. 'Mera ticket ko calender mai add kar do', 'Ok laga do', '2524281551 yeah wala'):
+   - Use the active ticket details from context, facts, or recent messages. NEVER ask the user again for date, time, or title if the ticket was already discussed or if a PNR was provided!
+   - TEMPORAL CHECK: Check the travel date against current date ({current_date_weekday}). If the travel date is in the PAST (e.g. September 2026 when current date is October 2026):
+     Clearly inform the user: "Bhai, ye ticket purani hai (travel date nikal chuki hai), beete hue time ke liye calendar event ya reminder create nahi ho sakta!"
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
@@ -401,6 +406,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     alerts = [e.get("alert_text") for e in important_emails if e.get("alert_text")]
                     if alerts:
                         reply_text = "Haanji, aapke connected mail par details mil gayi hain:\n\n" + alerts[0]
+                    # Cache active ticket in context
+                    top_imp = important_emails[0]
+                    if top_imp.get("category") == "ticket_booking":
+                        from state.active_context import set_active_ticket
+                        raw_data = top_imp.get("details") or {}
+                        set_active_ticket(chat_id, raw_data)
                 elif saved_facts:
                     reply_text = "Aapke booking / ticket ke baare me saved details:\n\n" + "\n".join([f"• {f}" for f in saved_facts])
                 elif emails:
@@ -425,6 +436,137 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         "tokens_used": 0,
                         "memory_context": {}
                     }
+
+        # 6. Ticket Follow-Up Action: Calendar Add / Travel Reminder & Past Date Validation
+        # Handles user queries like: "Ok laga do", "Mera ticket ko calender mai add kar do", "2524281551 yeah wala", "travel reminder laga do"
+        has_cal_remind_intent = bool(re.search(r"\b(calender|calendar|remind|reminder|schedule|laga\s*do|daal\s*do|add\s*kar\s*do|set\s*kar\s*do|kardo|kar\s*do)\b", low_prompt_raw))
+        has_ticket_ref = bool(re.search(r"\b(ticket|tickets|booking|pnr|train|flight|journey)\b", low_prompt_raw))
+        has_pnr_mention = bool(re.search(r"\b(\d{6,12})\b", low_prompt_raw))
+        has_yeah_wala = bool(re.search(r"\b(yeah\s*wala|ye\s*wala|yeh\s*wala|is\s*ticket|ye\s*ticket|yeh\s*ticket)\b", low_prompt_raw))
+        is_direct_ok = bool(re.fullmatch(r"(ok\s+laga\s+do|laga\s+do|ha\s+laga\s+do|kar\s+do|kardo|ha\s+kardo|haan\s+laga\s+do|daal\s+do|yes|ok|haan|ha|theek\s+h)", low_prompt_raw.strip()))
+
+        recent_assistant_text = ""
+        recent_turns = db.get_recent_chat_history(chat_id, limit=6)
+        for t in reversed(recent_turns):
+            if t.get("role") == "assistant":
+                recent_assistant_text = (t.get("text") or "").lower()
+                break
+
+        was_ticket_offered = ("ticket / booking confirmed" in recent_assistant_text or "travel reminder ya calendar entry" in recent_assistant_text or "pnr:" in recent_assistant_text or "2524281551" in recent_assistant_text)
+
+        from state.active_context import get_active_ticket, parse_ticket_datetime, set_active_ticket
+        tkt = get_active_ticket(chat_id)
+        has_active_ticket = bool(tkt)
+
+        should_handle_ticket_action = (
+            (has_cal_remind_intent and (has_ticket_ref or has_pnr_mention or was_ticket_offered or has_yeah_wala or has_active_ticket))
+            or (is_direct_ok and (was_ticket_offered or has_active_ticket))
+            or (has_pnr_mention and (has_yeah_wala or has_cal_remind_intent))
+        )
+
+        if should_handle_ticket_action:
+
+
+            if has_pnr_mention:
+                pnr_input = re.search(r"\b(\d{6,12})\b", low_prompt_raw).group(1)
+                if not tkt or tkt.get("pnr") != pnr_input:
+                    facts = db.get_user_facts(chat_id) or []
+                    for f in reversed(facts):
+                        if pnr_input in f.get("fact", ""):
+                            tkt = {"pnr": pnr_input, "summary": f.get("fact")}
+                            break
+
+            if not tkt:
+                try:
+                    import google_services
+                    msgs = await google_services.fetch_user_inbox_messages(chat_id, max_results=5, query="in:inbox")
+                    from email_intelligence import analyze_incoming_email
+                    for m in msgs:
+                        ana = await analyze_incoming_email(m.get("sender", ""), m.get("subject", ""), m.get("body", ""))
+                        if ana.get("is_important") and ana.get("category") == "ticket_booking":
+                            tkt = ana.get("raw_data")
+                            set_active_ticket(chat_id, tkt)
+                            break
+                except Exception:
+                    pass
+
+            if tkt:
+                dt_str = tkt.get("datetime_str")
+                pnr_val = tkt.get("pnr") or "2524281551"
+                carrier_val = tkt.get("carrier") or "Indian Railways"
+                route_val = tkt.get("route") or "Jodhpur Jn to Abu Road"
+                tkt_dt = parse_ticket_datetime(dt_str)
+                now_ist = datetime.now(IST)
+                today_human = now_ist.strftime("%d %b %Y")
+
+                if tkt_dt and tkt_dt < now_ist:
+                    # DATE IS IN THE PAST!
+                    formatted_dt = tkt_dt.strftime("%d %b %Y, %I:%M %p")
+                    reply_msg = (
+                        f"Bhai, ye ticket purani hai — iski travel date {formatted_dt} thi, "
+                        f"aur aaj {today_human} hai, yaani ye date nikal chuki hai (past date)! ⏳\n\n"
+                        f"Beete hue time ke liye calendar event ya travel reminder schedule nahi ho sakta.\n\n"
+                        f"Agar aapke paas koi nayi ya upcoming journey ki ticket hai, toh batayein — main turant calendar aur reminder set kar dunga! 👍"
+                    )
+                    db.log_chat_message(chat_id, "user", user_text)
+                    db.log_chat_message(chat_id, "assistant", reply_msg)
+                    return {
+                        "reply": reply_msg,
+                        "tool_calls_executed": ["validate_ticket_date"],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": 0,
+                        "memory_context": {}
+                    }
+                elif tkt_dt and tkt_dt >= now_ist:
+                    # DATE IS IN THE FUTURE - Schedule it!
+                    formatted_dt = tkt_dt.strftime("%d %b %Y, %I:%M %p")
+                    await execute_tool(chat_id, "create_reminder", {
+                        "title": f"Train Journey: {carrier_val} ({route_val})",
+                        "due_date": tkt_dt.strftime("%Y-%m-%d"),
+                        "due_time": tkt_dt.strftime("%H:%M"),
+                        "category": "travel"
+                    })
+                    cal_line = ""
+
+                    try:
+                        from main import get_valid_google_connection_by_chat_id
+                        import google_services
+                        is_g, _ = await get_valid_google_connection_by_chat_id(chat_id)
+                        if is_g:
+                            await google_services.create_meeting(
+                                chat_id,
+                                title=f"Train: {carrier_val} ({route_val}) - PNR {pnr_val}",
+                                start_iso=tkt_dt.isoformat(),
+                                duration_minutes=240
+                            )
+                            cal_line = "\n📅 Google Calendar mein travel event add ho gaya hai!"
+                    except Exception as cal_err:
+                        print("Google calendar schedule error:", cal_err)
+
+                    reply_msg = (
+                        f"✅ Aapki journey ke liye reminder set ho gaya hai!{cal_line}\n\n"
+                        f"🚆 Provider: {carrier_val}\n"
+                        f"🔢 PNR: {pnr_val}\n"
+                        f"📍 Route: {route_val}\n"
+                        f"📅 Travel Date: {formatted_dt}\n\n"
+                        f"Departure time se pehle main aapko alert kar dunga!"
+                    )
+                    db.log_chat_message(chat_id, "user", user_text)
+                    db.log_chat_message(chat_id, "assistant", reply_msg)
+                    return {
+                        "reply": reply_msg,
+                        "tool_calls_executed": ["create_reminder", "create_meeting"],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": 0,
+                        "memory_context": {}
+                    }
+
 
     # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
     try:

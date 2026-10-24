@@ -335,3 +335,57 @@ async def test_ticket_email_fast_path():
         assert "Ticket / Booking Confirmed" in turn["reply"]
 
 
+@pytest.mark.asyncio
+async def test_ticket_past_date_calendar_rejection():
+    from agent.loop import run_agent_turn
+    from state.active_context import set_active_ticket
+
+    chat_id = 998877
+    # Set active ticket with past date (03-Sep-2026)
+    set_active_ticket(chat_id, {
+        "pnr": "2524281551",
+        "carrier": "Indian Railways",
+        "route": "JODHPUR JN (JU) to ABU ROAD (ABR)",
+        "datetime_str": "03-Sep-2026 22:00",
+        "amount": "599.0",
+        "passengers": "DEVENDRA, RISHI"
+    })
+
+    # User asks to add it to calendar
+    turn = await run_agent_turn(chat_id, "Mera ticket ko calender mai add kar do")
+    assert "validate_ticket_date" in turn["tool_calls_executed"]
+    assert "purani hai" in turn["reply"] or "past date" in turn["reply"]
+    assert "nikal chuki hai" in turn["reply"] or "beete hue" in turn["reply"]
+
+    # User references PNR: "2524281551 yeah wala"
+    turn2 = await run_agent_turn(chat_id, "2524281551 yeah wala")
+    assert "validate_ticket_date" in turn2["tool_calls_executed"]
+    assert "purani hai" in turn2["reply"] or "past date" in turn2["reply"]
+
+
+@pytest.mark.asyncio
+async def test_ticket_future_date_calendar_scheduling():
+    from agent.loop import run_agent_turn
+    from state.active_context import set_active_ticket
+
+    chat_id = 998877
+    # Set active ticket with future date (25-Dec-2026)
+    set_active_ticket(chat_id, {
+        "pnr": "2524289999",
+        "carrier": "Indian Railways",
+        "route": "DELHI to MUMBAI",
+        "datetime_str": "25-Dec-2026 18:00",
+        "amount": "1200.0",
+        "passengers": "DEVENDRA"
+    })
+
+    with patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
+         patch("google_services.create_meeting", AsyncMock(return_value={"id": "cal_123"})):
+
+        turn = await run_agent_turn(chat_id, "Ok laga do")
+        assert "create_reminder" in turn["tool_calls_executed"]
+        assert "reminder set ho gaya hai" in turn["reply"].lower()
+        assert "2524289999" in turn["reply"]
+
+
+

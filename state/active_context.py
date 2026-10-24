@@ -77,3 +77,110 @@ def format_active_context(chat_id: int) -> str:
     if not parts:
         return "None (fresh topic/turn)"
     return " | ".join(parts)
+
+
+def set_active_ticket(chat_id: int, ticket_info: Dict[str, Any]):
+    """Stores the active ticket details so follow-ups work immediately."""
+    ctx = _ACTIVE_CONTEXT_STORE.setdefault(chat_id, {
+        "connector": None,
+        "topic": None,
+        "objects": [],
+        "updated_at": None
+    })
+    ctx["last_ticket"] = ticket_info
+    pnr = ticket_info.get("pnr") or "Ticket"
+    carrier = ticket_info.get("carrier") or "Travel Provider"
+    route = ticket_info.get("route") or ""
+    dt = ticket_info.get("datetime_str") or ""
+    update_active_context(
+        chat_id,
+        connector="Ticket",
+        topic=f"Ticket PNR {pnr}",
+        objects=[f"Provider: {carrier}", f"PNR: {pnr}", f"Route: {route}", f"Travel Date: {dt}"]
+    )
+
+
+def get_active_ticket(chat_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieves the last viewed or saved ticket for the chat."""
+    ctx = _ACTIVE_CONTEXT_STORE.get(chat_id)
+    if ctx and ctx.get("last_ticket"):
+        return ctx["last_ticket"]
+
+    # Fallback 1: check recent DB facts for ticket PNR
+    try:
+        import db, re
+        facts = db.get_user_facts(chat_id) or []
+        for f in reversed(facts):
+            f_text = f.get("fact", "")
+            if "pnr" in f_text.lower() or "booking/ticket" in f_text.lower():
+                pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]+)", f_text, re.I)
+                route_m = re.search(r"route\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                date_m = re.search(r"date\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                carrier_m = re.search(r"(?:booking/ticket|ticket|provider)\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                pax_m = re.search(r"passengers\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                seat_m = re.search(r"seats\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                if pnr_m:
+                    return {
+                        "pnr": pnr_m.group(1).strip(),
+                        "route": route_m.group(1).strip() if route_m else None,
+                        "datetime_str": date_m.group(1).strip() if date_m else None,
+                        "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
+                        "passengers": pax_m.group(1).strip() if pax_m else None,
+                        "seats": seat_m.group(1).strip() if seat_m else None,
+                        "summary": f_text
+                    }
+    except Exception:
+        pass
+
+    # Fallback 2: check recent chat history for PNR
+    try:
+        import db, re
+        history = db.get_recent_chat_history(chat_id, limit=8)
+        for t in reversed(history):
+            txt = t.get("text", "")
+            if "pnr" in txt.lower():
+                pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]{6,12})", txt, re.I)
+                route_m = re.search(r"route\s*[:\-#]?\s*([^\n]+)", txt, re.I)
+                date_m = re.search(r"(?:travel\s*date|date\s*&\s*time|date)\s*[:\-#]?\s*([^\n]+)", txt, re.I)
+                carrier_m = re.search(r"(?:provider|service)\s*[:\-#]?\s*([^\n]+)", txt, re.I)
+                if pnr_m:
+                    return {
+                        "pnr": pnr_m.group(1).strip(),
+                        "route": route_m.group(1).strip() if route_m else None,
+                        "datetime_str": date_m.group(1).strip() if date_m else None,
+                        "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
+                        "summary": txt[:200]
+                    }
+    except Exception:
+        pass
+
+    return None
+
+
+def parse_ticket_datetime(dt_str: Optional[str]) -> Optional[datetime]:
+    """Parses various ticket date formats into an IST-aware datetime object."""
+    if not dt_str:
+        return None
+    clean = str(dt_str).strip()
+    formats = [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%d-%b-%Y %H:%M",
+        "%d-%b-%Y",
+        "%d %b %Y, %I:%M %p",
+        "%d %b %Y %H:%M",
+        "%d %b %Y",
+        "%d-%m-%Y %H:%M",
+        "%d-%m-%Y",
+    ]
+    for fmt in formats:
+        try:
+            d = datetime.strptime(clean[:19], fmt)
+            return d.replace(tzinfo=IST)
+        except Exception:
+            pass
+    return None
+

@@ -1853,6 +1853,22 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "body_snippet": m.get("body", "")[:1000]
                 })
 
+                if analysis.get("is_important") and analysis.get("category") == "ticket_booking":
+                    raw_d = analysis.get("raw_data") or {}
+                    pnr = raw_d.get("pnr") or ""
+                    route = raw_d.get("route") or ""
+                    dt = raw_d.get("datetime_str") or ""
+                    carrier = raw_d.get("carrier") or "Travel Provider"
+                    seats = raw_d.get("seats") or ""
+                    passengers = raw_d.get("passengers") or ""
+                    t_fact = f"Booking/Ticket: {carrier} | PNR: {pnr} | Route: {route} | Date: {dt} | Seats: {seats} | Passengers: {passengers}"
+                    try:
+                        db.save_user_fact(chat_id, t_fact, category="booking")
+                        from state.active_context import set_active_ticket
+                        set_active_ticket(chat_id, raw_d)
+                    except Exception as c_err:
+                        print("Error caching ticket:", c_err)
+
             saved_facts = db.get_user_facts(chat_id) or []
             booking_facts = [f for f in saved_facts if any(k in f.get("fact", "").lower() for k in ("booking", "ticket", "pnr", "train", "flight"))]
 
