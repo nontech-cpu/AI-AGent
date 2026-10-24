@@ -118,7 +118,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
-    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
     now_ist = datetime.now(IST)
 
     # Check if user sent just a raw email address (e.g. attempting to link Google)
@@ -590,11 +590,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = db.get_recent_chat_history(chat_id, limit=6)
+    recent_history = db.get_recent_chat_history(chat_id, limit=8)
     for turn in recent_history:
         t_text = turn.get("text") or ""
-        if len(t_text) > 250:
-            t_text = t_text[:250] + "..."
+        if len(t_text) > 3000:
+            t_text = t_text[:3000] + "..."
         messages.append({"role": turn["role"], "content": t_text})
 
     # Append current user prompt
