@@ -116,9 +116,39 @@ def format_active_context(chat_id: int) -> str:
         obj_list = ", ".join([f"[{i+1}] {obj}" for i, obj in enumerate(ctx["objects"])])
         parts.append(f"Last Displayed Objects: {obj_list}")
 
+    if ctx.get("last_document"):
+        doc = ctx["last_document"]
+        fname = doc.get("filename", "Uploaded File")
+        sample = doc.get("content", "")[:2500].replace("\n", " ").strip()
+        parts.append(f"Recent Uploaded Document: '{fname}' (Content excerpt: {sample})")
+
     if not parts:
         return "None (fresh topic/turn)"
     return " | ".join(parts)
+
+
+def set_active_document(chat_id: int, doc_info: Dict[str, Any]):
+    """Stores the active document details so follow-ups work immediately."""
+    ctx = _ACTIVE_CONTEXT_STORE.setdefault(chat_id, {
+        "connector": None,
+        "topic": None,
+        "objects": [],
+        "updated_at": None
+    })
+    ctx["last_document"] = doc_info
+    fname = doc_info.get("filename") or "Document"
+    update_active_context(
+        chat_id,
+        connector="Document",
+        topic=f"Document: {fname}",
+        objects=[f"File: {fname}"]
+    )
+
+
+def get_active_document(chat_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieves the last uploaded document info."""
+    ctx = _ACTIVE_CONTEXT_STORE.get(chat_id, {})
+    return ctx.get("last_document")
 
 
 def set_active_ticket(chat_id: int, ticket_info: Dict[str, Any]):

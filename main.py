@@ -3319,6 +3319,27 @@ async def process_document(chat_id, doc, caption=""):
         }
         record_chat_turn(chat_id, "user", f"[Sent Document: {file_name}] {caption or ''}")
 
+        try:
+            from state.active_context import set_active_document
+            set_active_document(chat_id, {
+                "filename": file_name,
+                "content": text_content,
+                "timestamp": datetime.now(IST).isoformat(),
+            })
+        except Exception as act_err:
+            print("set_active_document error:", repr(act_err))
+
+        if caption.strip():
+            agent_prompt = (
+                f"User uploaded document '{file_name}'.\n\n"
+                f"--- Extracted Document Content (first 5000 chars) ---\n"
+                f"{text_content[:5000]}\n"
+                f"--- End Document Content ---\n\n"
+                f"User instruction: {caption.strip()}"
+            )
+            await handle_active(chat_id, agent_prompt)
+            return
+
         summary = await summarize_document_content(file_name, text_content, caption, get_language(chat_id))
         RECENT_DOCS[chat_id]["summary"] = summary
         record_chat_turn(chat_id, "assistant", summary)
