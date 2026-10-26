@@ -173,7 +173,7 @@ class AskUserArgs(BaseModel):
     options: Optional[List[str]] = Field(None, description="Optional list of choices for the user.")
 
 class GetWeatherArgs(BaseModel):
-    city: str = Field(..., description="Name of the city, town, or location (e.g. 'Manali', 'Delhi', 'Mumbai', 'London').")
+    city: Optional[str] = Field(None, description="Name of the city, town, or location (e.g. 'Manali', 'Delhi', 'Mumbai', 'London', 'Jodhpur'). If omitted, automatically resolves from context.")
 
 class ConvertCurrencyArgs(BaseModel):
     amount: float = Field(..., description="Amount of money to convert (e.g. 92, 100, 50.5).")
@@ -655,13 +655,12 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Fetch live real-time weather, temperature, humidity, wind, and forecast conditions for any city or location globally.",
+            "description": "Fetch live real-time weather, temperature, humidity, wind, and forecast conditions for any city or location globally. If city is not explicitly given, pass null to auto-resolve from user's memory, facts, or ticket.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "city": {"type": "string", "description": "City or location name (e.g. 'Manali', 'Delhi', 'Mumbai', 'London', 'New York')."}
-                },
-                "required": ["city"]
+                    "city": {"type": ["string", "null"], "description": "City or location name (e.g. 'Manali', 'Delhi', 'Mumbai', 'London', 'Jodhpur'). Optional."}
+                }
             }
         }
     },
@@ -2001,7 +2000,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
         elif tool_name == "get_weather":
             args = GetWeatherArgs(**arguments)
             from utilities import get_weather
-            res = await get_weather(args.city)
+            res = await get_weather(args.city, chat_id=chat_id)
             return res
 
         elif tool_name == "convert_currency":

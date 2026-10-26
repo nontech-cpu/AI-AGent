@@ -1,8 +1,8 @@
 """
 PeculiarAI — Production Real-Time Utilities Engine
 Provides 100% free, reliable, no-auth-required live web utilities:
-1. Live Weather & Forecasts (Open-Meteo)
-2. Live Currency Exchange & Conversions (Open Exchange Rates)
+1. Live Weather & Forecasts (Open-Meteo) with automatic city cleaning and context inference
+2. Live Currency Exchange & Conversions (Open Exchange Rates) with natural alias handling
 3. Live Gold, Silver & Crypto Market Rates (CoinGecko Real-Time Markets)
 4. Safe Math Calculator & Expression Evaluator (AST-based)
 """
@@ -54,27 +54,97 @@ CURRENCY_ALIASES = {
 }
 
 
+def clean_city_query(raw_city: Optional[str]) -> str:
+    """
+    Cleans conversational and messy Hinglish city inputs.
+    e.g. 'jodhpur m' -> 'Jodhpur', 'bhy jodhpur m weather' -> 'Jodhpur', 'delhi me' -> 'Delhi'
+    """
+    if not raw_city:
+        return ""
+    c = re.sub(r"[^a-zA-Z\s]", " ", raw_city)
+    stop = {
+        "bhy", "bhai", "bro", "in", "at", "m", "me", "mein", "mai", "ka", "ki", "ke", "ko",
+        "se", "pe", "par", "weather", "mausam", "temp", "temperature", "today", "aaj",
+        "kaisa", "kya", "hai", "h", "city", "shehar", "plz", "pls", "batao", "dikhao", "check"
+    }
+    words = [w for w in c.strip().split() if w.lower() not in stop]
+    return " ".join(words).strip()
+
+
+def resolve_inferred_city(chat_id: Optional[int]) -> Optional[str]:
+    """
+    Infers the user's city from context (active ticket route, saved facts, memory)
+    when the user does not specify a city in their query.
+    """
+    if not chat_id:
+        return None
+    try:
+        # 1. Check active ticket route (e.g. "Jodhpur Jn to Abu Road")
+        from state.active_context import get_active_ticket
+        tkt = get_active_ticket(chat_id)
+        if tkt:
+            route = tkt.get("route") or ""
+            # e.g. "Jodhpur Jn to Abu Road"
+            parts = re.split(r"\s+to\s+|\s*-\s*|\s*,\s*", route, flags=re.I)
+            if parts:
+                origin = clean_city_query(parts[0])
+                if origin:
+                    return origin.title()
+
+        # 2. Check saved user facts
+        from morning_briefing import detect_user_city
+        city = detect_user_city(chat_id)
+        if city:
+            return city
+    except Exception as exc:
+        print("[utilities.resolve_inferred_city] error:", repr(exc))
+    return None
+
+
 # ==============================================================================
 # 1. LIVE WEATHER
 # ==============================================================================
 
-async def get_weather(city: str = "Delhi") -> Dict[str, Any]:
+async def get_weather(city: Optional[str] = None, chat_id: Optional[int] = None) -> Dict[str, Any]:
     """
-    Fetches real-time weather and temperature for any city in the world using Open-Meteo.
+    Fetches real-time weather, temperature, AQI, and UV Index for any city in the world using Open-Meteo.
+    Cleans messy inputs ('jodhpur m' -> 'Jodhpur') and auto-infers user's city if omitted.
     100% Free, no API key required.
     """
-    clean_city = (city or "Delhi").strip().title()
+    cleaned = clean_city_query(city)
+    if not cleaned and chat_id:
+        cleaned = resolve_inferred_city(chat_id) or ""
+    if not cleaned:
+        cleaned = "Delhi"
+
+    clean_city = cleaned.strip().title()
+
+    # Multi-candidate geocoding fallback for maximum resilience
+    candidates = [clean_city]
+    words = clean_city.split()
+    if len(words) > 1:
+        candidates.append(words[0])
+        candidates.append(f"{clean_city}, India")
+        candidates.append(f"{words[0]}, India")
+    else:
+        candidates.append(f"{clean_city}, India")
+
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            geo_res = await client.get(
-                f"https://geocoding-api.open-meteo.com/v1/search?name={clean_city}&count=1"
-            )
-            if geo_res.status_code == 200 and geo_res.json().get("results"):
-                res = geo_res.json()["results"][0]
-                lat = res["latitude"]
-                lon = res["longitude"]
-                resolved_name = res.get("name", clean_city)
-                country = res.get("country", "")
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            geo_data = None
+            for cand in candidates:
+                geo_res = await client.get(
+                    f"https://geocoding-api.open-meteo.com/v1/search?name={cand}&count=1"
+                )
+                if geo_res.status_code == 200 and geo_res.json().get("results"):
+                    geo_data = geo_res.json()["results"][0]
+                    break
+
+            if geo_data:
+                lat = geo_data["latitude"]
+                lon = geo_data["longitude"]
+                resolved_name = geo_data.get("name", clean_city)
+                country = geo_data.get("country", "")
 
                 w_res = await client.get(
                     f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode,uv_index_max&timezone=auto"
@@ -143,17 +213,49 @@ async def get_weather(city: str = "Delhi") -> Dict[str, Any]:
 # 2. LIVE CURRENCY CONVERSION
 # ==============================================================================
 
-async def convert_currency(amount: float, from_curr: str = "USD", to_curr: str = "INR") -> Dict[str, Any]:
+def extract_currency_code(text: str, default: str = "USD") -> str:
+    """Intelligently identifies currency code from aliases or symbols."""
+    if not text:
+        return default
+    low = text.lower().strip()
+    # Check exact match or word match in aliases
+    for alias, code in CURRENCY_ALIASES.items():
+        if re.search(r"\b" + re.escape(alias) + r"\b", low) or alias == low:
+            return code
+    # Clean letters
+    clean = re.sub(r"[^a-zA-Z]", "", text).upper()
+    return clean[:3] if len(clean) >= 3 else default
+
+
+async def convert_currency(amount: Any, from_curr: str = "USD", to_curr: Optional[str] = None) -> Dict[str, Any]:
     """
     Converts amount between world currencies using real-time Open Exchange Rates API.
     Handles aliases e.g. 'dollar' -> 'USD', 'rupees' -> 'INR', 'euro' -> 'EUR'.
+    Intelligently defaults to_currency to INR (or USD if from is INR).
     100% Free, no API key required.
     """
-    clean_from = CURRENCY_ALIASES.get(from_curr.strip().lower(), from_curr.strip().upper())
-    clean_to = CURRENCY_ALIASES.get(to_curr.strip().lower(), to_curr.strip().upper())
+    # Clean amount
+    try:
+        if isinstance(amount, str):
+            amt_cleaned = re.sub(r"[^\d\.]", "", amount)
+            amount = float(amt_cleaned)
+        else:
+            amount = float(amount)
+    except Exception:
+        amount = 1.0
+
+    clean_from = extract_currency_code(from_curr, default="USD")
+
+    # If to_curr not specified or same as from:
+    if not to_curr or to_curr.strip().lower() in ("none", "null", ""):
+        clean_to = "USD" if clean_from == "INR" else "INR"
+    else:
+        clean_to = extract_currency_code(to_curr, default="INR")
+        if clean_to == clean_from:
+            clean_to = "USD" if clean_from == "INR" else "INR"
 
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             res = await client.get(f"https://open.er-api.com/v6/latest/{clean_from}")
             if res.status_code == 200:
                 data = res.json()
@@ -162,12 +264,13 @@ async def convert_currency(amount: float, from_curr: str = "USD", to_curr: str =
                 if rate:
                     converted_val = round(float(amount) * float(rate), 2)
                     last_update = data.get("time_last_update_utc", "")
-                    symbol_to = "₹" if clean_to == "INR" else ("$" if clean_to == "USD" else clean_to)
+                    symbol_to = "₹" if clean_to == "INR" else ("$" if clean_to == "USD" else ("€" if clean_to == "EUR" else clean_to))
+                    symbol_from = "₹" if clean_from == "INR" else ("$" if clean_from == "USD" else ("€" if clean_from == "EUR" else clean_from))
 
                     formatted_msg = (
-                        f"💱 **Currency Conversion:**\n"
-                        f"• **{amount:,.2f} {clean_from}** = **{symbol_to}{converted_val:,.2f} {clean_to}**\n"
-                        f"• **Live Exchange Rate:** 1 {clean_from} ≈ {symbol_to}{rate:,.4f} {clean_to}"
+                        f"💱 **Live Currency Conversion:**\n"
+                        f"• **{symbol_from}{amount:,.2f} {clean_from}** = **{symbol_to}{converted_val:,.2f} {clean_to}**\n"
+                        f"• **Current Rate:** 1 {clean_from} ≈ {symbol_to}{rate:,.4f} {clean_to}"
                     )
                     return {
                         "status": "success",
@@ -203,25 +306,26 @@ async def convert_currency(amount: float, from_curr: str = "USD", to_curr: str =
 
 async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[str, Any]:
     """
-    Fetches real-time market prices for Gold, Silver, and major Cryptocurrencies (Bitcoin, Ethereum, Solana).
-    Gold is calculated from PAX-Gold (100% physical gold backed 1 troy ounce = 31.1034768 grams).
-    Returns 24K and 22K per gram & per 10 grams rates in INR & USD.
+    Fetches real-time market prices for Gold, Silver, and Cryptocurrencies (Bitcoin, Ethereum, Solana).
+    - Gold: PAX-Gold (1 troy ounce = 31.1034768 grams). Returns 24K & 22K per 10g & 1g rates.
+    - Silver: Kinesis Silver (1 troy ounce = 31.1034768 grams). Returns 1kg, 10g & 1g rates.
+    - Crypto: Bitcoin, Ethereum, Solana live prices.
     100% Free, no API key required.
     """
     clean_item = (item or "gold").strip().lower()
-    clean_curr = CURRENCY_ALIASES.get(currency.strip().lower(), currency.strip().upper())
+    clean_curr = extract_currency_code(currency or "INR", default="INR")
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             res = await client.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,tether-gold,bitcoin,ethereum,solana&vs_currencies=usd,inr"
+                "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,tether-gold,kinesis-silver,bitcoin,ethereum,solana&vs_currencies=usd,inr"
             )
             if res.status_code == 200:
                 data = res.json()
 
                 # A) GOLD PRICING
-                if any(w in clean_item for w in ("gold", "sona", "gold rate", "gold price", "sohna")):
-                    pax = data.get("pax-gold", {})
+                if any(w in clean_item for w in ("gold", "sona", "gold rate", "gold price", "sohna", "24k", "22k")):
+                    pax = data.get("pax-gold", {}) or data.get("tether-gold", {})
                     pax_inr = pax.get("inr", 0)
                     pax_usd = pax.get("usd", 0)
 
@@ -257,7 +361,36 @@ async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[st
                         "formatted": formatted_msg
                     }
 
-                # B) BITCOIN / CRYPTO PRICING
+                # B) SILVER PRICING
+                if any(w in clean_item for w in ("silver", "chandi", "chandi ka bhav", "silver rate")):
+                    sil = data.get("kinesis-silver", {})
+                    sil_inr = sil.get("inr", 0)
+                    sil_usd = sil.get("usd", 0)
+
+                    gram_sil_inr = round(sil_inr / 31.1034768, 2)
+                    gram_sil_usd = round(sil_usd / 31.1034768, 2)
+                    kg_sil_inr = round(gram_sil_inr * 1000, 2)
+                    ten_gram_sil_inr = round(gram_sil_inr * 10, 2)
+
+                    formatted_msg = (
+                        f"🥈 **Live Silver Price (आज का चाँदी का भाव):**\n"
+                        f"• **1 Kilogram (1 KG):** ₹{kg_sil_inr:,.2f} INR\n"
+                        f"• **10 Grams:** ₹{ten_gram_sil_inr:,.2f} INR\n"
+                        f"• **1 Gram:** ₹{gram_sil_inr:,.2f} INR (${gram_sil_usd:,.2f} USD)"
+                    )
+                    return {
+                        "status": "success",
+                        "success": True,
+                        "item": "Silver",
+                        "asset": "Silver",
+                        "price_1kg_inr": kg_sil_inr,
+                        "price_10g_inr": ten_gram_sil_inr,
+                        "price_1g_inr": gram_sil_inr,
+                        "price": kg_sil_inr,
+                        "formatted": formatted_msg
+                    }
+
+                # C) BITCOIN / CRYPTO PRICING
                 if any(w in clean_item for w in ("bitcoin", "btc")):
                     btc = data.get("bitcoin", {})
                     btc_inr = btc.get("inr", 0)
@@ -409,11 +542,11 @@ def calculate(expression: str) -> Dict[str, Any]:
             "result": result,
             "formatted": f"🧮 **Calculation:** {clean_expr} = **{result}**"
         }
-    except ZeroDivisionError as zde:
+    except ZeroDivisionError:
         return {
             "status": "error",
             "success": False,
-            "message": f"Calculation error: Division by zero"
+            "message": "Calculation error: Division by zero"
         }
     except Exception as exc:
         return {

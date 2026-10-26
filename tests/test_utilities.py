@@ -62,10 +62,28 @@ async def test_market_prices():
 
 @pytest.mark.asyncio
 async def test_weather_lookup():
+    # 1. Clean city lookup
     res = await get_weather("Manali")
     assert res["status"] == "success"
     assert "Manali" in res["location"]
     assert "temperature" in res
+
+    # 2. Messy Hinglish city input: "jodhpur m" -> cleans to "Jodhpur"
+    jodhpur_res = await get_weather("jodhpur m")
+    assert jodhpur_res["status"] == "success"
+    assert "Jodhpur" in jodhpur_res["location"]
+    assert "temperature" in jodhpur_res
+
+    # 3. Messy sentence: "bhy jodhpur m weather" -> cleans to "Jodhpur"
+    bhy_res = await get_weather("bhy jodhpur m weather")
+    assert bhy_res["status"] == "success"
+    assert "Jodhpur" in bhy_res["location"]
+
+    # 4. Silver market price test
+    sil_res = await get_market_price("silver", "inr")
+    assert sil_res["status"] == "success"
+    assert sil_res["asset"] == "Silver"
+    assert sil_res["price_1kg_inr"] > 0
 
 
 @pytest.mark.asyncio
