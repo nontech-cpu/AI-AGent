@@ -59,6 +59,10 @@ GROUNDING & TRUTH CONTRACT:
    - Use the active ticket details from context, facts, or recent messages. NEVER ask the user again for date, time, or title if the ticket was already discussed or if a PNR was provided!
    - TEMPORAL CHECK: Check the travel date against current date ({current_date_weekday}). If the travel date is in the PAST (e.g. September 2026 when current date is October 2026):
      Clearly inform the user: "Bhai, ye ticket purani hai (travel date nikal chuki hai), beete hue time ke liye calendar event ya reminder create nahi ho sakta!"
+12. NOTION VS REMINDERS / SCHEDULE CONTRACT:
+   - ONLY call `create_notion_page` when the user EXPLICITLY asks to save something in Notion (e.g. 'notion me daal do', 'notion page banao', 'save to notion') or explicitly asks for detailed documentation / written notes in Notion.
+   - Casual plans, everyday events, trip updates, appointments, tasks, or time statements (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor ke jana h', 'gym jana h', 'shaam ko movie dekhna hai') are SCHEDULE / REMINDER items, NEVER Notion pages!
+   - When a user states a plan with a time (e.g. '4:30 trip h dost k sth'): check schedule for conflicts, alert them if there is a clash, and offer or create a reminder / calendar event (`create_reminder` or `create_meeting`). NEVER create a Notion page for it!
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
@@ -658,9 +662,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     low_prompt = user_text.lower()
     selected_tool_names = set()
 
-    # Intent 1: Calendar / Meetings / Schedule
-    if re.search(r"\b(meeting|meetings|schedule|call|calls|meet|slot|slots|free|busy|appointment|appointments|aaj|kal|parso|plan|plans|calendar|event|events|timing|time)\b", low_prompt):
-        selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting", "create_reminder"])
+    # Intent 1: Calendar / Meetings / Schedule / Events / Any Time mention (e.g. "4:30 trip h dost k sth")
+    has_time_mention = bool(re.search(r"\b(\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|bje|baje)|shaam|subah|dopahar|raat|evening|morning|night|afternoon)\b", low_prompt))
+    has_plan_event = bool(re.search(r"\b(meeting|meetings|schedule|call|calls|meet|slot|slots|free|busy|appointment|appointments|aaj|kal|parso|plan|plans|calendar|event|events|timing|time|trip|travel|outing|party|class|lecture|wedding|match|game|interview|doctor|gym|workout|movie|dinner|lunch)\b", low_prompt))
+    if has_plan_event or has_time_mention:
+        selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting", "create_reminder", "list_reminders"])
 
     # Intent 2: Reminders / Tasks / Schedule
     if re.search(r"\b(remind|reminder|reminders|yaad|task|tasks|movie|dinner|lunch|gym|workout|doctor|ticket|pnr|flight|hotel|booking|to-do|todo)\b", low_prompt):
@@ -671,8 +677,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         selected_tool_names.update(["get_contact", "save_contact", "update_contact_commitment", "list_contacts"])
 
     # Intent 4: GitHub / Notion / Code / Notes
-    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|notion|commit|commits|code|pr|prs|pull|branch|readme|page|pages|database|push|note|notes|heading|bullet|bullets|section)\b", low_prompt):
-        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file", "create_notion_page", "list_notion_pages"])
+    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|commit|commits|code|pr|prs|pull|branch|readme)\b", low_prompt):
+        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
+    if re.search(r"\b(notion|notes|note|heading|bullet|bullets|section|documentation)\b", low_prompt) and not has_time_mention:
+        selected_tool_names.update(["create_notion_page", "list_notion_pages"])
 
     # Intent 5: Lists & Packing
     if re.search(r"\b(pack|packing|list|lists|trip|goa|bag|bags|travel|item|items)\b", low_prompt):
@@ -695,7 +703,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             top = (act_ctx.get("topic") or act_ctx.get("focus_topic") or "").lower()
             if "github" in conn or "github" in top or "repo" in top or "issue" in top:
                 selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-            if "notion" in conn or "notion" in top or "document" in conn or "document" in top:
+            if ("notion" in conn or "notion" in top) and re.search(r"\b(notion|notes|note|page|doc|content|summary|save|likh)\b", low_prompt):
                 selected_tool_names.update(["create_notion_page", "list_notion_pages"])
             if "calendar" in conn or "meeting" in top or "schedule" in top:
                 selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting"])
@@ -707,13 +715,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Intent 9: Follow-up confirmation / affirmative intent for GitHub / Notion / Meeting actions
     recent_turns_text = " ".join([t.get("text", "") for t in recent_history[-4:]]).lower()
     has_recent_github = bool(re.search(r"\b(github|repo|repos|repository|readme|commit|issue|pull|pr|php-project)\b", recent_turns_text))
-    has_recent_notion = bool(re.search(r"\b(notion|notes|note|page)\b", recent_turns_text))
+    has_recent_notion = bool(re.search(r"\b(notion|page)\b", recent_turns_text))
     is_affirmative = bool(re.search(r"\b(yes|yeah|haan|ha|han|kar do|kardo|kr do|krdo|confirm|proceed|ok|okay|kar de|karde|kr de|krde|kr bhy|kro|kr)\b", low_prompt))
 
     if has_recent_github and (is_affirmative or is_code_modify):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-    if has_recent_notion:
+    if has_recent_notion and is_affirmative and re.search(r"\b(notion|notes|note|page|daal|likh|save)\b", low_prompt):
         selected_tool_names.update(["create_notion_page"])
+
+    # Strict Safety Guard: If user is giving a schedule plan / time without mentioning 'notion', NEVER include create_notion_page
+    if (has_time_mention or has_plan_event) and not bool(re.search(r"\bnotion\b", low_prompt)):
+        selected_tool_names.discard("create_notion_page")
 
     # Always allow connection / search memory (conversational questions are answered directly in chat text without ask_user dummy tool)
     selected_tool_names.update(["connect_integration", "check_integrations_status", "search_memory"])

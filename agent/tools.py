@@ -438,7 +438,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_notion_page",
-            "description": "Create a page or append notes/tasks to the user's connected Notion workspace.",
+            "description": "Create a dedicated documentation page in Notion ONLY when user EXPLICITLY asks to save to Notion or write detailed notes in Notion. NEVER call for casual schedule items, appointments, trips, or reminders (e.g. '4:30 trip h', 'kal doctor jana h').",
             "parameters": {
                 "type": "object",
                 "properties": {

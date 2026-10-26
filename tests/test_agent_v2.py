@@ -269,3 +269,47 @@ def test_fake_success_guard_does_not_block_conversational_text():
     assert ok is False
 
 
+@pytest.mark.asyncio
+async def test_casual_trip_schedule_never_creates_notion_page():
+    chat_id = 998877665
+    from unittest.mock import patch, AsyncMock
+    from state.active_context import update_active_context
+
+    # Simulate that prior turn had Notion context
+    update_active_context(chat_id, connector="Notion", topic="Notes")
+
+    captured_tools = []
+    async def mock_post(url, headers=None, json=None):
+        if "chat/completions" in str(url):
+            tools = json.get("tools", [])
+            for t in tools:
+                captured_tools.append(t["function"]["name"])
+            return AsyncMock(
+                status_code=200,
+                json=lambda: {
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "Bhai, kal 4:30 PM par trip ka plan note kar liya! Lekin 4:00 PM meeting aur 4:15 PM movie ke sath clash ho sakta hai."
+                        }
+                    }],
+                    "usage": {"total_tokens": 50}
+                }
+            )
+        return AsyncMock(status_code=200, json=lambda: {})
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post), \
+         patch("db.get_recent_chat_history", return_value=[{"role": "assistant", "text": "Notion page link: https://notion.so/test"}]), \
+         patch("db.log_chat_message"):
+
+        res = await run_agent_turn(chat_id, "4:30 trip h dost k sth")
+
+        # Must NOT include create_notion_page in tools offered to LLM
+        assert "create_notion_page" not in captured_tools
+        # Must include reminder/schedule tools
+        assert "create_reminder" in captured_tools
+        assert "create_meeting" in captured_tools
+        assert "Notion" not in res["tool_calls_executed"]
+
+
+
