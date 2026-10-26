@@ -44,7 +44,9 @@ Treat these blocks as ground truth. Never hallucinate facts not present in conte
 - **Memory Deletion:** When asked to delete/forget a fact or ticket, call `delete_note_or_fact`. For wipe all, call `request_master_privacy_wipe()`.
 
 # 4. TOOLS & CONNECTORS
-- **Notion Notes:** ONLY call `create_notion_page(title=..., content=...)` when the user EXPLICITLY asks to save or write notes in Notion (e.g. 'Notion me daal do', 'Notion page banao', 'save to Notion'). NEVER call `create_notion_page` for casual plans, trips, appointments, meetings, or reminders (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor jana h') — for everyday plans and times, check schedule for conflicts and offer or use `create_reminder` or `create_meeting`.
+- **Notion Notes & Pages:** ONLY call `create_notion_page(title=..., content=...)` when the user EXPLICITLY asks to save or write notes in Notion (e.g. 'Notion me daal do', 'Notion page banao', 'save to Notion'). NEVER call `create_notion_page` for casual plans, trips, appointments, meetings, or reminders (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor jana h') — for everyday plans and times, check schedule for conflicts and offer or use `create_reminder` or `create_meeting`.
+  * When user asks to add content, format code into code blocks, or update an existing Notion page (e.g. 'python code code block me add karna tha', 'is page me ye add karo'): NEVER say you cannot edit or update existing pages! Call `update_notion_page(content=..., page_title_or_id=...)` or `create_notion_page(..., target_section=...)`.
+  * For code, ALWAYS format with markdown code fences (```python\n...\n```) — the system converts this into native Notion syntax-highlighted code blocks!
   * Pass `target_section='new'` when user says 'alg se', 'separate', 'naya page', or does not name an existing page.
   * ALWAYS pass the user's FULL UNTRUNCATED content, definitions, and code in `content`. NEVER summarize, condense, or cut off notes!
   * If headings should be bold / font size 30, format with `# ` and `## ` and pass `formatting='headings_and_bullets'`.
@@ -253,7 +255,7 @@ async def build_runtime_system_prompt(
         "Tasks & Reminders: create_reminder, list_reminders, delete_reminder | "
         "Calendar & Schedule: get_schedule, check_availability, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
-        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, list_notion_pages"
+        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages"
     )
 
     # 9. Active Context

@@ -121,6 +121,14 @@ class UploadToDriveArgs(BaseModel):
 class CreateNotionPageArgs(BaseModel):
     title: str = Field(..., description="Title of the Notion page.")
     content: str = Field(..., description="Markdown or text content for the Notion page.")
+    target_section: Optional[str] = Field(None, description="Optional target page or section to append into.")
+    formatting: Optional[str] = Field(None, description="Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'.")
+
+class UpdateNotionPageArgs(BaseModel):
+    content: str = Field(..., description="Markdown or code content to add to the Notion page.")
+    page_title_or_id: Optional[str] = Field(None, description="Title, ID, or URL of the page.")
+    section_title: Optional[str] = Field(None, description="Optional heading above the added content.")
+    formatting: Optional[str] = Field(None, description="Optional formatting guidance.")
 
 class ListGitHubReposArgs(BaseModel):
     username: Optional[str] = Field(None, description="GitHub username to list repositories for.")
@@ -438,14 +446,32 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_notion_page",
-            "description": "Create a dedicated documentation page in Notion ONLY when user EXPLICITLY asks to save to Notion or write detailed notes in Notion. NEVER call for casual schedule items, appointments, trips, or reminders (e.g. '4:30 trip h', 'kal doctor jana h').",
+            "description": "Create a new dedicated documentation page in Notion with title and content. Supports native syntax-highlighted code blocks (```python ... ```), headings, and bullet points. ONLY call when user EXPLICITLY asks to save to Notion or write detailed notes in Notion. NEVER call for casual schedule items or reminders.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Page or note title."},
-                    "content": {"type": "string", "description": "Markdown text content."}
+                    "title": {"type": "string", "description": "Page or note title (e.g. 'FastAPI Quick Notes')."},
+                    "content": {"type": "string", "description": "Markdown text content. Can include code blocks with triple backticks, headings, and lists."},
+                    "target_section": {"type": ["string", "null"], "description": "Optional name or ID of existing page or section to append into. Defaults to null for new page."}
                 },
                 "required": ["title", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_notion_page",
+            "description": "Append or add new content, code blocks, sections, or notes to an existing Notion page (e.g. adding a Python code block, updating notes). Use this whenever the user wants to add to, format, or update an existing page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "The markdown content or code block (using ```language ... ```) to add to the page."},
+                    "page_title_or_id": {"type": ["string", "null"], "description": "Title, ID, or Notion URL of the page to update. If null, updates the most recent active Notion page."},
+                    "section_title": {"type": ["string", "null"], "description": "Optional section heading to place above the new content."},
+                    "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance e.g. 'code', 'bullets', 'text'."}
+                },
+                "required": ["content"]
             }
         }
     },
@@ -510,23 +536,7 @@ TOOL_DEFINITIONS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_notion_page",
-            "description": "Appends notes into a new or existing section in Notion, or creates a new page. Supports headings and bullet points formatting.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Title or section heading for the notes (e.g. 'Project Roadmap', 'Meeting Notes')."},
-                    "content": {"type": "string", "description": "The note content. Can contain markdown headings (#), bullets (-), or numbered lists."},
-                    "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Defaults to general Notes section if null."},
-                    "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'."}
-                },
-                "required": ["title", "content"]
-            }
-        }
-    },
+
     {
         "type": "function",
         "function": {
@@ -597,23 +607,7 @@ TOOL_DEFINITIONS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_notion_page",
-            "description": "Appends notes into a new or existing section in Notion, or creates a new page. Supports headings and bullet points formatting.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Title or section heading for the notes (e.g. 'Project Roadmap', 'Meeting Notes')."},
-                    "content": {"type": "string", "description": "The note content. Can contain markdown headings (#), bullets (-), or numbered lists."},
-                    "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Defaults to general Notes section if null."},
-                    "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'."}
-                },
-                "required": ["title", "content"]
-            }
-        }
-    },
+
     {
         "type": "function",
         "function": {
@@ -1570,6 +1564,52 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 return {
                     "status": "success",
                     "title": title,
+                    "url": pg_url or "",
+                    "message": f"✅ {msg}{link_str}"
+                }
+            else:
+                return {"status": "error", "message": msg}
+
+        elif tool_name in ("update_notion_page", "append_notion_page"):
+            content = arguments.get("content", "")
+            page_title_or_id = arguments.get("page_title_or_id") or arguments.get("target_section")
+            section_title = arguments.get("section_title")
+            formatting = arguments.get("formatting")
+
+            if not content:
+                return {"status": "error", "message": "Missing 'content' to append to Notion page."}
+
+            token_row = db.get_user_integration(chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            if not api_key:
+                return {
+                    "status": "error",
+                    "message": "Notion is not connected. Type 'connect notion' ya apna Notion token ('ntn_...' ya 'secret_...') bhej kar connect karein."
+                }
+
+            if not page_title_or_id:
+                try:
+                    from state.active_context import get_active_context
+                    act_ctx = get_active_context(chat_id)
+                    if act_ctx and act_ctx.get("connector", "").lower() == "notion":
+                        page_title_or_id = act_ctx.get("url") or act_ctx.get("topic")
+                except Exception:
+                    pass
+
+            ok, msg, pg_url = await integrations.append_to_notion_page(
+                token=api_key,
+                content=content,
+                page_id_or_title=page_title_or_id,
+                section_title=section_title,
+                formatting=formatting
+            )
+            if ok:
+                link_str = f"\n\n🔗 Link: {pg_url}" if pg_url else ""
+                return {
+                    "status": "success",
                     "url": pg_url or "",
                     "message": f"✅ {msg}{link_str}"
                 }

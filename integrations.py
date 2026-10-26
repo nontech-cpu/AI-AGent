@@ -6,6 +6,7 @@ Handles token validation, workspace searching, and executing actions like:
 """
 import os
 import json
+import re
 import httpx
 from typing import Optional, Dict, Any, Tuple, List
 
@@ -104,9 +105,57 @@ def text_to_notion_rich_text(text: str, default_bold: bool = False) -> list:
     }]
 
 
+VALID_NOTION_LANGUAGES = {
+    "abap", "agda", "arduino", "assembly", "bash", "basic", "bnf", "c", "c#", "c++",
+    "clojure", "coffeescript", "coq", "css", "dart", "dhall", "diff", "docker", "ebnf",
+    "elixir", "elm", "erlang", "f#", "flow", "fortran", "gherkin", "glsl", "go",
+    "graphql", "groovy", "haskell", "html", "idris", "java", "javascript", "json",
+    "julia", "kotlin", "latex", "less", "lisp", "livescript", "llvm", "lua", "makefile",
+    "markdown", "markup", "matlab", "mathematica", "mermaid", "nix", "notion formula",
+    "objective-c", "ocaml", "pascal", "perl", "php", "plain text", "powershell", "prolog",
+    "protobuf", "purescript", "python", "r", "racket", "reason", "ruby", "rust", "sass",
+    "scala", "scheme", "scss", "shell", "solidity", "sql", "stan", "stylus", "swift",
+    "tcl", "toml", "typescript", "v", "vb.net", "verilog", "vhdl", "visual basic",
+    "webassembly", "xml", "yaml", "yang"
+}
+
+NOTION_LANG_ALIASES = {
+    "py": "python",
+    "python": "python",
+    "js": "javascript",
+    "jsx": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "sh": "bash",
+    "bash": "bash",
+    "shell": "shell",
+    "zsh": "bash",
+    "yml": "yaml",
+    "yaml": "yaml",
+    "cpp": "c++",
+    "c++": "c++",
+    "cs": "c#",
+    "c#": "c#",
+    "csharp": "c#",
+    "golang": "go",
+    "go": "go",
+    "rb": "ruby",
+    "ruby": "ruby",
+    "rs": "rust",
+    "rust": "rust",
+    "md": "markdown",
+    "markdown": "markdown",
+    "htm": "html",
+    "html": "html",
+    "sql": "sql",
+    "json": "json"
+}
+
+
 def parse_content_to_notion_blocks(content: str, default_formatting: Optional[str] = None) -> list:
     """
     Parses unstructured or markdown text into typed Notion block objects:
+    - Code blocks (```python ... ```) -> native Notion code block with syntax highlighting
     - #, ##, ### or 'Heading:' or **Title** -> heading_1 (font size ~30), heading_2, heading_3 with bold
     - -, *, •, ◦ -> bulleted_list_item with inline rich text formatting
     - 1., 2. -> numbered_list_item
@@ -117,22 +166,71 @@ def parse_content_to_notion_blocks(content: str, default_formatting: Optional[st
     """
     import re
     blocks = []
-    lines = [l.strip() for l in content.split("\n")]
+    raw_lines = content.split("\n")
     force_bullets = (default_formatting == "bullets")
 
     i = 0
-    n = len(lines)
+    n = len(raw_lines)
     while i < n:
-        line = lines[i].strip()
+        raw_line = raw_lines[i]
+        line = raw_line.strip()
         if not line:
             i += 1
+            continue
+
+        # 0) Code blocks: ```python ... ``` or ``` ... ```
+        if line.startswith("```"):
+            rest = line[3:]
+            # Single-line code fence: ```python app = FastAPI()```
+            if rest.endswith("```") and len(rest) > 3:
+                inner = rest[:-3].strip()
+                parts = inner.split(None, 1)
+                first_word = parts[0].lower() if parts else ""
+                if first_word in NOTION_LANG_ALIASES or first_word in VALID_NOTION_LANGUAGES:
+                    c_lang = NOTION_LANG_ALIASES.get(first_word, first_word)
+                    c_body = parts[1] if len(parts) > 1 else ""
+                else:
+                    c_lang = "python" if any(w in inner for w in ("def ", "import ", "from ", "class ", "app =")) else "plain text"
+                    c_body = inner
+                i += 1
+            else:
+                c_lang_spec = rest.strip().lower()
+                c_lang = NOTION_LANG_ALIASES.get(c_lang_spec, c_lang_spec) if (c_lang_spec in NOTION_LANG_ALIASES or c_lang_spec in VALID_NOTION_LANGUAGES) else ""
+                code_lines = []
+                i += 1
+                while i < n:
+                    if raw_lines[i].strip().startswith("```"):
+                        i += 1
+                        break
+                    code_lines.append(raw_lines[i])
+                    i += 1
+                c_body = "\n".join(code_lines)
+                if not c_lang:
+                    if any(w in c_body for w in ("def ", "import ", "from ", "class ", "app =", "FastAPI")):
+                        c_lang = "python"
+                    elif any(w in c_body for w in ("const ", "let ", "var ", "function", "console.log")):
+                        c_lang = "javascript"
+                    elif any(w in c_body for w in ("SELECT ", "INSERT ", "UPDATE ", "DELETE ", "FROM ")):
+                        c_lang = "sql"
+                    else:
+                        c_lang = "plain text"
+
+            c_chunks = [c_body[k:k+1900] for k in range(0, max(1, len(c_body)), 1900)]
+            blocks.append({
+                "object": "block",
+                "type": "code",
+                "code": {
+                    "rich_text": [{"type": "text", "text": {"content": c}} for c in c_chunks],
+                    "language": c_lang if c_lang in VALID_NOTION_LANGUAGES else "plain text"
+                }
+            })
             continue
 
         # 1) Markdown tables: | col1 | col2 |
         if line.startswith("|") and line.endswith("|") and line.count("|") >= 2:
             table_lines = []
-            while i < n and lines[i].strip().startswith("|") and lines[i].strip().endswith("|") and lines[i].strip().count("|") >= 2:
-                table_lines.append(lines[i].strip())
+            while i < n and raw_lines[i].strip().startswith("|") and raw_lines[i].strip().endswith("|") and raw_lines[i].strip().count("|") >= 2:
+                table_lines.append(raw_lines[i].strip())
                 i += 1
             
             rows_cells = []
@@ -334,16 +432,17 @@ async def create_notion_page(
         is_explicit_new = bool(target_name_query in ("new", "separate", "alg", "alag", "new_page", "none", "create_new"))
 
         target_existing_page = None
-        # Check if user explicitly asked to append to an existing page by name
+        # Check if user explicitly asked to append to an existing page by name or ID/URL
         if not is_explicit_new and target_name_query and target_name_query not in ("default",):
             for r in page_results:
                 if r.get("archived") or r.get("in_trash"):
                     continue
+                p_id_raw = r.get("id", "").replace("-", "").lower()
                 title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
                 p_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
-                if not p_title:
+                if not p_title and not p_id_raw:
                     continue
-                if target_name_query in p_title.lower() or p_title.lower() in target_name_query:
+                if (p_title and (target_name_query in p_title.lower() or p_title.lower() in target_name_query)) or (p_id_raw and (p_id_raw in target_name_query or target_name_query in p_id_raw)):
                     target_existing_page = r
                     break
 
@@ -493,8 +592,142 @@ async def create_notion_page(
             return False, f"Notion error ({create_res.status_code}): {err_detail}", None
 
 
+async def append_to_notion_page(
+    token: str,
+    content: str,
+    page_id_or_title: Optional[str] = None,
+    section_title: Optional[str] = None,
+    formatting: Optional[str] = None
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Appends content, code blocks, or sections into an existing Notion page.
+    Matches page by:
+    - Notion URL (extracts 32-character hex ID)
+    - Raw page ID (UUID or 32-char hex)
+    - Page Title (fuzzy search against workspace pages)
+    - Or most recent active page if not specified.
+    Returns (success, message, page_url).
+    """
+    clean_token = token.strip() if token else ""
+    if not clean_token:
+        return False, "Notion token is missing. Kripya apna Notion account connect karein.", None
+
+    headers = {
+        "Authorization": f"Bearer {clean_token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+
+    parsed_blocks = parse_content_to_notion_blocks(content, default_formatting=formatting)
+    if not parsed_blocks:
+        return False, "Koi content nahi mila add karne ke liye.", None
+
+    query_str = (page_id_or_title or "").strip()
+    target_id = None
+    target_title = None
+    target_url = None
+
+    id_match = re.search(r'([0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}|[0-9a-fA-F]{32})', query_str)
+    if id_match:
+        target_id = id_match.group(1).replace("-", "")
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        search_res = await client.post(
+            "https://api.notion.com/v1/search",
+            headers=headers,
+            json={"filter": {"value": "page", "property": "object"}, "page_size": 25}
+        )
+        page_results = search_res.json().get("results", []) if search_res.status_code == 200 else []
+
+        if target_id:
+            for r in page_results:
+                if r.get("id", "").replace("-", "").lower() == target_id.lower():
+                    title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
+                    target_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                    target_url = r.get("url")
+                    break
+        else:
+            target_query = query_str.lower()
+            if target_query:
+                for r in page_results:
+                    if r.get("archived") or r.get("in_trash"):
+                        continue
+                    p_id_raw = r.get("id", "").replace("-", "").lower()
+                    title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
+                    p_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                    if (p_title and (target_query in p_title.lower() or p_title.lower() in target_query)) or (p_id_raw and (p_id_raw in target_query or target_query in p_id_raw)):
+                        target_id = r.get("id")
+                        target_title = p_title
+                        target_url = r.get("url")
+                        break
+
+            if not target_id:
+                for r in page_results:
+                    if r.get("archived") or r.get("in_trash"):
+                        continue
+                    title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
+                    p_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                    if any(w in p_title.lower() for w in ("peculiarai notes", "peculiar notes", "scratchpad")):
+                        target_id = r.get("id")
+                        target_title = p_title
+                        target_url = r.get("url")
+                        break
+                if not target_id and page_results:
+                    r = page_results[0]
+                    target_id = r.get("id")
+                    title_arr = r.get("properties", {}).get("title", {}).get("title", []) or r.get("properties", {}).get("Name", {}).get("title", [])
+                    target_title = "".join([t.get("plain_text", "") for t in title_arr]).strip()
+                    target_url = r.get("url")
+
+        if not target_id:
+            return False, "Notion mein koi existing page nahi mila jisme content update kiya ja sake.", None
+
+        clean_pid = target_id.replace("-", "")
+        p_url = target_url or f"https://notion.so/{clean_pid}"
+        existing_title = target_title or "Notes"
+
+        include_heading = bool(section_title and section_title.strip() and section_title.strip().lower() != existing_title.lower() and section_title.strip().lower() not in ("notes", "note", "code block", "peculiarai note"))
+        all_append_blocks = []
+        if include_heading:
+            all_append_blocks.extend([
+                {"object": "block", "type": "divider", "divider": {}},
+                {
+                    "object": "block",
+                    "type": "heading_2",
+                    "heading_2": {"rich_text": text_to_notion_rich_text(section_title.strip(), default_bold=True)}
+                }
+            ])
+        all_append_blocks.extend(parsed_blocks)
+
+        first_batch = all_append_blocks[:100]
+        append_res = await client.patch(
+            f"https://api.notion.com/v1/blocks/{clean_pid}/children",
+            headers=headers,
+            json={"children": first_batch}
+        )
+
+        if append_res.status_code in (200, 201):
+            for idx in range(100, len(all_append_blocks), 100):
+                nxt_batch = all_append_blocks[idx:idx+100]
+                await client.patch(
+                    f"https://api.notion.com/v1/blocks/{clean_pid}/children",
+                    headers=headers,
+                    json={"children": nxt_batch}
+                )
+            sec_info = f" under section '{section_title.strip()}'" if include_heading else ""
+            return True, f"Content successfully added{sec_info} in your Notion page '{existing_title}'!", p_url
+        else:
+            err_msg = append_res.text
+            try:
+                err_msg = append_res.json().get("message", err_msg)
+            except Exception:
+                pass
+            return False, f"Notion update error ({append_res.status_code}): {err_msg}", None
+
+
 # Alias for clarity
 create_or_append_notion_note = create_notion_page
+update_notion_page = append_to_notion_page
 
 
 async def list_notion_pages(token: str, query: Optional[str] = None) -> List[Dict[str, Any]]:

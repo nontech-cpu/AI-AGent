@@ -61,6 +61,9 @@ GROUNDING & TRUTH CONTRACT:
      Clearly inform the user: "Bhai, ye ticket purani hai (travel date nikal chuki hai), beete hue time ke liye calendar event ya reminder create nahi ho sakta!"
 12. NOTION VS REMINDERS / SCHEDULE CONTRACT:
    - ONLY call `create_notion_page` when the user EXPLICITLY asks to save something in Notion (e.g. 'notion me daal do', 'notion page banao', 'save to notion') or explicitly asks for detailed documentation / written notes in Notion.
+   - When the user asks to add content, format code into code blocks, or update an existing Notion page (e.g. 'python code code block me add karna tha', 'is page me ye add karo'):
+     NEVER claim or apologize that you cannot edit or update existing pages! You HAVE the tool `update_notion_page(content=..., page_title_or_id=...)`!
+     Format code blocks using triple backticks (```python ... ```) — the system converts them into native Notion syntax-highlighted code blocks!
    - Casual plans, everyday events, trip updates, appointments, tasks, or time statements (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor ke jana h', 'gym jana h', 'shaam ko movie dekhna hai') are SCHEDULE / REMINDER items, NEVER Notion pages!
    - When a user states a plan with a time (e.g. '4:30 trip h dost k sth'): check schedule for conflicts, alert them if there is a clash, and offer or create a reminder / calendar event (`create_reminder` or `create_meeting`). NEVER create a Notion page for it!
 
@@ -724,7 +727,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|commit|commits|code|pr|prs|pull|branch|readme)\b", low_prompt):
         selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
     if re.search(r"\b(notion|notes|note|heading|bullet|bullets|section|documentation)\b", low_prompt) and not has_time_mention:
-        selected_tool_names.update(["create_notion_page", "list_notion_pages"])
+        selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
 
     # Intent 5: Lists & Packing
     if re.search(r"\b(pack|packing|list|lists|trip|goa|bag|bags|travel|item|items)\b", low_prompt):
@@ -747,8 +750,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             top = (act_ctx.get("topic") or act_ctx.get("focus_topic") or "").lower()
             if "github" in conn or "github" in top or "repo" in top or "issue" in top:
                 selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-            if ("notion" in conn or "notion" in top) and re.search(r"\b(notion|notes|note|page|doc|content|summary|save|likh)\b", low_prompt):
-                selected_tool_names.update(["create_notion_page", "list_notion_pages"])
+            if ("notion" in conn or "notion" in top) and re.search(r"\b(notion|notes|note|page|doc|content|summary|save|likh|code|block|clode|add|format|update|python|fastapi)\b", low_prompt):
+                selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
             if "calendar" in conn or "meeting" in top or "schedule" in top:
                 selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting"])
             if "gmail" in conn or "email" in top:
@@ -772,11 +775,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         if has_recent_github and (is_affirmative or is_code_modify):
             selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
         if has_recent_notion and re.search(r"\b(notion|notes|note|page|daal|likh|save)\b", low_prompt):
-            selected_tool_names.update(["create_notion_page"])
+            selected_tool_names.update(["create_notion_page", "update_notion_page"])
 
-    # Strict Safety Guard: If user is giving a schedule plan / time without mentioning 'notion', NEVER include create_notion_page
+    # If recent history discussed notion and user asks to add/format/code block
+    if has_recent_notion and re.search(r"\b(code|block|clode|add|format|update|python|fastapi|daal|likh)\b", low_prompt):
+        selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
+
+    # Strict Safety Guard: If user is giving a schedule plan / time without mentioning 'notion', NEVER include create_notion_page or update_notion_page
     if (has_time_mention or has_plan_event) and not bool(re.search(r"\bnotion\b", low_prompt)):
         selected_tool_names.discard("create_notion_page")
+        selected_tool_names.discard("update_notion_page")
 
     # Always allow connection / search memory (conversational questions are answered directly in chat text without ask_user dummy tool)
     selected_tool_names.update(["connect_integration", "check_integrations_status", "search_memory"])
@@ -921,8 +929,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     elif fn_name == "send_email":
                         to_email = args_dict.get("to")
                         update_active_context(chat_id, connector="Gmail", topic=f"email to {to_email}" if to_email else "email")
-                    elif fn_name == "create_notion_page":
-                        n_title = tool_result.get("title") or args_dict.get("title", "Notion page")
+                    elif fn_name in ("create_notion_page", "update_notion_page", "append_notion_page"):
+                        n_title = tool_result.get("title") or args_dict.get("title") or args_dict.get("page_title_or_id") or "Notion page"
                         p_url = tool_result.get("url") or ""
                         update_active_context(chat_id, connector="Notion", topic=n_title, objects=[n_title], url=p_url)
                 except Exception as ctx_err:

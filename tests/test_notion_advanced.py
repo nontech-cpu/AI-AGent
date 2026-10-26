@@ -414,3 +414,65 @@ async def test_list_notion_pages_filters_archived_and_database_rows():
         assert "Internal Row" not in titles
         assert "Old Deleted Page" not in titles
 
+
+def test_parse_content_code_block_native_notion_block():
+    """Verify that triple-backtick markdown blocks are converted into native Notion code blocks."""
+    raw_text = """The page includes a heading and the code block:
+
+```python
+from fastapi import FastAPI
+app = FastAPI()
+```"""
+    blocks = parse_content_to_notion_blocks(raw_text)
+    types = [b["type"] for b in blocks]
+    assert "paragraph" in types
+    assert "code" in types
+
+    code_block = next(b for b in blocks if b["type"] == "code")
+    assert code_block["code"]["language"] == "python"
+    content_str = code_block["code"]["rich_text"][0]["text"]["content"]
+    assert "from fastapi import FastAPI" in content_str
+    assert "app = FastAPI()" in content_str
+
+
+@pytest.mark.asyncio
+async def test_append_to_notion_page_with_code_block():
+    """Verify append_to_notion_page patches the code block into the existing page."""
+    mock_search_data = {
+        "results": [
+            {
+                "id": "40596daf148381f7b811c38be69b57ef",
+                "object": "page",
+                "properties": {"title": {"title": [{"plain_text": "FastAPI Quick Notes"}]}},
+                "url": "https://app.notion.com/p/FastAPI-Quick-Notes-40596daf148381f7b811c38be69b57ef"
+            }
+        ]
+    }
+    with patch("httpx.AsyncClient.post") as mock_post, \
+         patch("httpx.AsyncClient.patch") as mock_patch:
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status_code = 200
+        mock_post_resp.json.return_value = mock_search_data
+        mock_post.return_value = mock_post_resp
+
+        mock_patch_resp = MagicMock()
+        mock_patch_resp.status_code = 200
+        mock_patch_resp.json.return_value = {"results": []}
+        mock_patch.return_value = mock_patch_resp
+
+        from integrations import append_to_notion_page
+        code_snippet = "```python\nfrom fastapi import FastAPI\napp = FastAPI()\n```"
+        ok, msg, url = await append_to_notion_page(
+            token="secret_token",
+            content=code_snippet,
+            page_id_or_title="https://app.notion.com/p/FastAPI-Quick-Notes-40596daf148381f7b811c38be69b57ef"
+        )
+        assert ok is True
+        assert "FastAPI Quick Notes" in msg
+        assert "40596daf148381f7b811c38be69b57ef" in url
+        assert mock_patch.called
+        patch_payload = mock_patch.call_args[1]["json"]
+        assert any(b["type"] == "code" for b in patch_payload["children"])
+
+

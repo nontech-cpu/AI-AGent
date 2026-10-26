@@ -47,16 +47,32 @@ class NotionConnector(Connector):
         return [
             ToolSpec(
                 name="create_notion_page",
-                description="Appends notes into a new or existing section in Notion, or creates a new page. Supports headings and bullet points formatting.",
+                description="Creates a new dedicated documentation page in Notion. Supports headings, bullet points, and code block formatting.",
                 parameters={
                     "type": "object",
                     "properties": {
-                        "title": {"type": "string", "description": "Title or section heading for the notes (e.g. 'Project Roadmap', 'Meeting Notes')."},
-                        "content": {"type": "string", "description": "The note content. Can contain markdown headings (#), bullets (-), or numbered lists."},
-                        "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Defaults to general Notes section if null."},
+                        "title": {"type": "string", "description": "Title or heading for the new page (e.g. 'FastAPI Quick Notes')."},
+                        "content": {"type": "string", "description": "The markdown content. Can contain code blocks (```python ... ```), headings (#), bullets (-), or numbered lists."},
+                        "target_section": {"type": ["string", "null"], "description": "Optional name of existing page or section to append into. Leave null to create new page."},
                         "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance: 'bullets', 'headings_and_bullets', or 'text'."}
                     },
                     "required": ["title", "content"]
+                },
+                kind="write",
+                needs_confirmation=False
+            ),
+            ToolSpec(
+                name="update_notion_page",
+                description="Append or add new content, code blocks, sections, or notes to an existing Notion page (e.g. adding a Python code block, updating notes). Use this whenever the user wants to add to, format, or update an existing page.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "The markdown content or code block (using ```language ... ```) to add to the page."},
+                        "page_title_or_id": {"type": ["string", "null"], "description": "Title, ID, or Notion URL of the page to update. If null, updates the most recent active Notion page."},
+                        "section_title": {"type": ["string", "null"], "description": "Optional section heading to place above the new content."},
+                        "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance e.g. 'code', 'bullets', 'text'."}
+                    },
+                    "required": ["content"]
                 },
                 kind="write",
                 needs_confirmation=False
@@ -139,6 +155,51 @@ class NotionConnector(Connector):
                 return ToolResult(
                     ok=True,
                     data={"status": "success", "title": title, "url": pg_url or "", "message": msg},
+                    urls=[pg_url] if pg_url else []
+                )
+            else:
+                return ToolResult(
+                    ok=False,
+                    error={"type": ErrorType.API_ERROR.value, "message": msg}
+                )
+
+        if tool_name in ("update_notion_page", "append_notion_page"):
+            content = args.get("content", "")
+            page_title_or_id = args.get("page_title_or_id") or args.get("target_section")
+            section_title = args.get("section_title")
+            formatting = args.get("formatting")
+
+            if not content:
+                return ToolResult(
+                    ok=False,
+                    error={"type": ErrorType.INVALID_ARGS.value, "message": "Missing 'content' to append to Notion page."}
+                )
+
+            token_row = db.get_user_integration(user_or_chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            if not page_title_or_id:
+                try:
+                    from state.active_context import get_active_context
+                    act_ctx = get_active_context(user_or_chat_id)
+                    if act_ctx and act_ctx.get("connector", "").lower() == "notion":
+                        page_title_or_id = act_ctx.get("url") or act_ctx.get("topic")
+                except Exception:
+                    pass
+
+            ok, msg, pg_url = await integrations.append_to_notion_page(
+                token=api_key,
+                content=content,
+                page_id_or_title=page_title_or_id,
+                section_title=section_title,
+                formatting=formatting
+            )
+            if ok:
+                return ToolResult(
+                    ok=True,
+                    data={"status": "success", "url": pg_url or "", "message": msg},
                     urls=[pg_url] if pg_url else []
                 )
             else:
