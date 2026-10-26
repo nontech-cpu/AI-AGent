@@ -95,3 +95,32 @@ async def test_verifier_allows_email_from_recent_history_when_query_is_yes():
     assert "aaravmishra619@gmail.com" in final_reply
     assert "Mere paas iski koi saved information nahi hai" not in final_reply
 
+
+def test_verifier_sanitizes_regional_script_labels():
+    draft = (
+        "**Ananya Roy** ko **Tuesday ko pitch deck bhejna** tha.\n\n"
+        "- **பெயர்:** Ananya Roy (Elevate Ventures)\n"
+        "- **பங்கு:** Head of Partnerships\n"
+        "- **தொலைபேசி:** 9876543210\n"
+        "- **மின்னஞ்சல்:** ananya@elevate.vc\n"
+        "- **வாக்குறுதி:** Pitch deck bhejna hai Tuesday ko\n\n"
+        "Aaj Tuesday hai — bhej diya?"
+    )
+    passed, revised, violations = deterministic_verify(
+        draft,
+        tool_results=[{"email": "ananya@elevate.vc"}],
+        user_query="रनिया, रोई को क्या बताना था?"
+    )
+    assert passed is True
+    assert "பெயர்" not in revised
+    assert "பங்கு" not in revised
+    assert "தொலைபேசி" not in revised
+    assert "மின்னஞ்சல்" not in revised
+    assert "வாக்குறுதி" not in revised
+    assert "- **Name:**" in revised
+    assert "- **Role:**" in revised
+    assert "- **Phone:**" in revised
+    assert "- **Email:**" in revised
+    assert "- **Commitment:**" in revised
+
+

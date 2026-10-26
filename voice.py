@@ -27,7 +27,10 @@ async def clean_voice_transcript(raw_text):
         "- 'जेवनिंग' -> 'evening', "
         "- 'वाई' -> 'भाई', "
         "- 'आई मतेशाम भूँ' -> 'आज शाम को', "
-        "- 'मिटिंग' -> 'मीटिंग'. "
+        "- 'मिटिंग' -> 'मीटिंग', "
+        "- 'रनिया, रोई' / 'रानिया रोई' / 'अनन्या रोय' -> 'Ananya Roy', "
+        "- 'अनन्या' / 'अनाया' / 'अन्नाया' -> 'Ananya', "
+        "- 'देविंदर' / 'देवेंद्र' -> 'Devender'. "
         "Preserve user intent and meaning accurately. If the text is already clear, keep it as is. "
         "Return ONLY a JSON object: {\"clean_text\": \"...\"}."
     )

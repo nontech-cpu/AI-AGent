@@ -188,6 +188,41 @@ def deterministic_verify(
         if em.lower() not in {e.lower() for e in evidence_emails}:
             violations.append(f"Fabricated email address: {em}")
 
+    # 5. Regional Indian Script (Tamil, Telugu, Kannada, Malayalam, etc.) Sanitization
+    REGIONAL_LABEL_REPLACEMENTS = {
+        # Tamil
+        "பெயர்": "Name",
+        "பங்கு": "Role",
+        "தொலைபேசி": "Phone",
+        "மின்னஞ்சல்": "Email",
+        "வாக்குறுதி": "Commitment",
+        "தேதி": "Date",
+        "நேரம்": "Time",
+        "குறிப்பு": "Notes",
+        # Telugu
+        "పేరు": "Name",
+        "పాత్ర": "Role",
+        "ఫోన్": "Phone",
+        "ఇమెయిల్": "Email",
+        "నిబద్ధత": "Commitment",
+        # Kannada
+        "ಹೆಸರು": "Name",
+        "ಪಾತ್ರ": "Role",
+        "ದೂರವಾಣಿ": "Phone",
+        "ಇಮೇಲ್": "Email",
+        # Malayalam
+        "പേര്": "Name",
+        "പങ്ക്": "Role",
+        "ഫോൺ": "Phone",
+        "ഇമെയിൽ": "Email",
+    }
+    if re.search(r"[\u0B80-\u0D7F\u0980-\u0AFF]", draft_reply):
+        cleaned_reply = draft_reply
+        for k, v in REGIONAL_LABEL_REPLACEMENTS.items():
+            cleaned_reply = cleaned_reply.replace(k, v)
+        cleaned_reply = re.sub(r"[\u0B80-\u0D7F\u0980-\u0AFF]+", "", cleaned_reply)
+        draft_reply = cleaned_reply
+
     if violations:
         # If fake links found, strip them
         if any("Fabricated Google Meet link" in v for v in violations):
