@@ -1517,4 +1517,105 @@ def get_all_connected_google_users() -> list[dict]:
         return []
 
 
+def _init_morning_briefing_table():
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS daily_morning_briefings (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        briefing_date VARCHAR(10) NOT NULL,
+                        trigger_kind VARCHAR(50) DEFAULT 'standard_8am',
+                        sent_at TIMESTAMPTZ DEFAULT now(),
+                        CONSTRAINT uq_chat_briefing_date UNIQUE (chat_id, briefing_date)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_morning_briefings_lookup ON daily_morning_briefings(chat_id, briefing_date);
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS daily_morning_briefings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER NOT NULL,
+                        briefing_date TEXT NOT NULL,
+                        trigger_kind TEXT DEFAULT 'standard_8am',
+                        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (chat_id, briefing_date)
+                    )
+                """))
+    except Exception as exc:
+        print("init_morning_briefing_table error:", repr(exc))
+
+
+def is_morning_briefing_sent(chat_id: int, briefing_date: str) -> bool:
+    """Returns True if morning briefing for briefing_date (YYYY-MM-DD) was already dispatched."""
+    if not chat_id or not briefing_date:
+        return True
+    _init_morning_briefing_table()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT id FROM daily_morning_briefings WHERE chat_id = :c AND briefing_date = :d"),
+                {"c": chat_id, "d": briefing_date}
+            ).first()
+            return row is not None
+    except Exception as exc:
+        print("is_morning_briefing_sent error:", repr(exc))
+        return False
+
+
+def record_morning_briefing_sent(chat_id: int, briefing_date: str, trigger_kind: str = "standard_8am"):
+    """Marks morning briefing as sent for the date."""
+    if not chat_id or not briefing_date:
+        return
+    _init_morning_briefing_table()
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(
+                    text("""
+                        INSERT INTO daily_morning_briefings (chat_id, briefing_date, trigger_kind, sent_at)
+                        VALUES (:c, :d, :k, now())
+                        ON CONFLICT (chat_id, briefing_date) DO NOTHING
+                    """),
+                    {"c": chat_id, "d": briefing_date, "k": trigger_kind}
+                )
+            else:
+                conn.execute(
+                    text("""
+                        INSERT OR IGNORE INTO daily_morning_briefings (chat_id, briefing_date, trigger_kind, sent_at)
+                        VALUES (:c, :d, :k, CURRENT_TIMESTAMP)
+                    """),
+                    {"c": chat_id, "d": briefing_date, "k": trigger_kind}
+                )
+    except Exception as exc:
+        print("record_morning_briefing_sent error:", repr(exc))
+
+
+def get_all_active_telegram_users() -> list[dict]:
+    """Retrieves all registered and consented users with valid Telegram chat IDs."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT id, telegram_chat_id, first_name, username
+                FROM users
+                WHERE telegram_chat_id IS NOT NULL AND consented_at IS NOT NULL
+            """)).fetchall()
+            return [
+                {
+                    "user_id": r[0],
+                    "chat_id": int(r[1]),
+                    "first_name": r[2] or "",
+                    "username": r[3] or ""
+                }
+                for r in rows if r[1]
+            ]
+    except Exception as exc:
+        print("get_all_active_telegram_users error:", repr(exc))
+        return []
+
+
+
 

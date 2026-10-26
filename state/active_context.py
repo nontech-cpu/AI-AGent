@@ -285,9 +285,13 @@ def parse_ticket_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     ]
     for fmt in formats:
         try:
-            d = datetime.strptime(clean[:19], fmt)
+            d = datetime.strptime(clean, fmt)
             return d.replace(tzinfo=IST)
         except Exception:
-            pass
+            try:
+                d = datetime.strptime(clean[:19], fmt)
+                return d.replace(tzinfo=IST)
+            except Exception:
+                pass
     return None
 

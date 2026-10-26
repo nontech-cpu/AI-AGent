@@ -77,7 +77,7 @@ async def get_weather(city: str = "Delhi") -> Dict[str, Any]:
                 country = res.get("country", "")
 
                 w_res = await client.get(
-                    f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode&timezone=auto"
+                    f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode,uv_index_max&timezone=auto"
                 )
                 if w_res.status_code == 200:
                     data = w_res.json()
@@ -89,13 +89,28 @@ async def get_weather(city: str = "Delhi") -> Dict[str, Any]:
                     w_code = cw.get("weathercode", 0)
                     condition_desc = WEATHER_CODES.get(w_code, "Pleasant")
                     wind = cw.get("windspeed")
+                    uv_index = daily.get("uv_index_max", [None])[0]
+
+                    # Fetch real-time Air Quality (AQI)
+                    aqi_val = None
+                    try:
+                        aq_res = await client.get(
+                            f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm2_5"
+                        )
+                        if aq_res.status_code == 200:
+                            aqi_val = aq_res.json().get("current", {}).get("us_aqi")
+                    except Exception:
+                        pass
 
                     location_str = f"{resolved_name}, {country}" if country else resolved_name
+                    aqi_str = f" | AQI: {aqi_val}" if aqi_val is not None else ""
+                    uv_str = f" | UV Index: {uv_index}" if uv_index is not None else ""
+
                     formatted_msg = (
                         f"🌤️ **Weather in {location_str}:**\n"
                         f"• **Temperature:** {temp}°C (Min: {min_temp}°C | Max: {max_temp}°C)\n"
                         f"• **Condition:** {condition_desc}\n"
-                        f"• **Wind Speed:** {wind} km/h"
+                        f"• **Wind Speed:** {wind} km/h{aqi_str}{uv_str}"
                     )
                     return {
                         "status": "success",
@@ -108,6 +123,8 @@ async def get_weather(city: str = "Delhi") -> Dict[str, Any]:
                         "min_temp": min_temp,
                         "condition": condition_desc,
                         "windspeed": wind,
+                        "aqi": aqi_val,
+                        "uv_index": uv_index,
                         "unit": "°C",
                         "formatted": formatted_msg
                     }
