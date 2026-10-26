@@ -74,3 +74,19 @@ def fmt_when(at, now=None):
     else:
         day = at.strftime("%d %b")
     return f"{day} {at.strftime('%H:%M')}"
+
+
+def format_event_clock_ist(dt_str: str | None) -> str:
+    """Format Google Calendar / ISO dateTime string into an IST clock string (e.g. '6:00 PM')."""
+    if not dt_str:
+        return "All day"
+    try:
+        clean_str = dt_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        if dt.tzinfo is None:
+            dt_ist = dt.replace(tzinfo=IST)
+        else:
+            dt_ist = dt.astimezone(IST)
+        return dt_ist.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return dt_str[11:16] if len(dt_str) >= 16 else (dt_str or "All day")

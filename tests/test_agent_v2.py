@@ -312,4 +312,29 @@ async def test_casual_trip_schedule_never_creates_notion_page():
         assert "Notion" not in res["tool_calls_executed"]
 
 
+@pytest.mark.asyncio
+async def test_affirmative_yes_to_conversational_email_draft_executes_send_email():
+    chat_id = 998877666
+    from unittest.mock import patch, AsyncMock
+
+    mock_history = [
+        {"role": "user", "text": "bhy aaravmishra619@gmail.com pr email send kr subject kurta and body 18000 kurta is worth buying"},
+        {"role": "assistant", "text": "Sure! I'm ready to send an email to aaravmishra619@gmail.com with:\n- Subject: kurta\n- Body: 18000 kurta is worth buying\nJust give me a quick 'yes' to go ahead."}
+    ]
+
+    with patch("db.get_recent_chat_history", return_value=mock_history), \
+         patch("google_services.send_email", new_callable=AsyncMock) as mock_send, \
+         patch("db.log_chat_message"):
+
+        mock_send.return_value = "msg_12345"
+        res = await run_agent_turn(chat_id, "yes")
+
+        # Must execute email without saying 'Mere paas iski koi saved information nahi hai'
+        assert "Email sent successfully" in res["reply"]
+        assert "aaravmishra619@gmail.com" in res["reply"]
+        assert "Mere paas" not in res["reply"]
+        assert "send_email" in res["tool_calls_executed"]
+
+
+
 

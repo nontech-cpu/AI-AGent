@@ -422,7 +422,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "send_email",
-            "description": "Prepare an email to send via connected Gmail account. Gated by confirmation.",
+            "description": "Send an email via connected Gmail. ALWAYS call this tool immediately whenever the user asks to send, compose, or draft an email. DO NOT ask the user for confirmation in chat text first — calling this tool triggers the system's official confirmation dialogue automatically.",
             "parameters": {
                 "type": "object",
                 "properties": {

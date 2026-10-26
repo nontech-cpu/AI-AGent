@@ -45,7 +45,7 @@ GROUNDING & TRUTH CONTRACT:
    - When user asks to connect Google, or says 'connect google', 'link my email', or asks to schedule/host a Google Calendar / Meet meeting when Google is not connected: ALWAYS call `connect_integration` with service='google' immediately! DO NOT call `ask_user` to ask if they want to connect — they already asked!
    - NEVER ask the user for their Google email address or password to connect Google! Google OAuth requires the user to click the official authorization link.
    - If the user sends an email address (e.g. 'xyz@gmail.com') wishing to connect Google, DO NOT say you cannot connect Google! Call `connect_integration` with service='google' and return the official OAuth link so the user can authorize.
-   - When user asks to send an email, upload a file, or create a calendar event: ALWAYS call the respective tool (send_email, upload_to_drive, create_meeting) directly! NEVER call `ask_user` to ask whether you should execute what the user just asked for.
+   - When user asks to send an email, upload a file, or create a calendar event: ALWAYS call the respective tool (send_email, upload_to_drive, create_meeting) DIRECTLY in your FIRST turn! NEVER ask the user for confirmation in chat text before calling the tool. The tool execution itself triggers the system confirmation prompt automatically.
    - When user asks to connect or link GitHub (e.g. 'mera github link krde', 'github link krde', 'connect github', 'github connect kar do') or sends a GitHub profile/token: ALWAYS call `connect_integration` with service='github'! DO NOT call `ask_user` to ask for username or URL — calling `connect_integration(service='github')` immediately returns the official 1-click OAuth link!
    - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
    - When user asks to check, inspect, or see if a file/README exists in a repo (e.g. 'php-project m readme file h kya dkhkr btaa', 'readme check karo'): ALWAYS call `get_github_file(repo=..., path="README.md")` autonomously! NEVER ask the user to share the file link or copy-paste file content.
@@ -280,6 +280,50 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             }
         elif intent == "cross_question":
             is_cross_q = True
+
+    if not active_pending:
+        # Check if user said "yes" or affirmative to an email or meeting proposal in previous assistant message
+        from state.pending import AFFIRMATIVE_REGEX
+        low_usr = user_text.lower().strip()
+        if AFFIRMATIVE_REGEX.search(low_usr) or low_usr in ("yes", "haan", "ha", "ok", "okay", "proceed", "send", "send it", "kar do", "kardo", "kr do", "krdo"):
+            recent_turns = db.get_recent_chat_history(chat_id, limit=4)
+            last_assistant_turn = None
+            for t in reversed(recent_turns):
+                if t.get("role") == "assistant":
+                    last_assistant_turn = t.get("text") or ""
+                    break
+            if last_assistant_turn:
+                # Check for proposed email
+                email_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', last_assistant_turn)
+                if email_match and any(w in last_assistant_turn.lower() for w in ("email", "mail", "send", "ready to send", "subject")):
+                    to_addr = email_match.group(0)
+                    subj_m = re.search(r'(?:subject|विषय)[:\-*]+\s*([^\n]+)', last_assistant_turn, re.I)
+                    body_m = re.search(r'(?:body|message|संदेश)[:\-*]+\s*([^\n]+)', last_assistant_turn, re.I)
+                    subject_val = subj_m.group(1).strip("* ") if subj_m else "Message"
+                    body_val = body_m.group(1).strip("* ") if body_m else ""
+                    synthetic_pending = {
+                        "action_kind": "send_email",
+                        "payload": {
+                            "to": to_addr,
+                            "subject": subject_val,
+                            "body": body_val
+                        }
+                    }
+                    save_pending_action(chat_id, "send_email", synthetic_pending["payload"])
+                    success, reply_msg = await execute_pending_action(chat_id, synthetic_pending)
+                    db.log_chat_message(chat_id, "user", user_text)
+                    db.log_chat_message(chat_id, "assistant", reply_msg)
+                    return {
+                        "reply": reply_msg,
+                        "tool_calls_executed": ["send_email"],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": 0,
+                        "memory_context": {}
+                    }
+
 
     # 0. Instant Follow-up Link & URL Resolver
     # ONLY triggers when user is solely asking for an existing link, NEVER when giving action instructions (add, create, notes, etc.)
@@ -712,16 +756,23 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     except Exception:
         pass
 
-    # Intent 9: Follow-up confirmation / affirmative intent for GitHub / Notion / Meeting actions
+    # Intent 9: Follow-up confirmation / affirmative intent for Email / Meeting / GitHub / Notion actions
     recent_turns_text = " ".join([t.get("text", "") for t in recent_history[-4:]]).lower()
     has_recent_github = bool(re.search(r"\b(github|repo|repos|repository|readme|commit|issue|pull|pr|php-project)\b", recent_turns_text))
     has_recent_notion = bool(re.search(r"\b(notion|page)\b", recent_turns_text))
+    has_recent_email = bool(re.search(r"\b(email|mail|gmail|subject|@)\b", recent_turns_text))
+    has_recent_meeting = bool(re.search(r"\b(meeting|meetings|schedule|call|calendar|meet)\b", recent_turns_text))
     is_affirmative = bool(re.search(r"\b(yes|yeah|haan|ha|han|kar do|kardo|kr do|krdo|confirm|proceed|ok|okay|kar de|karde|kr de|krde|kr bhy|kro|kr)\b", low_prompt))
 
-    if has_recent_github and (is_affirmative or is_code_modify):
-        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-    if has_recent_notion and is_affirmative and re.search(r"\b(notion|notes|note|page|daal|likh|save)\b", low_prompt):
-        selected_tool_names.update(["create_notion_page"])
+    if is_affirmative:
+        if has_recent_email:
+            selected_tool_names.update(["send_email"])
+        if has_recent_meeting:
+            selected_tool_names.update(["create_meeting", "check_availability", "get_schedule"])
+        if has_recent_github and (is_affirmative or is_code_modify):
+            selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
+        if has_recent_notion and re.search(r"\b(notion|notes|note|page|daal|likh|save)\b", low_prompt):
+            selected_tool_names.update(["create_notion_page"])
 
     # Strict Safety Guard: If user is giving a schedule plan / time without mentioning 'notion', NEVER include create_notion_page
     if (has_time_mention or has_plan_event) and not bool(re.search(r"\bnotion\b", low_prompt)):
