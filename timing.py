@@ -10,6 +10,11 @@ def _at(d, t):
     return datetime.combine(d, t, tzinfo=IST)
 
 
+def parse_followup_time(message, now=None):
+    from llm import parse_followup_time as _pft
+    return _pft(message, now)
+
+
 def build_plan(due_date, due_time, now=None):
     """Returns {"status": none|past|urgent|scheduled, "minutes": int|None,
     "reminders": [(remind_at, label), ...]}"""

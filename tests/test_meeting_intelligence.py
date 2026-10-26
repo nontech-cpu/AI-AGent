@@ -55,6 +55,8 @@ async def test_pending_action_updates_meeting_time_on_user_reschedule(fixed_now)
          patch("main.get_language", return_value="en"), \
          patch("main.set_language"), \
          patch("main.log_chat_message"), \
+         patch("timing.parse_followup_time", side_effect=lambda msg, now=None: parse_followup_time(msg, fixed_now)), \
+         patch("main.parse_followup_time", side_effect=lambda msg, now=None: parse_followup_time(msg, fixed_now)), \
          patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "test@gmail.com")), \
          patch("main.detect_meeting_conflicts", return_value=([], [])):
 

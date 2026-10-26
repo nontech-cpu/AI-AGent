@@ -230,7 +230,12 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
     if NEGATIVE_REGEX.search(low):
         return ("cancel", None)
 
-    # 3. Time update for meetings (e.g. "monday 5 bje", "5pm kar do", "time 6pm rakhna")
+    # 3. Cross-Question Detection
+    # If the user asks an informational question (e.g. "Tuesday ko Ananya se meeting ke pehle kya mujhe free time milega?")
+    if QUESTION_REGEX.search(clean):
+        return ("cross_question", None)
+
+    # 4. Time update for meetings (e.g. "monday 5 bje", "5pm kar do", "time 6pm rakhna")
     kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")
     if kind in ("create_meeting", "meeting", "update_meeting"):
         try:
@@ -240,11 +245,6 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
                 return ("update_time", parsed)
         except Exception:
             pass
-
-    # 4. Cross-Question Detection
-    # If the user asks an informational question (e.g. "Tuesday ko Ananya se meeting ke pehle kya mujhe free time milega?")
-    if QUESTION_REGEX.search(clean):
-        return ("cross_question", None)
 
     return ("unrelated", None)
 

@@ -248,10 +248,17 @@ async def test_connected_user_gmail_monitor_loop_end_to_end():
 
     mock_say = AsyncMock()
 
+    sleep_count_1 = 0
+    async def fake_sleep_1(secs):
+        nonlocal sleep_count_1
+        sleep_count_1 += 1
+        if sleep_count_1 > 1:
+            raise asyncio.CancelledError()
+
     with patch("main.get_all_connected_google_users", return_value=mock_users), \
          patch("main.fetch_user_inbox_messages", AsyncMock(return_value=mock_messages)), \
          patch("main.say_raw", mock_say), \
-         patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError()])):
+         patch("asyncio.sleep", side_effect=fake_sleep_1):
 
         try:
             await connected_user_gmail_monitor_loop()
@@ -271,10 +278,17 @@ async def test_connected_user_gmail_monitor_loop_end_to_end():
 
     # Now simulate a second run with the same emails
     mock_say.reset_mock()
+    sleep_count_2 = 0
+    async def fake_sleep_2(secs):
+        nonlocal sleep_count_2
+        sleep_count_2 += 1
+        if sleep_count_2 > 1:
+            raise asyncio.CancelledError()
+
     with patch("main.get_all_connected_google_users", return_value=mock_users), \
          patch("main.fetch_user_inbox_messages", AsyncMock(return_value=mock_messages)), \
          patch("main.say_raw", mock_say), \
-         patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError()])):
+         patch("asyncio.sleep", side_effect=fake_sleep_2):
 
         try:
             await connected_user_gmail_monitor_loop()
