@@ -76,3 +76,22 @@ async def test_verify_and_ground_reply_full_flow():
     )
     assert is_grounded is True
     assert "module" in final_reply
+
+
+@pytest.mark.asyncio
+async def test_verifier_allows_email_from_recent_history_when_query_is_yes():
+    draft = "Please confirm — send this email to aaravmishra619@gmail.com with subject kurta?"
+    recent_history = [
+        {"role": "user", "text": "aaravmishra619@gmail.com ko mail bhej do subject kurta"}
+    ]
+    is_grounded, final_reply, violations = await verify_and_ground_reply(
+        draft_reply=draft,
+        tool_results=[],
+        memory_context={},
+        user_query="yes",
+        recent_history=recent_history
+    )
+    assert is_grounded is True
+    assert "aaravmishra619@gmail.com" in final_reply
+    assert "Mere paas iski koi saved information nahi hai" not in final_reply
+

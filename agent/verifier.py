@@ -35,12 +35,23 @@ Respond ONLY with valid JSON:
 def extract_evidence_text(
     tool_results: List[Dict[str, Any]],
     memory_context: Optional[Dict[str, Any]] = None,
-    user_query: str = ""
+    user_query: str = "",
+    recent_history: Optional[List[Dict[str, Any]]] = None
 ) -> str:
-    """Combines all tool outputs, memory context, and user-provided inputs into a single audit string."""
+    """Combines all tool outputs, memory context, recent conversation turns, and user-provided inputs into a single audit string."""
     parts = []
     if user_query:
         parts.append(f"User Query & Provided Details:\n{user_query}")
+
+    if recent_history:
+        hist_lines = []
+        for t in recent_history:
+            r = t.get("role", "turn")
+            txt = t.get("text", "")
+            if txt:
+                hist_lines.append(f"{r}: {txt}")
+        if hist_lines:
+            parts.append("Recent Conversation History:\n" + "\n".join(hist_lines))
 
     if memory_context and memory_context.get("formatted_block"):
         parts.append(f"Memory Evidence:\n{memory_context['formatted_block']}")
@@ -57,13 +68,14 @@ def deterministic_verify(
     draft_reply: str,
     tool_results: List[Dict[str, Any]],
     memory_context: Optional[Dict[str, Any]] = None,
-    user_query: str = ""
+    user_query: str = "",
+    recent_history: Optional[List[Dict[str, Any]]] = None
 ) -> Tuple[bool, Optional[str], List[str]]:
     """
     Fast, zero-latency deterministic safety checks.
     Returns (passed, revised_reply, violation_reasons).
     """
-    evidence_str = extract_evidence_text(tool_results, memory_context, user_query)
+    evidence_str = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
     violations = []
 
     # 1. Fake Google Meet Link Check
@@ -191,7 +203,8 @@ async def verify_and_ground_reply(
     draft_reply: str,
     tool_results: List[Dict[str, Any]],
     memory_context: Optional[Dict[str, Any]] = None,
-    user_query: str = ""
+    user_query: str = "",
+    recent_history: Optional[List[Dict[str, Any]]] = None
 ) -> Tuple[bool, str, List[str]]:
     """
     Two-tier verification pass:
@@ -199,7 +212,7 @@ async def verify_and_ground_reply(
     2. Optional LLM verifier pass if factual assertions need cross-checking.
     """
     # 1. Deterministic fast check (0 latency)
-    passed, revised, violations = deterministic_verify(draft_reply, tool_results, memory_context, user_query)
+    passed, revised, violations = deterministic_verify(draft_reply, tool_results, memory_context, user_query, recent_history)
     if not passed:
         return False, revised or "Mere paas iski koi saved information nahi hai. Kya aap batana chahenge taaki main yaad rakhun?", violations
 
@@ -210,7 +223,7 @@ async def verify_and_ground_reply(
         return True, draft_reply, []
 
     # If no evidence and draft claims specific names/commitments, flag it
-    evidence_text = extract_evidence_text(tool_results, memory_context, user_query)
+    evidence_text = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
     if not evidence_text.strip():
         if any(w in user_query.lower() for w in ["kya bhejna", "kab hai", "details", "repo", "schedule", "free hu", "kahan", "kaam", "kaun", "kiska", "who", "where", "what", "email", "phone"]):
             fallback = "Mere paas iski koi saved information nahi hai. Kya aap mujhe batana chahenge taaki main yaad rakhun?"

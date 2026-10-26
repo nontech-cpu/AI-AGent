@@ -194,12 +194,12 @@ def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
 
 # Regular expressions for affirmative and negative intent in English and Roman Hinglish
 AFFIRMATIVE_REGEX = re.compile(
-    r"^(yes|yeah|yep|yup|haan|haanji|han|ha|kar do|kardo|kr do|krdo|bilkul|sure|proceed|confirm|ok|okay|create it|send it|kar dena|kardena|bana do|banado|schedule kar do|schedule krdo)\b",
+    r"^(yes|yeah|yep|yup|haan|haanji|han|ha|kar do|kardo|kr do|krdo|kar de|karde|kr de|krde|bhej do|bhejdo|bhej de|bhejde|bhejo|send|send it|send kar do|send krdo|bilkul|sure|proceed|confirm|ok|okay|theek hai|thik hai|create it|kar dena|kardena|bana do|banado|schedule kar do|schedule krdo|yes please)\b",
     re.I
 )
 
 NEGATIVE_REGEX = re.compile(
-    r"^(no|nope|cancel|mat karo|mat kro|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it)\b|meeting ka ni|ye nahi|ye mat|nhi chahiye|nahi chahiye",
+    r"^(no|nope|cancel|mat karo|mat kro|mat karna|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it|cancel it|cancel kar do|cancel krdo)\b|meeting ka ni|ye nahi|ye mat|nhi chahiye|nahi chahiye",
     re.I
 )
 
@@ -322,6 +322,16 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             if file_link:
                 reply += f"\n🔗 **Link:** {file_link}"
 
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+            return True, reply
+
+        elif kind in ("delete_meeting",):
+            event_id = payload.get("event_id")
+            title = payload.get("title", "Meeting")
+            if event_id:
+                await google_services.delete_calendar_event(chat_id, event_id)
+            reply = f"✅ **Meeting successfully deleted!**\n🗑️ '{title}' aapke Google Calendar se remove kar di gayi hai."
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
             return True, reply

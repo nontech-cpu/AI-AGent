@@ -1114,7 +1114,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         draft_reply=final_reply,
         tool_results=tool_results_list,
         memory_context=mem_ctx,
-        user_query=user_text
+        user_query=user_text,
+        recent_history=recent_history
     )
     if not is_grounded:
         print(f"Grounding Verifier intercepted unsupported claims: {violations}")
