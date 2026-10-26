@@ -786,6 +786,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if has_recent_notion and re.search(r"\b(code|block|clode|add|format|update|python|fastapi|daal|likh)\b", low_prompt):
         selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
 
+    # Intent 10: Real-time Utilities (Weather, Currency Conversion, Gold / Market Rates, Calculations)
+    if re.search(r"\b(weather|mausam|temperature|temp|barish|rain|forecast|climate)\b", low_prompt):
+        selected_tool_names.update(["get_weather"])
+    if re.search(r"\b(dollar|usd|inr|euro|eur|gbp|pound|currency|convert|conversion|exchange|rupaye|rupees|rate|rates)\b", low_prompt):
+        selected_tool_names.update(["convert_currency", "calculate"])
+    if re.search(r"\b(gold|silver|sona|chandi|bitcoin|btc|eth|ethereum|solana|sol|crypto|market price|commodity)\b", low_prompt):
+        selected_tool_names.update(["get_market_price", "convert_currency"])
+    if re.search(r"\b(calc|calculate|calculation|hisab|hisaab)\b", low_prompt) or bool(re.search(r"\d+\s*[\+\-\*\/]\s*\d+", low_prompt)) or "%" in low_prompt:
+        selected_tool_names.update(["calculate"])
+
     # Strict Safety Guard: If user is giving a schedule plan / time without mentioning 'notion', NEVER include create_notion_page or update_notion_page
     if (has_time_mention or has_plan_event) and not bool(re.search(r"\bnotion\b", low_prompt)):
         selected_tool_names.discard("create_notion_page")

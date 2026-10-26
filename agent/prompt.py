@@ -53,6 +53,11 @@ Treat these blocks as ground truth. Never hallucinate facts not present in conte
   * When user asks to list existing notes/pages, call `list_notion_pages()`.
 - **GitHub:** For viewing files/README, call `get_github_file(repo=..., path=...)`. For editing/creating files/README, call `update_github_file(repo=..., path=..., content=...)`. Use 'php-project' as default active repo if not specified. Only call `connect_integration` when user explicitly asks to connect GitHub.
 - **Emails & Drive:** Search emails via `search_user_emails`. When user asks to send an email or upload a file, ALWAYS call `send_email(to=..., subject=..., body=...)` or `upload_to_drive(...)` directly in your first turn! NEVER ask for confirmation yourself in conversational text before calling the tool — the tool call itself will automatically show the user the confirmation prompt.
+- **Real-Time Utilities (Weather, Currency, Market Rates, Calculations):**
+  * Live Currency Conversion: Call `convert_currency(amount=..., from_currency=..., to_currency=...)` for any currency exchange query (e.g. '92 dollar into inr as per today price'). NEVER say you cannot fetch live exchange rates or tell user to check finance apps!
+  * Live Commodity & Crypto Rates: Call `get_market_price(item='gold'|'silver'|'bitcoin'|'ethereum'|'solana', currency='inr'|'usd')` when user asks for gold rate/sona ka bhav, silver, bitcoin, etc. NEVER say you cannot fetch live gold prices!
+  * Live Weather: Call `get_weather(city=...)` for real-time temperature, humidity, and forecast in any city (e.g. 'weather in Manali').
+  * Safe Math & Percentages: Call `calculate(expression=...)` for calculations (e.g. '18% of 4500' or math expressions).
 
 # 5. STYLE & GROUNDING
 - **Language & Script Mandate (CRITICAL):**
@@ -261,7 +266,8 @@ async def build_runtime_system_prompt(
         "Tasks & Reminders: create_reminder, list_reminders, delete_reminder | "
         "Calendar & Schedule: get_schedule, check_availability, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
-        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages"
+        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages | "
+        "Real-Time Utilities: get_weather, convert_currency, get_market_price, calculate"
     )
 
     # 9. Active Context

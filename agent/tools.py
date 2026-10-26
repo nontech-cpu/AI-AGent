@@ -172,6 +172,21 @@ class AskUserArgs(BaseModel):
     question: str = Field(..., description="Specific question to ask the user.")
     options: Optional[List[str]] = Field(None, description="Optional list of choices for the user.")
 
+class GetWeatherArgs(BaseModel):
+    city: str = Field(..., description="Name of the city, town, or location (e.g. 'Manali', 'Delhi', 'Mumbai', 'London').")
+
+class ConvertCurrencyArgs(BaseModel):
+    amount: float = Field(..., description="Amount of money to convert (e.g. 92, 100, 50.5).")
+    from_currency: str = Field(..., description="Currency symbol or code converting from (e.g. 'USD', '$', 'dollar', 'EUR', 'INR').")
+    to_currency: Optional[str] = Field("INR", description="Currency code converting to (defaults to 'INR' or e.g. 'USD', 'EUR').")
+
+class GetMarketPriceArgs(BaseModel):
+    item: str = Field(..., description="Commodity or asset name (e.g. 'gold', 'silver', 'bitcoin', 'ethereum', 'solana').")
+    currency: Optional[str] = Field("inr", description="Currency for the price quote e.g. 'inr' or 'usd'. Defaults to 'inr'.")
+
+class CalculateArgs(BaseModel):
+    expression: str = Field(..., description="Math expression or percentage calculation (e.g. '92 * 83.5', '18% of 4500', '(500 + 200) / 4').")
+
 
 # -------------------------------------------------------------
 # 2. Tool Definitions for Groq Function Calling
@@ -633,6 +648,65 @@ TOOL_DEFINITIONS = [
                     "options": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Optional choices or null."}
                 },
                 "required": ["question"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Fetch live real-time weather, temperature, humidity, wind, and forecast conditions for any city or location globally.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "City or location name (e.g. 'Manali', 'Delhi', 'Mumbai', 'London', 'New York')."}
+                },
+                "required": ["city"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "convert_currency",
+            "description": "Convert currency amounts using live real-time foreign exchange market rates (e.g. USD to INR, EUR to USD, GBP to INR).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "Amount to convert (e.g. 92)."},
+                    "from_currency": {"type": "string", "description": "Currency converting from (e.g. 'USD', 'dollar', 'EUR')."},
+                    "to_currency": {"type": ["string", "null"], "description": "Currency converting to (e.g. 'INR', 'USD'). Defaults to 'INR'."}
+                },
+                "required": ["amount", "from_currency"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_market_price",
+            "description": "Fetch live real-time market prices for commodities (Gold 24K & 22K per gram/10g, Silver) and cryptocurrencies (Bitcoin, Ethereum, Solana) in INR or USD.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "string", "description": "Asset or commodity name: 'gold', 'silver', 'bitcoin', 'ethereum', 'solana'."},
+                    "currency": {"type": ["string", "null"], "description": "Currency code 'inr' or 'usd'. Defaults to 'inr'."}
+                },
+                "required": ["item"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": "Safely evaluates mathematical expressions, percentages (e.g. '18% of 4500'), and arithmetic calculations without code execution risk.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "Math expression or percentage to calculate (e.g. '92 * 86.5' or '18% of 5000')."}
+                },
+                "required": ["expression"]
             }
         }
     }
@@ -1923,6 +1997,30 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
         elif tool_name == "ask_user":
             args = AskUserArgs(**arguments)
             return {"status": "clarification_needed", "question": args.question, "options": args.options}
+
+        elif tool_name == "get_weather":
+            args = GetWeatherArgs(**arguments)
+            from utilities import get_weather
+            res = await get_weather(args.city)
+            return res
+
+        elif tool_name == "convert_currency":
+            args = ConvertCurrencyArgs(**arguments)
+            from utilities import convert_currency
+            res = await convert_currency(args.amount, args.from_currency, args.to_currency or "INR")
+            return res
+
+        elif tool_name == "get_market_price":
+            args = GetMarketPriceArgs(**arguments)
+            from utilities import get_market_price
+            res = await get_market_price(args.item, args.currency or "inr")
+            return res
+
+        elif tool_name == "calculate":
+            args = CalculateArgs(**arguments)
+            from utilities import calculate
+            res = calculate(args.expression)
+            return res
 
         else:
             return {"status": "error", "message": f"Unknown tool: '{tool_name}'"}
