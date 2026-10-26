@@ -513,6 +513,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
         # 6. Ticket Follow-Up Action: Calendar Add / Travel Reminder & Past Date Validation
         # Handles user queries like: "Ok laga do", "Mera ticket ko calender mai add kar do", "2524281551 yeah wala", "travel reminder laga do"
+        is_reminder_query = bool(re.search(
+            r"\b(any\s*reminder|kya\s*reminder|koi\s*reminder|list\s*reminder|show\s*reminder|check\s*reminder|reminders?\s*(for\s*me|aaj|today|hai|h|dikhao|btao|batao|check))\b",
+            low_prompt_raw
+        ))
         has_cal_remind_intent = bool(re.search(r"\b(calender|calendar|remind|reminder|schedule|laga\s*do|daal\s*do|add\s*kar\s*do|set\s*kar\s*do|kardo|kar\s*do)\b", low_prompt_raw))
         has_ticket_ref = bool(re.search(r"\b(ticket|tickets|booking|pnr|train|flight|journey)\b", low_prompt_raw))
         has_pnr_mention = bool(re.search(r"\b(\d{6,12})\b", low_prompt_raw))
@@ -533,9 +537,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         has_active_ticket = bool(tkt)
 
         should_handle_ticket_action = (
-            (has_cal_remind_intent and (has_ticket_ref or has_pnr_mention or was_ticket_offered or has_yeah_wala or has_active_ticket))
-            or (is_direct_ok and (was_ticket_offered or has_active_ticket))
-            or (has_pnr_mention and (has_yeah_wala or has_cal_remind_intent))
+            not is_reminder_query and (
+                (has_ticket_ref and (has_cal_remind_intent or has_yeah_wala))
+                or (has_pnr_mention and (has_yeah_wala or has_cal_remind_intent))
+                or (is_direct_ok and (was_ticket_offered or has_active_ticket))
+            )
         )
 
         if should_handle_ticket_action:
@@ -688,9 +694,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if re.search(r"\b(meeting|meetings|schedule|call|calls|meet|slot|slots|free|busy|appointment|appointments|aaj|kal|parso|plan|plans|calendar|event|events|timing|time)\b", low_prompt):
         selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting", "create_reminder"])
 
-    # Intent 2: Reminders / Tasks
+    # Intent 2: Reminders / Tasks / Schedule
     if re.search(r"\b(remind|reminder|reminders|yaad|task|tasks|movie|dinner|lunch|gym|workout|doctor|ticket|pnr|flight|hotel|booking|to-do|todo)\b", low_prompt):
-        selected_tool_names.update(["create_reminder", "list_reminders", "delete_reminder"])
+        selected_tool_names.update(["create_reminder", "list_reminders", "get_schedule", "delete_reminder"])
 
     # Intent 3: Contacts & Commitments
     if re.search(r"\b(contact|contacts|number|phone|bhejna|bhejo|send|promise|commitment|commitments|lead|designer|ananya|annaya|devender|rahul)\b", low_prompt):
@@ -765,6 +771,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "model": current_model,
                 "temperature": 0.1,
                 "messages": messages,
+                "max_tokens": 4096,
             }
             if effective_tools:
                 payload["tools"] = effective_tools
