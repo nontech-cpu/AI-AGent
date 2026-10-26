@@ -939,24 +939,37 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
 # ---------- Persistent Chat Logs & ChatGPT-style Long-Term Memory ----------
 
 def log_chat_message(chat_id, role, message):
-    """Saves a conversation turn permanently in PostgreSQL."""
+    """Saves a conversation turn permanently in PostgreSQL, preventing immediate duplicates."""
     if not message or not str(message).strip():
         return
+    clean_msg = str(message).strip()
     try:
         with engine.begin() as conn:
+            # Check last logged message for this user to avoid consecutive duplicates
+            last = conn.execute(
+                text(
+                    "SELECT role, message FROM chat_logs "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "ORDER BY id DESC LIMIT 1"
+                ),
+                {"cid": chat_id}
+            ).first()
+            if last and last[0] == role and last[1] == clean_msg:
+                return  # Skip duplicate insert
+
             conn.execute(
                 text(
                     "INSERT INTO chat_logs (user_id, role, message) "
                     "SELECT id, :role, :msg FROM users WHERE telegram_chat_id = :cid"
                 ),
-                {"cid": chat_id, "role": role, "msg": str(message).strip()}
+                {"cid": chat_id, "role": role, "msg": clean_msg}
             )
     except Exception as exc:
         print("log_chat_message error:", repr(exc))
 
 
 def get_recent_chat_history(chat_id, limit=15):
-    """Retrieves the recent conversation history in chronological order."""
+    """Retrieves the recent conversation history in chronological order without sequential duplicates."""
     try:
         with engine.connect() as conn:
             rows = conn.execute(
@@ -965,10 +978,16 @@ def get_recent_chat_history(chat_id, limit=15):
                     "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
                     "ORDER BY id DESC LIMIT :lim"
                 ),
-                {"cid": chat_id, "lim": limit}
+                {"cid": chat_id, "lim": limit * 2}
             ).fetchall()
-        # Return chronological order (oldest to newest)
-        return [{"role": r[0], "text": r[1]} for r in reversed(rows)]
+        # Return chronological order (oldest to newest) with duplicates removed
+        cleaned = []
+        for r in reversed(rows):
+            role, msg = r[0], r[1]
+            if cleaned and cleaned[-1]["role"] == role and cleaned[-1]["text"] == msg:
+                continue
+            cleaned.append({"role": role, "text": msg})
+        return cleaned[-limit:]
     except Exception as exc:
         print("get_recent_chat_history error:", repr(exc))
         return []

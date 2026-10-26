@@ -211,6 +211,9 @@ def record_chat_turn(chat_id: int, role: str, text: str):
     clean_msg = text.strip()
     if chat_id not in RECENT_CHAT_TURNS:
         RECENT_CHAT_TURNS[chat_id] = deque(maxlen=20)
+    # Deduplicate consecutive identical messages
+    if RECENT_CHAT_TURNS[chat_id] and RECENT_CHAT_TURNS[chat_id][-1].get("role") == role and RECENT_CHAT_TURNS[chat_id][-1].get("text") == clean_msg:
+        return
     RECENT_CHAT_TURNS[chat_id].append({"role": role, "text": clean_msg})
     # Persist in Neon PostgreSQL chat_logs
     try:
@@ -3055,6 +3058,11 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         set_language(chat_id, detected)
         stored = detected
     reply_lang.set(stored)
+
+    # In AGENT_CORE=v2 mode, route directly to the unified Agent Loop (single brain for reasoning, tools, and pending state)
+    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
+        await handle_active(chat_id, clean)
+        return
 
     if chat_id in PENDING_GOOGLE_ACTIONS:
         pending = PENDING_GOOGLE_ACTIONS[chat_id]
