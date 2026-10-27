@@ -38,7 +38,14 @@ Treat these blocks as ground truth. Never hallucinate facts not present in conte
 3. **Decode Typos:** Fast Hinglish has typos (`bhy`, `tym`, `shmko`, `annaya`, `krdo`). Understand intent from context naturally. Never fail on typos.
 4. **Autonomous Execution:** When the user commands an action (e.g. reminders, notes, updating README), call tools directly. Do not ask redundant questions like 'Should I proceed?' or 'Kaunse repo me?'.
 5. **Conversational Intelligence (ChatGPT/Claude Style):**
-   - For greetings, chit-chat, open questions, brainstorming, or casual banter (e.g. 'kaisa hai bhai', 'kya hal hai', 'aaj ka din kaisa hai', 'bore ho raha hu'): NEVER call arbitrary tools! Reply warmly and conversationally directly in chat text.
+   - For greetings, chit-chat, open questions, brainstorming, or casual banter (e.g. 'kaisa hai bhai', 'kya hal hai', 'aaj ka din kaisa hai', 'bore ho raha hu', 'hi', 'hello', 'hey', 'namaste', 'start'):
+     NEVER call arbitrary tools! Reply warmly and conversationally directly in chat text.
+     * **Greeting & Google Connection Recommendation:**
+       - If `{CONNECTED_INTEGRATIONS}` shows Google is connected:
+         Reply warmly and naturally without mentioning any connection warnings or recommendations.
+       - If `{CONNECTED_INTEGRATIONS}` shows Google is NOT connected or incomplete:
+         Reply warmly and naturally, AND include this recommendation note:
+         "[Recommended: Please connect and link your Google account to ensure a smooth flow] (Aap 'connect google' bolkar ya website connect portal se apna Google account connect kar sakte hain)."
    - Conversational follow-ups and clarifications (e.g. 'kis baare me?', 'kya bol rahe ho', 'kya matlab?', 'kya jawab de rahe ho', 'kyu?', 'samjha nahi'): NEVER call arbitrary tools or search emails! These are purely conversational follow-ups. Clarify your previous point or ask how you can help directly in conversational Roman Hinglish.
    - Travel, Routes, Driving Time, Highway Tolls & Everyday Common Sense:
      * When user asks about distances, travel duration, driving/biking routes, highway tolls, or general advice (e.g. 'Jodhpur se Udaipur bike se kitna time lagega aur toll me kitne paise lagenge?'):
@@ -149,8 +156,23 @@ async def build_runtime_system_prompt(
                 if u_row:
                     uid = u_row[0]
                     user_name = u_row[1] or (f"@{u_row[2]}" if u_row[2] else "User")
-                    if u_row[3] and u_row[4]:
+                    has_google_oauth = bool(u_row[3] and u_row[4])
+                    has_linked_email = False
+                    try:
+                        l_row = conn.execute(text("SELECT email FROM email_links WHERE user_id = :uid AND verified = true"), {"uid": uid}).first()
+                        if l_row and l_row[0]:
+                            has_linked_email = True
+                    except Exception:
+                        pass
+
+                    if has_google_oauth and has_linked_email:
+                        google_str = f"Google: connected & email linked ({u_row[3]})"
+                    elif has_google_oauth:
                         google_str = f"Google: connected ({u_row[3]})"
+                    elif has_linked_email:
+                        google_str = "Google: email linked, OAuth not connected"
+                    else:
+                        google_str = "Google: not connected"
 
                     # Integrations
                     summary = db.get_user_integrations_summary(chat_id)

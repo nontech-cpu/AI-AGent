@@ -1344,10 +1344,14 @@ async def get_valid_google_connection_by_chat_id(chat_id: int) -> tuple[bool, st
         if not raw_refresh:
             return False, None
         # Attempt to refresh token with Google to ensure it's not revoked or expired
-        refreshed = await refresh_access_token(raw_refresh)
-        if refreshed and refreshed.get("access_token"):
+        try:
+            refreshed = await refresh_access_token(raw_refresh)
+            if refreshed and refreshed.get("access_token"):
+                return True, token.get("email")
+            return False, None
+        except Exception as ref_err:
+            print("Google token refresh live ping warning, using stored valid token:", repr(ref_err))
             return True, token.get("email")
-        return False, None
     except Exception as exc:
         print("Google connection validation check failed:", repr(exc))
         return False, None
@@ -1576,6 +1580,8 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
         elif kind == 'delete_meeting':
             await google_delete_calendar_event(chat_id, pending['event_id'])
             await say(chat_id, f"Meeting '{pending.get('title')}' deleted successfully from your Google Calendar ✅")
+        elif kind == 'save_item':
+            await save_item_flow(chat_id, pending['item'])
 
         # Check if user had a follow-up instruction in the same message (e.g. "haan aur 6bje rkh new meeting")
         rem_clean = clean_remainder_instruction(rem_parsed)
@@ -2122,7 +2128,15 @@ async def handle_active(chat_id, text):
 
     # Fast local response for greetings & acknowledgments in legacy v1 mode
     if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
-        greet_reply = "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
+        is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+        if is_conn:
+            greet_reply = "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
+        else:
+            greet_reply = (
+                "Namaste! Main aapka personal assistant hu.\n\n"
+                "[Recommended: Please connect and link your Google account to ensure a smooth flow]\n\n"
+                "Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
+            )
         record_chat_turn(chat_id, "assistant", greet_reply)
         await say(chat_id, greet_reply)
         return
@@ -3282,11 +3296,58 @@ async def process_photo(chat_id, photo_list, caption=""):
                 print("auto save contact from photo error:", repr(card_err))
 
         try:
+            cap_low = (caption or "").lower()
+            explicit_sched = any(w in cap_low for w in ("schedule", "reminder", "remind", "save", "laga do", "set kar", "add", "daal do", "bana do"))
             r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")
             if r.get("intent") == "save_item" and r.get("item"):
-                await save_item_flow(chat_id, r["item"])
+                item = r["item"]
+                if explicit_sched:
+                    await save_item_flow(chat_id, item)
+                else:
+                    title = item.get("title") or "Bill / Expense"
+                    due_d = item.get("due_date") or ""
+                    amt = item.get("amount") or ""
+                    detail_lines = [f"• **Item:** {title}"]
+                    if due_d:
+                        detail_lines.append(f"• **Due Date:** {due_d}")
+                    if amt:
+                        detail_lines.append(f"• **Amount:** ₹{amt}")
+                    detail_str = "\n".join(detail_lines)
+
+                    PENDING_GOOGLE_ACTIONS[chat_id] = {
+                        "kind": "save_item",
+                        "item": item,
+                        "created_at": datetime.now(IST)
+                    }
+                    confirm_msg = (
+                        f"Maine aapke photo se ye details extract ki hain:\n\n"
+                        f"{detail_str}\n\n"
+                        f"👉 **Kya main iska reminder schedule kar du?** ('haan' ya 'schedule kar do' bolein)"
+                    )
+                    record_chat_turn(chat_id, "assistant", confirm_msg)
+                    await say_raw(chat_id, confirm_msg)
             elif r.get("intent") == "create_meeting":
-                await prepare_google_action(chat_id, r)
+                if explicit_sched:
+                    await prepare_google_action(chat_id, r)
+                else:
+                    m_title = r.get("title") or "Meeting"
+                    m_start = r.get("start_iso") or ""
+                    PENDING_GOOGLE_ACTIONS[chat_id] = {
+                        "kind": "create_meeting",
+                        "title": m_title,
+                        "start_iso": m_start,
+                        "duration_minutes": r.get("duration_minutes", 30),
+                        "attendees": r.get("attendees", []),
+                        "created_at": datetime.now(IST)
+                    }
+                    confirm_msg = (
+                        f"Maine aapke image se meeting details extract ki hain:\n\n"
+                        f"• **Title:** {m_title}\n"
+                        f"• **Time:** {m_start}\n\n"
+                        f"👉 **Kya main ye meeting Google Calendar me schedule kar du?** ('haan' ya 'schedule kar do' bolein)"
+                    )
+                    record_chat_turn(chat_id, "assistant", confirm_msg)
+                    await say_raw(chat_id, confirm_msg)
         except Exception as exc:
             print("photo intent error:", repr(exc))
     except Exception as e:
@@ -3355,10 +3416,37 @@ async def process_document(chat_id, doc, caption=""):
 
         try:
             low_text = text_content[:2000].lower()
+            cap_low = (caption or "").lower()
+            explicit_sched = any(w in cap_low for w in ("schedule", "reminder", "remind", "save", "laga do", "set kar", "add", "daal do", "bana do"))
             if any(w in low_text for w in ("due date", "bill amount", "total due", "amount payable", "invoice amount", "बिजली", "बिल")):
                 r = await understand(f"This document might be a bill or invoice: {text_content[:800]}")
                 if r.get("intent") == "save_item" and r.get("item"):
-                    await save_item_flow(chat_id, r["item"])
+                    item = r["item"]
+                    if explicit_sched:
+                        await save_item_flow(chat_id, item)
+                    else:
+                        title = item.get("title") or "Bill / Invoice"
+                        due_d = item.get("due_date") or ""
+                        amt = item.get("amount") or ""
+                        detail_lines = [f"• **Title:** {title}"]
+                        if due_d:
+                            detail_lines.append(f"• **Due Date:** {due_d}")
+                        if amt:
+                            detail_lines.append(f"• **Amount:** ₹{amt}")
+                        detail_str = "\n".join(detail_lines)
+
+                        PENDING_GOOGLE_ACTIONS[chat_id] = {
+                            "kind": "save_item",
+                            "item": item,
+                            "created_at": datetime.now(IST)
+                        }
+                        confirm_msg = (
+                            f"Maine aapke document se bill details extract ki hain:\n\n"
+                            f"{detail_str}\n\n"
+                            f"👉 **Kya main iska reminder schedule kar du?** ('haan' ya 'schedule kar do' bolein)"
+                        )
+                        record_chat_turn(chat_id, "assistant", confirm_msg)
+                        await say_raw(chat_id, confirm_msg)
         except Exception as exc:
             print("doc reminder check error:", repr(exc))
 

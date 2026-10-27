@@ -97,3 +97,74 @@ async def test_answer_document_query_untrusted_content_isolation():
         
         assert "PWNED" not in answer
         assert "confidential report" in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_photo_smart_scheduling_confirmation():
+    import main
+    import db
+    chat_id = 998877110
+    db.ensure_user(chat_id)
+    db.give_consent(chat_id)
+    db.set_persona(chat_id, "Job")
+
+    mock_analysis = "Electricity bill of Rs. 1450 due on 28th October from BSES."
+    mock_understand_bill = {
+        "intent": "save_item",
+        "item": {
+            "title": "Electricity bill",
+            "amount": 1450,
+            "due_date": "2026-10-28",
+            "category": "bill"
+        }
+    }
+
+    sent_messages = []
+    async def mock_say(cid, text):
+        sent_messages.append(text)
+
+    with patch("main.process_telegram_photo", new_callable=AsyncMock, return_value=mock_analysis), \
+         patch("main.understand", new_callable=AsyncMock, return_value=mock_understand_bill), \
+         patch("main.say_raw", side_effect=mock_say), \
+         patch("main.say", side_effect=mock_say):
+
+        # 1. User sends photo WITHOUT explicit caption -> MUST ask confirmation first
+        await main.process_photo(chat_id, [{"file_id": "photo_123"}], caption="")
+        assert any("Kya main iska reminder schedule kar du?" in m for m in sent_messages)
+        assert chat_id in main.PENDING_GOOGLE_ACTIONS
+        assert main.PENDING_GOOGLE_ACTIONS[chat_id]["kind"] == "save_item"
+
+        # 2. User confirms with "haan" -> MUST schedule reminder
+        with patch("main.save_item_flow", new_callable=AsyncMock) as mock_save:
+            await main.handle_google_confirmation(chat_id, "yes", raw_text="haan")
+            mock_save.assert_called_once()
+            assert chat_id not in main.PENDING_GOOGLE_ACTIONS
+
+
+@pytest.mark.asyncio
+async def test_greeting_conditional_google_recommendation():
+    import main
+    import db
+    chat_id = 998877111
+    db.ensure_user(chat_id)
+    db.give_consent(chat_id)
+    db.set_persona(chat_id, "Job")
+
+    # Fast greeting path
+    sent_msgs = []
+    async def mock_say(cid, text):
+        sent_msgs.append(text)
+
+    # 1. Unconnected Google -> MUST show recommendation
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)), \
+         patch("main.say", side_effect=mock_say):
+        sent_msgs.clear()
+        await main.handle_active(chat_id, "hi")
+        assert any("[Recommended: Please connect and link your Google account to ensure a smooth flow]" in m for m in sent_msgs)
+
+    # 2. Connected Google -> MUST NOT show recommendation
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "user@gmail.com")), \
+         patch("main.say", side_effect=mock_say):
+        sent_msgs.clear()
+        await main.handle_active(chat_id, "hi")
+        assert not any("[Recommended: Please connect and link your Google account to ensure a smooth flow]" in m for m in sent_msgs)
