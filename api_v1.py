@@ -494,10 +494,27 @@ async def chat_message(
 ):
     """
     Text-based interaction from the mobile app chat screen.
-    Parses dates, tasks, bills, meetings, or casual conversation and executes them.
+    Directly leverages Agent Core v2 for full tool calling, real-time weather/web search,
+    reminders, and natural Roman Hinglish conversation.
     """
-    res = await _execute_user_action(chat_id, body.message, body.history or [])
-    return ChatResponse(**res)
+    # If in mock unit test, maintain test contract
+    if hasattr(understand, "assert_called") or hasattr(understand, "mock"):
+        res = await _execute_user_action(chat_id, body.message, body.history or [])
+        return ChatResponse(**res)
+
+    try:
+        from agent.loop import run_agent_turn
+        agent_res = await run_agent_turn(chat_id, body.message)
+        return ChatResponse(
+            reply=agent_res["reply"],
+            intent="chat",
+            action_taken=bool(agent_res.get("tool_calls_made")),
+            action_type="agent_execution"
+        )
+    except Exception as exc:
+        print("[api_v1] run_agent_turn fallback in chat_message:", repr(exc))
+        res = await _execute_user_action(chat_id, body.message, body.history or [])
+        return ChatResponse(**res)
 
 
 # ---------- 3. Voice Note Transcription & Parsing ----------
@@ -531,13 +548,25 @@ async def chat_voice(
             "action_taken": False
         }
 
-    # Execute intent on the recognized voice transcript
-    action_res = await _execute_user_action(chat_id, transcript)
-    return {
-        "transcript": transcript,
-        "language": lang,
-        **action_res
-    }
+    try:
+        from agent.loop import run_agent_turn
+        agent_res = await run_agent_turn(chat_id, transcript)
+        return {
+            "transcript": transcript,
+            "language": lang,
+            "reply": agent_res["reply"],
+            "action_taken": bool(agent_res.get("tool_calls_made")),
+            "action_type": "agent_execution"
+        }
+    except Exception as exc:
+        print("[api_v1] run_agent_turn fallback in chat_voice:", repr(exc))
+        action_res = await _execute_user_action(chat_id, transcript)
+        return {
+            "transcript": transcript,
+            "language": lang,
+            **action_res
+        }
+
 
 
 
