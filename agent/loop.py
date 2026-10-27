@@ -773,8 +773,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Pure reminder queries: load only reminder & schedule tools for fast 1s response
     is_pure_reminder_query = bool(
         re.search(r"\b(reminder|reminders)\b", low_prompt)
-        and not any(w in low_prompt for w in ("weather", "search", "github", "notion", "email", "mail", "drive", "gold", "crypto", "convert", "calc", "contact"))
+        and not any(w in low_prompt for w in ("weather", "search", "github", "notion", "email", "mail", "drive", "gold", "sona", "chandi", "silver", "crypto", "convert", "calc", "contact", "bhav", "rate", "price", "aur", "and", "&"))
     )
+
 
     if is_pure_casual_chat:
         active_tool_names = set()

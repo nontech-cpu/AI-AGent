@@ -702,7 +702,39 @@ def create_smart_list(chat_id, name, category="general"):
     return row[0] if row else None
 
 
+def create_smart_list_with_items(chat_id, name, category="general", items=None):
+    """Creates a smart list and its items in a single atomic transaction for high speed."""
+    items = items or []
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "INSERT INTO smart_lists (user_id, name, category) "
+                "SELECT id, :n, :cat FROM users WHERE telegram_chat_id = :c RETURNING id"
+            ),
+            {"n": name.strip(), "cat": category, "c": chat_id},
+        ).first()
+        if not row:
+            return None, []
+        list_id = row[0]
+        created = []
+        for it in items:
+            it_clean = it.strip() if isinstance(it, str) else str(it)
+            if not it_clean:
+                continue
+            item_row = conn.execute(
+                text(
+                    "INSERT INTO smart_list_items (list_id, title, quantity, checked) "
+                    "VALUES (:lid, :t, NULL, false) RETURNING id"
+                ),
+                {"lid": list_id, "t": it_clean},
+            ).first()
+            if item_row:
+                created.append({"id": item_row[0], "title": it_clean, "checked": False})
+        return list_id, created
+
+
 def add_smart_list_item(chat_id, list_id, title, quantity=None):
+
     with engine.begin() as conn:
         owner = conn.execute(
             text(

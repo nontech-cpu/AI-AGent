@@ -1401,8 +1401,36 @@
     </div>
   </div>
 
+  <!-- Modal 3.5: Create New Smart List -->
+  <div class="modal-backdrop" id="modalList">
+    <div class="modal-sheet">
+      <div class="modal-title">📝 Create New Smart List</div>
+      <div class="form-group">
+        <label>List Name *</label>
+        <input type="text" class="form-input" id="listNameInput" placeholder="e.g. Grocery Shopping, Goa Trip, Gym Plan">
+      </div>
+      <div class="form-group">
+        <label>Category</label>
+        <select class="form-select" id="listCategoryInput">
+          <option value="general" selected>General</option>
+          <option value="shopping">Shopping & Grocery</option>
+          <option value="travel">Travel & Packing</option>
+          <option value="work">Work & Projects</option>
+          <option value="fitness">Fitness & Health</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Initial Items (Optional, comma-separated)</label>
+        <input type="text" class="form-input" id="listItemsInput" placeholder="e.g. Milk, Eggs, Bread, Coffee">
+      </div>
+      <button class="btn-submit" id="btnSubmitNewList" onclick="submitNewList()">Create List</button>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:8px;" onclick="closeModals()">Cancel</button>
+    </div>
+  </div>
+
   <!-- Modal 4: Settings & User Chat ID -->
   <div class="modal-backdrop" id="modalSettings">
+
     <div class="modal-sheet">
       <div class="modal-title">⚙️ Companion Settings</div>
       <div class="form-group">
@@ -2083,12 +2111,64 @@
     function openNewReminderModal() { document.getElementById('modalReminder').classList.add('open'); }
     function openNewEventModal() { document.getElementById('modalCalendar').classList.add('open'); }
     function openNewTaskModal() { document.getElementById('modalTask').classList.add('open'); }
-    function openNewListModal() { instantiateTemplate('packing_list'); }
+    function openNewListModal() {
+      closeModals();
+      const nameEl = document.getElementById('listNameInput');
+      const itemsEl = document.getElementById('listItemsInput');
+      if (nameEl) nameEl.value = '';
+      if (itemsEl) itemsEl.value = '';
+      document.getElementById('modalList').classList.add('open');
+      setTimeout(() => { if (nameEl) nameEl.focus(); }, 100);
+    }
+
+    async function submitNewList() {
+      const name = (document.getElementById('listNameInput').value || '').trim();
+      if (!name) {
+        alert('Please enter a list name.');
+        return;
+      }
+      const category = document.getElementById('listCategoryInput').value || 'general';
+      const itemsRaw = (document.getElementById('listItemsInput').value || '').trim();
+      const items = itemsRaw ? itemsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+      const submitBtn = document.getElementById('btnSubmitNewList');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Creating...';
+      }
+
+      try {
+        const res = await fetch(`/api/v1/lists?chat_id=${currentChatId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, category, items })
+        });
+        if (res.ok) {
+          closeModals();
+          await loadUserLists();
+          switchNavTab('lists');
+          const container = document.getElementById('userListsContainer');
+          if (container) container.scrollIntoView({ behavior: 'smooth' });
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.detail || 'Failed to create list');
+        }
+      } catch (err) {
+        alert('Error creating list: ' + err.message);
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Create List';
+        }
+      }
+    }
+
     function openSettingsModal() { document.getElementById('modalSettings').classList.add('open'); }
 
     function closeModals() {
       document.querySelectorAll('.modal-backdrop').forEach(m => m.classList.remove('open'));
     }
+
 
     function saveSettingsChatId() {
       const val = document.getElementById('settingsChatIdInput').value.trim();
