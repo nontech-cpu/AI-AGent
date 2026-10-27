@@ -692,25 +692,64 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     except Exception:
         pass
 
+    low_prompt = user_text.lower().strip()
+    
+    # Pure casual greetings / check-ins: zero tool overhead and zero DB latency for 0.4s natural chat
+    has_action_words = bool(re.search(
+        r"\b(remind|reminder|meet|meeting|calendar|schedule|call|task|todo|note|notes|notion|git|github|mail|email|gmail|send|upload|drive|pdf|weather|search|rate|price|gold|sona|convert|calc|dollar|inr|ticket|pnr|flight|wipe|delete|forget|clean)\b",
+        low_prompt
+    ))
+    is_pure_casual_chat = (
+        not has_action_words
+        and (
+            bool(re.search(
+                r"^(?:(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)\s+)?(?:hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)(?:\s+(?:bhy|bhai|bro|yaar|dost|h|hai|ho|chal\s+raha\s+hai|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
+                low_prompt
+            ))
+            or bool(re.search(
+                r"^(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)(?:\s+(?:kesa|kaisa|kaise|kaisi|theek|thik|kya\s+hal|kya\s+haal|kya\s+chal\s+rha|kya\s+chal\s+raha|sab\s+badhiya))?(?:\s+(?:h|hai|ho|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
+                low_prompt
+            ))
+            or bool(re.search(
+                r"^(?:sab\s+)?(?:badhiya|theek|thik|mast)\s*(?:bhy|bhai|bro|yaar|dost)?(?:\s+(?:tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao|kaisa\s+hai|kaisa\s+h))?[\s?!.,]*$",
+                low_prompt
+            ))
+        )
+    )
+
     # Context assembly: assemble memory & system prompt (only needed for turns that proceed to the LLM)
-    from memory.retrieval import assemble_memory_context
-    mem_ctx = assemble_memory_context(chat_id, user_text)
 
-    from agent.prompt import build_runtime_system_prompt
-    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
+    if is_pure_casual_chat:
+        mem_ctx = {"formatted_block": "", "matched_entities": [], "relevant_memories": [], "facts": []}
+        system_content = (
+            "You are PeculiarAI, a sharp and personal AI companion. "
+            "You converse naturally like a warm, intelligent friend in Roman Hinglish (Latin alphabet exclusively). "
+            "# Conversational Mandate: "
+            "Reply warmly, naturally, and conversationally (e.g. 'Main badhiya hoon bhai! Aap batao, sab kaisa chal raha hai? 😊' or 'Ekdum badhiya bhai! Aap sunao, kya haal chaal?'). "
+            "STRICT RESPECT MANDATE: NEVER ask dismissive, impatient, or transactional questions like 'Aapko koi kaam ya reminder set karna hai ya bas chat karna hai?' or 'Kaam batao ya bas baat karni hai?'. "
+            "NEVER push reminders, calendar invites, or tasks onto casual banter or greetings. If the user is just saying hello or asking how you are, respond warmly and ask how they are doing. "
+            "Keep answers crisp, warm, and friendly."
+        )
+    else:
+        from memory.retrieval import assemble_memory_context
+        mem_ctx = assemble_memory_context(chat_id, user_text)
 
-
+        from agent.prompt import build_runtime_system_prompt
+        system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = db.get_recent_chat_history(chat_id, limit=8)
-    for turn in recent_history:
-        t_text = turn.get("text") or ""
-        if len(t_text) > 3000:
-            t_text = t_text[:3000] + "..."
-        messages.append({"role": turn["role"], "content": t_text})
+    recent_history = []
+    if not is_pure_casual_chat:
+        recent_history = db.get_recent_chat_history(chat_id, limit=8)
+        for turn in recent_history:
+            t_text = turn.get("text") or ""
+            if len(t_text) > 3000:
+                t_text = t_text[:3000] + "..."
+            messages.append({"role": turn["role"], "content": t_text})
 
     # Append current user prompt
     messages.append({"role": "user", "content": user_text})
+
 
     tool_calls_executed = []
     tool_results_list = []
@@ -719,10 +758,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     # Provide the comprehensive functional tool suite (ChatGPT/Claude style architecture)
-    # Dynamic Tool Selection to prevent exceeding Groq 7,000 TPM limit on free keys
-    low_prompt = user_text.lower()
-    
-    # 1. Core tool names (Always available on every turn)
+
+
+    # 1. Core tool names (Available whenever user is not in pure casual greeting)
     core_tool_names = {
         "create_reminder", "list_reminders", "delete_reminder",
         "save_contact", "get_contact", "list_contacts", "update_contact_commitment", "get_commitments",
@@ -732,7 +770,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         "calculate", "convert_currency"
     }
     
-    active_tool_names = set(core_tool_names)
+    active_tool_names = set() if is_pure_casual_chat else set(core_tool_names)
+
     
     # 2. Calendar / Meeting tools
     has_calendar_interest = bool(re.search(
@@ -1150,8 +1189,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         violations.append(fake_err)
         final_reply = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
 
+    # Guardrail: Anti-Rude / Anti-Transactional Filter (Ensure warm, respectful companion persona)
+    if re.search(r"\b(bas\s+chat\s+karna\s+hai|kaam\s+batao\s+ya\s+bas|kaam\s+karna\s+hai\s+ya\s+bas|kaam\s+hai\s+ya\s+bas|kuch\s+kaam\s+hai\s+ya\s+bas)\b", final_reply, re.I):
+        final_reply = "Bhai, main ekdum badhiya hoon! Aap sunao, sab kaisa chal raha hai? 😊"
+
     # Guardrail: Repeat Suppression
     final_reply = check_repeat_guard(chat_id, final_reply)
+
 
     latency_ms = int((time.time() - start_ts) * 1000)
 

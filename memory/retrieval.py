@@ -29,7 +29,9 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "fark", "set", "jana", "aana", "aaj", "kal", "parso", "subah", "shaam", "sham",
         "dopahar", "raat", "sthh", "sth", "saath", "sath", "bhi", "yeh", "kuch", "shmko",
         "movie", "dinner", "lunch", "kisko", "uska", "uski", "unka", "unki", "pehle",
-        "baad", "waqt", "nhi", "nahi", "nahin", "hain", "naam", "sirf"
+        "baad", "waqt", "nhi", "nahi", "nahin", "hain", "naam", "sirf",
+        "kesa", "kaisa", "kaise", "kaisi", "theek", "thik", "badhiya", "badia", "mast",
+        "haal", "hal", "chal", "rha", "raha", "rahe", "rahi", "hlo", "hello", "hey", "namaste"
     }
     candidates = [w for w in words if w not in stopwords][:3]
     return candidates
@@ -51,9 +53,20 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             "active_commitments": list
         }
     """
+    # Fast bypass for pure greetings / casual check-ins to save latency
+    low = user_text.lower().strip()
+    if re.match(r"^(hi|hello|hey|namaste|hlo|aur\s+(?:bhy|bhai)|kaisa\s+h|kesa\s+h|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|good\s+morning|good\s+night|gm|gn)[\s?!.,]*$", low):
+        return {
+            "formatted_block": "",
+            "matched_entities": [],
+            "relevant_memories": [],
+            "facts": []
+        }
+
     user_id = resolve_user_id(chat_id)
     matched_entities = []
     seen_entity_ids = set()
+
 
     # 1. Look for entity matches in text
     candidates = extract_potential_entity_tokens(user_text)
