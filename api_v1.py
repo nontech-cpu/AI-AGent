@@ -1727,19 +1727,22 @@ async def get_user_reminders(
     Returns reminders divided into Today, Upcoming, All, or Completed.
     """
     now = datetime.now(IST)
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT m.id, m.category, m.title, m.amount, m.due_date, m.due_time, "
-                "COALESCE(r.sent, false) as sent, r.remind_at "
-                "FROM memory_items m "
-                "LEFT JOIN reminders r ON r.item_id = m.id "
-                "JOIN users u ON u.id = m.user_id "
-                "WHERE u.telegram_chat_id = :c "
-                "ORDER BY m.due_date NULLS LAST, m.due_time NULLS LAST, m.id DESC LIMIT 100"
-            ),
-            {"c": chat_id}
-        ).fetchall()
+    def _fetch_rows():
+        with engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "SELECT m.id, m.category, m.title, m.amount, m.due_date, m.due_time, "
+                    "COALESCE(r.sent, false) as sent, r.remind_at "
+                    "FROM memory_items m "
+                    "LEFT JOIN reminders r ON r.item_id = m.id "
+                    "WHERE m.user_id = (SELECT id FROM users WHERE telegram_chat_id = :c) "
+                    "ORDER BY m.due_date NULLS LAST, m.due_time NULLS LAST, m.id DESC LIMIT 100"
+                ),
+                {"c": chat_id}
+            ).fetchall()
+
+    rows = await asyncio.to_thread(_fetch_rows)
+
 
     results = []
     seen_ids = set()

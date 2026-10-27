@@ -1544,49 +1544,66 @@
     }
 
     // ---------- Reminders Loader & CRUD ----------
+    function renderRemindersHtml(rems) {
+      if (!rems || rems.length === 0) {
+        return `
+          <div style="text-align:center; padding:30px 10px; color:var(--text-muted);">
+            <div style="font-size:32px; margin-bottom:8px;">🔔</div>
+            No reminders in this section.<br>Click <strong>+ New Reminder</strong> above!
+          </div>
+        `;
+      }
+      return rems.map(r => `
+        <div class="reminder-item-card ${r.completed ? 'completed' : ''}">
+          <div class="custom-checkbox ${r.completed ? 'checked' : ''}" onclick="toggleReminder(${r.id}, ${!r.completed})">
+            ${r.completed ? '✓' : ''}
+          </div>
+          <div class="reminder-details">
+            <div class="reminder-title">${escapeHtml(r.title)}</div>
+            <div class="reminder-meta">
+              <span class="badge-category">${r.category || 'reminder'}</span>
+              <span>📅 ${r.due_date || 'Today'} ${r.due_time ? '• ' + r.due_time : ''}</span>
+              ${r.amount ? `<span>₹${r.amount}</span>` : ''}
+            </div>
+          </div>
+          <button style="background:none; border:none; cursor:pointer; font-size:16px;" onclick="deleteReminder(${r.id})">🗑️</button>
+        </div>
+      `).join('');
+    }
+
     async function loadReminders(section, tabEl) {
       if (tabEl) {
         document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
         tabEl.classList.add('active');
       }
       const container = document.getElementById('remindersListContainer');
-      container.innerHTML = '<div style="text-align:center; padding:20px; color:#475569;">Loading reminders...</div>';
+      const cacheKey = `memorae_reminders_${currentChatId}_${section}`;
+      const cached = localStorage.getItem(cacheKey);
+
+      // Instant 0ms cache render - never show blank loading if cached
+      if (cached) {
+        try {
+          const cachedRems = JSON.parse(cached);
+          container.innerHTML = renderRemindersHtml(cachedRems);
+        } catch (e) {}
+      } else {
+        container.innerHTML = '<div style="text-align:center; padding:20px; color:#475569;">Loading reminders...</div>';
+      }
 
       try {
         const res = await fetch(`/api/v1/reminders?chat_id=${currentChatId}&section=${section}`);
+        if (!res.ok) return;
         const data = await res.json();
         const rems = data.reminders || [];
-
-        if (rems.length === 0) {
-          container.innerHTML = `
-            <div style="text-align:center; padding:30px 10px; color:var(--text-muted);">
-              <div style="font-size:32px; margin-bottom:8px;">🔔</div>
-              No reminders in this section.<br>Click <strong>+ New Reminder</strong> above!
-            </div>
-          `;
-          return;
-        }
-
-        container.innerHTML = rems.map(r => `
-          <div class="reminder-item-card ${r.completed ? 'completed' : ''}">
-            <div class="custom-checkbox ${r.completed ? 'checked' : ''}" onclick="toggleReminder(${r.id}, ${!r.completed})">
-              ${r.completed ? '✓' : ''}
-            </div>
-            <div class="reminder-details">
-              <div class="reminder-title">${escapeHtml(r.title)}</div>
-              <div class="reminder-meta">
-                <span class="badge-category">${r.category || 'reminder'}</span>
-                <span>📅 ${r.due_date || 'Today'} ${r.due_time ? '• ' + r.due_time : ''}</span>
-                ${r.amount ? `<span>₹${r.amount}</span>` : ''}
-              </div>
-            </div>
-            <button style="background:none; border:none; cursor:pointer; font-size:16px;" onclick="deleteReminder(${r.id})">🗑️</button>
-          </div>
-        `).join('');
+        localStorage.setItem(cacheKey, JSON.stringify(rems));
+        container.innerHTML = renderRemindersHtml(rems);
       } catch (err) {
-        container.innerHTML = '<div style="color:red; text-align:center;">Failed to load reminders.</div>';
+        if (!cached) {
+          container.innerHTML = '<div style="color:red; text-align:center;">Failed to load reminders.</div>';
+        }
       }
     }
+
 
     async function submitNewReminder() {
       const title = document.getElementById('newRemTitle').value.trim();
@@ -1707,46 +1724,63 @@
     }
 
     // ---------- Lists Loader & Templates ----------
+    function renderListsHtml(lists) {
+      if (!lists || lists.length === 0) {
+        return '<div style="color:var(--text-muted); text-align:center; padding:15px;">No custom lists yet. Pick a template above!</div>';
+      }
+      return lists.map(l => `
+        <div class="dash-card" style="margin-bottom:12px;">
+          <div class="dash-card-header">
+            <strong style="font-size:16px;">${escapeHtml(l.name)}</strong>
+            <button style="background:none; border:none; cursor:pointer;" onclick="deleteList(${l.id})">🗑️</button>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${(l.items || []).map(it => `
+              <div style="display:flex; align-items:center; gap:8px; font-size:14px;">
+                <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleListItem(${it.id}, this.checked)">
+                <span style="${it.checked ? 'text-decoration:line-through; opacity:0.6;' : ''}">${escapeHtml(it.title)}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div style="margin-top:10px; display:flex; gap:6px;">
+            <input type="text" id="addInput_${l.id}" placeholder="Add new item..." style="flex:1; padding:6px 10px; border-radius:12px; border:1px solid #cbd5e1; font-size:12px;" onkeypress="if(event.key==='Enter')addListItem(${l.id})">
+            <button style="background:var(--accent-purple); color:white; border:none; border-radius:12px; padding:6px 12px; font-size:12px; cursor:pointer;" onclick="addListItem(${l.id})">+ Add</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
     async function loadUserLists() {
       const container = document.getElementById('userListsContainer');
-      container.innerHTML = '<div style="text-align:center; padding:15px; color:#475569;">Loading lists...</div>';
+      const cacheKey = `memorae_lists_${currentChatId}`;
+      const cached = localStorage.getItem(cacheKey);
+
+      // Instant 0ms cache render
+      if (cached) {
+        try {
+          container.innerHTML = renderListsHtml(JSON.parse(cached));
+        } catch (e) {}
+      } else {
+        container.innerHTML = '<div style="text-align:center; padding:15px; color:#475569;">Loading lists...</div>';
+      }
 
       try {
         const res = await fetch(`/api/v1/lists?chat_id=${currentChatId}`);
+        if (!res.ok) return;
         const data = await res.json();
         const lists = data.lists || [];
-
-        if (lists.length === 0) {
-          container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:15px;">No custom lists yet. Pick a template above!</div>';
-          return;
-        }
-
-        container.innerHTML = lists.map(l => `
-          <div class="dash-card" style="margin-bottom:12px;">
-            <div class="dash-card-header">
-              <strong style="font-size:16px;">${escapeHtml(l.name)}</strong>
-              <button style="background:none; border:none; cursor:pointer;" onclick="deleteList(${l.id})">🗑️</button>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
-              ${(l.items || []).map(it => `
-                <div style="display:flex; align-items:center; gap:8px; font-size:14px;">
-                  <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleListItem(${it.id}, this.checked)">
-                  <span style="${it.checked ? 'text-decoration:line-through; opacity:0.6;' : ''}">${escapeHtml(it.title)}</span>
-                </div>
-              `).join('')}
-            </div>
-            <div style="margin-top:10px; display:flex; gap:6px;">
-              <input type="text" id="addInput_${l.id}" placeholder="Add new item..." style="flex:1; padding:6px 10px; border-radius:12px; border:1px solid #cbd5e1; font-size:12px;">
-              <button style="background:var(--accent-purple); color:white; border:none; border-radius:12px; padding:6px 12px; font-size:12px; cursor:pointer;" onclick="addListItem(${l.id})">+ Add</button>
-            </div>
-          </div>
-        `).join('');
+        localStorage.setItem(cacheKey, JSON.stringify(lists));
+        container.innerHTML = renderListsHtml(lists);
       } catch (err) {
-        container.innerHTML = '<div style="color:red;">Error loading lists.</div>';
+        if (!cached) container.innerHTML = '<div style="color:red;">Error loading lists.</div>';
       }
     }
 
+    let isCreatingTemplate = false;
     async function instantiateTemplate(templateId) {
+      if (isCreatingTemplate) return;
+      isCreatingTemplate = true;
+      switchNavTab('lists');
       try {
         const res = await fetch(`/api/v1/lists/from-template?chat_id=${currentChatId}`, {
           method: 'POST',
@@ -1754,7 +1788,6 @@
           body: JSON.stringify({ template_id: templateId })
         });
         if (res.ok) {
-          switchNavTab('lists');
           loadUserLists();
           loadDashboardData();
         } else {
@@ -1762,8 +1795,11 @@
         }
       } catch (err) {
         alert('Template creation error: ' + err.message);
+      } finally {
+        isCreatingTemplate = false;
       }
     }
+
 
     async function toggleListItem(itemId, checked) {
       await fetch(`/api/v1/lists/items/${itemId}/toggle?chat_id=${currentChatId}`, {
@@ -1921,6 +1957,7 @@
       userBubble.innerText = text;
       chatStream.appendChild(userBubble);
       chatStream.scrollTop = chatStream.scrollHeight;
+      appendToLocalChatCache('user', text);
 
       // Append placeholder bot bubble
       const botBubble = document.createElement('div');
@@ -1939,8 +1976,11 @@
           body: JSON.stringify({ message: text })
         });
         const data = await res.json();
-        botBubble.innerHTML = `<div class="bot-header">✦ Memorae AI</div>${formatChatText(data.reply || 'Done!')}`;
+        const replyText = data.reply || 'Done!';
+        botBubble.innerHTML = `<div class="bot-header">✦ Memorae AI</div>${formatChatText(replyText)}`;
         chatStream.scrollTop = chatStream.scrollHeight;
+        appendToLocalChatCache('assistant', replyText);
+
 
 
         // Auto-refresh dashboard & sections because chat actions modify database
@@ -2075,6 +2115,46 @@
       return s;
     }
 
+    function appendToLocalChatCache(role, text) {
+      try {
+        const cacheKey = 'memorae_chat_' + currentChatId;
+        const current = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+        current.push({ role, text });
+        const trimmed = current.slice(-50);
+        localStorage.setItem(cacheKey, JSON.stringify(trimmed));
+      } catch (e) {}
+    }
+
+    function renderChatBubbles(msgs) {
+      const chatStream = document.getElementById('chatStream');
+      if (!chatStream || !msgs || msgs.length === 0) return;
+      chatStream.innerHTML = '';
+      msgs.forEach(m => {
+        const bubble = document.createElement('div');
+        if (m.role === 'user') {
+          bubble.className = 'chat-bubble bubble-user';
+          bubble.innerText = m.text;
+        } else {
+          bubble.className = 'chat-bubble bubble-bot';
+          bubble.innerHTML = `<div class="bot-header">✦ Memorae AI</div>${formatChatText(m.text)}`;
+        }
+        chatStream.appendChild(bubble);
+      });
+      chatStream.scrollTop = chatStream.scrollHeight;
+    }
+
+    function restoreCachedChat() {
+      try {
+        const cached = localStorage.getItem('memorae_chat_' + currentChatId);
+        if (cached) {
+          const msgs = JSON.parse(cached);
+          if (Array.isArray(msgs) && msgs.length > 0) {
+            renderChatBubbles(msgs);
+          }
+        }
+      } catch (e) {}
+    }
+
     // ---------- Cross-Browser & Real-time Chat Sync ----------
     let isHistoryLoading = false;
     async function loadChatHistory() {
@@ -2090,36 +2170,25 @@
         const msgs = data.messages || [];
         if (msgs.length === 0) return;
 
+        // Persist to local storage so page reload is instantaneous
+        localStorage.setItem('memorae_chat_' + currentChatId, JSON.stringify(msgs));
+
         // Check if stream already has the same number of messages
         const existingBubbles = chatStream.querySelectorAll('.chat-bubble');
         if (existingBubbles.length === msgs.length && existingBubbles.length > 1) {
           return; // Already up-to-date
         }
 
-        const shouldScroll = (chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight) < 80;
-
-        chatStream.innerHTML = '';
-        msgs.forEach(m => {
-          const bubble = document.createElement('div');
-          if (m.role === 'user') {
-            bubble.className = 'chat-bubble bubble-user';
-            bubble.innerText = m.text;
-          } else {
-            bubble.className = 'chat-bubble bubble-bot';
-            bubble.innerHTML = `<div class="bot-header">✦ Memorae AI</div>${formatChatText(m.text)}`;
-          }
-          chatStream.appendChild(bubble);
-        });
-
-        if (shouldScroll || existingBubbles.length <= 1) {
-          chatStream.scrollTop = chatStream.scrollHeight;
-        }
+        renderChatBubbles(msgs);
       } catch (err) {
         console.error('Failed to load synchronized chat history:', err);
       } finally {
         isHistoryLoading = false;
       }
     }
+
+    // Immediate 0ms chat restoration on reload before any network calls
+    restoreCachedChat();
 
     // Initial load
     loadDashboardData();
@@ -2134,6 +2203,7 @@
     // Background live-sync polling every 3.5 seconds
     setInterval(loadChatHistory, 3500);
   </script>
+
 
 </body>
 </html>
