@@ -996,7 +996,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     final_reply = "\n".join(lines)
                 else:
                     final_reply = "Aapke connected inbox me koi email nahi mili."
-            elif isinstance(last_res, dict) and last_res.get("message") and not ("in connected mailbox" in str(last_res.get("message"))):
+            elif isinstance(last_res, dict) and last_res.get("status") == "success" and last_res.get("message") and not ("in connected mailbox" in str(last_res.get("message"))):
                 final_reply = last_res["message"]
             elif isinstance(last_res, dict) and ("github" in last_res or "notion" in last_res or "google" in last_res):
                 lines = []
@@ -1031,12 +1031,32 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply = f"Packing list '{last_res.get('trip_title')}' create kar di gayi hai!"
             elif isinstance(last_res, dict) and last_res.get("question"):
                 final_reply = last_res["question"]
-            elif isinstance(last_res, dict) and last_res.get("status") == "error" and "message" in last_res:
-                final_reply = last_res["message"]
-            else:
-                final_reply = "Bataiye, is baare me main aapki kya madad karun ya schedule me koi change karna hai?"
-        else:
-            final_reply = "Bataiye bhai, main aapki kya madad karun? Kisi reminder, meeting schedule, ya notes ke baare me kuch update karna hai?"
+
+    # Conversational recovery fallback: if still empty, answer the user conversationally without tools
+    if not final_reply:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as fb_client:
+                fb_resp = await fb_client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json={
+                        "model": "openai/gpt-oss-20b",
+                        "temperature": 0.5,
+                        "messages": [
+                            {"role": "system", "content": "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish. Do not mention tools, internal codes, or technical errors."},
+                            {"role": "user", "content": user_text}
+                        ],
+                        "max_tokens": 1024,
+                    }
+                )
+                if fb_resp.status_code == 200:
+                    fb_data = fb_resp.json()
+                    final_reply = fb_data["choices"][0]["message"].get("content", "").strip()
+        except Exception as fb_err:
+            print("Conversational recovery error:", repr(fb_err))
+
+    if not final_reply:
+        final_reply = "Bataiye bhai, main aapki kya madad karun? Schedule ya kisi update ke baare me bataiye!"
 
     if "<tool_call>" in final_reply:
         final_reply = re.sub(r"<tool_call>.*?</tool_call>", "", final_reply, flags=re.DOTALL | re.IGNORECASE).strip()

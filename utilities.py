@@ -454,6 +454,14 @@ async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[st
     except Exception as exc:
         print("[utilities.get_market_price] error:", repr(exc))
 
+    supported_keywords = ("gold", "sona", "24k", "22k", "silver", "chandi", "bitcoin", "btc", "ethereum", "eth", "solana", "sol")
+    if not any(w in clean_item for w in supported_keywords):
+        return {
+            "status": "not_applicable",
+            "success": False,
+            "message": f"'{clean_item}' is not a recognized commodity or crypto (supported: gold, silver, bitcoin, ethereum, solana)."
+        }
+
     return {
         "status": "error",
         "success": False,

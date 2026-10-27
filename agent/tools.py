@@ -684,11 +684,15 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_market_price",
-            "description": "Fetch live real-time market prices for commodities (Gold 24K & 22K per gram/10g, Silver) and cryptocurrencies (Bitcoin, Ethereum, Solana) in INR or USD.",
+            "description": "Fetch live real-time market prices STRICTLY for precious metals (Gold 24K & 22K per gram/10g, Silver) and major cryptocurrencies (Bitcoin, Ethereum, Solana). NEVER call this tool for travel fares, vehicle tolls, road costs, product prices, or general estimates.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "item": {"type": "string", "description": "Asset or commodity name: 'gold', 'silver', 'bitcoin', 'ethereum', 'solana'."},
+                    "item": {
+                        "type": "string",
+                        "enum": ["gold", "silver", "bitcoin", "ethereum", "solana"],
+                        "description": "Asset name strictly one of: 'gold', 'silver', 'bitcoin', 'ethereum', 'solana'."
+                    },
                     "currency": {"type": ["string", "null"], "description": "Currency code 'inr' or 'usd'. Defaults to 'inr'."}
                 },
                 "required": ["item"]
@@ -2011,6 +2015,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "get_market_price":
             args = GetMarketPriceArgs(**arguments)
+            item_lower = (args.item or "").lower().strip()
+            valid_commodities = ("gold", "silver", "bitcoin", "ethereum", "solana", "sona", "chandi", "btc", "eth", "sol", "crypto", "24k", "22k")
+            if not any(k in item_lower for k in valid_commodities):
+                return {
+                    "status": "not_applicable",
+                    "success": False,
+                    "message": f"'{args.item}' is not a supported financial commodity or cryptocurrency. For travel costs, tolls, fares, or everyday pricing, answer the user directly with general knowledge without calling this tool."
+                }
             from utilities import get_market_price
             res = await get_market_price(args.item, args.currency or "inr")
             return res
