@@ -4336,8 +4336,12 @@ async def google_callback(request: Request):
             "https://www.googleapis.com/auth/drive.file",
             "https://www.googleapis.com/auth/calendar.events",
             "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.readonly",
         ])
         save_google_token(db_user_id, email, encrypted, scopes)
+        if chat_id:
+            from google_services import clear_gmail_insufficient_scope_cache
+            clear_gmail_insufficient_scope_cache(chat_id)
 
         # Record device session on successful Google OAuth
         callback_device_id = state_data.get("device_id")

@@ -12,6 +12,12 @@ from google_auth import decrypt_token, refresh_access_token
 GOOGLE = 'https://www.googleapis.com'
 
 _ACCESS_TOKEN_CACHE: dict = {}
+_CHAT_GMAIL_INSUFFICIENT_SCOPES: set[int] = set()
+
+def clear_gmail_insufficient_scope_cache(chat_id: int):
+    """Clear cached insufficient scope flag when user reconnects Google."""
+    _CHAT_GMAIL_INSUFFICIENT_SCOPES.discard(int(chat_id))
+    _ACCESS_TOKEN_CACHE.pop(int(chat_id), None)
 
 async def access_token_for_chat(chat_id: int) -> tuple[str, str]:
     import time as _pytime
@@ -352,6 +358,9 @@ def _extract_body_from_gmail_payload(payload: dict) -> str:
 
 async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: str = "is:unread") -> list[dict]:
     """Fetch recent messages from the user's connected Gmail inbox."""
+    if int(chat_id) in _CHAT_GMAIL_INSUFFICIENT_SCOPES:
+        return []
+
     try:
         access, account = await access_token_for_chat(chat_id)
     except Exception as exc:
@@ -365,7 +374,12 @@ async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: s
             params={'q': query, 'maxResults': max_results}
         )
     except Exception as exc:
-        print(f"fetch_user_inbox_messages list failed for chat {chat_id}:", repr(exc))
+        err_str = str(exc).lower()
+        if "insufficient" in err_str or "permission" in err_str or "403" in err_str:
+            _CHAT_GMAIL_INSUFFICIENT_SCOPES.add(int(chat_id))
+            print(f"[INFO] Chat {chat_id} Google account lacks Gmail read scopes. Skipping background polling until reconnected.")
+        else:
+            print(f"fetch_user_inbox_messages list failed for chat {chat_id}:", repr(exc))
         return []
 
     msg_stubs = data.get('messages', [])
