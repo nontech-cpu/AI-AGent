@@ -1874,19 +1874,71 @@ async def delete_user_reminder(
 
 # ---------- Calendar Section Endpoints ----------
 
+def _resolve_calendar_chat_id(chat_id: int) -> int:
+    """If chat_id does not have Google connected, fall back to the primary connected user."""
+    try:
+        from db import engine, text
+        with engine.connect() as conn:
+            has_token = conn.execute(
+                text("SELECT 1 FROM google_tokens g JOIN users u ON u.id = g.user_id WHERE u.telegram_chat_id = :c"),
+                {"c": chat_id}
+            ).first()
+            if has_token:
+                return chat_id
+            primary = conn.execute(
+                text("SELECT u.telegram_chat_id FROM users u JOIN google_tokens g ON u.id = g.user_id ORDER BY g.user_id ASC LIMIT 1")
+            ).first()
+            if primary and primary[0]:
+                return int(primary[0])
+    except Exception:
+        pass
+    return chat_id
+
+
+@router.get("/user/active-profile", summary="Get Active Companion Profile")
+async def get_active_companion_profile(
+    chat_id: Optional[int] = Query(None)
+):
+    """
+    Returns active user profile with telegram chat id and Google connection status.
+    """
+    resolved_id = _resolve_calendar_chat_id(chat_id or 998877110)
+    has_google = False
+    google_email = None
+    try:
+        from db import engine, text
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT g.email FROM google_tokens g JOIN users u ON u.id = g.user_id WHERE u.telegram_chat_id = :c"),
+                {"c": resolved_id}
+            ).first()
+            if row:
+                has_google = True
+                google_email = row[0]
+    except Exception:
+        pass
+    return {
+        "status": "ok",
+        "chat_id": resolved_id,
+        "is_google_connected": has_google,
+        "google_email": google_email
+    }
+
+
 @router.get("/calendar/events", summary="Get Calendar Events")
 async def get_calendar_events_route(
-    view: Optional[str] = Query("month", description="month | week | day"),
+    view: Optional[str] = Query("month", description="month | week | day | upcoming"),
     date_str: Optional[str] = Query(None, alias="date", description="Target date YYYY-MM-DD"),
     month_str: Optional[str] = Query(None, alias="month", description="Target month YYYY-MM"),
     chat_id: int = Depends(get_current_chat_id)
 ):
     """
-    Fetches calendar events for the calendar view (month grid, week, or day).
+    Fetches calendar events for the calendar view (month grid, week, or day/upcoming).
     Synchronized with Google Calendar if connected, with fallback to local scheduled database items.
     """
     now = datetime.now(IST)
     target_d = date_str or now.strftime("%Y-%m-%d")
+    target_chat_id = _resolve_calendar_chat_id(chat_id)
     is_connected = False
     events = []
 
@@ -1897,12 +1949,17 @@ async def get_calendar_events_route(
             y, m = int(parts[0]), int(parts[1])
             start_iso = datetime(y, m, 1, 0, 0, 0).isoformat() + "Z"
             end_iso = datetime(y, m + 1 if m < 12 else 1, 1 if m < 12 else 1, 0, 0, 0).isoformat() + "Z" if m < 12 else datetime(y + 1, 1, 1, 0, 0, 0).isoformat() + "Z"
-        else:
-            t_dt = datetime.strptime(target_d, "%Y-%m-%d")
+        elif date_str:
+            t_dt = datetime.strptime(date_str, "%Y-%m-%d")
             start_iso = datetime(t_dt.year, t_dt.month, t_dt.day, 0, 0, 0).isoformat() + "Z"
             end_iso = datetime(t_dt.year, t_dt.month, t_dt.day, 23, 59, 59).isoformat() + "Z"
+        else:
+            # Default companion view: Today + upcoming 7 days
+            start_iso = datetime(now.year, now.month, now.day, 0, 0, 0).isoformat() + "Z"
+            future_dt = now + timedelta(days=7)
+            end_iso = datetime(future_dt.year, future_dt.month, future_dt.day, 23, 59, 59).isoformat() + "Z"
 
-        ev_list = await list_calendar_events(chat_id, time_min_iso=start_iso, time_max_iso=end_iso)
+        ev_list = await list_calendar_events(target_chat_id, time_min_iso=start_iso, time_max_iso=end_iso)
         is_connected = True
         for ev in ev_list:
             events.append({
@@ -1915,19 +1972,30 @@ async def get_calendar_events_route(
                 "description": ev.get("description", "")
             })
     except Exception:
+        pass
+
+    # Mirror or supplement with local items
+    if not events:
         try:
-            t_dt = datetime.strptime(target_d, "%Y-%m-%d").date()
-            rows = items_for_date(chat_id, t_dt)
-            for r in rows:
-                if r[0] in ("meeting", "appointment", "calendar"):
-                    events.append({
-                        "id": str(r[4]),
-                        "title": r[1],
-                        "start": f"{target_d}T{r[3] or '10:00:00'}",
-                        "link": None,
-                        "location": "",
-                        "description": ""
-                    })
+            days_to_check = [target_d]
+            if not date_str and not month_str:
+                days_to_check = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]
+            for d_str in days_to_check:
+                t_dt = datetime.strptime(d_str, "%Y-%m-%d").date()
+                for cid in set([target_chat_id, chat_id]):
+                    rows = items_for_date(cid, t_dt)
+                    for r in rows:
+                        if r[0] in ("meeting", "appointment", "calendar"):
+                            item_id = str(r[4])
+                            if not any(e["id"] == item_id for e in events):
+                                events.append({
+                                    "id": item_id,
+                                    "title": r[1],
+                                    "start": f"{d_str}T{r[3] or '10:00:00'}",
+                                    "link": None,
+                                    "location": "",
+                                    "description": ""
+                                })
         except Exception:
             pass
 
@@ -1939,7 +2007,7 @@ async def get_calendar_events_route(
         "is_connected": is_connected,
         "events_count": len(events),
         "minutes_booked": minutes_booked,
-        "status_summary": f"{len(events)} events • {minutes_booked}m booked" if events else "No events today",
+        "status_summary": f"{len(events)} events • {minutes_booked}m booked" if events else "No events scheduled",
         "events": events
     }
 
@@ -1950,27 +2018,46 @@ async def create_calendar_event_route(
     chat_id: int = Depends(get_current_chat_id)
 ):
     """
-    Creates a new event or meeting directly on Google Calendar.
+    Creates a new event or meeting directly on Google Calendar with instant fallback and local mirroring.
     """
+    target_chat_id = _resolve_calendar_chat_id(chat_id)
+    clean_dt = None
+    try:
+        from dateutil import parser as dt_parser
+        clean_dt = dt_parser.parse(body.start_iso)
+        clean_iso = clean_dt.isoformat()
+    except Exception:
+        clean_iso = body.start_iso
+
     try:
         from google_services import create_meeting
         res = await create_meeting(
-            chat_id=chat_id,
+            chat_id=target_chat_id,
             title=body.title,
-            start_iso=body.start_iso,
+            start_iso=clean_iso,
             duration_minutes=body.duration_minutes or 30,
             attendees=body.attendees or []
         )
+        # Mirror into local memory
+        if clean_dt:
+            try:
+                save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+                if target_chat_id != chat_id:
+                    save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+            except Exception:
+                pass
         return {
             "status": "ok",
             "event": res,
-            "message": f"Calendar event '{body.title}' scheduled successfully."
+            "message": f"Calendar event '{body.title}' scheduled successfully on Google Calendar."
         }
     except Exception as exc:
         print("[api_v1] create_calendar_event error:", repr(exc))
         try:
-            dt = datetime.fromisoformat(body.start_iso.replace("Z", "+00:00"))
-            iid = save_memory(chat_id, "meeting", body.title, None, dt.date(), dt.time())
+            if not clean_dt:
+                from dateutil import parser as dt_parser
+                clean_dt = dt_parser.parse(body.start_iso)
+            iid = save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
             return {
                 "status": "ok",
                 "local_id": iid,

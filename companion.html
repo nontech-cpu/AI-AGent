@@ -1149,62 +1149,16 @@
         </div>
 
         <div class="calendar-month-picker">
-          <span style="cursor:pointer;" onclick="alert('Previous month')">‹</span>
-          <span id="calendarMonthTitle">October 2026</span>
-          <span style="cursor:pointer;" onclick="alert('Next month')">›</span>
+          <span style="cursor:pointer; font-size:22px; padding:0 12px; user-select:none;" onclick="changeMonth(-1)">‹</span>
+          <span id="calendarMonthTitle" style="font-weight:700;">October 2026</span>
+          <span style="cursor:pointer; font-size:22px; padding:0 12px; user-select:none;" onclick="changeMonth(1)">›</span>
         </div>
 
-        <div class="calendar-grid">
-          <div class="cal-header-day">Mo</div>
-          <div class="cal-header-day">Tu</div>
-          <div class="cal-header-day">We</div>
-          <div class="cal-header-day">Th</div>
-          <div class="cal-header-day">Fr</div>
-          <div class="cal-header-day">Sa</div>
-          <div class="cal-header-day">Su</div>
-
-          <div class="cal-day-cell inactive">28</div>
-          <div class="cal-day-cell inactive">29</div>
-          <div class="cal-day-cell inactive">30</div>
-          <div class="cal-day-cell">1</div>
-          <div class="cal-day-cell">2</div>
-          <div class="cal-day-cell">3</div>
-          <div class="cal-day-cell">4</div>
-
-          <div class="cal-day-cell">5</div>
-          <div class="cal-day-cell">6</div>
-          <div class="cal-day-cell">7</div>
-          <div class="cal-day-cell">8</div>
-          <div class="cal-day-cell">9</div>
-          <div class="cal-day-cell">10</div>
-          <div class="cal-day-cell">11</div>
-
-          <div class="cal-day-cell">12</div>
-          <div class="cal-day-cell">13</div>
-          <div class="cal-day-cell">14</div>
-          <div class="cal-day-cell">15</div>
-          <div class="cal-day-cell">16</div>
-          <div class="cal-day-cell">17</div>
-          <div class="cal-day-cell">18</div>
-
-          <div class="cal-day-cell">19</div>
-          <div class="cal-day-cell">20</div>
-          <div class="cal-day-cell">21</div>
-          <div class="cal-day-cell">22</div>
-          <div class="cal-day-cell">23</div>
-          <div class="cal-day-cell">24</div>
-          <div class="cal-day-cell">25</div>
-
-          <div class="cal-day-cell">26</div>
-          <div class="cal-day-cell active-today" id="day27">27</div>
-          <div class="cal-day-cell">28</div>
-          <div class="cal-day-cell">29</div>
-          <div class="cal-day-cell">30</div>
-          <div class="cal-day-cell">31</div>
-          <div class="cal-day-cell inactive">1</div>
+        <div class="calendar-grid" id="calendarGridContainer">
+          <!-- Calendar dynamic grid rendered via JavaScript -->
         </div>
 
-        <h3 style="font-size:16px; font-weight:700; margin-bottom:10px;">Today's events</h3>
+        <h3 id="calendarDayEventsTitle" style="font-size:16px; font-weight:700; margin-bottom:10px;">Today's events</h3>
         <div id="calendarEventsContainer">
           <!-- Events loaded dynamically -->
         </div>

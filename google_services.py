@@ -89,7 +89,11 @@ async def upload_text_file(chat_id, filename, content, folder_id=None):
 
 async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=None):
     access, _ = await access_token_for_chat(chat_id)
-    start = datetime.fromisoformat(start_iso)
+    try:
+        start = datetime.fromisoformat(start_iso)
+    except Exception:
+        from dateutil import parser as dt_parser
+        start = dt_parser.parse(start_iso)
     end = start + timedelta(minutes=int(duration_minutes))
     event = {
         'summary': title,
@@ -101,15 +105,21 @@ async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=
     emails = attendees or []
     if emails:
         event['attendees'] = [{'email': e} for e in emails]
-    result = await _request('POST', f'{GOOGLE}/calendar/v3/calendars/primary/events', access,
-                            params={'conferenceDataVersion': 1, 'sendUpdates': 'all'}, json=event)
+    try:
+        result = await _request('POST', f'{GOOGLE}/calendar/v3/calendars/primary/events', access,
+                                params={'conferenceDataVersion': 1, 'sendUpdates': 'all'}, json=event)
+    except Exception as exc:
+        # Fallback without conference data in case account doesn't support Google Meet auto-generation
+        event.pop('conferenceData', None)
+        result = await _request('POST', f'{GOOGLE}/calendar/v3/calendars/primary/events', access,
+                                params={'sendUpdates': 'all'}, json=event)
     meet = (result.get('conferenceData') or {}).get('entryPoints') or []
     meet_url = next((x.get('uri') for x in meet if x.get('entryPointType') == 'video'), '')
     return {
         'id': result.get('id'),
         'summary': result.get('summary', title),
-        'start': result.get('start') or {'dateTime': start_iso},
-        'end': result.get('end') or {},
+        'start': result.get('start') or {'dateTime': start.isoformat()},
+        'end': result.get('end') or {'dateTime': end.isoformat()},
         'htmlLink': result.get('htmlLink', ''),
         'meet_url': meet_url
     }
