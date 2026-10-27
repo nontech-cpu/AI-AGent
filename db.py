@@ -659,35 +659,38 @@ def delete_board_card(chat_id, card_id):
 
 def get_smart_lists(chat_id):
     with engine.connect() as conn:
-        lists = conn.execute(
+        rows = conn.execute(
             text(
-                "SELECT l.id, l.name, l.category, l.created_at "
-                "FROM smart_lists l JOIN users u ON u.id = l.user_id "
-                "WHERE u.telegram_chat_id = :c ORDER BY l.id ASC"
+                "SELECT l.id, l.name, l.category, l.created_at, "
+                "       it.id as item_id, it.title as item_title, it.quantity, it.checked "
+                "FROM smart_lists l "
+                "JOIN users u ON u.id = l.user_id "
+                "LEFT JOIN smart_list_items it ON it.list_id = l.id "
+                "WHERE u.telegram_chat_id = :c "
+                "ORDER BY l.id ASC, it.id ASC"
             ),
             {"c": chat_id},
         ).fetchall()
 
-        result = []
-        for l in lists:
-            list_id = l[0]
-            items = conn.execute(
-                text(
-                    "SELECT id, title, quantity, checked FROM smart_list_items "
-                    "WHERE list_id = :lid ORDER BY id ASC"
-                ),
-                {"lid": list_id},
-            ).fetchall()
-            result.append({
-                "id": list_id,
-                "name": l[1],
-                "category": l[2],
-                "items": [
-                    {"id": it[0], "title": it[1], "quantity": it[2], "checked": bool(it[3])}
-                    for it in items
-                ]
-            })
-    return result
+        lists_dict = {}
+        for r in rows:
+            lid = r[0]
+            if lid not in lists_dict:
+                lists_dict[lid] = {
+                    "id": lid,
+                    "name": r[1],
+                    "category": r[2],
+                    "items": []
+                }
+            if r[4] is not None:  # item_id exists
+                lists_dict[lid]["items"].append({
+                    "id": r[4],
+                    "title": r[5],
+                    "quantity": r[6],
+                    "checked": bool(r[7])
+                })
+        return list(lists_dict.values())
+
 
 
 def create_smart_list(chat_id, name, category="general"):
@@ -753,6 +756,36 @@ def add_smart_list_item(chat_id, list_id, title, quantity=None):
             {"lid": list_id, "t": title.strip(), "q": quantity},
         ).first()
     return row[0] if row else None
+
+
+def add_smart_list_items_batch(chat_id, list_id, items):
+    if not items:
+        return []
+    created = []
+    with engine.begin() as conn:
+        owner = conn.execute(
+            text(
+                "SELECT l.id FROM smart_lists l JOIN users u ON u.id = l.user_id "
+                "WHERE l.id = :lid AND u.telegram_chat_id = :c"
+            ),
+            {"lid": list_id, "c": chat_id},
+        ).first()
+        if not owner:
+            return []
+        for it in items:
+            it_clean = it.strip() if isinstance(it, str) else str(it)
+            if not it_clean:
+                continue
+            row = conn.execute(
+                text(
+                    "INSERT INTO smart_list_items (list_id, title, quantity, checked) "
+                    "VALUES (:lid, :t, NULL, false) RETURNING id"
+                ),
+                {"lid": list_id, "t": it_clean},
+            ).first()
+            if row:
+                created.append({"id": row[0], "title": it_clean, "checked": False})
+    return created
 
 
 def toggle_smart_list_item(chat_id, item_id, checked=None):

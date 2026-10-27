@@ -2145,8 +2145,28 @@
         });
         if (res.ok) {
           closeModals();
-          await loadUserLists();
+          const newListData = await res.json().catch(() => null);
+          if (newListData && newListData.list_id) {
+            const cacheKey = `memorae_lists_${currentChatId}`;
+            try {
+              const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+              cached.push({
+                id: newListData.list_id,
+                name: newListData.name,
+                category: newListData.category,
+                items: newListData.items || []
+              });
+              localStorage.setItem(cacheKey, JSON.stringify(cached));
+              const container = document.getElementById('userListsContainer');
+              if (container) container.innerHTML = renderListsHtml(cached);
+            } catch (e) {}
+          }
+          const nameEl = document.getElementById('listNameInput');
+          if (nameEl) nameEl.value = '';
+          const itemsEl = document.getElementById('listItemsInput');
+          if (itemsEl) itemsEl.value = '';
           switchNavTab('lists');
+          await loadUserLists();
           const container = document.getElementById('userListsContainer');
           if (container) container.scrollIntoView({ behavior: 'smooth' });
         } else {

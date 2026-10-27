@@ -17,7 +17,7 @@ from db import (
     add_reminders, get_upcoming_reminders, get_google_token,
     delete_google_token, delete_user, export_data,
     get_board_cards, create_board_card, move_board_card, delete_board_card,
-    get_smart_lists, create_smart_list, create_smart_list_with_items, add_smart_list_item, toggle_smart_list_item,
+    get_smart_lists, create_smart_list, create_smart_list_with_items, add_smart_list_item, add_smart_list_items_batch, toggle_smart_list_item,
     delete_smart_list_item, delete_smart_list, find_or_create_smart_list,
     get_user_rules, add_user_rule, delete_user_rule,
     get_serendipity_memories, delete_memory_items,
@@ -1199,12 +1199,7 @@ async def create_list(body: SmartListCreateReq, chat_id: int = Depends(get_curre
         raise HTTPException(status_code=500, detail="Failed to create list")
     created_items = []
     if body.items:
-        for it in body.items:
-            it_clean = it.strip() if isinstance(it, str) else str(it)
-            if it_clean:
-                iid = await asyncio.to_thread(add_smart_list_item, chat_id, list_id, it_clean)
-                if iid:
-                    created_items.append({"id": iid, "title": it_clean, "checked": False})
+        created_items = await asyncio.to_thread(add_smart_list_items_batch, chat_id, list_id, body.items)
     return {"status": "ok", "list_id": list_id, "name": body.name, "category": body.category, "items": created_items}
 
 
