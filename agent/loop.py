@@ -710,112 +710,25 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     final_reply = ""
     total_tokens = 0
 
-    # Dynamic intent-based tool pruning to keep token usage within Groq 8,000 TPM limit
+    # Provide the comprehensive functional tool suite (ChatGPT/Claude style architecture)
+    # The LLM reasons holistically over user intent rather than relying on brittle regex keyword pruning.
     low_prompt = user_text.lower()
-    selected_tool_names = set()
-
-    # Intent 1: Calendar / Meetings / Schedule / Events / Any Time mention (e.g. "4:30 trip h dost k sth")
     has_time_mention = bool(re.search(r"\b(\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|bje|baje)|shaam|subah|dopahar|raat|evening|morning|night|afternoon)\b", low_prompt))
     has_plan_event = bool(re.search(r"\b(meeting|meetings|schedule|call|calls|meet|slot|slots|free|busy|appointment|appointments|aaj|kal|parso|plan|plans|calendar|event|events|timing|time|trip|travel|outing|party|class|lecture|wedding|match|game|interview|doctor|gym|workout|movie|dinner|lunch)\b", low_prompt))
-    if has_plan_event or has_time_mention:
-        selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting", "create_reminder", "list_reminders"])
+    has_notion_keyword = bool(re.search(r"\b(notion|notes|note|page|documentation)\b", low_prompt))
 
-    # Intent 2: Reminders / Tasks / Schedule
-    if re.search(r"\b(remind|reminder|reminders|yaad|task|tasks|movie|dinner|lunch|gym|workout|doctor|ticket|pnr|flight|hotel|booking|to-do|todo)\b", low_prompt):
-        selected_tool_names.update(["create_reminder", "list_reminders", "get_schedule", "delete_reminder"])
-
-    # Intent 3: Contacts & Commitments
-    if re.search(r"\b(contact|contacts|number|phone|bhejna|bhejo|send|promise|commitment|commitments|lead|designer|ananya|annaya|devender|rahul)\b", low_prompt):
-        selected_tool_names.update(["get_contact", "save_contact", "update_contact_commitment", "list_contacts"])
-
-    # Intent 4: GitHub / Notion / Code / Notes
-    if re.search(r"\b(github|git|gh|repo|repos|repository|repositories|issue|issues|commit|commits|code|pr|prs|pull|branch|readme)\b", low_prompt):
-        selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-    if re.search(r"\b(notion|notes|note|heading|bullet|bullets|section|documentation)\b", low_prompt) and not has_time_mention:
-        selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
-
-    # Intent 5: Lists & Packing
-    if re.search(r"\b(pack|packing|list|lists|trip|goa|bag|bags|travel|item|items)\b", low_prompt):
-        selected_tool_names.update(["create_packing_list"])
-
-    # Intent 6: Memory deletion & clearing
-    if re.search(r"\b(delete|hata|remove|wipe|clear|bhul|bhula|erase)\b", low_prompt):
-        selected_tool_names.update(["delete_note_or_fact", "delete_reminder", "clear_chat_history"])
-
-    # Intent 7: Email / Drive / Documents / Export
-    if re.search(r"\b(email|mail|gmail|inbox|drive|file|upload|pdf|excel|sheet|spreadsheet|export|document|docs|ticket|train|flight|booking|pnr)\b", low_prompt):
-        selected_tool_names.update(["search_user_emails", "send_email", "upload_to_drive", "generate_pdf", "generate_excel"])
-
-    # Intent 8: Inherit tools from active conversation context
-    try:
-        from state.active_context import get_active_context
-        act_ctx = get_active_context(chat_id)
-        if act_ctx:
-            conn = (act_ctx.get("connector") or "").lower()
-            top = (act_ctx.get("topic") or act_ctx.get("focus_topic") or "").lower()
-            if "github" in conn or "github" in top or "repo" in top or "issue" in top:
-                selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-            if ("notion" in conn or "notion" in top) and re.search(r"\b(notion|notes|note|page|doc|content|summary|save|likh|code|block|clode|add|format|update|python|fastapi)\b", low_prompt):
-                selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
-            if "calendar" in conn or "meeting" in top or "schedule" in top:
-                selected_tool_names.update(["create_meeting", "check_availability", "get_schedule", "delete_meeting"])
-            if "gmail" in conn or "email" in top:
-                selected_tool_names.update(["send_email"])
-    except Exception:
-        pass
-
-    # Intent 9: Follow-up confirmation / affirmative intent for Email / Meeting / GitHub / Notion actions
-    recent_turns_text = " ".join([t.get("text", "") for t in recent_history[-4:]]).lower()
-    has_recent_github = bool(re.search(r"\b(github|repo|repos|repository|readme|commit|issue|pull|pr|php-project)\b", recent_turns_text))
-    has_recent_notion = bool(re.search(r"\b(notion|page)\b", recent_turns_text))
-    has_recent_email = bool(re.search(r"\b(email|mail|gmail|subject|@)\b", recent_turns_text))
-    has_recent_meeting = bool(re.search(r"\b(meeting|meetings|schedule|call|calendar|meet)\b", recent_turns_text))
-    is_affirmative = bool(re.search(r"\b(yes|yeah|haan|ha|han|kar do|kardo|kr do|krdo|confirm|proceed|ok|okay|kar de|karde|kr de|krde|kr bhy|kro|kr)\b", low_prompt))
-
-    if is_affirmative:
-        if has_recent_email:
-            selected_tool_names.update(["send_email"])
-        if has_recent_meeting:
-            selected_tool_names.update(["create_meeting", "check_availability", "get_schedule"])
-        if has_recent_github and (is_affirmative or is_code_modify):
-            selected_tool_names.update(["list_github_repos", "get_github_file", "list_github_issues", "update_github_file"])
-        if has_recent_notion and re.search(r"\b(notion|notes|note|page|daal|likh|save)\b", low_prompt):
-            selected_tool_names.update(["create_notion_page", "update_notion_page"])
-
-    # If recent history discussed notion and user asks to add/format/code block
-    if has_recent_notion and re.search(r"\b(code|block|clode|add|format|update|python|fastapi|daal|likh)\b", low_prompt):
-        selected_tool_names.update(["create_notion_page", "update_notion_page", "list_notion_pages"])
-
-    # Intent 10: Real-time Utilities (Weather, Currency Conversion, Gold / Market Rates, Calculations)
-    if re.search(r"\b(weather|mausam|temperature|temp|barish|rain|forecast|climate)\b", low_prompt):
-        selected_tool_names.update(["get_weather"])
-    if re.search(r"\b(dollar|usd|inr|euro|eur|gbp|pound|currency|convert|conversion|exchange|rupaye|rupees|rate|rates)\b", low_prompt):
-        selected_tool_names.update(["convert_currency", "calculate"])
-    if re.search(r"\b(gold|silver|sona|chandi|bitcoin|btc|eth|ethereum|solana|sol|crypto|market price|commodity)\b", low_prompt):
-        selected_tool_names.update(["get_market_price", "convert_currency"])
-    if re.search(r"\b(calc|calculate|calculation|hisab|hisaab)\b", low_prompt) or bool(re.search(r"\d+\s*[\+\-\*\/]\s*\d+", low_prompt)) or "%" in low_prompt:
-        selected_tool_names.update(["calculate"])
-
-    # Strict Safety Guard: If user is giving a schedule plan / time without mentioning 'notion', NEVER include create_notion_page or update_notion_page
-    if (has_time_mention or has_plan_event) and not bool(re.search(r"\bnotion\b", low_prompt)):
-        selected_tool_names.discard("create_notion_page")
-        selected_tool_names.discard("update_notion_page")
-
-    # Always allow connection / search memory (conversational questions are answered directly in chat text without ask_user dummy tool)
-    selected_tool_names.update(["connect_integration", "check_integrations_status", "search_memory"])
-    selected_tool_names.discard("ask_user")
-    if is_code_modify:
-        selected_tool_names.discard("connect_integration")
-        selected_tool_names.discard("ask_user")
-
-    # If no specific intent was triggered, allow core essentials
-    if len(selected_tool_names) <= 4:
-        selected_tool_names.update(["create_reminder", "get_schedule", "get_contact", "save_note_or_fact", "list_github_repos", "update_github_file"])
-
+    # All functional tools are available to the agent (excluding internal dummy ask_user)
     effective_tools = [
         t for t in TOOL_DEFINITIONS
-        if t["function"]["name"] in selected_tool_names
+        if t["function"]["name"] != "ask_user"
     ]
+
+    # Safety Guard: If user mentions time/meeting without mentioning Notion, exclude Notion tools
+    if (has_time_mention or has_plan_event) and not has_notion_keyword:
+        effective_tools = [
+            t for t in effective_tools
+            if t["function"]["name"] not in ("create_notion_page", "update_notion_page")
+        ]
 
     MAX_TOOL_ITERATIONS = 4
     current_model = model
@@ -823,7 +736,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         for iteration in range(MAX_TOOL_ITERATIONS):
             payload = {
                 "model": current_model,
-                "temperature": 0.1,
+                "temperature": 0.5,
                 "messages": messages,
                 "max_tokens": 4096,
             }
@@ -837,14 +750,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 json=payload
             )
 
-            # Multi-tier auto-fallback on 429 Rate Limit (e.g. 8k TPM limit on gpt-oss models)
+            # Multi-tier auto-fallback on 429 Rate Limit
             if resp.status_code == 429:
-                for fb_model in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                for fb_model in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
                     if current_model != fb_model:
                         print(f"Agent Loop 429 Rate Limit on {current_model}. Switching to fallback model {fb_model}...")
                         current_model = fb_model
                         payload["model"] = current_model
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(1.5)
                         resp = await client.post(
                             "https://api.groq.com/openai/v1/chat/completions",
                             headers={"Authorization": f"Bearer {groq_key}"},
@@ -855,10 +768,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             if resp.status_code != 200:
                 print("Agent Loop Groq Error:", resp.status_code, resp.text[:300])
-                for fb_model in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+                for fb_model in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
                     if current_model != fb_model:
                         current_model = fb_model
                         payload["model"] = current_model
+                        await asyncio.sleep(1.0)
                         resp = await client.post(
                             "https://api.groq.com/openai/v1/chat/completions",
                             headers={"Authorization": f"Bearer {groq_key}"},

@@ -445,7 +445,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "send_email",
-            "description": "Send an email via connected Gmail. ALWAYS call this tool immediately whenever the user asks to send, compose, or draft an email. DO NOT ask the user for confirmation in chat text first — calling this tool triggers the system's official confirmation dialogue automatically.",
+            "description": "Send an email via connected Gmail. Triggers system confirmation prompt.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -461,13 +461,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_notion_page",
-            "description": "Create a new dedicated documentation page in Notion with title and content. Supports native syntax-highlighted code blocks (```python ... ```), headings, and bullet points. ONLY call when user EXPLICITLY asks to save to Notion or write detailed notes in Notion. NEVER call for casual schedule items or reminders.",
+            "description": "Create a documentation page in Notion with title and markdown content (supports ```code``` blocks, headings, lists). Only call when user explicitly asks for Notion.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Page or note title (e.g. 'FastAPI Quick Notes')."},
-                    "content": {"type": "string", "description": "Markdown text content. Can include code blocks with triple backticks, headings, and lists."},
-                    "target_section": {"type": ["string", "null"], "description": "Optional name or ID of existing page or section to append into. Defaults to null for new page."}
+                    "title": {"type": "string", "description": "Page title."},
+                    "content": {"type": "string", "description": "Markdown text content."},
+                    "target_section": {"type": ["string", "null"], "description": "Optional target page/section name to append into, or null for new."}
                 },
                 "required": ["title", "content"]
             }
@@ -477,13 +477,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_notion_page",
-            "description": "Append or add new content, code blocks, sections, or notes to an existing Notion page (e.g. adding a Python code block, updating notes). Use this whenever the user wants to add to, format, or update an existing page.",
+            "description": "Append or add new content, code blocks, or notes to an existing Notion page.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "The markdown content or code block (using ```language ... ```) to add to the page."},
-                    "page_title_or_id": {"type": ["string", "null"], "description": "Title, ID, or Notion URL of the page to update. If null, updates the most recent active Notion page."},
-                    "section_title": {"type": ["string", "null"], "description": "Optional section heading to place above the new content."},
+                    "content": {"type": "string", "description": "Markdown content or code block to add."},
+                    "page_title_or_id": {"type": ["string", "null"], "description": "Title, ID, or URL of page to update, or null for active page."},
+                    "section_title": {"type": ["string", "null"], "description": "Optional section heading."},
                     "formatting": {"type": ["string", "null"], "description": "Optional formatting guidance e.g. 'code', 'bullets', 'text'."}
                 },
                 "required": ["content"]

@@ -336,5 +336,86 @@ async def test_affirmative_yes_to_conversational_email_draft_executes_send_email
         assert "send_email" in res["tool_calls_executed"]
 
 
+@pytest.mark.asyncio
+async def test_multi_intent_execution_and_tool_catalog():
+    chat_id = 99885544
+    captured_tools = []
+    call_count = 0
 
+    async def mock_post(url, headers=None, json=None, **kwargs):
+        nonlocal captured_tools, call_count
+        if "telegram.org" in str(url):
+            class MockTgResp:
+                status_code = 200
+                def json(self): return {"ok": True}
+            return MockTgResp()
 
+        call_count += 1
+        if json and "tools" in json:
+            captured_tools = [t["function"]["name"] for t in json["tools"]]
+
+        class MockResponse:
+            def __init__(self, sc, data):
+                self.status_code = sc
+                self._data = data
+            def json(self):
+                return self._data
+
+        if call_count == 1:
+            # Model decides to execute both tools in one turn
+            return MockResponse(200, {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_market_1",
+                                "type": "function",
+                                "function": {"name": "get_market_price", "arguments": '{"item":"gold"}'}
+                            },
+                            {
+                                "id": "call_remind_2",
+                                "type": "function",
+                                "function": {"name": "create_reminder", "arguments": '{"title":"Gym","due_date":"2026-10-27","due_time":"18:00"}'}
+                            }
+                        ]
+                    }
+                }],
+                "usage": {"total_tokens": 150}
+            })
+        else:
+            # Second iteration after tool execution: synthesized reply
+            return MockResponse(200, {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Bhai, aaj gold ka rate approx ₹78,500 per 10g hai, aur shaam 6:00 PM ke liye Gym reminder schedule kar diya hai! 💪"
+                    }
+                }],
+                "usage": {"total_tokens": 200}
+            })
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post), \
+         patch("agent.loop.execute_tool", new_callable=AsyncMock) as mock_exec, \
+         patch("db.get_recent_chat_history", return_value=[]), \
+         patch("db.log_chat_message"):
+
+        mock_exec.side_effect = [
+            {"item": "gold", "price_per_10g": 78500, "status": "success"},
+            {"title": "Gym", "due_date": "2026-10-27", "due_time": "18:00", "status": "success"}
+        ]
+
+        res = await run_agent_turn(chat_id, "bhai aaj ka sona ka bhav bata aur sham 6 baje gym ka reminder laga de")
+
+        # Full tool suite must be available to model
+        assert "get_market_price" in captured_tools
+        assert "create_reminder" in captured_tools
+        assert "get_weather" in captured_tools
+        assert "convert_currency" in captured_tools
+
+        # Both tools must have been executed
+        assert "get_market_price" in res["tool_calls_executed"]
+        assert "create_reminder" in res["tool_calls_executed"]
+        assert "gold ka rate" in res["reply"]
+        assert "Gym reminder" in res["reply"]
