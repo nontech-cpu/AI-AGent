@@ -4737,9 +4737,21 @@ async def web_notion_start(request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/app", response_class=HTMLResponse)
+@app.get("/companion", response_class=HTMLResponse)
+async def serve_companion_app():
+    """Serves the interactive Memorae companion app simulation for mobile preview & web testing."""
+    html_path = os.path.join(os.path.dirname(__file__), "companion.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h1>Companion app not found</h1>", status_code=404)
+
+
 @app.get("/")
 def root():
-    return {"status": "ok", "app": "PeculiarAI Backend API", "health": "/health"}
+    return {"status": "ok", "app": "PeculiarAI Backend API", "companion_app": "/app", "health": "/health"}
+
 
 
 @app.get("/health")

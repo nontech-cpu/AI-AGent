@@ -199,3 +199,14 @@ def test_emergency_travel_vault():
     assert get_resp.status_code == 200
     items = get_resp.json()["items"]
     assert any("864920194820194" in it["title"] for it in items)
+
+
+def test_serve_companion_app_ui():
+    """Validates that /app and /companion serve the rich interactive web UI."""
+    resp = client.get("/app")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "Memorae — Personal AI Companion" in resp.text
+    assert "portal-hero" in resp.text
+    assert "mascot-sphere" in resp.text
+

@@ -1,0 +1,2052 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Memorae — Personal AI Companion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --sky-top: #78a6ff;
+      --sky-mid: #9dc2fd;
+      --sky-bottom: #dbeaff;
+      --glass-bg: rgba(255, 255, 255, 0.22);
+      --glass-card: rgba(255, 255, 255, 0.32);
+      --glass-border: rgba(255, 255, 255, 0.45);
+      --glass-dock: rgba(255, 255, 255, 0.35);
+      --text-main: #14213d;
+      --text-muted: #4a5d7c;
+      --text-light: #ffffff;
+      --accent-purple: #7952f5;
+      --accent-pink: #ec4899;
+      --accent-blue: #2563eb;
+      --success: #10b981;
+      --radius-xl: 32px;
+      --radius-lg: 24px;
+      --radius-md: 18px;
+      --shadow-soft: 0 12px 40px rgba(31, 56, 107, 0.12);
+      --shadow-glass: 0 8px 32px rgba(20, 33, 61, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f172a;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: var(--text-main);
+      overflow-x: hidden;
+    }
+
+    /* Device Mockup Shell */
+    .app-frame {
+      width: 100%;
+      max-width: 430px;
+      height: 932px;
+      max-height: 100vh;
+      background: linear-gradient(175deg, #7da5fa 0%, #a4c7fe 45%, #e1edff 100%);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 25px 70px rgba(0, 0, 0, 0.5), 0 0 0 12px #1e293b;
+      border-radius: 48px;
+    }
+
+    @media (max-width: 500px) {
+      .app-frame {
+        max-width: 100vw;
+        height: 100vh;
+        border-radius: 0;
+        box-shadow: none;
+      }
+    }
+
+    /* Background Ambient Glowing Clouds */
+    .glow-cloud-1 {
+      position: absolute;
+      top: -100px;
+      right: -100px;
+      width: 320px;
+      height: 320px;
+      background: radial-gradient(circle, rgba(236, 72, 153, 0.35) 0%, rgba(255, 255, 255, 0) 70%);
+      filter: blur(40px);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .glow-cloud-2 {
+      position: absolute;
+      bottom: 120px;
+      left: -80px;
+      width: 300px;
+      height: 300px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.3) 0%, rgba(255, 255, 255, 0) 70%);
+      filter: blur(40px);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Status Bar */
+    .status-bar {
+      height: 48px;
+      padding: 12px 24px 0 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+      font-weight: 600;
+      color: rgba(20, 33, 61, 0.8);
+      z-index: 10;
+    }
+
+    .status-icons {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    /* Top Action Bar */
+    .top-header {
+      padding: 8px 20px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+    }
+
+    .header-btn {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: var(--glass-card);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--glass-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--text-main);
+      box-shadow: var(--shadow-glass);
+      transition: all 0.2s ease;
+    }
+
+    .header-btn:active {
+      transform: scale(0.92);
+    }
+
+    .header-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--glass-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--glass-border);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+      cursor: pointer;
+    }
+
+    .header-badge .dot {
+      width: 8px;
+      height: 8px;
+      background: var(--success);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--success);
+    }
+
+    /* Screen Views Container */
+    .screen-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 20px 140px;
+      position: relative;
+      z-index: 5;
+      scrollbar-width: none;
+    }
+
+    .screen-content::-webkit-scrollbar {
+      display: none;
+    }
+
+    .view-section {
+      display: none;
+      animation: fadeIn 0.25s ease-out;
+    }
+
+    .view-section.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ---------------- PORTAL VIEW (HOME) ---------------- */
+    .portal-hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 15px;
+      text-align: center;
+    }
+
+    /* Mascot Sphere */
+    .mascot-container {
+      position: relative;
+      width: 110px;
+      height: 110px;
+      margin-bottom: 12px;
+      animation: floatMascot 4s ease-in-out infinite;
+    }
+
+    @keyframes floatMascot {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-10px) rotate(2deg); }
+    }
+
+    .mascot-sphere {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #ffd0e3 0%, #ff8db2 40%, #8b5cf6 85%, #6366f1 100%);
+      box-shadow: 0 15px 35px rgba(139, 92, 246, 0.4), inset 0 -8px 16px rgba(99, 102, 241, 0.6), inset 0 8px 16px rgba(255, 255, 255, 0.8);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .mascot-face {
+      position: relative;
+      width: 60px;
+      height: 35px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .mascot-eyes {
+      display: flex;
+      justify-content: space-between;
+      width: 44px;
+    }
+
+    .mascot-eye {
+      width: 9px;
+      height: 12px;
+      background: #111827;
+      border-radius: 50%;
+      position: relative;
+    }
+
+    .mascot-eye::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 4px;
+      height: 4px;
+      background: #ffffff;
+      border-radius: 50%;
+    }
+
+    .mascot-cheeks {
+      position: absolute;
+      top: 10px;
+      width: 58px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .mascot-cheek {
+      width: 10px;
+      height: 6px;
+      background: rgba(244, 63, 94, 0.6);
+      border-radius: 50%;
+      filter: blur(1px);
+    }
+
+    .mascot-mouth {
+      width: 12px;
+      height: 6px;
+      border-bottom: 3px solid #111827;
+      border-radius: 0 0 10px 10px;
+    }
+
+    .mascot-hat {
+      position: absolute;
+      top: -14px;
+      font-size: 32px;
+      transform: rotate(-10deg);
+      filter: drop-shadow(0 4px 6px rgba(0,0,0,0.25));
+    }
+
+    .hero-greeting {
+      font-size: 26px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 16px;
+      letter-spacing: -0.5px;
+    }
+
+    /* Quest Banner Card */
+    .quest-card {
+      background: var(--glass-card);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      box-shadow: var(--shadow-soft);
+      margin-bottom: 24px;
+    }
+
+    .quest-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .quest-info {
+      flex: 1;
+      text-align: left;
+    }
+
+    .quest-subtitle {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #475569;
+    }
+
+    .quest-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    .quest-reward {
+      font-size: 12px;
+      color: #334155;
+    }
+
+    /* Prompt Suggestion Pills */
+    .pills-group {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+      width: 100%;
+      margin-bottom: 20px;
+    }
+
+    .pill-item {
+      background: var(--glass-card);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      padding: 10px 18px;
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #1e293b;
+      box-shadow: var(--shadow-glass);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .pill-item:hover, .pill-item:active {
+      transform: scale(0.96) translateX(-4px);
+      background: rgba(255, 255, 255, 0.55);
+      border-color: rgba(255, 255, 255, 0.8);
+    }
+
+    /* Live Chat Stream inside Portal */
+    .chat-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 10px;
+      margin-bottom: 20px;
+    }
+
+    .chat-bubble {
+      max-width: 85%;
+      padding: 12px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      line-height: 1.45;
+      word-break: break-word;
+      box-shadow: var(--shadow-glass);
+    }
+
+    .bubble-user {
+      align-self: flex-end;
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #ffffff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .bubble-bot {
+      align-self: flex-start;
+      background: var(--glass-card);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      color: #0f172a;
+      border-bottom-left-radius: 4px;
+    }
+
+    .bot-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #6366f1;
+      margin-bottom: 4px;
+    }
+
+    /* ---------------- DASHBOARD VIEW ---------------- */
+    .dashboard-header {
+      margin-bottom: 18px;
+    }
+
+    .page-title {
+      font-size: 28px;
+      font-weight: 700;
+      color: #0f172a;
+      letter-spacing: -0.5px;
+    }
+
+    .page-desc {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .dash-card {
+      background: var(--glass-card);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 18px;
+      margin-bottom: 16px;
+      box-shadow: var(--shadow-soft);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .dash-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .dash-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 17px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .view-link {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-purple);
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .card-meta-line {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    .quick-chips-row {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      scrollbar-width: none;
+    }
+
+    .quick-chips-row::-webkit-scrollbar {
+      display: none;
+    }
+
+    .chip-btn {
+      background: rgba(255, 255, 255, 0.4);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #1e293b;
+      white-space: nowrap;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s ease;
+    }
+
+    .chip-btn:hover {
+      background: rgba(255, 255, 255, 0.7);
+    }
+
+    /* ---------------- REMINDERS VIEW ---------------- */
+    .filter-tabs {
+      display: flex;
+      background: rgba(255, 255, 255, 0.35);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 4px;
+      margin-bottom: 18px;
+    }
+
+    .filter-tab {
+      flex: 1;
+      text-align: center;
+      padding: 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .filter-tab.active {
+      background: #ffffff;
+      color: var(--accent-purple);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    }
+
+    .action-top-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .btn-create-primary {
+      background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 24px;
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      box-shadow: 0 8px 20px rgba(236, 72, 153, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .btn-create-primary:active {
+      transform: scale(0.95);
+    }
+
+    .reminder-item-card {
+      background: var(--glass-card);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: var(--shadow-glass);
+      transition: all 0.2s ease;
+    }
+
+    .reminder-item-card.completed {
+      opacity: 0.55;
+    }
+
+    .custom-checkbox {
+      width: 22px;
+      height: 22px;
+      border-radius: 8px;
+      border: 2px solid var(--accent-purple);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.5);
+      flex-shrink: 0;
+    }
+
+    .custom-checkbox.checked {
+      background: var(--accent-purple);
+      color: #ffffff;
+    }
+
+    .reminder-details {
+      flex: 1;
+    }
+
+    .reminder-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    .reminder-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .badge-category {
+      background: rgba(139, 92, 246, 0.15);
+      color: var(--accent-purple);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* ---------------- CALENDAR VIEW ---------------- */
+    .calendar-month-picker {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      font-weight: 700;
+      font-size: 18px;
+      color: #0f172a;
+    }
+
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 6px;
+      text-align: center;
+      margin-bottom: 20px;
+      background: var(--glass-card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 14px 10px;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .cal-header-day {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      padding-bottom: 6px;
+    }
+
+    .cal-day-cell {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font-size: 14px;
+      font-weight: 500;
+      color: #1e293b;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .cal-day-cell.inactive {
+      color: rgba(30, 41, 59, 0.3);
+    }
+
+    .cal-day-cell.active-today {
+      background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+      color: #ffffff;
+      font-weight: 700;
+      box-shadow: 0 4px 12px rgba(236, 72, 153, 0.4);
+    }
+
+    .cal-day-cell.selected {
+      border: 2px solid var(--accent-purple);
+    }
+
+    /* ---------------- LISTS VIEW ---------------- */
+    .template-card {
+      background: var(--glass-card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: var(--shadow-glass);
+    }
+
+    .template-card:hover {
+      background: rgba(255, 255, 255, 0.45);
+      transform: translateY(-2px);
+    }
+
+    .template-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+    }
+
+    /* ---------------- TASKS VIEW (KANBAN) ---------------- */
+    .kanban-tab-bar {
+      display: flex;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.35);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 4px;
+      margin-bottom: 16px;
+    }
+
+    .kanban-tab {
+      flex: 1;
+      text-align: center;
+      padding: 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .kanban-tab.active {
+      background: #ffffff;
+      color: var(--accent-purple);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    }
+
+    .btn-ai-generate {
+      background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 24px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
+      transition: all 0.2s ease;
+    }
+
+    .btn-ai-generate:active {
+      transform: scale(0.95);
+    }
+
+    /* ---------------- BOTTOM INPUT & CHAT DOCK ---------------- */
+    .portal-input-dock {
+      position: absolute;
+      bottom: 84px;
+      left: 16px;
+      right: 16px;
+      background: var(--glass-card);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid var(--glass-border);
+      border-radius: 36px;
+      padding: 6px 8px 6px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: var(--shadow-soft);
+      z-index: 20;
+    }
+
+    .portal-input-dock input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 15px;
+      color: #0f172a;
+      font-family: inherit;
+    }
+
+    .portal-input-dock input::placeholder {
+      color: rgba(30, 41, 59, 0.5);
+    }
+
+    .dock-btn {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.65);
+      border: 1px solid var(--glass-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 18px;
+      color: #1e293b;
+      transition: all 0.2s ease;
+    }
+
+    .dock-btn.send-btn {
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #ffffff;
+      border: none;
+    }
+
+    .dock-btn:active {
+      transform: scale(0.9);
+    }
+
+    /* ---------------- BOTTOM APP NAVIGATION DOCK ---------------- */
+    .bottom-nav {
+      position: absolute;
+      bottom: 12px;
+      left: 16px;
+      right: 16px;
+      height: 64px;
+      background: var(--glass-dock);
+      backdrop-filter: blur(32px);
+      -webkit-backdrop-filter: blur(32px);
+      border: 1px solid var(--glass-border);
+      border-radius: 32px;
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      padding: 0 8px;
+      box-shadow: var(--shadow-soft);
+      z-index: 30;
+    }
+
+    .nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      color: rgba(20, 33, 61, 0.65);
+      text-decoration: none;
+    }
+
+    .nav-item.active {
+      background: #ffffff;
+      color: var(--accent-purple);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+      transform: translateY(-2px);
+    }
+
+    .nav-icon {
+      font-size: 20px;
+    }
+
+    .nav-label {
+      font-size: 10px;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    /* Modals */
+    .modal-backdrop {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(15, 23, 42, 0.45);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: flex-end;
+      z-index: 50;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-sheet {
+      width: 100%;
+      background: #ffffff;
+      border-radius: 32px 32px 0 0;
+      padding: 24px 20px 40px;
+      box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.2);
+      animation: slideUp 0.25s ease-out;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    @keyframes slideUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+
+    .modal-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 16px;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .form-input:focus {
+      border-color: var(--accent-purple);
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+    }
+
+    .btn-submit {
+      width: 100%;
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #ffffff;
+      border: none;
+      padding: 14px;
+      border-radius: 18px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Phone Mockup Frame -->
+  <div class="app-frame">
+    <div class="glow-cloud-1"></div>
+    <div class="glow-cloud-2"></div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <span id="statusBarTime">2:51</span>
+      <div class="status-icons">
+        <span>5G</span>
+        <span>📶</span>
+        <span>🔋 98%</span>
+      </div>
+    </div>
+
+    <!-- Top Action Bar -->
+    <div class="top-header">
+      <button class="header-btn" onclick="openSettingsModal()" title="Settings & Chat ID">☰</button>
+      <div class="header-badge" onclick="openSettingsModal()" title="Click to change Chat ID">
+        <span class="dot"></span>
+        <span id="activeUserIdDisplay">User: 998877110</span>
+      </div>
+      <button class="header-btn" onclick="openVaultModal()" title="Emergency Travel Vault (IMEI)">🛡️</button>
+    </div>
+
+    <!-- Content Screen Views -->
+    <div class="screen-content">
+
+      <!-- ================= 1. PORTAL (HOME) ================= -->
+      <section id="viewPortal" class="view-section active">
+        <div class="portal-hero">
+          <div class="mascot-container">
+            <div class="mascot-sphere">
+              <div class="mascot-face">
+                <div class="mascot-eyes">
+                  <div class="mascot-eye"></div>
+                  <div class="mascot-eye"></div>
+                </div>
+                <div class="mascot-cheeks">
+                  <div class="mascot-cheek"></div>
+                  <div class="mascot-cheek"></div>
+                </div>
+                <div class="mascot-mouth"></div>
+              </div>
+            </div>
+            <div class="mascot-hat" id="mascotHat">🪖</div>
+          </div>
+
+          <h1 class="hero-greeting" id="heroGreeting">Good afternoon, dev</h1>
+
+          <!-- Quest Card -->
+          <div class="quest-card">
+            <div class="quest-icon">🔍</div>
+            <div class="quest-info">
+              <div class="quest-subtitle">CONTINUE TO MASTER MEMORAE</div>
+              <div class="quest-title">Discover Memorae</div>
+              <div class="quest-reward">Unlocks Aviator Hat 🪖</div>
+            </div>
+            <span style="cursor:pointer;" onclick="this.parentElement.style.display='none'">✕</span>
+          </div>
+
+          <!-- Quick Action Suggestion Pills -->
+          <div class="pills-group">
+            <div class="pill-item" onclick="sendQuickPrompt('What can I save here?')">✨ What can I save here?</div>
+            <div class="pill-item" onclick="sendQuickPrompt('Remind me to drink water at 10 AM')">🔔 Remind me to ___</div>
+            <div class="pill-item" onclick="sendQuickPrompt('What\'s on my schedule for today?')">📅 What's on my schedule?</div>
+            <div class="pill-item" onclick="sendQuickPrompt('Save link https://example.com/ai-article to my notes')">🔖 Save this link</div>
+          </div>
+
+          <!-- Chat Conversation Log -->
+          <div class="chat-stream" id="chatStream">
+            <div class="chat-bubble bubble-bot">
+              <div class="bot-header">✦ Memorae AI</div>
+              Hello Dev! Main aapka personal companion hu. Aap yahan mujhse baat kar sakte ho, voice note bhej sakte ho, ya neeche tabs se Reminders, Calendar aur Lists manage kar sakte ho! 😊
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 2. DASHBOARD ================= -->
+      <section id="viewDashboard" class="view-section">
+        <div class="dashboard-header">
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-desc">Your daily focus, deadlines & upcoming plan</p>
+        </div>
+
+        <!-- Reminders Card -->
+        <div class="dash-card">
+          <div class="dash-card-header">
+            <div class="dash-card-title">🔔 Reminders</div>
+            <span class="view-link" onclick="switchNavTab('reminders')">View all</span>
+          </div>
+          <div class="card-meta-line" id="dashRemindersMeta">Loading priority reminders...</div>
+          <div class="quick-chips-row">
+            <div class="chip-btn" onclick="sendQuickPrompt('Remind me to drink water at 10 AM')">💧 Drink water at 10 AM</div>
+            <div class="chip-btn" onclick="openNewReminderModal()">⏰ Set reminder...</div>
+          </div>
+        </div>
+
+        <!-- Calendars Card -->
+        <div class="dash-card">
+          <div class="dash-card-header">
+            <div class="dash-card-title">📅 Calendars</div>
+            <span class="view-link" onclick="switchNavTab('calendar')">View more</span>
+          </div>
+          <div class="card-meta-line" id="dashCalendarMeta">0 events • 0m booked</div>
+          <div class="quick-chips-row">
+            <div class="chip-btn" onclick="sendQuickPrompt('Summarise my today plan')">📝 Summarise today</div>
+            <div class="chip-btn" onclick="openNewEventModal()">🏋️ Schedule gym session</div>
+          </div>
+        </div>
+
+        <!-- Lists Card -->
+        <div class="dash-card">
+          <div class="dash-card-header">
+            <div class="dash-card-title">📝 Lists</div>
+            <span class="view-link" onclick="switchNavTab('lists')">View all</span>
+          </div>
+          <div class="card-meta-line" id="dashListsMeta">Your checklists & trips</div>
+          <div class="quick-chips-row">
+            <div class="chip-btn" onclick="instantiateTemplate('packing_list')">🧳 Trip to Goa packing list</div>
+            <div class="chip-btn" onclick="instantiateTemplate('home_tasks')">🏠 Home grocery list</div>
+          </div>
+        </div>
+
+        <!-- Integrations Card -->
+        <div class="dash-card">
+          <div class="dash-card-header">
+            <div class="dash-card-title">🔌 Connected Tools</div>
+            <span class="view-link" onclick="openIntegrationsModal()">Manage</span>
+          </div>
+          <div class="card-meta-line">Google Workspace, Calendar, GitHub, Notion sync active.</div>
+        </div>
+      </section>
+
+      <!-- ================= 3. REMINDERS ================= -->
+      <section id="viewReminders" class="view-section">
+        <div class="action-top-row">
+          <h1 class="page-title">Reminders</h1>
+          <button class="btn-create-primary" onclick="openNewReminderModal()">+ New Reminder</button>
+        </div>
+
+        <div class="filter-tabs">
+          <div class="filter-tab active" onclick="loadReminders('all', this)">All</div>
+          <div class="filter-tab" onclick="loadReminders('today', this)">Today</div>
+          <div class="filter-tab" onclick="loadReminders('upcoming', this)">Upcoming</div>
+          <div class="filter-tab" onclick="loadReminders('completed', this)">Done</div>
+        </div>
+
+        <div id="remindersListContainer">
+          <!-- Loaded dynamically -->
+        </div>
+      </section>
+
+      <!-- ================= 4. CALENDAR ================= -->
+      <section id="viewCalendar" class="view-section">
+        <div class="action-top-row">
+          <h1 class="page-title">Calendar</h1>
+          <button class="btn-create-primary" onclick="openNewEventModal()">+ Add Event</button>
+        </div>
+
+        <div class="calendar-month-picker">
+          <span style="cursor:pointer;" onclick="alert('Previous month')">‹</span>
+          <span id="calendarMonthTitle">October 2026</span>
+          <span style="cursor:pointer;" onclick="alert('Next month')">›</span>
+        </div>
+
+        <div class="calendar-grid">
+          <div class="cal-header-day">Mo</div>
+          <div class="cal-header-day">Tu</div>
+          <div class="cal-header-day">We</div>
+          <div class="cal-header-day">Th</div>
+          <div class="cal-header-day">Fr</div>
+          <div class="cal-header-day">Sa</div>
+          <div class="cal-header-day">Su</div>
+
+          <div class="cal-day-cell inactive">28</div>
+          <div class="cal-day-cell inactive">29</div>
+          <div class="cal-day-cell inactive">30</div>
+          <div class="cal-day-cell">1</div>
+          <div class="cal-day-cell">2</div>
+          <div class="cal-day-cell">3</div>
+          <div class="cal-day-cell">4</div>
+
+          <div class="cal-day-cell">5</div>
+          <div class="cal-day-cell">6</div>
+          <div class="cal-day-cell">7</div>
+          <div class="cal-day-cell">8</div>
+          <div class="cal-day-cell">9</div>
+          <div class="cal-day-cell">10</div>
+          <div class="cal-day-cell">11</div>
+
+          <div class="cal-day-cell">12</div>
+          <div class="cal-day-cell">13</div>
+          <div class="cal-day-cell">14</div>
+          <div class="cal-day-cell">15</div>
+          <div class="cal-day-cell">16</div>
+          <div class="cal-day-cell">17</div>
+          <div class="cal-day-cell">18</div>
+
+          <div class="cal-day-cell">19</div>
+          <div class="cal-day-cell">20</div>
+          <div class="cal-day-cell">21</div>
+          <div class="cal-day-cell">22</div>
+          <div class="cal-day-cell">23</div>
+          <div class="cal-day-cell">24</div>
+          <div class="cal-day-cell">25</div>
+
+          <div class="cal-day-cell">26</div>
+          <div class="cal-day-cell active-today" id="day27">27</div>
+          <div class="cal-day-cell">28</div>
+          <div class="cal-day-cell">29</div>
+          <div class="cal-day-cell">30</div>
+          <div class="cal-day-cell">31</div>
+          <div class="cal-day-cell inactive">1</div>
+        </div>
+
+        <h3 style="font-size:16px; font-weight:700; margin-bottom:10px;">Today's events</h3>
+        <div id="calendarEventsContainer">
+          <!-- Events loaded dynamically -->
+        </div>
+      </section>
+
+      <!-- ================= 5. LISTS ================= -->
+      <section id="viewLists" class="view-section">
+        <div class="action-top-row">
+          <h1 class="page-title">Lists</h1>
+          <button class="btn-create-primary" onclick="openNewListModal()">+ Create List</button>
+        </div>
+
+        <h3 style="font-size:14px; font-weight:700; text-transform:uppercase; color:var(--text-muted); margin-bottom:10px;">Quick start templates</h3>
+        <div class="template-card" onclick="instantiateTemplate('packing_list')">
+          <div class="template-icon">🧳</div>
+          <div>
+            <div style="font-size:15px; font-weight:600; color:#0f172a;">Packing list</div>
+            <div style="font-size:12px; color:var(--text-muted);">For trips & travel (Goa, Flights, Vacations)</div>
+          </div>
+        </div>
+
+        <div class="template-card" onclick="instantiateTemplate('party_planning')">
+          <div class="template-icon">🎉</div>
+          <div>
+            <div style="font-size:15px; font-weight:600; color:#0f172a;">Party planning</div>
+            <div style="font-size:12px; color:var(--text-muted);">Events, dinners & celebrations</div>
+          </div>
+        </div>
+
+        <div class="template-card" onclick="instantiateTemplate('home_tasks')">
+          <div class="template-icon">🏠</div>
+          <div>
+            <div style="font-size:15px; font-weight:600; color:#0f172a;">Home tasks</div>
+            <div style="font-size:12px; color:var(--text-muted);">Daily grocery & household repairs</div>
+          </div>
+        </div>
+
+        <div class="template-card" onclick="instantiateTemplate('study_checklist')">
+          <div class="template-icon">📚</div>
+          <div>
+            <div style="font-size:15px; font-weight:600; color:#0f172a;">Study checklist</div>
+            <div style="font-size:12px; color:var(--text-muted);">Exam milestones & assignments</div>
+          </div>
+        </div>
+
+        <h3 style="font-size:15px; font-weight:700; margin-top:18px; margin-bottom:10px;">My active lists</h3>
+        <div id="userListsContainer">
+          <!-- Loaded dynamically -->
+        </div>
+      </section>
+
+      <!-- ================= 6. TASKS (KANBAN) ================= -->
+      <section id="viewTasks" class="view-section">
+        <div class="action-top-row">
+          <h1 class="page-title">Tasks</h1>
+          <button class="btn-ai-generate" onclick="generateAiTasks()">✨ Generate with Memorae</button>
+        </div>
+
+        <div class="kanban-tab-bar">
+          <div class="kanban-tab active" onclick="loadTasksTab('queue', this)">Queue</div>
+          <div class="kanban-tab" onclick="loadTasksTab('this_week', this)">This Week</div>
+          <div class="kanban-tab" onclick="loadTasksTab('today', this)">Today</div>
+          <div class="kanban-tab" onclick="loadTasksTab('done', this)">Done</div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+          <button class="btn-create-primary" style="padding:6px 14px; font-size:13px;" onclick="openNewTaskModal()">+ Add task</button>
+        </div>
+
+        <div id="tasksListContainer">
+          <!-- Loaded dynamically -->
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Bottom Input & Chat Bar (Portal Dock) -->
+    <div class="portal-input-dock" id="bottomInputDock">
+      <button class="dock-btn" onclick="openNewReminderModal()" title="Add reminder">+</button>
+      <input type="text" id="chatMessageInput" placeholder="Message or ask Memorae..." onkeypress="handleInputKey(event)">
+      <button class="dock-btn" id="voiceMicBtn" onclick="toggleSpeechRecognition()" title="Voice input">🎙️</button>
+      <button class="dock-btn send-btn" onclick="sendChatMessage()" title="Send">↑</button>
+    </div>
+
+    <!-- Bottom App Navigation Dock -->
+    <nav class="bottom-nav">
+      <div class="nav-item active" onclick="switchNavTab('portal', this)">
+        <span class="nav-icon">🔮</span>
+        <span class="nav-label">Portal</span>
+      </div>
+      <div class="nav-item" onclick="switchNavTab('dashboard', this)">
+        <span class="nav-icon">💼</span>
+        <span class="nav-label">Dashboard</span>
+      </div>
+      <div class="nav-item" onclick="switchNavTab('reminders', this)">
+        <span class="nav-icon">🔔</span>
+        <span class="nav-label">Reminders</span>
+      </div>
+      <div class="nav-item" onclick="switchNavTab('calendar', this)">
+        <span class="nav-icon">📅</span>
+        <span class="nav-label">Calendar</span>
+      </div>
+      <div class="nav-item" onclick="switchNavTab('lists', this)">
+        <span class="nav-icon">📝</span>
+        <span class="nav-label">Lists</span>
+      </div>
+      <div class="nav-item" onclick="switchNavTab('tasks', this)">
+        <span class="nav-icon">✅</span>
+        <span class="nav-label">Tasks</span>
+      </div>
+    </nav>
+  </div>
+
+  <!-- ================= MODALS ================= -->
+
+  <!-- Modal 1: New Reminder -->
+  <div class="modal-backdrop" id="modalReminder">
+    <div class="modal-sheet">
+      <div class="modal-title">⏰ New Reminder</div>
+      <div class="form-group">
+        <label>Reminder Title</label>
+        <input type="text" class="form-input" id="newRemTitle" placeholder="e.g. Electricity bill payment / Team sync">
+      </div>
+      <div class="form-group">
+        <label>Due Date</label>
+        <input type="date" class="form-input" id="newRemDate">
+      </div>
+      <div class="form-group">
+        <label>Due Time</label>
+        <input type="time" class="form-input" id="newRemTime" value="10:00">
+      </div>
+      <div class="form-group">
+        <label>Category</label>
+        <select class="form-input" id="newRemCat">
+          <option value="reminder">General Reminder</option>
+          <option value="bill">Bill / Payment</option>
+          <option value="meeting">Meeting</option>
+          <option value="travel">Travel</option>
+        </select>
+      </div>
+      <button class="btn-submit" onclick="submitNewReminder()">Save Reminder</button>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:8px;" onclick="closeModals()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Modal 2: New Calendar Event -->
+  <div class="modal-backdrop" id="modalCalendar">
+    <div class="modal-sheet">
+      <div class="modal-title">📅 Schedule Calendar Event</div>
+      <div class="form-group">
+        <label>Event Title</label>
+        <input type="text" class="form-input" id="newCalTitle" placeholder="e.g. Project Architecture Review">
+      </div>
+      <div class="form-group">
+        <label>Date & Time</label>
+        <input type="datetime-local" class="form-input" id="newCalDateTime">
+      </div>
+      <div class="form-group">
+        <label>Duration (minutes)</label>
+        <input type="number" class="form-input" id="newCalDuration" value="30">
+      </div>
+      <button class="btn-submit" onclick="submitNewEvent()">Schedule on Google Calendar</button>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:8px;" onclick="closeModals()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Modal 3: New Task -->
+  <div class="modal-backdrop" id="modalTask">
+    <div class="modal-sheet">
+      <div class="modal-title">✅ Add Task Card</div>
+      <div class="form-group">
+        <label>Task Title</label>
+        <input type="text" class="form-input" id="newTaskTitle" placeholder="e.g. Implement payment gateway webhook">
+      </div>
+      <div class="form-group">
+        <label>Column</label>
+        <select class="form-input" id="newTaskColumn">
+          <option value="today">Today</option>
+          <option value="this_week">This Week</option>
+          <option value="queue">Queue</option>
+          <option value="done">Done</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Priority</label>
+        <select class="form-input" id="newTaskPriority">
+          <option value="high">High Priority</option>
+          <option value="medium" selected>Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <button class="btn-submit" onclick="submitNewTask()">Create Task</button>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:8px;" onclick="closeModals()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Modal 4: Settings & User Chat ID -->
+  <div class="modal-backdrop" id="modalSettings">
+    <div class="modal-sheet">
+      <div class="modal-title">⚙️ Companion Settings</div>
+      <div class="form-group">
+        <label>Telegram Chat ID (Synchronized User)</label>
+        <input type="number" class="form-input" id="settingsChatIdInput" placeholder="e.g. 998877110">
+        <small style="color:var(--text-muted); font-size:11px; margin-top:4px; display:block;">
+          Aap apna Telegram Chat ID daal kar apna real bot data live dekh aur test kar sakte ho!
+        </small>
+      </div>
+      <button class="btn-submit" onclick="saveSettingsChatId()">Apply & Sync Data</button>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:8px;" onclick="closeModals()">Close</button>
+    </div>
+  </div>
+
+  <!-- Modal 5: Emergency Vault (IMEI & Travel) -->
+  <div class="modal-backdrop" id="modalVault">
+    <div class="modal-sheet">
+      <div class="modal-title">🛡️ Emergency Travel Vault</div>
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
+        Dial <strong>*#06#</strong> on your phone to get your 15-digit IMEI number. Stored safely for emergency travel loss or insurance claims.
+      </p>
+      <div class="form-group">
+        <label>Phone IMEI Number</label>
+        <input type="text" class="form-input" id="vaultImeiInput" placeholder="e.g. 864920194820194">
+      </div>
+      <button class="btn-submit" onclick="submitVaultImei()">Save to Emergency Vault</button>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:8px;" onclick="closeModals()">Close</button>
+    </div>
+  </div>
+
+  <!-- Modal 6: Integrations & Activity Ledger -->
+  <div class="modal-backdrop" id="modalIntegrations">
+    <div class="modal-sheet">
+      <div class="modal-title">🔌 Tool Integrations</div>
+      <div id="integrationsCardList" style="margin-bottom:14px;">
+        <!-- Loaded dynamically -->
+      </div>
+      <div class="modal-title" style="font-size:16px;">📜 Activity Ledger (Audit Log)</div>
+      <div id="activityLedgerList" style="max-height:160px; overflow-y:auto; font-size:12px; color:#334155;">
+        Loading audit entries...
+      </div>
+      <button class="btn-submit" style="background:#e2e8f0; color:#334155; margin-top:14px;" onclick="closeModals()">Close</button>
+    </div>
+  </div>
+
+  <script>
+    // ---------- Configuration & State ----------
+    let currentChatId = localStorage.getItem('memorae_chat_id') || '998877110';
+    let activeTab = 'portal';
+    let currentKanbanCol = 'queue';
+
+    // Update Time in Status Bar
+    function updateClock() {
+      const d = new Date();
+      let hours = d.getHours();
+      let minutes = d.getMinutes();
+      minutes = minutes < 10 ? '0' + minutes : minutes;
+      document.getElementById('statusBarTime').innerText = `${hours}:${minutes}`;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Default dates in form inputs
+    document.getElementById('newRemDate').valueAsDate = new Date();
+    const nowIso = new Date().toISOString().slice(0, 16);
+    document.getElementById('newCalDateTime').value = nowIso;
+    document.getElementById('activeUserIdDisplay').innerText = `User: ${currentChatId}`;
+    document.getElementById('settingsChatIdInput').value = currentChatId;
+
+    // ---------- Navigation Switcher ----------
+    function switchNavTab(tabName, el) {
+      activeTab = tabName;
+      document.querySelectorAll('.view-section').forEach(sec => sec.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(btn => btn.classList.remove('active'));
+
+      const targetView = document.getElementById(`view${tabName.charAt(0).toUpperCase() + tabName.slice(1)}`);
+      if (targetView) targetView.classList.add('active');
+
+      if (el) el.classList.add('active');
+      else {
+        const matchingBtn = Array.from(document.querySelectorAll('.nav-item')).find(btn =>
+          btn.innerText.toLowerCase().includes(tabName.toLowerCase())
+        );
+        if (matchingBtn) matchingBtn.classList.add('active');
+      }
+
+      // Hide or show bottom input bar on portal vs other tabs
+      const dock = document.getElementById('bottomInputDock');
+      if (tabName === 'portal') {
+        dock.style.display = 'flex';
+      } else {
+        dock.style.display = 'none';
+      }
+
+      // Load section data
+      if (tabName === 'dashboard') loadDashboardData();
+      if (tabName === 'reminders') loadReminders('all');
+      if (tabName === 'calendar') loadCalendarEvents();
+      if (tabName === 'lists') loadUserLists();
+      if (tabName === 'tasks') loadTasksTab(currentKanbanCol);
+    }
+
+    // ---------- Dashboard Loader ----------
+    async function loadDashboardData() {
+      try {
+        const res = await fetch(`/api/v1/dashboard/overview?chat_id=${currentChatId}`);
+        const data = await res.json();
+
+        if (data.user_profile) {
+          document.getElementById('heroGreeting').innerText = data.user_profile.greeting || 'Good afternoon, dev';
+        }
+
+        // Reminders meta
+        if (data.reminders_card) {
+          document.getElementById('dashRemindersMeta').innerText =
+            `${data.reminders_card.count} active reminders scheduled`;
+        }
+
+        // Calendar meta
+        if (data.calendars_card) {
+          document.getElementById('dashCalendarMeta').innerText =
+            data.calendars_card.status_text || '0 events • 0m booked';
+        }
+
+        // Lists meta
+        if (data.lists_card) {
+          document.getElementById('dashListsMeta').innerText =
+            `${data.lists_card.count} active checklists created`;
+        }
+      } catch (err) {
+        console.error('loadDashboardData error:', err);
+      }
+    }
+
+    // ---------- Reminders Loader & CRUD ----------
+    async function loadReminders(section, tabEl) {
+      if (tabEl) {
+        document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+        tabEl.classList.add('active');
+      }
+      const container = document.getElementById('remindersListContainer');
+      container.innerHTML = '<div style="text-align:center; padding:20px; color:#475569;">Loading reminders...</div>';
+
+      try {
+        const res = await fetch(`/api/v1/reminders?chat_id=${currentChatId}&section=${section}`);
+        const data = await res.json();
+        const rems = data.reminders || [];
+
+        if (rems.length === 0) {
+          container.innerHTML = `
+            <div style="text-align:center; padding:30px 10px; color:var(--text-muted);">
+              <div style="font-size:32px; margin-bottom:8px;">🔔</div>
+              No reminders in this section.<br>Click <strong>+ New Reminder</strong> above!
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = rems.map(r => `
+          <div class="reminder-item-card ${r.completed ? 'completed' : ''}">
+            <div class="custom-checkbox ${r.completed ? 'checked' : ''}" onclick="toggleReminder(${r.id}, ${!r.completed})">
+              ${r.completed ? '✓' : ''}
+            </div>
+            <div class="reminder-details">
+              <div class="reminder-title">${escapeHtml(r.title)}</div>
+              <div class="reminder-meta">
+                <span class="badge-category">${r.category || 'reminder'}</span>
+                <span>📅 ${r.due_date || 'Today'} ${r.due_time ? '• ' + r.due_time : ''}</span>
+                ${r.amount ? `<span>₹${r.amount}</span>` : ''}
+              </div>
+            </div>
+            <button style="background:none; border:none; cursor:pointer; font-size:16px;" onclick="deleteReminder(${r.id})">🗑️</button>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = '<div style="color:red; text-align:center;">Failed to load reminders.</div>';
+      }
+    }
+
+    async function submitNewReminder() {
+      const title = document.getElementById('newRemTitle').value.trim();
+      const date = document.getElementById('newRemDate').value;
+      const time = document.getElementById('newRemTime').value;
+      const cat = document.getElementById('newRemCat').value;
+
+      if (!title || !date) {
+        alert('Please enter a title and select due date.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/v1/reminders?chat_id=${currentChatId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, due_date: date, due_time: time, category: cat })
+        });
+        if (res.ok) {
+          closeModals();
+          document.getElementById('newRemTitle').value = '';
+          loadReminders('all');
+          loadDashboardData();
+        } else {
+          alert('Failed to save reminder.');
+        }
+      } catch (err) {
+        alert('Error saving reminder: ' + err.message);
+      }
+    }
+
+    async function toggleReminder(id, completed) {
+      await fetch(`/api/v1/reminders/${id}?chat_id=${currentChatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed })
+      });
+      loadReminders('all');
+    }
+
+    async function deleteReminder(id) {
+      if (!confirm('Are you sure you want to delete this reminder?')) return;
+      await fetch(`/api/v1/reminders/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      loadReminders('all');
+      loadDashboardData();
+    }
+
+    // ---------- Calendar Loader & CRUD ----------
+    async function loadCalendarEvents() {
+      const container = document.getElementById('calendarEventsContainer');
+      container.innerHTML = '<div style="text-align:center; padding:15px; color:#475569;">Loading schedule...</div>';
+
+      try {
+        const res = await fetch(`/api/v1/calendar/events?chat_id=${currentChatId}&view=day`);
+        const data = await res.json();
+        const evs = data.events || [];
+
+        if (evs.length === 0) {
+          container.innerHTML = `
+            <div style="background:var(--glass-card); padding:16px; border-radius:20px; text-align:center; color:var(--text-muted);">
+              No events scheduled for today.<br>Click <strong>+ Add Event</strong> to sync to Google Calendar!
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = evs.map(ev => `
+          <div class="dash-card" style="margin-bottom:10px; padding:12px 16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <strong style="font-size:15px; color:#0f172a;">${escapeHtml(ev.title)}</strong>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+                  🕒 ${ev.start ? ev.start.replace('T', ' ') : 'All Day'}
+                </div>
+              </div>
+              <button style="background:none; border:none; cursor:pointer;" onclick="deleteCalendarEvent('${ev.id}')">🗑️</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = '<div style="color:red;">Error loading calendar events.</div>';
+      }
+    }
+
+    async function submitNewEvent() {
+      const title = document.getElementById('newCalTitle').value.trim();
+      const dt = document.getElementById('newCalDateTime').value;
+      const dur = parseInt(document.getElementById('newCalDuration').value || '30', 10);
+
+      if (!title || !dt) {
+        alert('Please fill event title and start time.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/v1/calendar/events?chat_id=${currentChatId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, start_iso: dt, duration_minutes: dur })
+        });
+        if (res.ok) {
+          closeModals();
+          document.getElementById('newCalTitle').value = '';
+          loadCalendarEvents();
+          loadDashboardData();
+        } else {
+          alert('Could not schedule event.');
+        }
+      } catch (err) {
+        alert('Event scheduling error: ' + err.message);
+      }
+    }
+
+    async function deleteCalendarEvent(id) {
+      if (!confirm('Cancel this event?')) return;
+      await fetch(`/api/v1/calendar/events/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      loadCalendarEvents();
+    }
+
+    // ---------- Lists Loader & Templates ----------
+    async function loadUserLists() {
+      const container = document.getElementById('userListsContainer');
+      container.innerHTML = '<div style="text-align:center; padding:15px; color:#475569;">Loading lists...</div>';
+
+      try {
+        const res = await fetch(`/api/v1/lists?chat_id=${currentChatId}`);
+        const data = await res.json();
+        const lists = data.lists || [];
+
+        if (lists.length === 0) {
+          container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:15px;">No custom lists yet. Pick a template above!</div>';
+          return;
+        }
+
+        container.innerHTML = lists.map(l => `
+          <div class="dash-card" style="margin-bottom:12px;">
+            <div class="dash-card-header">
+              <strong style="font-size:16px;">${escapeHtml(l.name)}</strong>
+              <button style="background:none; border:none; cursor:pointer;" onclick="deleteList(${l.id})">🗑️</button>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+              ${(l.items || []).map(it => `
+                <div style="display:flex; align-items:center; gap:8px; font-size:14px;">
+                  <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleListItem(${it.id}, this.checked)">
+                  <span style="${it.checked ? 'text-decoration:line-through; opacity:0.6;' : ''}">${escapeHtml(it.title)}</span>
+                </div>
+              `).join('')}
+            </div>
+            <div style="margin-top:10px; display:flex; gap:6px;">
+              <input type="text" id="addInput_${l.id}" placeholder="Add new item..." style="flex:1; padding:6px 10px; border-radius:12px; border:1px solid #cbd5e1; font-size:12px;">
+              <button style="background:var(--accent-purple); color:white; border:none; border-radius:12px; padding:6px 12px; font-size:12px; cursor:pointer;" onclick="addListItem(${l.id})">+ Add</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = '<div style="color:red;">Error loading lists.</div>';
+      }
+    }
+
+    async function instantiateTemplate(templateId) {
+      try {
+        const res = await fetch(`/api/v1/lists/from-template?chat_id=${currentChatId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template_id: templateId })
+        });
+        if (res.ok) {
+          switchNavTab('lists');
+          loadUserLists();
+          loadDashboardData();
+        } else {
+          alert('Failed to create template list.');
+        }
+      } catch (err) {
+        alert('Template creation error: ' + err.message);
+      }
+    }
+
+    async function toggleListItem(itemId, checked) {
+      await fetch(`/api/v1/lists/items/${itemId}/toggle?chat_id=${currentChatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checked })
+      });
+      loadUserLists();
+    }
+
+    async function addListItem(listId) {
+      const input = document.getElementById(`addInput_${listId}`);
+      const val = input.value.trim();
+      if (!val) return;
+      await fetch(`/api/v1/lists/${listId}/items?chat_id=${currentChatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: val })
+      });
+      input.value = '';
+      loadUserLists();
+    }
+
+    async function deleteList(listId) {
+      if (!confirm('Delete this checklist?')) return;
+      await fetch(`/api/v1/lists/${listId}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      loadUserLists();
+      loadDashboardData();
+    }
+
+    // ---------- Tasks & AI Synthesis ----------
+    async function loadTasksTab(tab, tabEl) {
+      currentKanbanCol = tab;
+      if (tabEl) {
+        document.querySelectorAll('.kanban-tab').forEach(t => t.classList.remove('active'));
+        tabEl.classList.add('active');
+      }
+
+      const container = document.getElementById('tasksListContainer');
+      container.innerHTML = '<div style="text-align:center; padding:15px; color:#475569;">Loading tasks...</div>';
+
+      try {
+        const res = await fetch(`/api/v1/tasks?chat_id=${currentChatId}&tab=${tab}`);
+        const data = await res.json();
+        const tasks = data.tasks || [];
+
+        if (tasks.length === 0) {
+          container.innerHTML = `
+            <div style="text-align:center; padding:30px; color:var(--text-muted);">
+              No tasks in '${tab}'.<br>
+              Click <strong>✨ Generate with Memorae</strong> to let AI create them!
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = tasks.map(t => `
+          <div class="reminder-item-card">
+            <div class="custom-checkbox ${t.status === 'done' ? 'checked' : ''}" onclick="moveTask(${t.id}, '${t.status === 'done' ? 'today' : 'done'}')">
+              ${t.status === 'done' ? '✓' : ''}
+            </div>
+            <div class="reminder-details">
+              <div class="reminder-title" style="${t.status === 'done' ? 'text-decoration:line-through; opacity:0.6;' : ''}">${escapeHtml(t.title)}</div>
+              <div class="reminder-meta">
+                <span class="badge-category" style="text-transform:uppercase;">${t.priority || 'medium'}</span>
+                <span>${t.status || 'queue'}</span>
+              </div>
+            </div>
+            <button style="background:none; border:none; cursor:pointer;" onclick="deleteTask(${t.id})">🗑️</button>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = '<div style="color:red;">Error loading tasks.</div>';
+      }
+    }
+
+    async function generateAiTasks() {
+      const container = document.getElementById('tasksListContainer');
+      container.innerHTML = '<div style="text-align:center; padding:25px; color:#6366f1;">✨ Memorae AI is synthesizing smart tasks from your context...</div>';
+      try {
+        const res = await fetch(`/api/v1/tasks/generate-ai?chat_id=${currentChatId}`, { method: 'POST' });
+        if (res.ok) {
+          loadTasksTab(currentKanbanCol);
+          loadDashboardData();
+        } else {
+          alert('Could not synthesize tasks.');
+        }
+      } catch (err) {
+        alert('AI Task generation error: ' + err.message);
+      }
+    }
+
+    async function submitNewTask() {
+      const title = document.getElementById('newTaskTitle').value.trim();
+      const col = document.getElementById('newTaskColumn').value;
+      const pri = document.getElementById('newTaskPriority').value;
+
+      if (!title) {
+        alert('Please enter task title');
+        return;
+      }
+
+      await fetch(`/api/v1/tasks?chat_id=${currentChatId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, status: col, priority: pri })
+      });
+      closeModals();
+      document.getElementById('newTaskTitle').value = '';
+      loadTasksTab(col);
+      loadDashboardData();
+    }
+
+    async function moveTask(cardId, newStatus) {
+      await fetch(`/api/v1/boards/cards/${cardId}/move?chat_id=${currentChatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      });
+      loadTasksTab(currentKanbanCol);
+    }
+
+    async function deleteTask(cardId) {
+      await fetch(`/api/v1/boards/cards/${cardId}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      loadTasksTab(currentKanbanCol);
+    }
+
+    // ---------- Interactive Chat & Voice Dock ----------
+    function sendQuickPrompt(promptText) {
+      document.getElementById('chatMessageInput').value = promptText;
+      switchNavTab('portal');
+      sendChatMessage();
+    }
+
+    function handleInputKey(e) {
+      if (e.key === 'Enter') sendChatMessage();
+    }
+
+    async function sendChatMessage() {
+      const input = document.getElementById('chatMessageInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+
+      const chatStream = document.getElementById('chatStream');
+
+      // Append user bubble
+      const userBubble = document.createElement('div');
+      userBubble.className = 'chat-bubble bubble-user';
+      userBubble.innerText = text;
+      chatStream.appendChild(userBubble);
+      chatStream.scrollTop = chatStream.scrollHeight;
+
+      // Append placeholder bot bubble
+      const botBubble = document.createElement('div');
+      botBubble.className = 'chat-bubble bubble-bot';
+      botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div>Thinking...';
+      chatStream.appendChild(botBubble);
+      chatStream.scrollTop = chatStream.scrollHeight;
+
+      try {
+        const res = await fetch('/api/v1/chat/message', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Chat-Id': currentChatId
+          },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        botBubble.innerHTML = `<div class="bot-header">✦ Memorae AI</div>${escapeHtml(data.reply || 'Done!')}`;
+        chatStream.scrollTop = chatStream.scrollHeight;
+
+        // Auto-refresh dashboard & sections because chat actions modify database
+        loadDashboardData();
+      } catch (err) {
+        botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div>Could not connect to backend server.';
+      }
+    }
+
+    // Speech Recognition
+    function toggleSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('Web speech recognition is not supported in this browser. Please type your message.');
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'en-IN';
+      const micBtn = document.getElementById('voiceMicBtn');
+      micBtn.style.background = '#ef4444';
+      micBtn.style.color = '#ffffff';
+
+      recognition.onresult = (e) => {
+        const transcript = e.results[0][0].transcript;
+        document.getElementById('chatMessageInput').value = transcript;
+        sendChatMessage();
+      };
+      recognition.onend = () => {
+        micBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+        micBtn.style.color = '#1e293b';
+      };
+      recognition.start();
+    }
+
+    // ---------- Integrations & Emergency Vault ----------
+    async function openIntegrationsModal() {
+      document.getElementById('modalIntegrations').classList.add('open');
+      const cardList = document.getElementById('integrationsCardList');
+      const ledgerList = document.getElementById('activityLedgerList');
+      cardList.innerHTML = 'Loading integrations...';
+
+      try {
+        const res = await fetch(`/api/v1/integrations?chat_id=${currentChatId}`);
+        const data = await res.json();
+        cardList.innerHTML = (data.cards || []).map(c => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:10px; background:#f8fafc; border-radius:14px; margin-bottom:8px;">
+            <div>
+              <strong style="font-size:14px;">${escapeHtml(c.name)}</strong>
+              <div style="font-size:11px; color:#64748b;">${c.connected ? '🟢 Connected (' + (c.account || 'Active') + ')' : '⚪ Not connected'}</div>
+            </div>
+            ${c.action_url ? `<a href="${c.action_url}" target="_blank" style="padding:6px 12px; background:#e2e8f0; border-radius:10px; text-decoration:none; font-size:12px; font-weight:600; color:#334155;">Connect</a>` : ''}
+          </div>
+        `).join('');
+
+        const legRes = await fetch(`/api/v1/activity-ledger?chat_id=${currentChatId}&limit=10`);
+        const legData = await legRes.json();
+        ledgerList.innerHTML = (legData.entries || []).map(e => `
+          <div style="padding:4px 0; border-bottom:1px solid #f1f5f9;">
+            <strong>${e.actor}:</strong> ${escapeHtml(e.action_text)}
+          </div>
+        `).join('') || 'No recent activity yet.';
+      } catch (err) {
+        cardList.innerHTML = 'Error loading integrations.';
+      }
+    }
+
+    function openVaultModal() {
+      document.getElementById('modalVault').classList.add('open');
+    }
+
+    async function submitVaultImei() {
+      const imei = document.getElementById('vaultImeiInput').value.trim();
+      if (!imei) {
+        alert('Please enter your 15-digit IMEI number');
+        return;
+      }
+      try {
+        await fetch(`/api/v1/vault/emergency?chat_id=${currentChatId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_type: 'imei', title: 'Device IMEI', value: imei })
+        });
+        alert('Device IMEI stored safely in your Emergency Travel Vault!');
+        closeModals();
+      } catch (err) {
+        alert('Failed to store IMEI: ' + err.message);
+      }
+    }
+
+    // ---------- Modal Helpers ----------
+    function openNewReminderModal() { document.getElementById('modalReminder').classList.add('open'); }
+    function openNewEventModal() { document.getElementById('modalCalendar').classList.add('open'); }
+    function openNewTaskModal() { document.getElementById('modalTask').classList.add('open'); }
+    function openNewListModal() { instantiateTemplate('packing_list'); }
+    function openSettingsModal() { document.getElementById('modalSettings').classList.add('open'); }
+
+    function closeModals() {
+      document.querySelectorAll('.modal-backdrop').forEach(m => m.classList.remove('open'));
+    }
+
+    function saveSettingsChatId() {
+      const val = document.getElementById('settingsChatIdInput').value.trim();
+      if (!val) return;
+      currentChatId = val;
+      localStorage.setItem('memorae_chat_id', val);
+      document.getElementById('activeUserIdDisplay').innerText = `User: ${val}`;
+      closeModals();
+      loadDashboardData();
+      alert(`Switched active Telegram User ID to: ${val}. All actions are now live-synced with this user!`);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Initial load
+    loadDashboardData();
+  </script>
+</body>
+</html>
