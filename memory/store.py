@@ -91,8 +91,13 @@ def embed_text(content: str) -> Optional[List[float]]:
     return None
 
 
+_RESOLVED_USER_ID_CACHE: Dict[int, int] = {}
+
 def resolve_user_id(chat_id_or_user_id: int) -> int:
     """Resolves telegram_chat_id or direct user_id into the internal users.id primary key."""
+    if chat_id_or_user_id in _RESOLVED_USER_ID_CACHE:
+        return _RESOLVED_USER_ID_CACHE[chat_id_or_user_id]
+
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         try:
@@ -101,15 +106,18 @@ def resolve_user_id(chat_id_or_user_id: int) -> int:
                 {"c": chat_id_or_user_id}
             ).fetchone()
             if row:
+                _RESOLVED_USER_ID_CACHE[chat_id_or_user_id] = row[0]
                 return row[0]
             row2 = conn.execute(
                 text("SELECT id FROM users WHERE id = :uid"),
                 {"uid": chat_id_or_user_id}
             ).fetchone()
             if row2:
+                _RESOLVED_USER_ID_CACHE[chat_id_or_user_id] = row2[0]
                 return row2[0]
         except Exception:
             pass
+
 
     # Ensure user exists in users table to satisfy foreign key constraints
     try:

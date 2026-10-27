@@ -218,15 +218,23 @@ async def build_runtime_system_prompt(
         build_runtime_system_prompt._sched_cache = {}
     _sched_cache = build_runtime_system_prompt._sched_cache
 
+    has_schedule_context_need = bool(re.search(
+        r"\b(schedule|meeting|meetings|meet|calendar|event|events|reminder|reminders|aaj|kal|today|tomorrow|free|busy|plan|plans|timing|time|appointment|commit|commitment)\b",
+        user_text,
+        re.I
+    ))
+
     async def fetch_full_sched(d):
         cache_key = f"{chat_id}_{d.isoformat()}"
         cached = _sched_cache.get(cache_key)
         now_ts = time.time()
-        if cached and (now_ts - cached["ts"]) < 60:
+        if cached and (now_ts - cached["ts"]) < 120:
             return cached["data"]
+        if not has_schedule_context_need:
+            return cached["data"] if cached else {"calendar_events": [], "reminders": [], "commitments": []}
         try:
             from main import get_unified_schedule
-            data = await asyncio.wait_for(get_unified_schedule(chat_id, d), timeout=2.5)
+            data = await asyncio.wait_for(get_unified_schedule(chat_id, d), timeout=1.0)
             _sched_cache[cache_key] = {"data": data, "ts": now_ts}
             return data
         except Exception:
@@ -238,6 +246,7 @@ async def build_runtime_system_prompt(
         fetch_full_sched(today_d),
         fetch_full_sched(tomorrow_d)
     )
+
 
     # 3. Pending Actions
     pending_str = "None"

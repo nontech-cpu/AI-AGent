@@ -1329,32 +1329,44 @@ async def connected_user_gmail_monitor_loop():
 # ---------- Google connection ----------
 
 
+_GOOGLE_CONN_CACHE: dict = {}
+
 async def get_valid_google_connection_by_chat_id(chat_id: int) -> tuple[bool, str | None]:
     """Check if the user has a valid, unrevoked Google connection. Returns (is_connected, email)."""
+    import time as _pytime
+    now_ts = _pytime.time()
+    cached = _GOOGLE_CONN_CACHE.get(chat_id)
+    if cached and (now_ts - cached["ts"] < 180.0):
+        return cached["res"]
+
+
     try:
         with engine.connect() as conn:
             row = conn.execute(text("SELECT id FROM users WHERE telegram_chat_id = :c"), {"c": chat_id}).first()
         if not row:
-            return False, None
+            res = (False, None)
+            _GOOGLE_CONN_CACHE[chat_id] = {"ts": now_ts, "res": res}
+            return res
         db_user_id = int(row[0])
         token = get_google_token(db_user_id)
         if not token or not token.get("refresh_token_enc"):
-            return False, None
+            res = (False, None)
+            _GOOGLE_CONN_CACHE[chat_id] = {"ts": now_ts, "res": res}
+            return res
         raw_refresh = decrypt_token(token["refresh_token_enc"])
         if not raw_refresh:
-            return False, None
-        # Attempt to refresh token with Google to ensure it's not revoked or expired
-        try:
-            refreshed = await refresh_access_token(raw_refresh)
-            if refreshed and refreshed.get("access_token"):
-                return True, token.get("email")
-            return False, None
-        except Exception as ref_err:
-            print("Google token refresh live ping warning, using stored valid token:", repr(ref_err))
-            return True, token.get("email")
+            res = (False, None)
+            _GOOGLE_CONN_CACHE[chat_id] = {"ts": now_ts, "res": res}
+            return res
+        # Fast optimistic check: if token has email and valid refresh token, trust it
+        email_val = token.get("email")
+        res = (True, email_val)
+        _GOOGLE_CONN_CACHE[chat_id] = {"ts": now_ts, "res": res}
+        return res
     except Exception as exc:
         print("Google connection validation check failed:", repr(exc))
         return False, None
+
 
 
 async def start_google_connection(chat_id):

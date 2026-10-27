@@ -699,6 +699,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
+
+
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
     recent_history = db.get_recent_chat_history(chat_id, limit=8)
     for turn in recent_history:
@@ -717,27 +719,71 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     # Provide the comprehensive functional tool suite (ChatGPT/Claude style architecture)
-    # The LLM reasons holistically over user intent rather than relying on brittle regex keyword pruning.
+    # Dynamic Tool Selection to prevent exceeding Groq 7,000 TPM limit on free keys
     low_prompt = user_text.lower()
-    has_time_mention = bool(re.search(r"\b(\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|bje|baje)|shaam|subah|dopahar|raat|evening|morning|night|afternoon)\b", low_prompt))
-    has_plan_event = bool(re.search(r"\b(meeting|meetings|schedule|call|calls|meet|slot|slots|free|busy|appointment|appointments|aaj|kal|parso|plan|plans|calendar|event|events|timing|time|trip|travel|outing|party|class|lecture|wedding|match|game|interview|doctor|gym|workout|movie|dinner|lunch)\b", low_prompt))
-    has_notion_keyword = bool(re.search(r"\b(notion|notes|note|page|documentation)\b", low_prompt))
+    
+    # 1. Core tool names (Always available on every turn)
+    core_tool_names = {
+        "create_reminder", "list_reminders", "delete_reminder",
+        "save_contact", "get_contact", "list_contacts", "update_contact_commitment", "get_commitments",
+        "save_note_or_fact", "search_memory", "clear_chat_history",
+        "get_weather", "search_web", "read_webpage",
+        "check_integrations_status", "connect_integration",
+        "calculate", "convert_currency"
+    }
+    
+    active_tool_names = set(core_tool_names)
+    
+    # 2. Calendar / Meeting tools
+    has_calendar_interest = bool(re.search(
+        r"(\b(meet|meeting|meetings|calendar|event|events|schedule|call|calls|slot|slots|free|busy|availability|appointment|appointments|host|reschedule|cancel\s+meet|doctor|interview|trip|plan|plans|movie|dinner|lunch|party|wedding)\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|bje|baje)\b)",
+        low_prompt
+    ))
+    if has_calendar_interest:
+        active_tool_names.update({"get_schedule", "check_availability", "create_meeting", "update_meeting", "delete_meeting", "get_meet_link"})
 
-    # All functional tools are available to the agent (excluding internal dummy ask_user)
+    
+    # 3. GitHub tools
+    has_github_interest = bool(re.search(
+        r"\b(github|gh|git|repo|repos|repository|repositories|commit|commits|readme|issue|issues|branch|code|push|pull)\b",
+        low_prompt
+    ))
+    if has_github_interest:
+        active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
+        
+    # 4. Notion tools
+    has_notion_interest = bool(re.search(
+        r"\b(notion|page|pages|workspace|documentation|doc|docs)\b",
+        low_prompt
+    ))
+    if has_notion_interest:
+        active_tool_names.update({"create_notion_page", "update_notion_page", "list_notion_pages"})
+        
+    # 5. Email & File generation tools
+    has_export_interest = bool(re.search(
+        r"\b(email|mail|gmail|send\s+email|pdf|excel|sheet|spreadsheet|invoice|report|drive|upload)\b",
+        low_prompt
+    ))
+    if has_export_interest:
+        active_tool_names.update({"send_email", "upload_to_drive", "generate_pdf", "generate_excel"})
+        
+    # 6. Commodity / Market price tools
+    has_market_interest = bool(re.search(
+        r"\b(gold|silver|crude|oil|brent|crypto|bitcoin|btc|eth|ethereum|sol|solana|sone|chandi|bhav|rate|price|market\s*price)\b",
+        low_prompt
+    ))
+    if has_market_interest:
+        active_tool_names.add("get_market_price")
+        
+    # Build effective_tools adhering to token budgets
     effective_tools = [
         t for t in TOOL_DEFINITIONS
-        if t["function"]["name"] != "ask_user"
+        if t["function"]["name"] in active_tool_names
     ]
-
-    # Safety Guard: If user mentions time/meeting without mentioning Notion, exclude Notion tools
-    if (has_time_mention or has_plan_event) and not has_notion_keyword:
-        effective_tools = [
-            t for t in effective_tools
-            if t["function"]["name"] not in ("create_notion_page", "update_notion_page")
-        ]
 
     MAX_TOOL_ITERATIONS = 4
     current_model = model
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             payload = {
@@ -755,6 +801,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 headers={"Authorization": f"Bearer {groq_key}"},
                 json=payload
             )
+
+
 
             # Multi-tier auto-fallback on 429 Rate Limit
             if resp.status_code == 429:

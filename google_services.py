@@ -11,7 +11,15 @@ from google_auth import decrypt_token, refresh_access_token
 
 GOOGLE = 'https://www.googleapis.com'
 
+_ACCESS_TOKEN_CACHE: dict = {}
+
 async def access_token_for_chat(chat_id: int) -> tuple[str, str]:
+    import time as _pytime
+    now_ts = _pytime.time()
+    cached = _ACCESS_TOKEN_CACHE.get(chat_id)
+    if cached and (now_ts - cached["ts"] < 3000.0):
+        return cached["access"], cached["email"]
+
     with engine.connect() as conn:
         row = conn.execute(text('SELECT id FROM users WHERE telegram_chat_id=:c'), {'c': chat_id}).first()
     if not row:
@@ -23,7 +31,10 @@ async def access_token_for_chat(chat_id: int) -> tuple[str, str]:
     access = refreshed.get('access_token') if refreshed else None
     if not access:
         raise RuntimeError('Google token refresh failed. Please reconnect Google.')
-    return access, token.get('email', '')
+    email = token.get('email', '')
+    _ACCESS_TOKEN_CACHE[chat_id] = {"ts": now_ts, "access": access, "email": email}
+    return access, email
+
 
 async def _request(method, url, access, **kwargs):
     headers = kwargs.pop('headers', {})
