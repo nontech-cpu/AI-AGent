@@ -341,8 +341,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         r"\b(add|daal|daalo|dal|bana|banao|bna|bnao|create|save|likh|likho|update|append|note|notes|heading|code|section|pdf|file|repo|issue|event|meeting|schedule|kardo|kar\s*do|krdo|kr\s*do|bhej|send|post)\b",
         low_prompt
     ))
+    is_account_link_status_query = bool(
+        re.search(r"\b(email|mail|gmail|google|github|notion|account|drive|calendar)\b", low_prompt)
+        and re.search(r"\b(link\w*|connected|connect|juda|judi)\b", low_prompt)
+    )
     is_link_query = (
         not has_action_intent
+        and not is_account_link_status_query
         and len(words) <= 6
         and bool(re.search(r"\b(link|url)\b", low_prompt))
         and any(w in low_prompt for w in ("iska", "uska", "ye", "yeh", "do", "dena", "dedo", "bhejo", "bhj", "bhej", "mujh", "mujhe", "kaha", "kahan", "bhai", "bhy", "share", "de", "notion", "meet", "chahiye"))
@@ -379,7 +384,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         low_prompt_raw
     ))
     is_link_delivery_request = bool(
-        re.search(r"\b(link|url)\b", low_prompt_raw)
+        not is_account_link_status_query
+        and re.search(r"\b(link|url)\b", low_prompt_raw)
         and re.search(r"\b(de|dedo|dena|do|bhej|bhejo|bhj|bhjdo|share|dikha|dikhao|send|give|chahiye|iska|uska|unka)\b", low_prompt_raw)
     )
 
@@ -389,10 +395,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
         has_notion = bool(re.search(r"\b(notion|noion|noiton|notinn|notn|noitn|noton)\b", low_prompt_raw))
         has_github = bool(re.search(r"\b(github|gh|git)\b", low_prompt_raw))
-        has_google = bool(re.search(r"\b(google|gmail|calendar|drive|gmeet)\b", low_prompt_raw))
+        has_google = bool(re.search(r"\b(google|gmail|email|mail|calendar|drive|gmeet)\b", low_prompt_raw))
         has_general = bool(
             re.search(r"\b(connector|connectors|integration|integrations|account|accounts|all\s+accounts)\b", low_prompt_raw)
-            or (re.search(r"\b(connected|connect)\b", low_prompt_raw) and ("?" in low_prompt_raw or re.search(r"\b(h\b|hai\b|ni\b|nahi\b|kya\b|ab\b)", low_prompt_raw)))
+            or (re.search(r"\b(connected|connect|link\w*)\b", low_prompt_raw) and ("?" in low_prompt_raw or re.search(r"\b(h\b|hai\b|ni\b|nahi\b|kya\b|ab\b)", low_prompt_raw)))
         )
 
         # 1. Notion Connection / Status Queries (NEVER intercept if user is asking about notes/pages/content/search/read/list)
@@ -979,7 +985,18 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not final_reply:
         if tool_results_list:
             last_res = tool_results_list[-1]
-            if isinstance(last_res, dict) and last_res.get("message"):
+            if isinstance(last_res, dict) and "emails" in last_res:
+                emails = last_res.get("emails", [])
+                if emails:
+                    lines = [f"📧 **Aapke inbox me {len(emails)} emails mili hain:**"]
+                    for em in emails[:3]:
+                        subj = em.get("subject", "No Subject")
+                        sender = em.get("from", "")
+                        lines.append(f"• **{subj}** (From: {sender})")
+                    final_reply = "\n".join(lines)
+                else:
+                    final_reply = "Aapke connected inbox me koi email nahi mili."
+            elif isinstance(last_res, dict) and last_res.get("message") and not ("in connected mailbox" in str(last_res.get("message"))):
                 final_reply = last_res["message"]
             elif isinstance(last_res, dict) and ("github" in last_res or "notion" in last_res or "google" in last_res):
                 lines = []

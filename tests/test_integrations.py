@@ -125,3 +125,21 @@ async def test_execute_tool_get_github_file():
         assert res["name"] == "README.md"
         assert "Test Readme Content" in res["content"]
 
+
+@pytest.mark.asyncio
+async def test_email_link_status_query_fast_path():
+    """Verify 'meri email link h?' and 'meri email link h kya yh puch rha hu?' are treated as account status checks, not URLs."""
+    from agent.loop import run_agent_turn
+
+    with patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock, return_value=(True, "neeravmishraoppo@gmail.com")):
+        res1 = await run_agent_turn(1234828592, "meri email link h?")
+        assert "check_integrations_status" in res1["tool_calls_executed"]
+        assert "connected hai (neeravmishraoppo@gmail.com)" in res1["reply"]
+        assert "mail.google.com" not in res1["reply"]
+
+        res2 = await run_agent_turn(1234828592, "meri email link h kya yh puch rha hu?")
+        assert "check_integrations_status" in res2["tool_calls_executed"]
+        assert "connected hai (neeravmishraoppo@gmail.com)" in res2["reply"]
+        assert "mail.google.com" not in res2["reply"]
+
+

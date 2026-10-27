@@ -1348,7 +1348,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "message": msg
                 }
 
-            if s_key in ("google", "gmail", "calendar", "drive"):
+            if s_key in ("google", "gmail", "calendar", "drive", "email", "mail", "gmeet"):
                 google_conn = False
                 google_email = None
                 try:
