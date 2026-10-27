@@ -330,7 +330,7 @@ async def send_telegram_message(chat_id: int, text_content: str) -> bool:
     if not token or not chat_id:
         return False
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={
@@ -421,9 +421,12 @@ async def morning_briefing_job():
 
 async def morning_briefing_loop():
     """Background monitoring loop running inside FastAPI lifespan."""
+    # Delay initial execution so server startup and web requests are blazing fast
+    await asyncio.sleep(60)
     while True:
         try:
             await morning_briefing_job()
         except Exception as exc:
             print("[morning_briefing_loop] cycle error:", repr(exc))
         await asyncio.sleep(60)  # Check every 60 seconds
+
