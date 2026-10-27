@@ -517,7 +517,28 @@ async def chat_message(
         return ChatResponse(**res)
 
 
+@router.get("/chat/history", summary="Get synchronized conversation history")
+async def get_chat_history_endpoint(
+    chat_id: int = Depends(get_current_chat_id),
+    limit: int = 30
+):
+    """
+    Returns the real-time persistent chat history for the user from PostgreSQL.
+    Enables seamless real-time synchronization across Chrome, Edge, Mobile, and Telegram.
+    """
+    import db
+    db.ensure_user(chat_id)
+    history = db.get_recent_chat_history(chat_id, limit=limit)
+
+    return {
+        "chat_id": chat_id,
+        "count": len(history),
+        "messages": history
+    }
+
+
 # ---------- 3. Voice Note Transcription & Parsing ----------
+
 
 @router.post("/chat/voice", summary="Upload Voice Note & Parse Actions")
 async def chat_voice(

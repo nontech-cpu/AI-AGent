@@ -86,3 +86,15 @@ def test_telegram_webhook_deduplication(client: TestClient):
         assert res2.status_code == 200
         # Should NOT process again
         assert mock_handle.call_count == 1
+
+
+def test_chat_history_synchronization_endpoint(client: TestClient):
+    """Verifies that GET /api/v1/chat/history returns the user's persistent chat history for cross-browser sync."""
+    chat_id = 998877110
+    res = client.get(f"/api/v1/chat/history?chat_id={chat_id}&limit=10")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["chat_id"] == chat_id
+    assert "messages" in data
+    assert isinstance(data["messages"], list)
+
