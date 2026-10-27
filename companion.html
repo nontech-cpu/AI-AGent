@@ -1644,6 +1644,40 @@
         return;
       }
 
+      // 1. Immediately close modal and reset form (0ms latency)
+      closeModals();
+      document.getElementById('newRemTitle').value = '';
+
+      // 2. Optimistic UI update
+      const optId = 'opt_' + Date.now();
+      const optRem = {
+        id: optId,
+        title: title,
+        due_date: date,
+        due_time: time,
+        category: cat,
+        completed: false
+      };
+
+      const cacheKey = `memorae_reminders_${currentChatId}_all`;
+      let cachedRems = [];
+      try {
+        cachedRems = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+      } catch (e) {
+        cachedRems = [];
+      }
+      cachedRems.unshift(optRem);
+      localStorage.setItem(cacheKey, JSON.stringify(cachedRems));
+
+      // 3. Render immediately
+      if (activeTab === 'reminders') {
+        const container = document.getElementById('remindersListContainer');
+        if (container) container.innerHTML = renderRemindersHtml(cachedRems);
+      } else {
+        switchNavTab('reminders');
+      }
+
+      // 4. Background network sync
       try {
         const res = await fetch(`/api/v1/reminders?chat_id=${currentChatId}`, {
           method: 'POST',
@@ -1651,14 +1685,24 @@
           body: JSON.stringify({ title, due_date: date, due_time: time, category: cat })
         });
         if (res.ok) {
-          closeModals();
-          document.getElementById('newRemTitle').value = '';
           loadReminders('all');
           loadDashboardData();
         } else {
+          cachedRems = cachedRems.filter(r => r.id !== optId);
+          localStorage.setItem(cacheKey, JSON.stringify(cachedRems));
+          if (activeTab === 'reminders') {
+            const container = document.getElementById('remindersListContainer');
+            if (container) container.innerHTML = renderRemindersHtml(cachedRems);
+          }
           alert('Failed to save reminder.');
         }
       } catch (err) {
+        cachedRems = cachedRems.filter(r => r.id !== optId);
+        localStorage.setItem(cacheKey, JSON.stringify(cachedRems));
+        if (activeTab === 'reminders') {
+          const container = document.getElementById('remindersListContainer');
+          if (container) container.innerHTML = renderRemindersHtml(cachedRems);
+        }
         alert('Error saving reminder: ' + err.message);
       }
     }
@@ -2011,12 +2055,19 @@
 
 
 
-        // Auto-refresh dashboard & sections because chat actions modify database
+        // Auto-refresh dashboard & invalidate stale caches so chat actions immediately reflect in sections
+        try {
+          ['all', 'today', 'upcoming'].forEach(s => {
+            localStorage.removeItem(`memorae_reminders_${currentChatId}_${s}`);
+          });
+          localStorage.removeItem(`memorae_lists_${currentChatId}`);
+        } catch (e) {}
+
         loadDashboardData();
-        if (activeTab === 'reminders') loadReminders('all');
-        if (activeTab === 'calendar') loadCalendarEvents();
-        if (activeTab === 'lists') loadUserLists();
-        if (activeTab === 'tasks') loadTasksTab(currentKanbanCol);
+        loadReminders('all');
+        loadUserLists();
+        loadCalendarEvents();
+        loadTasksTab(currentKanbanCol);
       } catch (err) {
         botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div>Could not connect to backend server.';
       } finally {
@@ -2131,12 +2182,41 @@
       const itemsRaw = (document.getElementById('listItemsInput').value || '').trim();
       const items = itemsRaw ? itemsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
 
-      const submitBtn = document.getElementById('btnSubmitNewList');
-      if (submitBtn) {
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Creating...';
+      // 1. Immediately close modal & reset inputs (0ms UI latency)
+      closeModals();
+      const nameEl = document.getElementById('listNameInput');
+      if (nameEl) nameEl.value = '';
+      const itemsEl = document.getElementById('listItemsInput');
+      if (itemsEl) itemsEl.value = '';
+
+      // 2. Optimistic UI: Prepend to local cache immediately
+      const optId = 'opt_' + Date.now();
+      const optList = {
+        id: optId,
+        name: name,
+        category: category,
+        items: items.map((it, idx) => ({ id: `opt_it_${idx}`, title: it, quantity: null, checked: false }))
+      };
+
+      const cacheKey = `memorae_lists_${currentChatId}`;
+      let cachedLists = [];
+      try {
+        cachedLists = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+      } catch (e) {
+        cachedLists = [];
+      }
+      cachedLists.push(optList);
+      localStorage.setItem(cacheKey, JSON.stringify(cachedLists));
+
+      // 3. Immediately switch tab & render list
+      switchNavTab('lists');
+      const container = document.getElementById('userListsContainer');
+      if (container) {
+        container.innerHTML = renderListsHtml(cachedLists);
+        container.scrollIntoView({ behavior: 'smooth' });
       }
 
+      // 4. Background network sync
       try {
         const res = await fetch(`/api/v1/lists?chat_id=${currentChatId}`, {
           method: 'POST',
@@ -2144,42 +2224,40 @@
           body: JSON.stringify({ name, category, items })
         });
         if (res.ok) {
-          closeModals();
           const newListData = await res.json().catch(() => null);
           if (newListData && newListData.list_id) {
-            const cacheKey = `memorae_lists_${currentChatId}`;
-            try {
-              const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-              cached.push({
+            const idx = cachedLists.findIndex(l => l.id === optId);
+            if (idx !== -1) {
+              cachedLists[idx] = {
                 id: newListData.list_id,
                 name: newListData.name,
                 category: newListData.category,
                 items: newListData.items || []
-              });
-              localStorage.setItem(cacheKey, JSON.stringify(cached));
-              const container = document.getElementById('userListsContainer');
-              if (container) container.innerHTML = renderListsHtml(cached);
-            } catch (e) {}
+              };
+              localStorage.setItem(cacheKey, JSON.stringify(cachedLists));
+              if (container && activeTab === 'lists') {
+                container.innerHTML = renderListsHtml(cachedLists);
+              }
+            }
           }
-          const nameEl = document.getElementById('listNameInput');
-          if (nameEl) nameEl.value = '';
-          const itemsEl = document.getElementById('listItemsInput');
-          if (itemsEl) itemsEl.value = '';
-          switchNavTab('lists');
-          await loadUserLists();
-          const container = document.getElementById('userListsContainer');
-          if (container) container.scrollIntoView({ behavior: 'smooth' });
+          loadUserLists();
+          loadDashboardData();
         } else {
+          cachedLists = cachedLists.filter(l => l.id !== optId);
+          localStorage.setItem(cacheKey, JSON.stringify(cachedLists));
+          if (container && activeTab === 'lists') {
+            container.innerHTML = renderListsHtml(cachedLists);
+          }
           const err = await res.json().catch(() => ({}));
           alert(err.detail || 'Failed to create list');
         }
       } catch (err) {
-        alert('Error creating list: ' + err.message);
-      } finally {
-        if (submitBtn) {
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Create List';
+        cachedLists = cachedLists.filter(l => l.id !== optId);
+        localStorage.setItem(cacheKey, JSON.stringify(cachedLists));
+        if (container && activeTab === 'lists') {
+          container.innerHTML = renderListsHtml(cachedLists);
         }
+        alert('Error creating list: ' + err.message);
       }
     }
 
@@ -2302,6 +2380,16 @@
 
     // Background live-sync polling every 3.5 seconds
     setInterval(loadChatHistory, 3500);
+
+    // Background live-sync polling for reminders, lists, calendar & dashboard every 8 seconds
+    setInterval(() => {
+      if (document.hidden) return;
+      loadDashboardData();
+      if (activeTab === 'reminders') loadReminders('all');
+      if (activeTab === 'lists') loadUserLists();
+      if (activeTab === 'tasks') loadTasksTab(currentKanbanCol);
+      if (activeTab === 'calendar') loadCalendarEvents();
+    }, 8000);
   </script>
 
 
