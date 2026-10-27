@@ -9,8 +9,10 @@ Provides 100% free, reliable, no-auth-required live web utilities:
 import os
 import re
 import ast
+import html
 import operator
 import httpx
+from urllib.parse import unquote
 from typing import Dict, Any, Optional, Tuple
 
 WEATHER_CODES = {
@@ -562,3 +564,108 @@ def calculate(expression: str) -> Dict[str, Any]:
             "success": False,
             "message": f"Calculation error: {repr(exc)}"
         }
+
+
+# ==============================================================================
+# 5. AUTONOMOUS LIVE WEB SEARCH (ChatGPT / Gemini Real-Time Grounding)
+# ==============================================================================
+
+async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
+    """
+    Performs autonomous live internet web search for real-world facts, current events,
+    travel tolls, routes, distances, news, places, and documentation.
+    100% free, no API key required, with multi-source fallback.
+    """
+    clean_q = (query or "").strip()
+    if not clean_q:
+        return {
+            "status": "error",
+            "success": False,
+            "query": "",
+            "count": 0,
+            "results": [],
+            "message": "Search query cannot be empty."
+        }
+
+    results = []
+    # Primary: DuckDuckGo HTML Search
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": clean_q},
+                headers=headers
+            )
+            if resp.status_code == 200:
+                raw_html = resp.text
+                titles = re.findall(r'<a rel="nofollow" class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
+                snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
+                for (u, t), s in zip(titles[:max_results], snippets[:max_results]):
+                    u_clean = u
+                    if "uddg=" in u:
+                        m = re.search(r"uddg=([^&]+)", u)
+                        if m:
+                            u_clean = unquote(m.group(1))
+                    t_clean = html.unescape(re.sub(r"<[^>]+>", "", t)).strip()
+                    s_clean = html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+                    if t_clean and s_clean:
+                        results.append({
+                            "title": t_clean,
+                            "snippet": s_clean,
+                            "url": u_clean
+                        })
+    except Exception as exc:
+        print("[utilities.search_web] DuckDuckGo HTML search error:", repr(exc))
+
+    # Secondary: DuckDuckGo Instant Answer API Fallback
+    if not results:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(
+                    "https://api.duckduckgo.com/",
+                    params={"q": clean_q, "format": "json", "no_html": "1", "skip_disambig": "1"}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    abstract = data.get("AbstractText")
+                    if abstract:
+                        results.append({
+                            "title": data.get("Heading") or clean_q,
+                            "snippet": abstract,
+                            "url": data.get("AbstractURL") or "https://duckduckgo.com"
+                        })
+                    for r in data.get("RelatedTopics", [])[:3]:
+                        if isinstance(r, dict) and r.get("Text"):
+                            results.append({
+                                "title": r.get("Text")[:60] + "...",
+                                "snippet": r.get("Text"),
+                                "url": r.get("FirstURL") or ""
+                            })
+        except Exception as exc2:
+            print("[utilities.search_web] DuckDuckGo API fallback error:", repr(exc2))
+
+    if results:
+        formatted = "\n\n".join([f"• **{r['title']}**\n{r['snippet']}\nLink: {r['url']}" for r in results[:max_results]])
+        return {
+            "status": "success",
+            "success": True,
+            "query": clean_q,
+            "count": len(results),
+            "results": results[:max_results],
+            "message": f"Found {len(results)} live web search result(s) for '{clean_q}':\n\n{formatted}"
+        }
+    else:
+        return {
+            "status": "success",
+            "success": True,
+            "query": clean_q,
+            "count": 0,
+            "results": [],
+            "message": f"No web search results found for '{clean_q}'. Answer directly using internal reasoning."
+        }
+

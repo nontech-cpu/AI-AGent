@@ -5,8 +5,8 @@ Covers Weather, Currency Conversion, Market Prices (Gold/Crypto), and Math Calcu
 import pytest
 import unittest
 from unittest.mock import patch, MagicMock
-from utilities import calculate, convert_currency, get_market_price, get_weather
-from agent.tools import execute_tool, TOOL_DEFINITIONS, GetWeatherArgs, ConvertCurrencyArgs, GetMarketPriceArgs, CalculateArgs
+from utilities import calculate, convert_currency, get_market_price, get_weather, search_web
+from agent.tools import execute_tool, TOOL_DEFINITIONS, GetWeatherArgs, ConvertCurrencyArgs, GetMarketPriceArgs, CalculateArgs, SearchWebArgs
 
 
 class TestCalculator(unittest.TestCase):
@@ -106,8 +106,20 @@ async def test_agent_tools_dispatch():
     weather_res = await execute_tool(12345, "get_weather", {"city": "Delhi"})
     assert weather_res["status"] == "success"
 
+    # 5. Search web tool
+    web_res = await execute_tool(12345, "search_web", {"query": "Jodhpur to Udaipur bike toll distance"})
+    assert web_res["status"] == "success"
+    assert "results" in web_res
+
 
 def test_tool_definitions_presence():
     tool_names = [t["function"]["name"] for t in TOOL_DEFINITIONS]
-    for required in ["get_weather", "convert_currency", "get_market_price", "calculate"]:
+    for required in ["get_weather", "convert_currency", "get_market_price", "calculate", "search_web"]:
         assert required in tool_names, f"Tool {required} missing from TOOL_DEFINITIONS"
+
+
+@pytest.mark.asyncio
+async def test_search_web_empty_query():
+    res = await search_web("")
+    assert res["status"] == "error"
+    assert res["count"] == 0

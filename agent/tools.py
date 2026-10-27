@@ -187,6 +187,9 @@ class GetMarketPriceArgs(BaseModel):
 class CalculateArgs(BaseModel):
     expression: str = Field(..., description="Math expression or percentage calculation (e.g. '92 * 83.5', '18% of 4500', '(500 + 200) / 4').")
 
+class SearchWebArgs(BaseModel):
+    query: str = Field(..., description="Search query keywords e.g. 'Jodhpur to Udaipur bike toll distance' or 'latest movie release date'.")
+
 
 # -------------------------------------------------------------
 # 2. Tool Definitions for Groq Function Calling
@@ -710,6 +713,23 @@ TOOL_DEFINITIONS = [
                     "expression": {"type": "string", "description": "Math expression or percentage to calculate (e.g. '92 * 86.5' or '18% of 5000')."}
                 },
                 "required": ["expression"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Perform live internet web search for real-time external knowledge, current events, driving routes & highway tolls, places, technical documentation, train/flight status, or general facts not in memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Clean, concise search terms e.g. 'Jodhpur to Udaipur bike toll distance', 'latest budget highlights', 'who is CEO of X'."
+                    }
+                },
+                "required": ["query"]
             }
         }
     }
@@ -2031,6 +2051,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             args = CalculateArgs(**arguments)
             from utilities import calculate
             res = calculate(args.expression)
+            return res
+
+        elif tool_name == "search_web":
+            args = SearchWebArgs(**arguments)
+            from utilities import search_web
+            res = await search_web(args.query)
             return res
 
         else:
