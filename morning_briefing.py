@@ -52,6 +52,20 @@ def detect_user_city(chat_id: int) -> Optional[str]:
                 stop_words = {"home", "house", "apartment", "hostel", "flat", "pg", "hotel", "room", "office", "india", "abroad", "village"}
                 if cand.lower() not in stop_words:
                     return cand.title()
+
+            # 3. Route or Ticket origin e.g. "Route: JODHPUR JN (JU) to ABU ROAD (ABR)"
+            m3 = re.search(r"Route:\s*([A-Za-z]+)\s*(?:JN|CANTT|CITY)?\s*(?:\([A-Z]+\))?\s*to", txt, re.I)
+            if m3:
+                cand = m3.group(1).strip()
+                if cand.lower() not in ("from", "train", "flight"):
+                    return cand.title()
+
+        # Check active ticket in context
+        tkt = get_active_ticket(chat_id)
+        if tkt and tkt.get("route"):
+            m_route = re.search(r"^([A-Za-z]+)\s*(?:JN|CANTT|CITY)?\s*(?:\([A-Z]+\))?\s*to", tkt["route"], re.I)
+            if m_route:
+                return m_route.group(1).strip().title()
     except Exception as exc:
         print("[morning_briefing.detect_user_city] error:", repr(exc))
     return None
@@ -146,9 +160,13 @@ def detect_early_morning_event(chat_id: int, target_date: date, unified_sched: O
                 except Exception:
                     pass
 
-        # 4. Check Reminders for early morning
+        # 4. Check Reminders for early morning travel departures
         rems = unified_sched.get("reminders", [])
         for r in rems:
+            r_title = (r.get("title") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")) or ""
+            # Only treat as early travel wakeup if it explicitly mentions travel/flight/train/airport
+            if not any(k in r_title.lower() for k in ("flight", "train", "airport", "journey", "boarding", "departure")):
+                continue
             r_time = r.get("due_time") if isinstance(r, dict) else (r[3] if len(r) > 3 else None)
             if r_time:
                 try:
@@ -156,12 +174,12 @@ def detect_early_morning_event(chat_id: int, target_date: date, unified_sched: O
                     r_m = r_time.minute if hasattr(r_time, "minute") else int(str(r_time).split(":")[1])
                     if r_h < 8 or (r_h == 8 and r_m < 30):
                         dt_r = datetime.combine(target_date, dtime(r_h, r_m), tzinfo=IST)
-                        trigger_dt = dt_r - timedelta(hours=1.0)
-                        r_title = r.get("title") if isinstance(r, dict) else (r[1] if len(r) > 1 else "Task")
+                        is_flight = "flight" in r_title.lower() or "air" in r_title.lower()
+                        trigger_dt = dt_r - timedelta(hours=2.0 if is_flight else 1.5)
                         return {
-                            "is_travel": False,
-                            "is_flight": False,
-                            "kind": "reminder",
+                            "is_travel": True,
+                            "is_flight": is_flight,
+                            "kind": "flight" if is_flight else "train",
                             "title": r_title,
                             "event_time": dt_r,
                             "trigger_time": trigger_dt,
@@ -350,20 +368,28 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
     early_event = detect_early_morning_event(chat_id, now_ist.date(), unified_sched)
 
     should_send = False
+    active_early = None
     if early_event:
         # If early event: trigger between trigger_time and event_time + 30 mins
         trig_time = early_event["trigger_time"]
         ev_time = early_event["event_time"]
         if now_ist >= trig_time and now_ist <= ev_time + timedelta(minutes=30):
             should_send = True
-    else:
-        # Standard Morning Briefing: Triggers at 8:00 AM IST (window between 08:00 AM and 10:30 AM)
-        if now_ist.hour >= 8 and now_ist.hour < 11:
+            active_early = early_event
+        elif now_ist.hour >= 8 and now_ist.hour < 22:
+            # Fallback: If early wake-up window passed but briefing was never sent today,
+            # send standard daily briefing so user isn't left without their daily overview!
             should_send = True
+            active_early = None
+    else:
+        # Standard Morning Briefing: Triggers from 08:00 AM IST onwards (until 22:00 PM if not sent)
+        if now_ist.hour >= 8 and now_ist.hour < 22:
+            should_send = True
+            active_early = None
 
     if should_send:
         msg_text, trigger_kind = await build_morning_briefing_message(
-            chat_id, user_info, now_ist.date(), early_event=early_event, unified_sched=unified_sched
+            chat_id, user_info, now_ist.date(), early_event=active_early, unified_sched=unified_sched
         )
         sent_ok = await send_telegram_message(chat_id, msg_text)
         if sent_ok:
