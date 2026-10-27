@@ -297,8 +297,19 @@ def get_pending_reminders(now):
 
 
 def get_upcoming_reminders(chat_id, now):
-    # Sirf aane wale reminders (abhi ke baad ke), purane nahi
     with engine.connect() as conn:
+        if engine.dialect.name == "sqlite":
+            return conn.execute(
+                text(
+                    "SELECT r.remind_at, r.label, m.category, m.title, m.amount, m.due_time "
+                    "FROM reminders r "
+                    "JOIN memory_items m ON m.id = r.item_id "
+                    "JOIN users u ON u.id = m.user_id "
+                    "WHERE u.telegram_chat_id = :c AND NOT r.sent AND r.remind_at > :now "
+                    "ORDER BY r.remind_at LIMIT 30"
+                ),
+                {"c": chat_id, "now": now},
+            ).fetchall()
         return conn.execute(
             text(
                 "SELECT r.remind_at, r.label, m.category, m.title, m.amount, m.due_time "
@@ -311,6 +322,7 @@ def get_upcoming_reminders(chat_id, now):
             ),
             {"c": chat_id, "now": now},
         ).fetchall()
+
 
 
 def mark_sent(reminder_id):

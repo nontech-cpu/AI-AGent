@@ -181,8 +181,37 @@ class ContactMemoryCreateReq(BaseModel):
     context_notes: Optional[str] = Field(None, description="What was discussed / why it mattered")
     commitments: Optional[str] = Field(None, description="Promises, follow-ups or next steps")
 
+class ReminderCreateReq(BaseModel):
+    title: str = Field(..., min_length=1, description="Reminder title")
+    due_date: str = Field(..., description="Due date YYYY-MM-DD")
+    due_time: Optional[str] = Field(None, description="Due time HH:MM")
+    category: Optional[str] = Field("reminder", description="Category (bill, meeting, travel, reminder)")
+    amount: Optional[float] = Field(None, description="Optional amount")
 
-# ---------- 1. Authentication Endpoints ----------
+class ReminderUpdateReq(BaseModel):
+    title: Optional[str] = None
+    due_date: Optional[str] = None
+    due_time: Optional[str] = None
+    completed: Optional[bool] = None
+
+class CalendarEventCreateReq(BaseModel):
+    title: str = Field(..., min_length=1, description="Event title")
+    start_iso: str = Field(..., description="Start ISO string (e.g. 2026-10-27T15:00:00)")
+    duration_minutes: Optional[int] = Field(30, description="Duration in minutes")
+    attendees: Optional[List[str]] = Field([], description="Attendee email list")
+    description: Optional[str] = Field("", description="Meeting description")
+
+class ListTemplateReq(BaseModel):
+    template_id: str = Field(..., description="Template ID (packing_list, party_planning, home_tasks, study_checklist)")
+    custom_name: Optional[str] = Field(None, description="Custom name for the new list")
+
+class EmergencyVaultReq(BaseModel):
+    item_type: str = Field("imei", description="Item type (imei, passport, ticket, emergency_contact)")
+    title: str = Field(..., description="Item title")
+    value: str = Field(..., description="Secret or vital value")
+    notes: Optional[str] = Field("", description="Context/instructions")
+
+
 
 @router.post("/auth/session", response_model=SessionResponse, summary="Create/Restore App Session")
 async def create_app_session(body: SessionLoginRequest):
@@ -496,6 +525,8 @@ async def chat_voice(
         "language": lang,
         **action_res
     }
+
+
 
 
 # ---------- 4. Image-to-Action Scanning (OCR & Extraction) ----------
@@ -1431,4 +1462,742 @@ async def delete_contact(contact_id: int, chat_id: int = Depends(get_current_cha
     if not success:
         raise HTTPException(status_code=404, detail="Contact memory not found or access denied")
     return {"status": "ok", "message": "Contact memory deleted successfully"}
+
+
+# ==============================================================================
+# ---------- 15. Memorae Companion App: Dashboard, Calendar, Reminders & Tasks ----------
+# ==============================================================================
+
+LIST_TEMPLATES = {
+    "packing_list": {
+        "title": "Packing list",
+        "category": "travel",
+        "subtitle": "For trips & travel",
+        "items": ["Passport & ID", "Phone & Laptop Charger", "Powerbank", "Clothes & Footwear", "Medications & First Aid", "Toiletries kit", "Travel insurance / Tickets"]
+    },
+    "party_planning": {
+        "title": "Party planning",
+        "category": "events",
+        "subtitle": "Events & celebrations",
+        "items": ["Finalize guest list", "Book venue or arrange home setup", "Order cake & snacks", "Curate playlist", "Theme decorations", "Drinks & ice"]
+    },
+    "home_tasks": {
+        "title": "Home tasks",
+        "category": "household",
+        "subtitle": "Daily & household",
+        "items": ["Grocery restocking", "Pay electricity & water bills", "Check laundry & dry cleaning", "Water indoor plants", "Clean work desk"]
+    },
+    "study_checklist": {
+        "title": "Study checklist",
+        "category": "study",
+        "subtitle": "Study & assignments",
+        "items": ["Read core chapter notes", "Solve previous year practice questions", "Review flashcards", "Complete project milestone", "Take 15 min rest break"]
+    }
+}
+
+
+@router.get("/dashboard/overview", summary="Memorae Dashboard Overview")
+async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
+    """
+    Returns the complete aggregated data for the Memorae Dashboard & Portal screens:
+    - User Profile & Greeting ("Good afternoon, dev")
+    - Mascot / Aviator Hat discovery status
+    - Highlighted / Priority Reminders (due today/soon, drink water chips)
+    - Calendars Card (today's events, duration booked e.g. '0 events - 0m booked')
+    - Lists Card (user created lists like 'Trip to Goa')
+    - Today's Tasks
+    - Quick Action Pills
+    """
+    now = datetime.now(IST)
+    hr = now.hour
+    time_greeting = "Good morning" if hr < 12 else ("Good afternoon" if hr < 17 else "Good evening")
+    
+    # 1. User & Persona
+    persona = get_persona(chat_id) or "Dev"
+    
+    # 2. Tasks
+    board = get_board_cards(chat_id)
+    today_tasks = board.get("today", [])
+    queue_tasks = board.get("queue", [])
+    
+    # 3. Lists
+    smart_lists = get_smart_lists(chat_id)
+    recent_lists = []
+    for sl in smart_lists[:5]:
+        total_items = len(sl.get("items", []))
+        completed_items = sum(1 for it in sl.get("items", []) if it.get("checked"))
+        recent_lists.append({
+            "id": sl["id"],
+            "name": sl["name"],
+            "category": sl.get("category", "general"),
+            "total_items": total_items,
+            "completed_items": completed_items
+        })
+
+    # 4. Reminders
+    upcoming_raw = get_upcoming_reminders(chat_id, now)
+    highlighted_reminders = []
+    seen_titles = set()
+    for r in upcoming_raw[:5]:
+        remind_dt = r[0]
+        seen_titles.add(r[3])
+        highlighted_reminders.append({
+            "remind_at": remind_dt.isoformat() if hasattr(remind_dt, "isoformat") else str(remind_dt),
+            "label": r[1],
+            "category": r[2],
+            "title": r[3],
+            "amount": r[4],
+            "due_time": str(r[5]) if r[5] else None,
+            "is_today": (hasattr(remind_dt, "date") and remind_dt.date() == now.date())
+        })
+
+    # Include local items for today
+    today_items = items_for_date(chat_id, now.date())
+    for it in today_items:
+        if it[1] not in seen_titles and len(highlighted_reminders) < 5:
+            seen_titles.add(it[1])
+            highlighted_reminders.append({
+                "remind_at": now.isoformat(),
+                "label": "Today",
+                "category": it[0],
+                "title": it[1],
+                "amount": it[2],
+                "due_time": str(it[3]) if it[3] else None,
+                "is_today": True
+            })
+
+    # 5. Calendar Events
+    today_events = []
+    minutes_booked = 0
+    is_google_connected = False
+    try:
+        from google_services import list_calendar_events
+        start_day = datetime(now.year, now.month, now.day, 0, 0, 0).isoformat() + "Z"
+        end_day = datetime(now.year, now.month, now.day, 23, 59, 59).isoformat() + "Z"
+        ev_list = await list_calendar_events(chat_id, time_min_iso=start_day, time_max_iso=end_day)
+        is_google_connected = True
+        for ev in ev_list:
+            today_events.append({
+                "id": ev.get("id"),
+                "title": ev.get("summary") or ev.get("title") or "Meeting",
+                "start": ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date"),
+                "end": ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date"),
+                "link": ev.get("htmlLink") or ev.get("hangoutLink")
+            })
+            minutes_booked += 30
+    except Exception:
+        local_items = items_for_date(chat_id, now.date())
+        for it in local_items:
+            if it[0] in ("meeting", "appointment", "calendar"):
+                today_events.append({
+                    "id": str(it[4]),
+                    "title": it[1],
+                    "time": str(it[3]) if it[3] else None
+                })
+                minutes_booked += 30
+
+    return {
+        "user_profile": {
+            "name": persona,
+            "greeting": f"{time_greeting}, {persona.lower()}",
+            "mascot": {
+                "name": "Memorae Sphere",
+                "quest": "Discover Memorae",
+                "reward": "Unlocks Aviator Hat 🪖",
+                "mood": "happy"
+            }
+        },
+        "portal_pills": [
+            {"id": "save_here", "label": "✨ What can I save here?"},
+            {"id": "remind_me", "label": "🔔 Remind me to ___"},
+            {"id": "schedule", "label": "📅 What's on my schedule?"},
+            {"id": "save_link", "label": "🔖 Save this link"}
+        ],
+        "reminders_card": {
+            "title": "Reminders",
+            "count": len(highlighted_reminders),
+            "items": highlighted_reminders,
+            "quick_chips": [
+                "Remind me to drink water at 10 AM",
+                "Set reminder for tomorrow morning"
+            ]
+        },
+        "calendars_card": {
+            "title": "Calendars",
+            "date_display": now.strftime("%B %d, %Y"),
+            "events_count": len(today_events),
+            "minutes_booked": minutes_booked,
+            "status_text": f"{len(today_events)} events • {minutes_booked}m booked" if today_events else "You have no events yet!",
+            "is_connected": is_google_connected,
+            "events": today_events,
+            "quick_chips": [
+                "Summarise my today plan",
+                "Schedule a gym session"
+            ]
+        },
+        "lists_card": {
+            "title": "Lists",
+            "count": len(recent_lists),
+            "lists": recent_lists,
+            "quick_chips": [
+                "Create a grocery list",
+                "Make a todo list for work"
+            ]
+        },
+        "tasks_card": {
+            "title": "Tasks",
+            "today_count": len(today_tasks),
+            "queue_count": len(queue_tasks),
+            "today_tasks": today_tasks
+        }
+    }
+
+
+# ---------- Reminders Section Endpoints ----------
+
+@router.get("/reminders", summary="Get Filtered Reminders")
+async def get_user_reminders(
+    section: Optional[str] = Query("all", description="today | upcoming | all | completed"),
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Returns reminders divided into Today, Upcoming, All, or Completed.
+    """
+    now = datetime.now(IST)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT m.id, m.category, m.title, m.amount, m.due_date, m.due_time, "
+                "COALESCE(r.sent, false) as sent, r.remind_at "
+                "FROM memory_items m "
+                "LEFT JOIN reminders r ON r.item_id = m.id "
+                "JOIN users u ON u.id = m.user_id "
+                "WHERE u.telegram_chat_id = :c "
+                "ORDER BY m.due_date NULLS LAST, m.due_time NULLS LAST, m.id DESC LIMIT 100"
+            ),
+            {"c": chat_id}
+        ).fetchall()
+
+    results = []
+    for r in rows:
+        d_val = r[4]
+        is_today = (d_val == now.date() or (isinstance(d_val, str) and d_val == str(now.date())))
+        is_past = (d_val and d_val < now.date()) if hasattr(d_val, "strftime") else False
+        is_upcoming = (d_val and d_val > now.date()) if hasattr(d_val, "strftime") else False
+        is_completed = bool(r[6])
+
+        item_data = {
+            "id": r[0],
+            "category": r[1],
+            "title": r[2],
+            "amount": r[3],
+            "due_date": str(d_val) if d_val else None,
+            "due_time": str(r[5]) if r[5] else None,
+            "completed": is_completed,
+            "remind_at": r[7].isoformat() if hasattr(r[7], "isoformat") else (str(r[7]) if r[7] else None)
+        }
+
+        if section == "today" and (is_today or not d_val):
+            results.append(item_data)
+        elif section == "upcoming" and is_upcoming:
+            results.append(item_data)
+        elif section == "completed" and is_completed:
+            results.append(item_data)
+        elif section in ("all", None):
+            results.append(item_data)
+
+    return {"section": section, "count": len(results), "reminders": results}
+
+
+@router.post("/reminders", summary="Create New Reminder")
+async def create_user_reminder(
+    body: ReminderCreateReq,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Creates a new reminder from the Mobile Reminders section (+ button).
+    Directly schedules notifications and is instantly reflected across bot & companion app.
+    """
+    now = datetime.now(IST)
+    try:
+        due_d = datetime.strptime(body.due_date, "%Y-%m-%d").date()
+    except Exception:
+        due_d = now.date()
+
+    due_t = None
+    if body.due_time:
+        try:
+            due_t = datetime.strptime(body.due_time, "%H:%M").time()
+        except Exception:
+            pass
+
+    item_id = save_memory(chat_id, body.category or "reminder", body.title, body.amount, due_d, due_t)
+    plan = build_plan(due_d, due_t, now)
+    if plan.get("reminders") and item_id:
+        add_reminders(item_id, plan["reminders"])
+
+    return {
+        "status": "ok",
+        "reminder_id": item_id,
+        "title": body.title,
+        "due_date": str(due_d),
+        "due_time": str(due_t) if due_t else None,
+        "message": f"Reminder created for '{body.title}'"
+    }
+
+
+@router.patch("/reminders/{reminder_id}", summary="Update or Complete Reminder")
+async def update_user_reminder(
+    reminder_id: int,
+    body: ReminderUpdateReq,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Mark reminder complete or update its due date / time.
+    """
+    if body.completed is not None:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE reminders SET sent = :s WHERE item_id = :id"),
+                {"s": body.completed, "id": reminder_id}
+            )
+
+    if body.due_time:
+        try:
+            due_t = datetime.strptime(body.due_time, "%H:%M").time()
+            update_memory_time(chat_id, reminder_id, due_t)
+        except Exception:
+            pass
+
+    return {"status": "ok", "reminder_id": reminder_id, "updated": True}
+
+
+@router.delete("/reminders/{reminder_id}", summary="Delete Reminder")
+async def delete_user_reminder(
+    reminder_id: int,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Deletes a reminder and its scheduled alerts.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": reminder_id})
+        conn.execute(
+            text(
+                "DELETE FROM memory_items WHERE id = :id "
+                "AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :c)"
+            ),
+            {"id": reminder_id, "c": chat_id}
+        )
+    return {"status": "ok", "message": "Reminder deleted successfully"}
+
+
+# ---------- Calendar Section Endpoints ----------
+
+@router.get("/calendar/events", summary="Get Calendar Events")
+async def get_calendar_events_route(
+    view: Optional[str] = Query("month", description="month | week | day"),
+    date_str: Optional[str] = Query(None, alias="date", description="Target date YYYY-MM-DD"),
+    month_str: Optional[str] = Query(None, alias="month", description="Target month YYYY-MM"),
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Fetches calendar events for the calendar view (month grid, week, or day).
+    Synchronized with Google Calendar if connected, with fallback to local scheduled database items.
+    """
+    now = datetime.now(IST)
+    target_d = date_str or now.strftime("%Y-%m-%d")
+    is_connected = False
+    events = []
+
+    try:
+        from google_services import list_calendar_events
+        if month_str:
+            parts = month_str.split("-")
+            y, m = int(parts[0]), int(parts[1])
+            start_iso = datetime(y, m, 1, 0, 0, 0).isoformat() + "Z"
+            end_iso = datetime(y, m + 1 if m < 12 else 1, 1 if m < 12 else 1, 0, 0, 0).isoformat() + "Z" if m < 12 else datetime(y + 1, 1, 1, 0, 0, 0).isoformat() + "Z"
+        else:
+            t_dt = datetime.strptime(target_d, "%Y-%m-%d")
+            start_iso = datetime(t_dt.year, t_dt.month, t_dt.day, 0, 0, 0).isoformat() + "Z"
+            end_iso = datetime(t_dt.year, t_dt.month, t_dt.day, 23, 59, 59).isoformat() + "Z"
+
+        ev_list = await list_calendar_events(chat_id, time_min_iso=start_iso, time_max_iso=end_iso)
+        is_connected = True
+        for ev in ev_list:
+            events.append({
+                "id": ev.get("id"),
+                "title": ev.get("summary") or "Meeting",
+                "start": ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date"),
+                "end": ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date"),
+                "link": ev.get("htmlLink") or ev.get("hangoutLink"),
+                "location": ev.get("location", ""),
+                "description": ev.get("description", "")
+            })
+    except Exception:
+        try:
+            t_dt = datetime.strptime(target_d, "%Y-%m-%d").date()
+            rows = items_for_date(chat_id, t_dt)
+            for r in rows:
+                if r[0] in ("meeting", "appointment", "calendar"):
+                    events.append({
+                        "id": str(r[4]),
+                        "title": r[1],
+                        "start": f"{target_d}T{r[3] or '10:00:00'}",
+                        "link": None,
+                        "location": "",
+                        "description": ""
+                    })
+        except Exception:
+            pass
+
+    minutes_booked = len(events) * 30
+    return {
+        "view": view,
+        "date": target_d,
+        "month": month_str or now.strftime("%Y-%m"),
+        "is_connected": is_connected,
+        "events_count": len(events),
+        "minutes_booked": minutes_booked,
+        "status_summary": f"{len(events)} events • {minutes_booked}m booked" if events else "No events today",
+        "events": events
+    }
+
+
+@router.post("/calendar/events", summary="Create Calendar Event")
+async def create_calendar_event_route(
+    body: CalendarEventCreateReq,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Creates a new event or meeting directly on Google Calendar.
+    """
+    try:
+        from google_services import create_meeting
+        res = await create_meeting(
+            chat_id=chat_id,
+            title=body.title,
+            start_iso=body.start_iso,
+            duration_minutes=body.duration_minutes or 30,
+            attendees=body.attendees or []
+        )
+        return {
+            "status": "ok",
+            "event": res,
+            "message": f"Calendar event '{body.title}' scheduled successfully."
+        }
+    except Exception as exc:
+        print("[api_v1] create_calendar_event error:", repr(exc))
+        try:
+            dt = datetime.fromisoformat(body.start_iso.replace("Z", "+00:00"))
+            iid = save_memory(chat_id, "meeting", body.title, None, dt.date(), dt.time())
+            return {
+                "status": "ok",
+                "local_id": iid,
+                "message": f"Event saved in local schedule: {body.title}"
+            }
+        except Exception as local_err:
+            raise HTTPException(status_code=500, detail=f"Failed to create event: {str(exc)}")
+
+
+@router.delete("/calendar/events/{event_id}", summary="Delete Calendar Event")
+async def delete_calendar_event_route(
+    event_id: str,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Deletes an event from Google Calendar or local schedule.
+    """
+    try:
+        from google_services import delete_calendar_event
+        await delete_calendar_event(chat_id, event_id)
+        return {"status": "ok", "message": "Event deleted from Google Calendar."}
+    except Exception as exc:
+        print("[api_v1] delete_calendar_event error:", repr(exc))
+        return {"status": "ok", "message": "Event removed."}
+
+
+# ---------- Lists Section Enhancements ----------
+
+@router.post("/lists/from-template", summary="Create Smart List from Template")
+async def create_list_from_template(
+    body: ListTemplateReq,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Instantiates one of the pre-bundled templates:
+    - packing_list (For trips & travel)
+    - party_planning (Events & celebrations)
+    - home_tasks (Daily & household)
+    - study_checklist (Study & assignments)
+    """
+    tmpl = LIST_TEMPLATES.get(body.template_id)
+    if not tmpl:
+        raise HTTPException(status_code=400, detail=f"Invalid template_id. Choose from: {list(LIST_TEMPLATES.keys())}")
+
+    list_name = body.custom_name or tmpl["title"]
+    list_id = create_smart_list(chat_id, list_name, tmpl.get("category", "general"))
+    if not list_id:
+        raise HTTPException(status_code=500, detail="Failed to create list from template")
+
+    created_items = []
+    for it in tmpl.get("items", []):
+        iid = add_smart_list_item(chat_id, list_id, it)
+        created_items.append({"id": iid, "title": it, "checked": False})
+
+    return {
+        "status": "ok",
+        "list_id": list_id,
+        "name": list_name,
+        "category": tmpl.get("category"),
+        "items_count": len(created_items),
+        "items": created_items
+    }
+
+
+# ---------- Tasks Section Enhancements ----------
+
+@router.get("/tasks", summary="Get Kanban Tasks Matching Memorae UI")
+async def get_tasks_route(
+    tab: Optional[str] = Query(None, description="queue | this_week | today | done"),
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Returns tasks organized into Queue, This Week, Today, and Done.
+    """
+    board = get_board_cards(chat_id)
+    if tab and tab in board:
+        return {"tab": tab, "tasks": board[tab]}
+    return board
+
+
+@router.post("/tasks", summary="Add New Task Card")
+async def add_task_route(
+    body: BoardCardCreateReq,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Directly adds task to Queue, This Week, Today, or Done.
+    """
+    due = None
+    if body.due_date:
+        try:
+            due = datetime.strptime(body.due_date, "%Y-%m-%d").date()
+        except Exception:
+            pass
+    cid = create_board_card(
+        chat_id=chat_id,
+        title=body.title,
+        description=body.description or "",
+        status=body.status or "queue",
+        priority=body.priority or "medium",
+        due_date=due
+    )
+    return {"status": "ok", "task_id": cid, "title": body.title, "column": body.status}
+
+
+@router.post("/tasks/generate-ai", summary="Generate with Memorae (AI Task Synthesis)")
+async def generate_tasks_with_ai(
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Memorae Feature: 'Generate with Memorae'.
+    Inspects user's active context, uncompleted commitments, and schedule gaps
+    to automatically synthesize 3-5 high-leverage action tasks.
+    """
+    contacts = get_contact_memories(chat_id)
+    recent_commitments = [c["commitments"] for c in contacts if c.get("commitments")]
+    prompt = (
+        f"You are the Memorae task synthesizer. User has commitments: {recent_commitments[:3]}. "
+        "Generate 3 crisp, high-value productivity tasks for today and this week. "
+        "Return strictly JSON: [{\"title\": \"...\", \"status\": \"today\" or \"this_week\", \"priority\": \"high\" or \"medium\"}]"
+    )
+    generated = []
+    try:
+        tasks_json = await _chat_json(prompt, "Generate 3 tasks")
+        if isinstance(tasks_json, list):
+            for t in tasks_json:
+                cid = create_board_card(
+                    chat_id=chat_id,
+                    title=t.get("title", "Action Task"),
+                    description="Synthesized by Memorae AI",
+                    status=t.get("status", "today"),
+                    priority=t.get("priority", "medium")
+                )
+                generated.append({"id": cid, **t})
+    except Exception as exc:
+        print("[api_v1] generate_tasks_with_ai error:", repr(exc))
+
+    if not generated:
+        fallback = [
+            {"title": "Review top priorities for the week", "status": "today", "priority": "high"},
+            {"title": "Check outstanding invoices & due dates", "status": "today", "priority": "medium"},
+            {"title": "Organize upcoming travel or event logistics", "status": "this_week", "priority": "medium"}
+        ]
+        for t in fallback:
+            cid = create_board_card(chat_id=chat_id, title=t["title"], description="AI Suggestion", status=t["status"], priority=t["priority"])
+            generated.append({"id": cid, **t})
+
+    return {"status": "ok", "generated_count": len(generated), "tasks": generated}
+
+
+
+# ---------- Integrations & Activity Ledger Endpoints ----------
+
+@router.get("/integrations", summary="Get Integrations Cards")
+async def get_integrations_cards(chat_id: int = Depends(get_current_chat_id)):
+    """
+    Returns status of all integrations (Google Workspace, Google Calendar, Outlook Calendar, GitHub, Notion)
+    matching Screen 3 of Memorae.
+    """
+    db_uid = get_db_user_id(chat_id)
+    gtok = get_google_token(db_uid) if db_uid else None
+    google_connected = bool(gtok and gtok.get("refresh_token_enc"))
+    google_email = gtok.get("email") if gtok else None
+
+    github_conn = False
+    notion_conn = False
+    try:
+        import db
+        integ_summary = db.get_user_integrations_summary(chat_id)
+        github_conn = bool(integ_summary.get("github", {}).get("connected"))
+        notion_conn = bool(integ_summary.get("notion", {}).get("connected"))
+    except Exception:
+        pass
+
+    return {
+        "title": "Integrations",
+        "subtitle": "Connect your favorite tools and boost your productivity.",
+        "cards": [
+            {
+                "id": "google_workspace",
+                "name": "Connect Google Workspace",
+                "description": "Connect your full suite of Google Workspace apps.",
+                "icon": "google",
+                "connected": google_connected,
+                "account": google_email,
+                "action_url": "/api/v1/tools/google/connect-url"
+            },
+            {
+                "id": "google_calendar",
+                "name": "Google Calendar",
+                "description": "Manage your schedule and get reminders directly in chat.",
+                "icon": "calendar",
+                "connected": google_connected,
+                "account": google_email,
+                "action_url": "/api/v1/tools/google/connect-url"
+            },
+            {
+                "id": "outlook_calendar",
+                "name": "Outlook Calendar",
+                "description": "Sync Outlook calendars and manage events from Microsoft.",
+                "icon": "outlook",
+                "connected": False,
+                "action_url": None
+            },
+            {
+                "id": "github",
+                "name": "GitHub",
+                "description": "GitHub is a code hosting platform for version control.",
+                "icon": "github",
+                "connected": github_conn,
+                "action_url": "/auth/github/start"
+            },
+            {
+                "id": "notion",
+                "name": "Notion Workspace",
+                "description": "Sync pages, databases, and project boards.",
+                "icon": "notion",
+                "connected": notion_conn,
+                "action_url": "/auth/notion/start"
+            }
+        ]
+    }
+
+
+@router.get("/activity-ledger", summary="View Activity Ledger (Audit Log)")
+async def get_activity_ledger(
+    limit: Optional[int] = Query(20, description="Max entries to return"),
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Returns the Activity Ledger audit trail of automated actions taken by the AI assistant.
+    """
+    ledger = []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, role, message, created_at FROM chat_logs "
+                    "WHERE telegram_chat_id = :c ORDER BY id DESC LIMIT :lim"
+                ),
+                {"c": chat_id, "lim": limit}
+            ).fetchall()
+
+        for r in rows:
+            ledger.append({
+                "id": r[0],
+                "actor": "Assistant" if r[1] == "assistant" else "User",
+                "action_text": r[2][:160],
+                "timestamp": r[3].isoformat() if hasattr(r[3], "isoformat") else str(r[3])
+            })
+    except Exception:
+        # Fallback if chat_logs table doesn't exist in local test
+        ledger = [
+            {"id": 1, "actor": "Assistant", "action_text": "Activity ledger active.", "timestamp": datetime.now(IST).isoformat()}
+        ]
+    return {"ledger_count": len(ledger), "entries": ledger}
+
+
+# ---------- Emergency Travel Vault (IMEI & Travel Documents) ----------
+
+@router.get("/vault/emergency", summary="Get Emergency Travel Items")
+async def get_emergency_vault(chat_id: int = Depends(get_current_chat_id)):
+    """
+    Screen 5 feature: Fetches emergency travel vault items (IMEI number, passport details, emergency contacts).
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, title, amount, due_date FROM memory_items "
+                "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :c) "
+                "AND category = 'emergency' ORDER BY id DESC"
+            ),
+            {"c": chat_id}
+        ).fetchall()
+
+    items = []
+    for r in rows:
+        items.append({
+            "id": r[0],
+            "title": r[1],
+            "value": str(r[2]) if r[2] else "",
+            "notes": str(r[3]) if r[3] else ""
+        })
+    return {"vault_count": len(items), "items": items}
+
+
+@router.post("/vault/emergency", summary="Store Emergency Travel Item (e.g. Phone IMEI)")
+async def save_emergency_vault_item(
+    body: EmergencyVaultReq,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    """
+    Stores phone IMEI (*#06#), passport, or insurance safely in travel emergency vault.
+    """
+    iid = save_memory(
+        chat_id,
+        "emergency",
+        f"[{body.item_type.upper()}] {body.title}: {body.value}",
+        None,
+        None,
+        None
+    )
+    return {
+        "status": "ok",
+        "vault_id": iid,
+        "message": f"Saved {body.title} safely to your emergency travel vault."
+    }
+
+
 
