@@ -130,7 +130,7 @@ async def test_photo_smart_scheduling_confirmation():
 
         # 1. User sends photo WITHOUT explicit caption -> MUST ask confirmation first
         await main.process_photo(chat_id, [{"file_id": "photo_123"}], caption="")
-        assert any("Kya main iska reminder schedule kar du?" in m for m in sent_messages)
+        assert any("Kya main iska reminder schedule kar du" in m for m in sent_messages)
         assert chat_id in main.PENDING_GOOGLE_ACTIONS
         assert main.PENDING_GOOGLE_ACTIONS[chat_id]["kind"] == "save_item"
 
