@@ -435,15 +435,27 @@ async def _execute_user_action(chat_id: int, text_content: str, history: List[Di
             "saved_item": {"id": item_id, "title": title, "due_date": str(due_date), "due_time": str(due_time)}
         }
 
-    # Intent C: Conversational Assistant Chat (Groq LLM)
+    # Intent C: Full Agent Core (Weather, Web search, Notion, GitHub, Hinglish Persona)
+    try:
+        from agent.loop import run_agent_turn
+        agent_res = await run_agent_turn(chat_id, clean)
+        return {
+            "reply": agent_res["reply"],
+            "intent": "chat",
+            "action_taken": bool(agent_res.get("tool_calls_made")),
+            "action_type": "agent_execution" if agent_res.get("tool_calls_made") else "chat_reply"
+        }
+    except Exception as exc:
+        print("[api_v1] run_agent_turn fallback error:", repr(exc))
+
     messages = [
         {
             "role": "system",
             "content": (
-                "You are PeculiarAI, an elite executive personal assistant inspired by Memorae AI. "
-                "You are friendly, proactive, concise, and helpful. You support English, Hindi, and Hinglish. "
-                "Help the user track their day, schedule tasks, plan meetings, and answer queries. "
-                "Keep responses within 2-3 clear sentences."
+                "You are PeculiarAI (Memorae), an elite personal executive assistant. "
+                "CRITICAL: Always speak in friendly Roman Hinglish using Latin letters only (e.g. 'Main badhiya hu bhai! Aap batao?'). "
+                "NEVER output Devanagari script (like 'मैं बहुत बढ़िया हूँ'). "
+                "Keep responses warm, concise, and helpful within 2-3 sentences."
             )
         }
     ]
@@ -455,23 +467,24 @@ async def _execute_user_action(chat_id: int, text_content: str, history: List[Di
     messages.append({"role": "user", "content": clean})
 
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
-                json={"model": os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b", "temperature": 0.4, "messages": messages},
+                json={"model": "openai/gpt-oss-20b", "temperature": 0.4, "messages": messages},
             )
             resp.raise_for_status()
             reply_text = resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as exc:
-        print("[api_v1] chat completion error:", repr(exc))
-        reply_text = "Main aapki reminders, meetings, documents aur daily agenda manage karne me madad karta hu. Aap bataiye kya karna hai?"
+        print("[api_v1] chat completion fallback error:", repr(exc))
+        reply_text = "Main aapka personal AI companion hu! Aap mujhse mausam (weather), reminders, calendar ya kisi bhi sawal ke baare me pooch sakte ho."
 
     return {
         "reply": reply_text,
         "intent": intent,
         "action_taken": False
     }
+
 
 
 @router.post("/chat/message", response_model=ChatResponse, summary="Send Message to Assistant")
@@ -1679,7 +1692,13 @@ async def get_user_reminders(
         ).fetchall()
 
     results = []
+    seen_ids = set()
     for r in rows:
+        item_id = r[0]
+        if item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+
         d_val = r[4]
         is_today = (d_val == now.date() or (isinstance(d_val, str) and d_val == str(now.date())))
         is_past = (d_val and d_val < now.date()) if hasattr(d_val, "strftime") else False
@@ -1687,7 +1706,7 @@ async def get_user_reminders(
         is_completed = bool(r[6])
 
         item_data = {
-            "id": r[0],
+            "id": item_id,
             "category": r[1],
             "title": r[2],
             "amount": r[3],
@@ -1696,6 +1715,7 @@ async def get_user_reminders(
             "completed": is_completed,
             "remind_at": r[7].isoformat() if hasattr(r[7], "isoformat") else (str(r[7]) if r[7] else None)
         }
+
 
         if section == "today" and (is_today or not d_val):
             results.append(item_data)

@@ -1896,11 +1896,16 @@
       if (e.key === 'Enter') sendChatMessage();
     }
 
+    let isSendingChat = false;
     async function sendChatMessage() {
+      if (isSendingChat) return;
       const input = document.getElementById('chatMessageInput');
       const text = input.value.trim();
       if (!text) return;
+
+      isSendingChat = true;
       input.value = '';
+      input.disabled = true;
 
       const chatStream = document.getElementById('chatStream');
 
@@ -1914,7 +1919,7 @@
       // Append placeholder bot bubble
       const botBubble = document.createElement('div');
       botBubble.className = 'chat-bubble bubble-bot';
-      botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div>Thinking...';
+      botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div><span class="thinking-dots">Thinking...</span>';
       chatStream.appendChild(botBubble);
       chatStream.scrollTop = chatStream.scrollHeight;
 
@@ -1933,10 +1938,19 @@
 
         // Auto-refresh dashboard & sections because chat actions modify database
         loadDashboardData();
+        if (activeTab === 'reminders') loadReminders('all');
+        if (activeTab === 'calendar') loadCalendarEvents();
+        if (activeTab === 'lists') loadUserLists();
+        if (activeTab === 'tasks') loadTasksTab(currentKanbanCol);
       } catch (err) {
         botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div>Could not connect to backend server.';
+      } finally {
+        isSendingChat = false;
+        input.disabled = false;
+        input.focus();
       }
     }
+
 
     // Speech Recognition
     function toggleSpeechRecognition() {
