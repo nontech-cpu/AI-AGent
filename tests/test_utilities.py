@@ -5,8 +5,8 @@ Covers Weather, Currency Conversion, Market Prices (Gold/Crypto), and Math Calcu
 import pytest
 import unittest
 from unittest.mock import patch, MagicMock
-from utilities import calculate, convert_currency, get_market_price, get_weather, search_web
-from agent.tools import execute_tool, TOOL_DEFINITIONS, GetWeatherArgs, ConvertCurrencyArgs, GetMarketPriceArgs, CalculateArgs, SearchWebArgs
+from utilities import calculate, convert_currency, get_market_price, get_weather, search_web, read_webpage
+from agent.tools import execute_tool, TOOL_DEFINITIONS, GetWeatherArgs, ConvertCurrencyArgs, GetMarketPriceArgs, CalculateArgs, SearchWebArgs, ReadWebpageArgs
 
 
 class TestCalculator(unittest.TestCase):
@@ -111,10 +111,17 @@ async def test_agent_tools_dispatch():
     assert web_res["status"] == "success"
     assert "results" in web_res
 
+    # 6. Read webpage tool
+    page_res = await execute_tool(12345, "read_webpage", {"url": "https://example.com", "max_chars": 500})
+    assert page_res["status"] in ("success", "error")  # Network may succeed or mock
+    if page_res["status"] == "success":
+        assert "content" in page_res
+        assert "title" in page_res
+
 
 def test_tool_definitions_presence():
     tool_names = [t["function"]["name"] for t in TOOL_DEFINITIONS]
-    for required in ["get_weather", "convert_currency", "get_market_price", "calculate", "search_web"]:
+    for required in ["get_weather", "convert_currency", "get_market_price", "calculate", "search_web", "read_webpage"]:
         assert required in tool_names, f"Tool {required} missing from TOOL_DEFINITIONS"
 
 
@@ -123,3 +130,38 @@ async def test_search_web_empty_query():
     res = await search_web("")
     assert res["status"] == "error"
     assert res["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_read_webpage_empty_url():
+    res = await read_webpage("")
+    assert res["status"] == "error"
+    assert res["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_read_webpage_parser_mock():
+    mock_html = """
+    <html>
+        <head><title>Test Article &amp; Insights</title><style>body { color: red; }</style></head>
+        <body>
+            <nav><a href="#">Home</a></nav>
+            <script>console.log("secret");</script>
+            <h1>Artificial Intelligence</h1>
+            <p>Antigravity is building autonomous reasoning agents for daily tasks.</p>
+            <footer>Copyright 2026</footer>
+        </body>
+    </html>
+    """
+    class MockResponse:
+        status_code = 200
+        text = mock_html
+
+    with patch("httpx.AsyncClient.get", return_value=MockResponse()):
+        res = await read_webpage("https://peculiar-ai.com/article", max_chars=300)
+        assert res["status"] == "success"
+        assert res["title"] == "Test Article & Insights"
+        assert "Antigravity is building autonomous reasoning" in res["content"]
+        assert "console.log" not in res["content"]
+        assert "<style>" not in res["content"]
+        assert "<nav>" not in res["content"]

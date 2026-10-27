@@ -190,6 +190,10 @@ class CalculateArgs(BaseModel):
 class SearchWebArgs(BaseModel):
     query: str = Field(..., description="Search query keywords e.g. 'Jodhpur to Udaipur bike toll distance' or 'latest movie release date'.")
 
+class ReadWebpageArgs(BaseModel):
+    url: str = Field(..., description="Webpage or article URL to read, inspect, or summarize.")
+    max_chars: Optional[int] = Field(4000, description="Maximum characters to extract (defaults to 4000).")
+
 
 # -------------------------------------------------------------
 # 2. Tool Definitions for Groq Function Calling
@@ -730,6 +734,27 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_webpage",
+            "description": "Fetch, inspect, and extract readable text from any public article, blog post, documentation, or webpage URL for summarization or Q&A.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full webpage URL including https://"
+                    },
+                    "max_chars": {
+                        "type": ["integer", "null"],
+                        "description": "Max characters to extract (default 4000)."
+                    }
+                },
+                "required": ["url"]
             }
         }
     }
@@ -2057,6 +2082,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             args = SearchWebArgs(**arguments)
             from utilities import search_web
             res = await search_web(args.query)
+            return res
+
+        elif tool_name == "read_webpage":
+            args = ReadWebpageArgs(**arguments)
+            from utilities import read_webpage
+            res = await read_webpage(args.url, args.max_chars or 4000)
             return res
 
         else:

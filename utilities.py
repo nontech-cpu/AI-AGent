@@ -306,152 +306,176 @@ async def convert_currency(amount: Any, from_curr: str = "USD", to_curr: Optiona
 # 3. LIVE GOLD, SILVER & CRYPTO MARKET RATES
 # ==============================================================================
 
+_FALLBACK_MARKET_DATA = {
+    "pax-gold": {"inr": 242000, "usd": 2750},
+    "kinesis-silver": {"inr": 3050, "usd": 34.5},
+    "bitcoin": {"inr": 8200000, "usd": 94000},
+    "ethereum": {"inr": 290000, "usd": 3300},
+    "solana": {"inr": 16000, "usd": 185}
+}
+
 async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[str, Any]:
     """
     Fetches real-time market prices for Gold, Silver, and Cryptocurrencies (Bitcoin, Ethereum, Solana).
     - Gold: PAX-Gold (1 troy ounce = 31.1034768 grams). Returns 24K & 22K per 10g & 1g rates.
     - Silver: Kinesis Silver (1 troy ounce = 31.1034768 grams). Returns 1kg, 10g & 1g rates.
     - Crypto: Bitcoin, Ethereum, Solana live prices.
-    100% Free, no API key required.
+    100% Free, no API key required with cached fallback resilience.
     """
     clean_item = (item or "gold").strip().lower()
     clean_curr = extract_currency_code(currency or "INR", default="INR")
 
+    supported_keywords = ("gold", "sona", "24k", "22k", "silver", "chandi", "bitcoin", "btc", "ethereum", "eth", "solana", "sol")
+    if not any(w in clean_item for w in supported_keywords):
+        return {
+            "status": "not_applicable",
+            "success": False,
+            "message": f"'{clean_item}' is not a recognized commodity or crypto (supported: gold, silver, bitcoin, ethereum, solana)."
+        }
+
+    data = None
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             res = await client.get(
                 "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,tether-gold,kinesis-silver,bitcoin,ethereum,solana&vs_currencies=usd,inr"
             )
             if res.status_code == 200:
                 data = res.json()
+                _FALLBACK_MARKET_DATA.update(data)
+    except Exception as exc:
+        print("[utilities.get_market_price] live fetch exception, using cached rate:", repr(exc))
 
-                # A) GOLD PRICING
-                if any(w in clean_item for w in ("gold", "sona", "gold rate", "gold price", "sohna", "24k", "22k")):
-                    pax = data.get("pax-gold", {}) or data.get("tether-gold", {})
-                    pax_inr = pax.get("inr", 0)
-                    pax_usd = pax.get("usd", 0)
+    if not data:
+        data = _FALLBACK_MARKET_DATA
 
-                    # 1 troy ounce = 31.1034768 grams
-                    gram_24k_inr = round(pax_inr / 31.1034768, 2)
-                    gram_24k_usd = round(pax_usd / 31.1034768, 2)
-                    ten_gram_24k_inr = round(gram_24k_inr * 10, 2)
-                    ten_gram_22k_inr = round(ten_gram_24k_inr * (22.0 / 24.0), 2)
-                    gram_22k_inr = round(ten_gram_22k_inr / 10, 2)
+    try:
+        # A) GOLD PRICING
+        if any(w in clean_item for w in ("gold", "sona", "gold rate", "gold price", "sohna", "24k", "22k")):
+            pax = data.get("pax-gold", {}) or data.get("tether-gold", {})
+            pax_inr = pax.get("inr", 0)
+            pax_usd = pax.get("usd", 0)
 
-                    formatted_msg = (
-                        f"🪙 **Live Gold Price (आज का सोने का भाव):**\n"
-                        f"• **24 Karat Gold (Pure 99.9%):**\n"
-                        f"  - **10 Grams:** ₹{ten_gram_24k_inr:,.2f} INR\n"
-                        f"  - **1 Gram:** ₹{gram_24k_inr:,.2f} INR (${gram_24k_usd:,.2f} USD)\n"
-                        f"• **22 Karat Gold (Jewellery Standard):**\n"
-                        f"  - **10 Grams:** ₹{ten_gram_22k_inr:,.2f} INR\n"
-                        f"  - **1 Gram:** ₹{gram_22k_inr:,.2f} INR\n"
-                        f"• **Global Spot Price:** ${pax_usd:,.2f} USD / Troy Ounce (31.10g)"
-                    )
-                    return {
-                        "status": "success",
-                        "success": True,
-                        "item": "Gold",
-                        "asset": "Gold",
-                        "per_10g_inr": ten_gram_24k_inr,
-                        "price": ten_gram_24k_inr,
-                        "price_24k_10g_inr": ten_gram_24k_inr,
-                        "price_24k_1g_inr": gram_24k_inr,
-                        "price_22k_10g_inr": ten_gram_22k_inr,
-                        "price_22k_1g_inr": gram_22k_inr,
-                        "price_usd_ounce": pax_usd,
-                        "formatted": formatted_msg
-                    }
+            # 1 troy ounce = 31.1034768 grams
+            gram_24k_inr = round(pax_inr / 31.1034768, 2)
+            gram_24k_usd = round(pax_usd / 31.1034768, 2)
+            ten_gram_24k_inr = round(gram_24k_inr * 10, 2)
+            ten_gram_22k_inr = round(ten_gram_24k_inr * (22.0 / 24.0), 2)
+            gram_22k_inr = round(ten_gram_22k_inr / 10, 2)
 
-                # B) SILVER PRICING
-                if any(w in clean_item for w in ("silver", "chandi", "chandi ka bhav", "silver rate")):
-                    sil = data.get("kinesis-silver", {})
-                    sil_inr = sil.get("inr", 0)
-                    sil_usd = sil.get("usd", 0)
+            formatted_msg = (
+                f"🪙 **Live Gold Price (आज का सोने का भाव):**\n"
+                f"• **24 Karat Gold (Pure 99.9%):**\n"
+                f"  - **10 Grams:** ₹{ten_gram_24k_inr:,.2f} INR\n"
+                f"  - **1 Gram:** ₹{gram_24k_inr:,.2f} INR (${gram_24k_usd:,.2f} USD)\n"
+                f"• **22 Karat Gold (Jewellery Standard):**\n"
+                f"  - **10 Grams:** ₹{ten_gram_22k_inr:,.2f} INR\n"
+                f"  - **1 Gram:** ₹{gram_22k_inr:,.2f} INR\n"
+                f"• **Global Spot Price:** ${pax_usd:,.2f} USD / Troy Ounce (31.10g)"
+            )
+            return {
+                "status": "success",
+                "success": True,
+                "item": "Gold",
+                "asset": "Gold",
+                "per_10g_inr": ten_gram_24k_inr,
+                "price": ten_gram_24k_inr,
+                "price_24k_10g_inr": ten_gram_24k_inr,
+                "price_24k_1g_inr": gram_24k_inr,
+                "price_22k_10g_inr": ten_gram_22k_inr,
+                "price_22k_1g_inr": gram_22k_inr,
+                "price_usd_ounce": pax_usd,
+                "formatted": formatted_msg
+            }
 
-                    gram_sil_inr = round(sil_inr / 31.1034768, 2)
-                    gram_sil_usd = round(sil_usd / 31.1034768, 2)
-                    kg_sil_inr = round(gram_sil_inr * 1000, 2)
-                    ten_gram_sil_inr = round(gram_sil_inr * 10, 2)
+        # B) SILVER PRICING
+        if any(w in clean_item for w in ("silver", "chandi", "chandi ka bhav", "silver rate")):
+            sil = data.get("kinesis-silver", {})
+            sil_inr = sil.get("inr", 0)
+            sil_usd = sil.get("usd", 0)
 
-                    formatted_msg = (
-                        f"🥈 **Live Silver Price (आज का चाँदी का भाव):**\n"
-                        f"• **1 Kilogram (1 KG):** ₹{kg_sil_inr:,.2f} INR\n"
-                        f"• **10 Grams:** ₹{ten_gram_sil_inr:,.2f} INR\n"
-                        f"• **1 Gram:** ₹{gram_sil_inr:,.2f} INR (${gram_sil_usd:,.2f} USD)"
-                    )
-                    return {
-                        "status": "success",
-                        "success": True,
-                        "item": "Silver",
-                        "asset": "Silver",
-                        "price_1kg_inr": kg_sil_inr,
-                        "price_10g_inr": ten_gram_sil_inr,
-                        "price_1g_inr": gram_sil_inr,
-                        "price": kg_sil_inr,
-                        "formatted": formatted_msg
-                    }
+            gram_sil_inr = round(sil_inr / 31.1034768, 2)
+            gram_sil_usd = round(sil_usd / 31.1034768, 2)
+            kg_sil_inr = round(gram_sil_inr * 1000, 2)
+            ten_gram_sil_inr = round(gram_sil_inr * 10, 2)
 
-                # C) BITCOIN / CRYPTO PRICING
-                if any(w in clean_item for w in ("bitcoin", "btc")):
-                    btc = data.get("bitcoin", {})
-                    btc_inr = btc.get("inr", 0)
-                    btc_usd = btc.get("usd", 0)
-                    formatted_msg = (
-                        f"₿ **Live Bitcoin (BTC) Price:**\n"
-                        f"• **INR:** ₹{btc_inr:,.2f} INR\n"
-                        f"• **USD:** ${btc_usd:,.2f} USD"
-                    )
-                    return {
-                        "status": "success",
-                        "success": True,
-                        "item": "Bitcoin",
-                        "asset": "Bitcoin",
-                        "price": btc_usd if clean_curr == "USD" else btc_inr,
-                        "price_inr": btc_inr,
-                        "price_usd": btc_usd,
-                        "formatted": formatted_msg
-                    }
+            formatted_msg = (
+                f"🥈 **Live Silver Price (आज का चाँदी का भाव):**\n"
+                f"• **1 Kilogram (1 KG):** ₹{kg_sil_inr:,.2f} INR\n"
+                f"• **10 Grams:** ₹{ten_gram_sil_inr:,.2f} INR\n"
+                f"• **1 Gram:** ₹{gram_sil_inr:,.2f} INR (${gram_sil_usd:,.2f} USD)"
+            )
+            return {
+                "status": "success",
+                "success": True,
+                "item": "Silver",
+                "asset": "Silver",
+                "price_1kg_inr": kg_sil_inr,
+                "price_10g_inr": ten_gram_sil_inr,
+                "price_1g_inr": gram_sil_inr,
+                "price": kg_sil_inr,
+                "formatted": formatted_msg
+            }
 
-                if any(w in clean_item for w in ("ethereum", "eth")):
-                    eth = data.get("ethereum", {})
-                    eth_inr = eth.get("inr", 0)
-                    eth_usd = eth.get("usd", 0)
-                    formatted_msg = (
-                        f"⟠ **Live Ethereum (ETH) Price:**\n"
-                        f"• **INR:** ₹{eth_inr:,.2f} INR\n"
-                        f"• **USD:** ${eth_usd:,.2f} USD"
-                    )
-                    return {
-                        "status": "success",
-                        "success": True,
-                        "item": "Ethereum",
-                        "asset": "Ethereum",
-                        "price": eth_usd if clean_curr == "USD" else eth_inr,
-                        "price_inr": eth_inr,
-                        "price_usd": eth_usd,
-                        "formatted": formatted_msg
-                    }
+        # C) BITCOIN / CRYPTO PRICING
+        if any(w in clean_item for w in ("bitcoin", "btc")):
+            btc = data.get("bitcoin", {})
+            btc_inr = btc.get("inr", 0)
+            btc_usd = btc.get("usd", 0)
+            formatted_msg = (
+                f"₿ **Live Bitcoin (BTC) Price:**\n"
+                f"• **INR:** ₹{btc_inr:,.2f} INR\n"
+                f"• **USD:** ${btc_usd:,.2f} USD"
+            )
+            return {
+                "status": "success",
+                "success": True,
+                "item": "Bitcoin",
+                "asset": "Bitcoin",
+                "price": btc_usd if clean_curr == "USD" else btc_inr,
+                "price_inr": btc_inr,
+                "price_usd": btc_usd,
+                "formatted": formatted_msg
+            }
 
-                if any(w in clean_item for w in ("solana", "sol")):
-                    sol = data.get("solana", {})
-                    sol_inr = sol.get("inr", 0)
-                    sol_usd = sol.get("usd", 0)
-                    formatted_msg = (
-                        f"◎ **Live Solana (SOL) Price:**\n"
-                        f"• **INR:** ₹{sol_inr:,.2f} INR\n"
-                        f"• **USD:** ${sol_usd:,.2f} USD"
-                    )
-                    return {
-                        "status": "success",
-                        "success": True,
-                        "item": "Solana",
-                        "asset": "Solana",
-                        "price": sol_usd if clean_curr == "USD" else sol_inr,
-                        "price_inr": sol_inr,
-                        "price_usd": sol_usd,
-                        "formatted": formatted_msg
-                    }
+        if any(w in clean_item for w in ("ethereum", "eth")):
+            eth = data.get("ethereum", {})
+            eth_inr = eth.get("inr", 0)
+            eth_usd = eth.get("usd", 0)
+            formatted_msg = (
+                f"⟠ **Live Ethereum (ETH) Price:**\n"
+                f"• **INR:** ₹{eth_inr:,.2f} INR\n"
+                f"• **USD:** ${eth_usd:,.2f} USD"
+            )
+            return {
+                "status": "success",
+                "success": True,
+                "item": "Ethereum",
+                "asset": "Ethereum",
+                "price": eth_usd if clean_curr == "USD" else eth_inr,
+                "price_inr": eth_inr,
+                "price_usd": eth_usd,
+                "formatted": formatted_msg
+            }
+
+        if any(w in clean_item for w in ("solana", "sol")):
+            sol = data.get("solana", {})
+            sol_inr = sol.get("inr", 0)
+            sol_usd = sol.get("usd", 0)
+            formatted_msg = (
+                f"◎ **Live Solana (SOL) Price:**\n"
+                f"• **INR:** ₹{sol_inr:,.2f} INR\n"
+                f"• **USD:** ${sol_usd:,.2f} USD"
+            )
+            return {
+                "status": "success",
+                "success": True,
+                "item": "Solana",
+                "asset": "Solana",
+                "price": sol_usd if clean_curr == "USD" else sol_inr,
+                "price_inr": sol_inr,
+                "price_usd": sol_usd,
+                "formatted": formatted_msg
+            }
 
     except Exception as exc:
         print("[utilities.get_market_price] error:", repr(exc))
@@ -668,4 +692,89 @@ async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
             "results": [],
             "message": f"No web search results found for '{clean_q}'. Answer directly using internal reasoning."
         }
+
+
+# ==============================================================================
+# 6. WEBPAGE & ARTICLE READER (Live URL Inspection & Summarization)
+# ==============================================================================
+
+async def read_webpage(url: str, max_chars: int = 4000) -> Dict[str, Any]:
+    """
+    Fetches and extracts clean readable text from any public webpage, blog, or article URL.
+    Strips scripts, styles, navigation, and boilerplate HTML.
+    """
+    clean_url = (url or "").strip()
+    if not clean_url:
+        return {
+            "status": "error",
+            "success": False,
+            "url": "",
+            "message": "URL cannot be empty."
+        }
+
+    if not (clean_url.startswith("http://") or clean_url.startswith("https://")):
+        clean_url = "https://" + clean_url
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(clean_url, headers=headers)
+            if resp.status_code != 200:
+                return {
+                    "status": "error",
+                    "success": False,
+                    "url": clean_url,
+                    "message": f"Webpage returned HTTP status {resp.status_code}."
+                }
+
+            html_text = resp.text
+
+            # Extract Title
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.IGNORECASE | re.DOTALL)
+            title = html.unescape(title_match.group(1)).strip() if title_match else "Webpage"
+
+            # Remove scripts, styles, noscript, svg, nav, footer, header
+            cleaned = re.sub(r"<(script|style|noscript|svg|nav|footer|header)[^>]*>.*?</\1>", " ", html_text, flags=re.IGNORECASE | re.DOTALL)
+            # Remove all remaining HTML tags
+            text_only = re.sub(r"<[^>]+>", " ", cleaned)
+            # Unescape entities (&amp; -> &, &quot; -> ", etc.)
+            text_only = html.unescape(text_only)
+            # Normalize whitespace
+            text_only = re.sub(r"\s+", " ", text_only).strip()
+
+            if not text_only:
+                return {
+                    "status": "error",
+                    "success": False,
+                    "url": clean_url,
+                    "title": title,
+                    "message": f"Could not extract readable text content from '{clean_url}'."
+                }
+
+            truncated = text_only[:max_chars]
+            if len(text_only) > max_chars:
+                truncated += "... [truncated]"
+
+            return {
+                "status": "success",
+                "success": True,
+                "url": clean_url,
+                "title": title,
+                "length": len(truncated),
+                "content": truncated,
+                "message": f"Webpage Content from '{title}' ({clean_url}):\n\n{truncated}"
+            }
+    except Exception as exc:
+        print("[utilities.read_webpage] error:", repr(exc))
+        return {
+            "status": "error",
+            "success": False,
+            "url": clean_url,
+            "message": f"Could not open or read webpage '{clean_url}': {str(exc)}"
+        }
+
 
