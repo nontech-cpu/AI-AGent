@@ -770,7 +770,19 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         "calculate", "convert_currency"
     }
     
-    active_tool_names = set() if is_pure_casual_chat else set(core_tool_names)
+    # Pure reminder queries: load only reminder & schedule tools for fast 1s response
+    is_pure_reminder_query = bool(
+        re.search(r"\b(reminder|reminders)\b", low_prompt)
+        and not any(w in low_prompt for w in ("weather", "search", "github", "notion", "email", "mail", "drive", "gold", "crypto", "convert", "calc", "contact"))
+    )
+
+    if is_pure_casual_chat:
+        active_tool_names = set()
+    elif is_pure_reminder_query:
+        active_tool_names = {"list_reminders", "create_reminder", "delete_reminder", "get_schedule"}
+    else:
+        active_tool_names = set(core_tool_names)
+
 
     
     # 2. Calendar / Meeting tools
