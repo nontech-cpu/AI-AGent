@@ -1748,11 +1748,24 @@
 
     async function deleteReminder(id) {
       if (!confirm('Are you sure you want to delete this reminder?')) return;
+
+      // Instant 0ms optimistic removal from DOM
+      const card = document.querySelector(`.reminder-card[data-id="${id}"]`) || event?.target?.closest('.reminder-card');
+      if (card) card.remove();
+
       ['all', 'today', 'upcoming', 'completed'].forEach(sec => {
         localStorage.removeItem(`memorae_reminders_${currentChatId}_${sec}`);
       });
-      await fetch(`${API_BASE}/api/v1/reminders/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      const todayStr = new Date().toISOString().slice(0, 10);
+      localStorage.removeItem(`memorae_calendar_${currentChatId}_${todayStr}`);
+
+      try {
+        await fetch(`${API_BASE}/api/v1/reminders/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      } catch (e) {
+        console.error('deleteReminder error:', e);
+      }
       loadReminders(currentReminderSection);
+      loadCalendarEvents();
       loadDashboardData();
     }
 
@@ -1886,8 +1899,25 @@
     }
     async function deleteCalendarEvent(id) {
       if (!confirm('Cancel this event?')) return;
-      await fetch(`${API_BASE}/api/v1/calendar/events/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });
+
+      // Instant 0ms optimistic removal from DOM
+      const card = event?.target?.closest('.dash-card');
+      if (card) card.remove();
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      localStorage.removeItem(`memorae_calendar_${currentChatId}_${todayStr}`);
+      ['all', 'today', 'upcoming', 'completed'].forEach(sec => {
+        localStorage.removeItem(`memorae_reminders_${currentChatId}_${sec}`);
+      });
+
+      try {
+        await fetch(`${API_BASE}/api/v1/calendar/events/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });
+      } catch (e) {
+        console.error('deleteCalendarEvent error:', e);
+      }
       loadCalendarEvents();
+      loadReminders(currentReminderSection);
+      loadDashboardData();
     }
 
     // ---------- Lists Loader & Templates ----------

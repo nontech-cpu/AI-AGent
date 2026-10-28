@@ -126,6 +126,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         }
     """
     start_ts = time.time()
+    chat_id = db.canonical_chat_id(chat_id)
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")

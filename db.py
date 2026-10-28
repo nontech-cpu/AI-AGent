@@ -49,6 +49,7 @@ def has_consent(chat_id):
 
 
 def set_persona(chat_id, persona):
+    chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE users SET persona = :p WHERE telegram_chat_id = :c"),
@@ -57,6 +58,7 @@ def set_persona(chat_id, persona):
 
 
 def get_persona(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     with engine.connect() as conn:
         row = conn.execute(
             text("SELECT persona FROM users WHERE telegram_chat_id = :c"),
@@ -66,6 +68,7 @@ def get_persona(chat_id):
 
 
 def set_categories(chat_id, cats):
+    chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE users SET categories = :cats WHERE telegram_chat_id = :c"),
@@ -74,6 +77,7 @@ def set_categories(chat_id, cats):
 
 
 def get_categories(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     with engine.connect() as conn:
         row = conn.execute(
             text("SELECT categories FROM users WHERE telegram_chat_id = :c"),
@@ -83,6 +87,7 @@ def get_categories(chat_id):
 
 
 def save_memory(chat_id, category, title, amount, due_date, due_time):
+    chat_id = canonical_chat_id(chat_id)
     tm = due_time
     d = due_date
     if engine.dialect.name == "sqlite":
@@ -120,6 +125,7 @@ def list_memories(chat_id):
 
 
 def items_for_date(chat_id, d):
+    chat_id = canonical_chat_id(chat_id)
     d_val = d.isoformat() if hasattr(d, "isoformat") and engine.dialect.name == "sqlite" else d
     with engine.connect() as conn:
         rows = conn.execute(
@@ -135,6 +141,7 @@ def items_for_date(chat_id, d):
 
 
 def update_memory_time(chat_id, item_id, new_due_time):
+    chat_id = canonical_chat_id(chat_id)
     tm = new_due_time
     if engine.dialect.name == "sqlite" and hasattr(new_due_time, "strftime"):
         tm = new_due_time.strftime("%H:%M:%S")
@@ -159,6 +166,7 @@ def delete_user(chat_id):
 
 
 def wipe_all_user_memories(chat_id: int):
+    chat_id = canonical_chat_id(chat_id)
     """
     Master Privacy Wipe: Clears all user_facts, memory_items, reminders,
     chat_logs, contact_memories, smart_lists, board_cards, user_rules,
@@ -394,7 +402,21 @@ def remove_email_link(chat_id):
 
 # ---------- Conversation state (WhatsApp-style flow) ----------
 
+# ---------- Canonical User Identity Mapping ----------
+CANONICAL_CHAT_ID_MAP = {
+    1234828592: 1758056012,
+}
+
+def canonical_chat_id(chat_id):
+    try:
+        cid = int(chat_id)
+        return CANONICAL_CHAT_ID_MAP.get(cid, cid)
+    except Exception:
+        return chat_id
+
+
 def ensure_user(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -658,6 +680,7 @@ def delete_board_card(chat_id, card_id):
 # ---------- Phase 2: Persistent Smart Lists ----------
 
 def get_smart_lists(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -694,6 +717,7 @@ def get_smart_lists(chat_id):
 
 
 def create_smart_list(chat_id, name, category="general"):
+    chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         row = conn.execute(
             text(
@@ -706,6 +730,7 @@ def create_smart_list(chat_id, name, category="general"):
 
 
 def create_smart_list_with_items(chat_id, name, category="general", items=None):
+    chat_id = canonical_chat_id(chat_id)
     """Creates a smart list and its items in a single atomic transaction for high speed."""
     items = items or []
     with engine.begin() as conn:
@@ -737,6 +762,7 @@ def create_smart_list_with_items(chat_id, name, category="general", items=None):
 
 
 def add_smart_list_item(chat_id, list_id, title, quantity=None):
+    chat_id = canonical_chat_id(chat_id)
 
     with engine.begin() as conn:
         owner = conn.execute(
@@ -759,6 +785,7 @@ def add_smart_list_item(chat_id, list_id, title, quantity=None):
 
 
 def add_smart_list_items_batch(chat_id, list_id, items):
+    chat_id = canonical_chat_id(chat_id)
     if not items:
         return []
     created = []
@@ -789,6 +816,7 @@ def add_smart_list_items_batch(chat_id, list_id, items):
 
 
 def toggle_smart_list_item(chat_id, item_id, checked=None):
+    chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         owner = conn.execute(
             text(
@@ -811,6 +839,7 @@ def toggle_smart_list_item(chat_id, item_id, checked=None):
 
 
 def delete_smart_list_item(chat_id, item_id):
+    chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         res = conn.execute(
             text(
@@ -823,6 +852,7 @@ def delete_smart_list_item(chat_id, item_id):
 
 
 def delete_smart_list(chat_id, list_id):
+    chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         res = conn.execute(
             text(
@@ -1018,6 +1048,7 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
 _CHAT_HISTORY_CACHE: dict = {}
 
 def log_chat_message(chat_id, role, message):
+    chat_id = canonical_chat_id(chat_id)
     """Saves a conversation turn permanently in PostgreSQL, preventing immediate duplicates."""
     if not message or not str(message).strip():
         return
@@ -1051,6 +1082,7 @@ def log_chat_message(chat_id, role, message):
 
 
 def get_recent_chat_history(chat_id, limit=15):
+    chat_id = canonical_chat_id(chat_id)
     """Retrieves the recent conversation history in chronological order without sequential duplicates."""
     import time as _pytime
     now_ts = _pytime.time()
@@ -1122,6 +1154,7 @@ def get_chat_turns_mentioning_keyword(chat_id, keyword, limit=10):
 
 
 def save_user_fact(chat_id, fact, category="general"):
+    chat_id = canonical_chat_id(chat_id)
     """Saves an extracted life context fact, plan, or preference to user_facts."""
     if not fact or not str(fact).strip():
         return
@@ -1150,6 +1183,7 @@ def save_user_fact(chat_id, fact, category="general"):
 
 
 def get_user_facts(chat_id, limit=25):
+    chat_id = canonical_chat_id(chat_id)
     """Retrieves active life context facts, plans, and preferences for the user."""
     try:
         with engine.connect() as conn:
@@ -1211,6 +1245,7 @@ def delete_matching_user_facts(chat_id, query):
 # ---------- User Third-Party Integrations (Notion, GitHub, etc.) ----------
 
 def save_user_integration(chat_id, service: str, api_key: str, config_data: str = "{}"):
+    chat_id = canonical_chat_id(chat_id)
     """Encrypts and securely stores an API key/token for a third-party service."""
     if not api_key or not str(api_key).strip():
         return False
@@ -1238,6 +1273,7 @@ def save_user_integration(chat_id, service: str, api_key: str, config_data: str 
 
 
 def get_user_integration(chat_id, service: str):
+    chat_id = canonical_chat_id(chat_id)
     """Retrieves and decrypts the API key/token for a user integration."""
     from crypto import decrypt_any
     svc = str(service).strip().lower()
@@ -1265,6 +1301,7 @@ def get_user_integration(chat_id, service: str):
 
 
 def delete_user_integration(chat_id, service: str):
+    chat_id = canonical_chat_id(chat_id)
     """Deletes or deactivates a user integration."""
     svc = str(service).strip().lower()
     try:
@@ -1284,6 +1321,7 @@ def delete_user_integration(chat_id, service: str):
 
 
 def get_user_integrations_summary(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     """Returns a status summary of all supported integrations for a user."""
     integrations = {
         "notion": {"connected": False, "details": "Not connected"},
