@@ -3672,6 +3672,8 @@ app = FastAPI(lifespan=lifespan)
 _allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
     "https://peculiarai.shapebytes.com",
     "https://tightly-barbell-creamed.ngrok-free.dev",
 ]
@@ -3696,6 +3698,11 @@ app.add_middleware(
 
 from api_v1 import router as api_v1_router
 app.include_router(api_v1_router)
+
+from fastapi.staticfiles import StaticFiles
+_assets_path = os.path.join(os.path.dirname(__file__), "assets")
+if os.path.exists(_assets_path):
+    app.mount("/assets", StaticFiles(directory=_assets_path), name="assets")
 
 
 @app.middleware("http")
@@ -4755,6 +4762,7 @@ async def web_notion_start(request: Request):
 
 @app.get("/app", response_class=HTMLResponse)
 @app.get("/companion", response_class=HTMLResponse)
+@app.get("/companion.html", response_class=HTMLResponse)
 async def serve_companion_app():
     """Serves the interactive Memorae companion app simulation for mobile preview & web testing."""
     html_path = os.path.join(os.path.dirname(__file__), "companion.html")
@@ -4762,6 +4770,27 @@ async def serve_companion_app():
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse("<h1>Companion app not found</h1>", status_code=404)
+
+
+@app.get("/connect", response_class=HTMLResponse)
+@app.get("/connect.html", response_class=HTMLResponse)
+async def serve_connect_page():
+    """Serves the connect & integrations portal."""
+    html_path = os.path.join(os.path.dirname(__file__), "connect.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h1>Connect portal not found</h1>", status_code=404)
+
+
+@app.get("/index.html", response_class=HTMLResponse)
+async def serve_index_page():
+    """Serves the main landing page if requested."""
+    html_path = os.path.join(os.path.dirname(__file__), "index.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h1>Index page not found</h1>", status_code=404)
 
 
 @app.get("/")
@@ -4952,3 +4981,10 @@ async def telegram_webhook(
             await say(chat_id, "I can understand text, voice notes, photos, bills, and PDF documents 🙂")
 
     return {"ok": True}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    print(f"Starting PeculiarAI Backend Server on http://0.0.0.0:{port} ...")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

@@ -210,3 +210,18 @@ def test_serve_companion_app_ui():
     assert "portal-hero" in resp.text
     assert "mascot-sphere" in resp.text
 
+
+def test_serve_connect_portal_and_active_profile():
+    """Validates that /connect and /connect.html serve the connection portal, and active profile resolves."""
+    resp_conn = client.get("/connect")
+    assert resp_conn.status_code == 200
+    assert "text/html" in resp_conn.headers.get("content-type", "")
+
+    resp_prof = client.get("/api/v1/user/active-profile")
+    assert resp_prof.status_code == 200
+    data = resp_prof.json()
+    assert data["status"] == "ok"
+    assert "chat_id" in data
+    assert "is_google_connected" in data
+
+

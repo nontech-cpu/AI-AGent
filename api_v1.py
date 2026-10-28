@@ -1811,10 +1811,47 @@ async def create_user_reminder(
         except Exception:
             pass
 
+    target_chat_id = _resolve_calendar_chat_id(chat_id)
     item_id = save_memory(chat_id, body.category or "reminder", body.title, body.amount, due_d, due_t)
     plan = build_plan(due_d, due_t, now)
     if plan.get("reminders") and item_id:
         add_reminders(item_id, plan["reminders"])
+
+    if target_chat_id != chat_id:
+        try:
+            mid = save_memory(target_chat_id, body.category or "reminder", body.title, body.amount, due_d, due_t)
+            if plan.get("reminders") and mid:
+                add_reminders(mid, plan["reminders"])
+        except Exception:
+            pass
+
+    # 1. Real-time Telegram notification sync
+    try:
+        from main import say
+        time_str = f" at {due_t.strftime('%I:%M %p')}" if due_t else ""
+        tg_text = (
+            f"🔔 **New Reminder Set (via Web Companion)**:\n"
+            f"• **{body.title}**\n"
+            f"📅 Due: {due_d}{time_str}\n"
+            f"✅ Synced to your Telegram assistant."
+        )
+        asyncio.create_task(say(target_chat_id, tg_text))
+    except Exception as exc:
+        print("[api_v1] Telegram reminder notify error:", exc)
+
+    # 2. Cross-sync to Google Calendar if connected and has specific time
+    try:
+        from google_services import create_meeting
+        start_time_part = due_t or time(9, 0)
+        dt_start = datetime.combine(due_d, start_time_part)
+        asyncio.create_task(create_meeting(
+            chat_id=target_chat_id,
+            title=f"🔔 {body.title}",
+            start_iso=dt_start.isoformat(),
+            duration_minutes=30
+        ))
+    except Exception:
+        pass
 
     return {
         "status": "ok",
@@ -1905,9 +1942,17 @@ async def get_active_companion_profile(
     resolved_id = _resolve_calendar_chat_id(chat_id or 998877110)
     has_google = False
     google_email = None
+    user_name = None
     try:
         from db import engine, text
         with engine.connect() as conn:
+            u_row = conn.execute(
+                text("SELECT first_name, username FROM users WHERE telegram_chat_id = :c"),
+                {"c": resolved_id}
+            ).first()
+            if u_row:
+                user_name = u_row[0] or u_row[1]
+
             row = conn.execute(
                 text("SELECT g.email FROM google_tokens g JOIN users u ON u.id = g.user_id WHERE u.telegram_chat_id = :c"),
                 {"c": resolved_id}
@@ -1920,6 +1965,7 @@ async def get_active_companion_profile(
     return {
         "status": "ok",
         "chat_id": resolved_id,
+        "user_name": user_name,
         "is_google_connected": has_google,
         "google_email": google_email
     }
@@ -2038,14 +2084,36 @@ async def create_calendar_event_route(
             duration_minutes=body.duration_minutes or 30,
             attendees=body.attendees or []
         )
-        # Mirror into local memory
+        # Mirror into local memory and schedule reminder notification
         if clean_dt:
             try:
-                save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+                now_ist = datetime.now(IST)
+                mid = save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+                plan = build_plan(clean_dt.date(), clean_dt.time(), now_ist)
+                if plan.get("reminders") and mid:
+                    add_reminders(mid, plan["reminders"])
                 if target_chat_id != chat_id:
                     save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
             except Exception:
                 pass
+
+        # Real-time Telegram sync notification
+        try:
+            from main import say
+            time_label = clean_dt.strftime("%d %b %Y, %I:%M %p") if clean_dt else str(body.start_iso)
+            meet_str = f"\n🔗 Video Meet: {res.get('meet_url')}" if res and res.get('meet_url') else ""
+            cal_str = f"\n📆 Google Calendar: {res.get('htmlLink')}" if res and res.get('htmlLink') else ""
+            msg = (
+                f"📅 **New Calendar Event Scheduled (via Web)**:\n"
+                f"• **{body.title}**\n"
+                f"⏰ Time: {time_label}"
+                f"{meet_str}{cal_str}\n"
+                f"✅ Synced to your Google Calendar & Telegram."
+            )
+            asyncio.create_task(say(target_chat_id, msg))
+        except Exception:
+            pass
+
         return {
             "status": "ok",
             "event": res,
@@ -2057,7 +2125,27 @@ async def create_calendar_event_route(
             if not clean_dt:
                 from dateutil import parser as dt_parser
                 clean_dt = dt_parser.parse(body.start_iso)
-            iid = save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+            now_ist = datetime.now(IST)
+            iid = save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+            plan = build_plan(clean_dt.date(), clean_dt.time(), now_ist)
+            if plan.get("reminders") and iid:
+                add_reminders(iid, plan["reminders"])
+            if target_chat_id != chat_id:
+                save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+
+            try:
+                from main import say
+                time_label = clean_dt.strftime("%d %b %Y, %I:%M %p") if clean_dt else str(body.start_iso)
+                msg = (
+                    f"📅 **New Event Scheduled (Local Schedule)**:\n"
+                    f"• **{body.title}**\n"
+                    f"⏰ Time: {time_label}\n"
+                    f"✅ Synced to your Telegram assistant."
+                )
+                asyncio.create_task(say(target_chat_id, msg))
+            except Exception:
+                pass
+
             return {
                 "status": "ok",
                 "local_id": iid,

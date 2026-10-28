@@ -1168,7 +1168,33 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "message": f"Done! '{primary_title or args.title}' ka reminder {time_str} par shift kar diya hai."
                 }
             else:
-                db.save_memory(chat_id, args.category, args.title, amount=None, due_date=d_val, due_time=t_val)
+                item_id = db.save_memory(chat_id, args.category, args.title, amount=None, due_date=d_val, due_time=t_val)
+                try:
+                    from timing import build_plan
+                    from db import add_reminders
+                    plan = build_plan(d_val, t_val)
+                    if plan.get("reminders") and item_id:
+                        add_reminders(item_id, plan["reminders"])
+                except Exception:
+                    pass
+
+                # Cross-sync to Google Calendar if connected and time is set
+                try:
+                    from main import get_valid_google_connection_by_chat_id
+                    is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+                    if is_conn and d_val and t_val:
+                        import asyncio
+                        from google_services import create_meeting
+                        start_dt = datetime.combine(d_val, t_val)
+                        asyncio.create_task(create_meeting(
+                            chat_id=chat_id,
+                            title=f"🔔 {args.title}",
+                            start_iso=start_dt.isoformat(),
+                            duration_minutes=30
+                        ))
+                except Exception:
+                    pass
+
                 res = {
                     "status": "success",
                     "title": args.title,
