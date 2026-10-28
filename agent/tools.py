@@ -375,7 +375,22 @@ TOOL_DEFINITIONS = [
             }
         }
     },
+    
     {
+        "type": "function",
+        "function": {
+            "name": "delete_reminder",
+            "description": "Delete, remove, or cancel a saved reminder, meeting, or task by title keyword or ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title or keyword of the reminder/event to delete (e.g. 'electri', 'smaosa', 'meeting')."},
+                    "reminder_id": {"type": ["integer", "null"], "description": "Optional specific reminder ID to delete."}
+                },
+                "required": ["title"]
+            }
+        }
+    },{
         "type": "function",
         "function": {
             "name": "list_reminders",
@@ -1219,6 +1234,53 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     f"⚠️ Time Conflict Alert: Is samay par already {', '.join(conflicts)} scheduled hai!"
                 )
             return res
+
+        elif tool_name == "delete_reminder":
+            kw = arguments.get("title", "").strip().lower()
+            rem_id = arguments.get("reminder_id")
+            from db import canonical_chat_id, engine, text
+            import re
+            can_cid = canonical_chat_id(chat_id)
+
+            deleted_titles = []
+            with engine.begin() as conn:
+                if rem_id:
+                    matched_rows = conn.execute(
+                        text("SELECT id, title FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
+                        {"id": rem_id, "c": can_cid}
+                    ).fetchall()
+                else:
+                    clean_kw = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", kw).strip().strip("*")
+                    matched_rows = conn.execute(
+                        text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
+                        {"pat": f"%{clean_kw}%", "c": can_cid}
+                    ).fetchall()
+
+                for r_id, r_title in matched_rows:
+                    conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": r_id})
+                    conn.execute(text("DELETE FROM memory_items WHERE id = :id"), {"id": r_id})
+                    deleted_titles.append(r_title)
+
+            try:
+                from api_v1 import _invalidate_all_app_caches
+                _invalidate_all_app_caches()
+            except Exception:
+                pass
+
+            if deleted_titles:
+                return {
+                    "status": "success",
+                    "action": "delete_reminder",
+                "title": ", ".join(deleted_titles),
+                "deleted_count": len(deleted_titles),
+                    "deleted_titles": deleted_titles,
+                    "message": f"Done! Reminder '{', '.join(deleted_titles)}' successfully delete kar diya hai."
+                }
+            else:
+                return {
+                    "status": "not_found",
+                    "message": f"'{kw}' naam ka koi reminder nahi mila jo delete kiya ja sake."
+                }
 
         elif tool_name == "list_reminders":
             args = ListRemindersArgs(**arguments)

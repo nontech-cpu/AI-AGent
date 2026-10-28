@@ -42,6 +42,12 @@ _USER_META_CACHE: dict = {
         "user_name": "Neerav",
         "integrations_str": "Google: connected (neeravmishrarealme1@gmail.com) | GitHub: connected (@Neerav-Mishra) | Notion: not connected",
         "rules_str": "Natural Roman Hinglish; executive tone; keep schedule synced."
+    },
+    1234828592: {
+        "ts": time.time() + 86400,
+        "user_name": "Nirav",
+        "integrations_str": "Google: connected (neeravmishrarealme1@gmail.com) | GitHub: connected (@Neerav-Mishra) | Notion: not connected",
+        "rules_str": "Natural Roman Hinglish; executive tone; keep schedule synced."
     }
 }
 
@@ -56,6 +62,8 @@ async def build_runtime_system_prompt(
     """
     if custom_system:
         return custom_system
+
+    chat_id = db.canonical_chat_id(chat_id)
 
     now_ist = datetime.now(IST)
     weekday = now_ist.strftime("%A")

@@ -189,8 +189,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             pass
 
     # 0.1 High-speed Reminder & Today's Schedule Query Fast-Path (Instant <0.1s response)
-    is_rem_write = bool(re.search(r"\b(add|set|create|laga|daal|dal|bana|bna|delete|hata|khatam|cancel|reschedule)\b", low_prompt))
-    is_rem_ask = (not is_rem_write) and bool(re.search(r"\b(remind\w*|schedule\w*|agenda)\b", low_prompt))
+    is_rem_write = bool(re.search(r"\b(add|set|create|laga|daal|dal|bana|bna|delete|dlt|dlet|del|hata|hatao|khatam|cancel|reschedule|remove|clear|mita|mitado|erase|update|change|badal)\b", low_prompt))
+    is_rem_ask = (not is_rem_write) and bool(re.search(r"\b(remind\w*|schedule\w*|agenda)\b", low_prompt)) and bool(re.search(r"\b(kya|ky|kaunse|konse|btana|bta|bata|batao|dikha|dikhao|show|list|check|sunao|for\s+today|today|aaj)\b", low_prompt))
     if is_rem_ask:
         try:
             today_date = now_ist.date()
