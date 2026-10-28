@@ -1001,7 +1001,7 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
                 "context_notes = CASE "
                 "WHEN CAST(:ctx AS VARCHAR) IS NOT NULL AND context_notes IS NOT NULL THEN context_notes || ' | ' || CAST(:ctx AS VARCHAR) "
                 "WHEN CAST(:ctx AS VARCHAR) IS NOT NULL THEN CAST(:ctx AS VARCHAR) ELSE context_notes END "
-                "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                "WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid OR id IN (SELECT user_id FROM google_tokens LIMIT 1)) "
                 "AND LOWER(name) LIKE LOWER(:pattern)"
             ),
             {
@@ -1015,11 +1015,16 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
 
 # ---------- Persistent Chat Logs & ChatGPT-style Long-Term Memory ----------
 
+_CHAT_HISTORY_CACHE: dict = {}
+
 def log_chat_message(chat_id, role, message):
     """Saves a conversation turn permanently in PostgreSQL, preventing immediate duplicates."""
     if not message or not str(message).strip():
         return
     clean_msg = str(message).strip()
+    for k in list(_CHAT_HISTORY_CACHE.keys()):
+        if k[0] == chat_id:
+            _CHAT_HISTORY_CACHE.pop(k, None)
     try:
         with engine.begin() as conn:
             # Check last logged message for this user to avoid consecutive duplicates
@@ -1047,6 +1052,12 @@ def log_chat_message(chat_id, role, message):
 
 def get_recent_chat_history(chat_id, limit=15):
     """Retrieves the recent conversation history in chronological order without sequential duplicates."""
+    import time as _pytime
+    now_ts = _pytime.time()
+    ck = (chat_id, limit)
+    cached = _CHAT_HISTORY_CACHE.get(ck)
+    if cached and (now_ts < cached["exp"]):
+        return cached["data"]
     try:
         with engine.connect() as conn:
             rows = conn.execute(
@@ -1064,7 +1075,9 @@ def get_recent_chat_history(chat_id, limit=15):
             if cleaned and cleaned[-1]["role"] == role and cleaned[-1]["text"] == msg:
                 continue
             cleaned.append({"role": role, "text": msg})
-        return cleaned[-limit:]
+        res = cleaned[-limit:]
+        _CHAT_HISTORY_CACHE[ck] = {"exp": now_ts + 45.0, "data": res}
+        return res
     except Exception as exc:
         print("get_recent_chat_history error:", repr(exc))
         return []

@@ -1178,16 +1178,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 except Exception:
                     pass
 
-                # Cross-sync to Google Calendar if connected and time is set
+                # Cross-sync to Google Calendar if connected and date is set
                 try:
+                    from api_v1 import _resolve_calendar_chat_id
+                    cal_chat = _resolve_calendar_chat_id(chat_id)
                     from main import get_valid_google_connection_by_chat_id
-                    is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
-                    if is_conn and d_val and t_val:
+                    is_conn, _ = await get_valid_google_connection_by_chat_id(cal_chat)
+                    if is_conn and d_val:
                         import asyncio
                         from google_services import create_meeting
-                        start_dt = datetime.combine(d_val, t_val)
+                        start_time_part = t_val or dtime(9, 0)
+                        start_dt = datetime.combine(d_val, start_time_part)
                         asyncio.create_task(create_meeting(
-                            chat_id=chat_id,
+                            chat_id=cal_chat,
                             title=f"🔔 {args.title}",
                             start_iso=start_dt.isoformat(),
                             duration_minutes=30

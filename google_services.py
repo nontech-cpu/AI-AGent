@@ -13,6 +13,16 @@ GOOGLE = 'https://www.googleapis.com'
 
 _ACCESS_TOKEN_CACHE: dict = {}
 _CHAT_GMAIL_INSUFFICIENT_SCOPES: set[int] = set()
+_CALENDAR_CACHE: dict = {}
+
+def invalidate_calendar_cache(chat_id: int = None):
+    """Invalidate in-memory Google Calendar event cache."""
+    global _CALENDAR_CACHE
+    if chat_id is None:
+        _CALENDAR_CACHE.clear()
+    else:
+        prefix = f"{chat_id}_"
+        _CALENDAR_CACHE = {k: v for k, v in _CALENDAR_CACHE.items() if not k.startswith(prefix)}
 
 def clear_gmail_insufficient_scope_cache(chat_id: int):
     """Clear cached insufficient scope flag when user reconnects Google."""
@@ -115,6 +125,7 @@ async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=
                                 params={'sendUpdates': 'all'}, json=event)
     meet = (result.get('conferenceData') or {}).get('entryPoints') or []
     meet_url = next((x.get('uri') for x in meet if x.get('entryPointType') == 'video'), '')
+    invalidate_calendar_cache(chat_id)
     return {
         'id': result.get('id'),
         'summary': result.get('summary', title),
@@ -126,6 +137,13 @@ async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=
 
 
 async def list_calendar_events(chat_id, time_min_iso=None, time_max_iso=None, query=None, max_results=20):
+    import time as _pytime
+    now_ts = _pytime.time()
+    cache_key = f"{chat_id}_{time_min_iso}_{time_max_iso}_{query}_{max_results}"
+    cached = _CALENDAR_CACHE.get(cache_key)
+    if cached and (now_ts < cached["exp"]):
+        return cached["events"]
+
     access, _ = await access_token_for_chat(chat_id)
     params = {
         'singleEvents': 'true',
@@ -156,6 +174,7 @@ async def list_calendar_events(chat_id, time_min_iso=None, time_max_iso=None, qu
             'attendees': it.get('attendees', []),
             'conferenceData': it.get('conferenceData', {}),
         })
+    _CALENDAR_CACHE[cache_key] = {"exp": now_ts + 90.0, "events": events}
     return events
 
 
@@ -314,6 +333,7 @@ async def update_meeting(chat_id, event_id, new_start_iso=None, duration_minutes
         old_meet = (existing.get('conferenceData') or {}).get('entryPoints') or []
         meet_url = next((x.get('uri') for x in old_meet if x.get('entryPointType') == 'video'), '')
 
+    invalidate_calendar_cache(chat_id)
     return {
         'id': result.get('id'),
         'htmlLink': result.get('htmlLink'),
@@ -330,6 +350,7 @@ async def delete_calendar_event(chat_id, event_id):
     """
     access, _ = await access_token_for_chat(chat_id)
     await _request('DELETE', f'{GOOGLE}/calendar/v3/calendars/primary/events/{event_id}', access)
+    invalidate_calendar_cache(chat_id)
     return {'id': event_id, 'status': 'deleted'}
 
 

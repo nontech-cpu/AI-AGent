@@ -760,72 +760,49 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Provide the comprehensive functional tool suite (ChatGPT/Claude style architecture)
 
 
-    # 1. Core tool names (Available whenever user is not in pure casual greeting)
-    core_tool_names = {
-        "create_reminder", "list_reminders", "delete_reminder",
-        "save_contact", "get_contact", "list_contacts", "update_contact_commitment", "get_commitments",
-        "save_note_or_fact", "search_memory", "clear_chat_history",
-        "get_weather", "search_web", "read_webpage",
-        "check_integrations_status", "connect_integration",
-        "calculate", "convert_currency"
-    }
-    
-    # Pure reminder queries: load only reminder & schedule tools for fast 1s response
-    is_pure_reminder_query = bool(
-        re.search(r"\b(reminder|reminders)\b", low_prompt)
-        and not any(w in low_prompt for w in ("weather", "search", "github", "notion", "email", "mail", "drive", "gold", "sona", "chandi", "silver", "crypto", "convert", "calc", "contact", "bhav", "rate", "price", "aur", "and", "&"))
-    )
+    active_tool_names = set()
 
+    if not is_pure_casual_chat:
+        has_rem = bool(re.search(r"\b(reminder|reminders|remind|yaad|alarm|task|tasks|todo|baje|bje|am|pm)\b", low_prompt))
+        has_cal = bool(re.search(r"(\b(meet|meeting|meetings|calendar|event|events|schedule|call|calls|slot|slots|free|busy|availability|appointment|appointments|host|reschedule|cancel\s+meet|doctor|interview|trip|plan|plans|movie|dinner|lunch|party|wedding)\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|bje|baje)\b)", low_prompt))
+        has_cont = bool(re.search(r"\b(contact|contacts|phone|number|call|commit|commitment|promise|promises|bhejna|dena|milna)\b", low_prompt))
+        has_mem = bool(re.search(r"\b(note|notes|fact|facts|save|store|yaad|remember|memory|search|dhundo|pata\s+karo|ticket|pnr|flight|clear\s+chat)\b", low_prompt))
+        has_weath = bool(re.search(r"\b(weather|mausam|temperature|rain|barish|forecast|aqi|uv)\b", low_prompt))
+        has_web = bool(re.search(r"\b(search|google|news|score|match|who\s+is|what\s+is|meaning|web|url|link|http)\b", low_prompt))
+        has_calc = bool(re.search(r"(\b(calculate|calc|math|percentage|\%|convert|currency|dollar|inr|rupee|euro|pound)\b|[\d+\-*/=]{3,})", low_prompt))
+        has_mkt = bool(re.search(r"\b(gold|silver|crude|oil|brent|crypto|bitcoin|btc|eth|ethereum|sol|solana|sone|chandi|bhav|rate|price|market\s*price)\b", low_prompt))
+        has_gh = bool(re.search(r"\b(github|gh|git|repo|repos|repository|repositories|commit|commits|readme|issue|issues|branch|code|push|pull)\b", low_prompt))
+        has_not = bool(re.search(r"\b(notion|page|pages|workspace|documentation|doc|docs)\b", low_prompt))
+        has_exp = bool(re.search(r"\b(email|mail|gmail|send\s+email|pdf|excel|sheet|spreadsheet|invoice|report|drive|upload)\b", low_prompt))
+        has_integ = bool(re.search(r"\b(connect|connection|integrat|link\w*|status|auth|login)\b", low_prompt))
 
-    if is_pure_casual_chat:
-        active_tool_names = set()
-    elif is_pure_reminder_query:
-        active_tool_names = {"list_reminders", "create_reminder", "delete_reminder", "get_schedule"}
-    else:
-        active_tool_names = set(core_tool_names)
+        if has_rem:
+            active_tool_names.update({"create_reminder", "list_reminders", "delete_reminder", "get_schedule"})
+        if has_cal:
+            active_tool_names.update({"get_schedule", "check_availability", "create_meeting", "update_meeting", "delete_meeting", "get_meet_link", "create_reminder", "list_reminders"})
+        if has_cont:
+            active_tool_names.update({"save_contact", "get_contact", "list_contacts", "update_contact_commitment", "get_commitments"})
+        if has_mem:
+            active_tool_names.update({"save_note_or_fact", "search_memory", "clear_chat_history"})
+        if has_weath:
+            active_tool_names.add("get_weather")
+        if has_web:
+            active_tool_names.update({"search_web", "read_webpage"})
+        if has_calc:
+            active_tool_names.update({"calculate", "convert_currency"})
+        if has_mkt:
+            active_tool_names.add("get_market_price")
+        if has_gh:
+            active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
+        if has_not:
+            active_tool_names.update({"create_notion_page", "update_notion_page", "list_notion_pages"})
+        if has_exp:
+            active_tool_names.update({"send_email", "upload_to_drive", "generate_pdf", "generate_excel"})
+        if has_integ:
+            active_tool_names.update({"check_integrations_status", "connect_integration"})
 
-
-    
-    # 2. Calendar / Meeting tools
-    has_calendar_interest = bool(re.search(
-        r"(\b(meet|meeting|meetings|calendar|event|events|schedule|call|calls|slot|slots|free|busy|availability|appointment|appointments|host|reschedule|cancel\s+meet|doctor|interview|trip|plan|plans|movie|dinner|lunch|party|wedding)\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|bje|baje)\b)",
-        low_prompt
-    ))
-    if has_calendar_interest:
-        active_tool_names.update({"get_schedule", "check_availability", "create_meeting", "update_meeting", "delete_meeting", "get_meet_link"})
-
-    
-    # 3. GitHub tools
-    has_github_interest = bool(re.search(
-        r"\b(github|gh|git|repo|repos|repository|repositories|commit|commits|readme|issue|issues|branch|code|push|pull)\b",
-        low_prompt
-    ))
-    if has_github_interest:
-        active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
-        
-    # 4. Notion tools
-    has_notion_interest = bool(re.search(
-        r"\b(notion|page|pages|workspace|documentation|doc|docs)\b",
-        low_prompt
-    ))
-    if has_notion_interest:
-        active_tool_names.update({"create_notion_page", "update_notion_page", "list_notion_pages"})
-        
-    # 5. Email & File generation tools
-    has_export_interest = bool(re.search(
-        r"\b(email|mail|gmail|send\s+email|pdf|excel|sheet|spreadsheet|invoice|report|drive|upload)\b",
-        low_prompt
-    ))
-    if has_export_interest:
-        active_tool_names.update({"send_email", "upload_to_drive", "generate_pdf", "generate_excel"})
-        
-    # 6. Commodity / Market price tools
-    has_market_interest = bool(re.search(
-        r"\b(gold|silver|crude|oil|brent|crypto|bitcoin|btc|eth|ethereum|sol|solana|sone|chandi|bhav|rate|price|market\s*price)\b",
-        low_prompt
-    ))
-    if has_market_interest:
-        active_tool_names.add("get_market_price")
+        if not active_tool_names:
+            active_tool_names = {"create_reminder", "list_reminders", "get_schedule", "save_note_or_fact", "search_memory", "search_web", "get_weather", "check_integrations_status"}
         
     # Build effective_tools adhering to token budgets
     effective_tools = [

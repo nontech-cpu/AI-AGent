@@ -238,8 +238,11 @@ def clean_html_to_text(s: str) -> str:
 
 
 async def tg(method, payload):
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{API}/{method}", json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            await client.post(f"{API}/{method}", json=payload)
+    except Exception as exc:
+        logging.getLogger("uvicorn").warning(f"Telegram tg({method}) error: {exc}")
 
 
 async def say_raw(chat_id, text):
@@ -425,7 +428,22 @@ def find_matching_contact(text: str, contacts: list[dict]) -> dict | None:
     return None
 
 
+_UNIFIED_SCHED_CACHE: dict = {}
+
+def invalidate_unified_schedule_cache(chat_id: int = None):
+    global _UNIFIED_SCHED_CACHE
+    if chat_id is None:
+        _UNIFIED_SCHED_CACHE.clear()
+    else:
+        _UNIFIED_SCHED_CACHE = {k: v for k, v in _UNIFIED_SCHED_CACHE.items() if k[0] != chat_id}
+
 async def get_unified_schedule(chat_id: int, target_date: date):
+    import time as _pytime
+    now_ts = _pytime.time()
+    ck = (chat_id, str(target_date))
+    cached = _UNIFIED_SCHED_CACHE.get(ck)
+    if cached and (now_ts < cached["exp"]):
+        return cached["data"]
     """
     Unified Temporal Schedule Aggregator:
     Combines:
@@ -439,8 +457,46 @@ async def get_unified_schedule(chat_id: int, target_date: date):
     date_d_b = target_date.strftime("%d %b").lower()
     date_iso = target_date.isoformat()
 
-    # 1. Reminders
-    raw_rems = items_for_date(chat_id, target_date)
+    # Concurrent fetch of Schedule components to eliminate sequential DB latency
+    async def _fetch_rems():
+        try:
+            return await asyncio.to_thread(items_for_date, chat_id, target_date)
+        except Exception:
+            return []
+
+    async def _fetch_cal():
+        try:
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if is_conn:
+                t_min = f"{date_iso}T00:00:00+05:30"
+                t_max = f"{date_iso}T23:59:59+05:30"
+                return await google_list_calendar_events(chat_id, time_min_iso=t_min, time_max_iso=t_max)
+        except Exception:
+            pass
+        return []
+
+    async def _fetch_conts():
+        try:
+            return await asyncio.to_thread(get_contact_memories, chat_id)
+        except Exception:
+            return []
+
+    async def _fetch_tasks():
+        try:
+            return await asyncio.to_thread(get_board_cards, chat_id)
+        except Exception:
+            return {}
+
+    raw_rems_res, cal_res, conts_res, board_res = await asyncio.gather(
+        _fetch_rems(), _fetch_cal(), _fetch_conts(), _fetch_tasks(),
+        return_exceptions=True
+    )
+
+    raw_rems = raw_rems_res if isinstance(raw_rems_res, list) else []
+    calendar_events = cal_res if isinstance(cal_res, list) else []
+    contacts = conts_res if isinstance(conts_res, list) else []
+    board = board_res if isinstance(board_res, dict) else {}
+
     reminders = []
     for r in raw_rems:
         if isinstance(r, dict):
@@ -453,50 +509,30 @@ async def get_unified_schedule(chat_id: int, target_date: date):
                 "due_time": r[3] if len(r) > 3 else None,
             })
 
-    # 2. Google Calendar
-    calendar_events = []
-    try:
-        is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
-        if is_conn:
-            t_min = f"{date_iso}T00:00:00+05:30"
-            t_max = f"{date_iso}T23:59:59+05:30"
-            calendar_events = await google_list_calendar_events(chat_id, time_min_iso=t_min, time_max_iso=t_max)
-    except Exception as exc:
-        print("Calendar fetch in unified schedule skipped/failed:", repr(exc))
-
-    # 3. Contact Commitments
     matched_commitments = []
-    try:
-        contacts = get_contact_memories(chat_id)
-        for c in contacts:
-            comm = (c.get("commitments") or "").lower()
-            notes = (c.get("context_notes") or "").lower()
-            combined = f"{comm} {notes}"
-            matches = any(alias in combined for alias in day_aliases) or (date_d_b in combined) or (date_iso in combined)
-            if matches and c.get("commitments"):
-                matched_commitments.append({
-                    "name": c["name"],
-                    "company": c.get("company"),
-                    "role_title": c.get("role_title"),
-                    "commitment": c["commitments"],
-                    "email": c.get("email"),
-                    "phone": c.get("phone")
-                })
-    except Exception as exc:
-        print("Contact commitments in unified schedule error:", repr(exc))
+    for c in contacts:
+        comm = (c.get("commitments") or "").lower()
+        notes = (c.get("context_notes") or "").lower()
+        combined = f"{comm} {notes}"
+        matches = any(alias in combined for alias in day_aliases) or (date_d_b in combined) or (date_iso in combined)
+        if matches and c.get("commitments"):
+            matched_commitments.append({
+                "name": c["name"],
+                "company": c.get("company"),
+                "role_title": c.get("role_title"),
+                "commitment": c["commitments"],
+                "email": c.get("email"),
+                "phone": c.get("phone")
+            })
 
-    # 4. Board Tasks
     matched_tasks = []
-    try:
-        board = get_board_cards(chat_id)
-        for st, cards in board.items():
+    for st, cards in board.items():
+        if isinstance(cards, list):
             for card in cards:
-                if card.get("due_date") == date_iso:
+                if isinstance(card, dict) and card.get("due_date") == date_iso:
                     matched_tasks.append(card)
-    except Exception as exc:
-        print("Board tasks in unified schedule error:", repr(exc))
 
-    return {
+    result = {
         "date": target_date,
         "weekday": weekday_str,
         "calendar_events": calendar_events,
@@ -504,6 +540,8 @@ async def get_unified_schedule(chat_id: int, target_date: date):
         "commitments": matched_commitments,
         "tasks": matched_tasks
     }
+    _UNIFIED_SCHED_CACHE[ck] = {"exp": now_ts + 90.0, "data": result}
+    return result
 
 
 async def detect_meeting_conflicts(chat_id: int, start_iso: str, duration_minutes: int = 30):

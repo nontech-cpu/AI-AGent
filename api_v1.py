@@ -1734,6 +1734,7 @@ async def get_user_reminders(
     Returns reminders divided into Today, Upcoming, All, or Completed.
     """
     now = datetime.now(IST)
+    target_chat = _resolve_calendar_chat_id(chat_id)
     def _fetch_rows():
         with engine.connect() as conn:
             return conn.execute(
@@ -1742,17 +1743,18 @@ async def get_user_reminders(
                     "COALESCE(r.sent, false) as sent, r.remind_at "
                     "FROM memory_items m "
                     "LEFT JOIN reminders r ON r.item_id = m.id "
-                    "WHERE m.user_id = (SELECT id FROM users WHERE telegram_chat_id = :c) "
+                    "WHERE m.user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, :target)) "
                     "ORDER BY m.due_date NULLS LAST, m.due_time NULLS LAST, m.id DESC LIMIT 100"
                 ),
-                {"c": chat_id}
+                {"c": chat_id, "target": target_chat}
             ).fetchall()
 
     rows = await asyncio.to_thread(_fetch_rows)
 
-
     results = []
     seen_ids = set()
+    now_date = now.date()
+
     for r in rows:
         item_id = r[0]
         if item_id in seen_ids:
@@ -1760,28 +1762,49 @@ async def get_user_reminders(
         seen_ids.add(item_id)
 
         d_val = r[4]
-        is_today = (d_val == now.date() or (isinstance(d_val, str) and d_val == str(now.date())))
-        is_past = (d_val and d_val < now.date()) if hasattr(d_val, "strftime") else False
-        is_upcoming = (d_val and d_val > now.date()) if hasattr(d_val, "strftime") else False
+        t_val = r[5]
         is_completed = bool(r[6])
+
+        d_date = None
+        if isinstance(d_val, str):
+            try:
+                d_date = datetime.strptime(d_val[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
+        elif hasattr(d_val, "strftime"):
+            d_date = d_val
+
+        t_time = None
+        if isinstance(t_val, str):
+            try:
+                t_time = datetime.strptime(t_val[:8], "%H:%M:%S").time()
+            except Exception:
+                try:
+                    t_time = datetime.strptime(t_val[:5], "%H:%M").time()
+                except Exception:
+                    pass
+        elif hasattr(t_val, "strftime"):
+            t_time = t_val
+
+        is_today = (d_date == now_date or not d_date)
+        is_upcoming = (not is_completed) and (d_date is None or d_date >= now_date)
 
         item_data = {
             "id": item_id,
             "category": r[1],
             "title": r[2],
             "amount": r[3],
-            "due_date": str(d_val) if d_val else None,
-            "due_time": str(r[5]) if r[5] else None,
+            "due_date": str(d_date) if d_date else (str(d_val) if d_val else None),
+            "due_time": str(t_time) if t_time else (str(t_val) if t_val else None),
             "completed": is_completed,
             "remind_at": r[7].isoformat() if hasattr(r[7], "isoformat") else (str(r[7]) if r[7] else None)
         }
 
-
-        if section == "today" and (is_today or not d_val):
+        if section == "today" and is_today:
             results.append(item_data)
         elif section == "upcoming" and is_upcoming:
             results.append(item_data)
-        elif section == "completed" and is_completed:
+        elif section in ("completed", "done") and is_completed:
             results.append(item_data)
         elif section in ("all", None):
             results.append(item_data)
@@ -1812,18 +1835,10 @@ async def create_user_reminder(
             pass
 
     target_chat_id = _resolve_calendar_chat_id(chat_id)
-    item_id = save_memory(chat_id, body.category or "reminder", body.title, body.amount, due_d, due_t)
+    item_id = save_memory(target_chat_id, body.category or "reminder", body.title, body.amount, due_d, due_t)
     plan = build_plan(due_d, due_t, now)
     if plan.get("reminders") and item_id:
         add_reminders(item_id, plan["reminders"])
-
-    if target_chat_id != chat_id:
-        try:
-            mid = save_memory(target_chat_id, body.category or "reminder", body.title, body.amount, due_d, due_t)
-            if plan.get("reminders") and mid:
-                add_reminders(mid, plan["reminders"])
-        except Exception:
-            pass
 
     # 1. Real-time Telegram notification sync
     try:
@@ -1897,14 +1912,15 @@ async def delete_user_reminder(
     """
     Deletes a reminder and its scheduled alerts.
     """
+    target_chat = _resolve_calendar_chat_id(chat_id)
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": reminder_id})
         conn.execute(
             text(
                 "DELETE FROM memory_items WHERE id = :id "
-                "AND user_id = (SELECT id FROM users WHERE telegram_chat_id = :c)"
+                "AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, :target))"
             ),
-            {"id": reminder_id, "c": chat_id}
+            {"id": reminder_id, "c": chat_id, "target": target_chat}
         )
     return {"status": "ok", "message": "Reminder deleted successfully"}
 

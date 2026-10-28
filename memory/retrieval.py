@@ -31,13 +31,22 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "movie", "dinner", "lunch", "kisko", "uska", "uski", "unka", "unki", "pehle",
         "baad", "waqt", "nhi", "nahi", "nahin", "hain", "naam", "sirf",
         "kesa", "kaisa", "kaise", "kaisi", "theek", "thik", "badhiya", "badia", "mast",
-        "haal", "hal", "chal", "rha", "raha", "rahe", "rahi", "hlo", "hello", "hey", "namaste"
+        "haal", "hal", "chal", "rha", "raha", "rahe", "rahi", "hlo", "hello", "hey", "namaste",
+        "reminders", "schedule", "events", "calendar", "weather", "notion", "github", "task", "tasks", "list", "lists", "calc", "calculate"
     }
     candidates = [w for w in words if w not in stopwords][:3]
     return candidates
 
 
+_MEM_CTX_CACHE: dict = {}
+
 def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
+    import time as _pytime
+    now_ts = _pytime.time()
+    ck = (chat_id, user_text.strip().lower())
+    cached = _MEM_CTX_CACHE.get(ck)
+    if cached and (now_ts < cached["exp"]):
+        return cached["data"]
     """
     Assembles layered cognitive memory for the current turn:
     1. Entity lookup (Fuzzy / phonetic matching on candidate words).
@@ -87,8 +96,13 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         except Exception:
             relevant_mems = []
 
-    # 3. User facts
-    facts = get_user_semantic_facts(user_id)[:3]
+    # 3. User facts (only if relevant to user preferences/facts query or if recall requested)
+    facts = []
+    if re.search(r"\b(fact|facts|preference|preferences|profile|about me|pasand|aadat|habit|rule|rules|favourite|favorite)\b", user_text, re.I):
+        try:
+            facts = get_user_semantic_facts(user_id)[:3]
+        except Exception:
+            facts = []
 
     # Format into context string
     lines = ["<memory>"]
@@ -126,9 +140,11 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
 
     formatted = "\n".join(lines) if (matched_entities or relevant_mems or facts) else ""
 
-    return {
+    res = {
         "formatted_block": formatted,
         "matched_entities": matched_entities,
         "relevant_memories": relevant_mems,
         "facts": facts
     }
+    _MEM_CTX_CACHE[ck] = {"exp": now_ts + 90.0, "data": res}
+    return res

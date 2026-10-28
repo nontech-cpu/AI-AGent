@@ -679,8 +679,16 @@ def save_user_semantic_fact(user_id: int, fact: str, category: str = "general") 
     )
 
 
+_FACTS_CACHE: dict = {}
+
 def get_user_semantic_facts(user_id: int, category: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieves saved life facts and preferences."""
+    import time as _pytime
+    now_ts = _pytime.time()
+    ck = (user_id, category)
+    if ck in _FACTS_CACHE and (now_ts < _FACTS_CACHE[ck]["exp"]):
+        return _FACTS_CACHE[ck]["data"]
+
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         rows = conn.execute(
@@ -707,4 +715,5 @@ def get_user_semantic_facts(user_id: int, category: Optional[str] = None) -> Lis
                 "category": struct.get("category", "general"),
                 "created_at": str(r[3])
             })
+        _FACTS_CACHE[ck] = {"exp": now_ts + 120.0, "data": facts}
         return facts

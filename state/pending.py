@@ -59,6 +59,7 @@ def ensure_pending_table():
 
 
 def save_pending_action(chat_id: int, action_kind: str, payload: dict, expires_minutes: int = 60) -> int:
+    _PENDING_ACTION_CACHE.pop(chat_id, None)
     """
     Saves or replaces a pending confirmation action in the database.
     Previous unconfirmed actions for the user are marked as 'superseded'.
@@ -111,11 +112,18 @@ def save_pending_action(chat_id: int, action_kind: str, payload: dict, expires_m
     return action_id
 
 
+_PENDING_ACTION_CACHE: dict = {}
+
 def get_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
     """
     Retrieves the current pending action for chat_id from the database.
     Returns None if no action is pending or if it has expired.
     """
+    import time as _pytime
+    now_ts = _pytime.time()
+    cached = _PENDING_ACTION_CACHE.get(chat_id)
+    if cached and (now_ts < cached["exp"]):
+        return cached["val"]
     ensure_pending_table()
     with db.engine.connect() as conn:
         row = conn.execute(text("""
@@ -127,6 +135,7 @@ def get_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
         """), {"chat_id": chat_id}).fetchone()
 
         if not row:
+            _PENDING_ACTION_CACHE[chat_id] = {"exp": now_ts + 60.0, "val": None}
             return None
 
         action_id, c_id, action_kind, payload_raw, status, created_at, expires_at = row
@@ -162,7 +171,7 @@ def get_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
         else:
             payload = {}
 
-        return {
+        res = {
             "id": action_id,
             "chat_id": c_id,
             "action_kind": action_kind,
@@ -171,10 +180,13 @@ def get_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
             "created_at": created_at,
             "expires_at": expires_at
         }
+        _PENDING_ACTION_CACHE[chat_id] = {"exp": now_ts + 60.0, "val": res}
+        return res
 
 
 def complete_pending_action(action_id: int, status: str = "confirmed") -> None:
     """Marks a pending action as confirmed, cancelled, or superseded in the DB."""
+    _PENDING_ACTION_CACHE.clear()
     ensure_pending_table()
     with db.engine.begin() as conn:
         conn.execute(text("""
@@ -186,6 +198,7 @@ def complete_pending_action(action_id: int, status: str = "confirmed") -> None:
 
 def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
     """Cancels the active pending action for chat_id."""
+    _PENDING_ACTION_CACHE.pop(chat_id, None)
     pending = get_pending_action(chat_id)
     if pending:
         complete_pending_action(pending["id"], status="cancelled")

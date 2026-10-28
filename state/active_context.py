@@ -87,23 +87,23 @@ def clear_active_context(chat_id: int):
     """Clears context when user explicitly switches topic."""
     _ACTIVE_CONTEXT_STORE.pop(chat_id, None)
 
-def format_active_context(chat_id: int) -> str:
+def format_active_context(chat_id: int, recent_history: Optional[List[Dict[str, Any]]] = None) -> str:
     """Formats active context into a concise string for runtime system prompt injection."""
     ctx = dict(get_active_context(chat_id))
-    # If in-memory context has no connector or topic, check recent DB chat turns
+    # If in-memory context has no connector or topic, check recent in-memory turns
     if not ctx.get("connector") or not ctx.get("topic"):
-        try:
-            import db, re
-            recent = db.get_recent_chat_history(chat_id, limit=6)
-            for t in reversed(recent):
-                txt = t.get("text", "")
-                m = re.search(r'\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+-project)\b', txt)
-                if m:
-                    ctx["connector"] = "GitHub"
-                    ctx["topic"] = f"repo: {m.group(1)}"
-                    break
-        except Exception:
-            pass
+        if recent_history:
+            try:
+                import re
+                for t in reversed(recent_history):
+                    txt = t.get("text", "")
+                    m = re.search(r'\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+-project)\b', txt)
+                    if m:
+                        ctx["connector"] = "GitHub"
+                        ctx["topic"] = f"repo: {m.group(1)}"
+                        break
+            except Exception:
+                pass
 
     parts = []
     if ctx.get("connector"):
