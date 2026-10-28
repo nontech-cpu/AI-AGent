@@ -1236,11 +1236,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             return res
 
         elif tool_name == "delete_reminder":
-            kw = arguments.get("title", "").strip().lower()
+            kw = str(arguments.get("title", "")).strip().lower()
             rem_id = arguments.get("reminder_id")
-            from db import canonical_chat_id, engine, text
+            from db import canonical_chat_id, engine, text, items_for_date
+            from timing import IST
+            from datetime import datetime
             import re
             can_cid = canonical_chat_id(chat_id)
+
+            # Robust keyword cleaning: remove asterisks, times (- 05:30 PM), filler words
+            clean_kw = kw.replace("*", "").strip()
+            clean_kw = re.sub(r"[-–—\s]*(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?.*$", "", clean_kw, flags=re.I).strip()
+            clean_kw = re.sub(r"(reminder|rmeinder|remidner|meeting|wala|wali|ko|ka|ki)", "", clean_kw, flags=re.I).strip()
+            clean_kw = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", clean_kw).strip()
 
             deleted_titles = []
             with engine.begin() as conn:
@@ -1249,12 +1257,24 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         text("SELECT id, title FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
                         {"id": rem_id, "c": can_cid}
                     ).fetchall()
-                else:
-                    clean_kw = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", kw).strip().strip("*")
+                elif clean_kw:
                     matched_rows = conn.execute(
                         text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
                         {"pat": f"%{clean_kw}%", "c": can_cid}
                     ).fetchall()
+                    # Fallback token match if exact substring not found
+                    if not matched_rows:
+                        tokens = [t for t in clean_kw.split() if len(t) >= 3]
+                        for tk in tokens:
+                            rows = conn.execute(
+                                text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
+                                {"pat": f"%{tk}%", "c": can_cid}
+                            ).fetchall()
+                            if rows:
+                                matched_rows = rows
+                                break
+                else:
+                    matched_rows = []
 
                 for r_id, r_title in matched_rows:
                     conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": r_id})
@@ -1271,15 +1291,30 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 return {
                     "status": "success",
                     "action": "delete_reminder",
-                "title": ", ".join(deleted_titles),
-                "deleted_count": len(deleted_titles),
+                    "title": ", ".join(deleted_titles),
+                    "deleted_count": len(deleted_titles),
                     "deleted_titles": deleted_titles,
                     "message": f"Done! Reminder '{', '.join(deleted_titles)}' successfully delete kar diya hai."
                 }
             else:
+                # If not found or empty title, fetch active reminders to guide user
+                today_items = items_for_date(can_cid, datetime.now(IST).date())
+                if today_items:
+                    rem_lines = [f"• {it[1]}" + (f" ({it[3].strftime('%I:%M %p')})" if it[3] else "") for it in today_items]
+                    active_hint = "\n\nAapke active reminders:\n" + "\n".join(rem_lines)
+                else:
+                    active_hint = "\n\nFilhaal aapka koi pending reminder nahi hai."
+
+                if clean_kw:
+                    msg = f"'{kw}' naam ka reminder nahi mila.{active_hint}"
+                else:
+                    msg = f"Aapko kaunsa reminder delete karna hai?{active_hint}"
+
                 return {
                     "status": "not_found",
-                    "message": f"'{kw}' naam ka koi reminder nahi mila jo delete kiya ja sake."
+                    "action": "delete_reminder",
+                    "title": kw or "None",
+                    "message": msg
                 }
 
         elif tool_name == "list_reminders":

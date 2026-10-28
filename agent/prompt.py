@@ -34,6 +34,7 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
 3. **Execution:** Call tools directly when user requests actions (reminders, meetings, notes, weather, search). Multi-intent queries execute all required tools.
 4. **Reminders & Calendar Sync:** When creating a reminder with date/time, it syncs to Google Calendar automatically. Check {SCHEDULE_BLOCK} for conflict alerts.
 5. **Language & Output:** ALWAYS write in Latin / Roman Hinglish (A-Z). Never output regional non-Latin scripts. Keep responses concise, helpful, and natural. Never fabricate fake links, IDs, or actions.
+6. **Deleting Reminders & Events (CRITICAL):** You have direct tools (`delete_reminder`, `delete_meeting`). When user asks to delete, cancel, or remove any reminder (even with typos like 'remidner', 'rmeinder', 'dlt', 'dlet', 'hata do', 'electri** - 05:30 PM'), ALWAYS immediately execute `delete_reminder(title=...)`. If title is missing, list active reminders and ask which one. NEVER say you lack access or tell the user to delete from their phone's Clock or Calendar app!
 """
 
 _USER_META_CACHE: dict = {

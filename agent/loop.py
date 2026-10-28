@@ -71,6 +71,12 @@ GROUNDING & TRUTH CONTRACT:
      Format code blocks using triple backticks (```python ... ```) — the system converts them into native Notion syntax-highlighted code blocks!
    - Casual plans, everyday events, trip updates, appointments, tasks, or time statements (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor ke jana h', 'gym jana h', 'shaam ko movie dekhna hai') are SCHEDULE / REMINDER items, NEVER Notion pages!
    - When a user states a plan with a time (e.g. '4:30 trip h dost k sth'): check schedule for conflicts, alert them if there is a clash, and offer or create a reminder / calendar event (`create_reminder` or `create_meeting`). NEVER create a Notion page for it!
+13. DELETING REMINDERS & MEETINGS (CRITICAL MANDATE - ZERO REFUSAL):
+   - You have FULL access and native tools (`delete_reminder`, `delete_meeting`) to delete or cancel reminders, tasks, and calendar events from the system and database.
+   - When the user asks to delete, cancel, or remove a reminder or meeting (including typos like 'remidner', 'rmeinder', 'dlt', 'dlet', 'del', 'hata do', 'hatao', 'cancel', or quoting title/time like 'electri** - 05:30 PM'):
+     * ALWAYS call the `delete_reminder` tool immediately with the title keyword (e.g. `delete_reminder(title='electri')`).
+     * If the user did not specify which reminder to delete (e.g. 'bhy reminder dlt krna'), call `list_reminders` to check active reminders and ask which one they want to delete.
+   - NEVER EVER say: "mere paas direct access nahi hai", "main AI hoon phone settings/calendar access nahi hai", or "phone ki Clock/Calendar app khol kar delete karo". Those are FALSE refusals and strictly prohibited! You HAVE `delete_reminder`. Use it!
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
@@ -137,15 +143,19 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # 0. Pure casual greetings / check-ins fast path (Instant <0.9s response, zero DB lag)
     low_prompt = user_text.lower().strip()
     has_action_words = bool(re.search(
-        r"\b(remind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|forget\w*|clean\w*)\b",
+        r"\b(remind\w*|remid\w*|rmeind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|dlt\w*|dlet\w*|del\b|hata\w*|cancel\w*|remove\w*|clear\w*|mitado\w*|forget\w*|clean\w*|karna\b|krna\b|kardo\b|krdo\b|laga\b|daal\b|bana\b|set\b)\b",
         low_prompt
     ))
+    words_count = len(low_prompt.split())
+    has_explicit_greeting = bool(re.search(
+        r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)\b",
+        low_prompt
+    ))
+    is_standalone_vocative = (words_count <= 2 and low_prompt in ("bhai", "bhy", "bro", "yaar", "dost", "suno", "hey bhai", "hi bro"))
     is_pure_casual_chat = (
         not has_action_words
-        and bool(re.search(
-            r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast|bhai|bhy|bro|yaar|dost)\b",
-            low_prompt
-        ))
+        and words_count <= 6
+        and (has_explicit_greeting or is_standalone_vocative)
     )
 
     if is_pure_casual_chat:
@@ -784,15 +794,19 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     
     # Pure casual greetings / check-ins: zero tool overhead and zero DB latency for 0.4s natural chat
     has_action_words = bool(re.search(
-        r"\b(remind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|forget\w*|clean\w*)\b",
+        r"\b(remind\w*|remid\w*|rmeind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|dlt\w*|dlet\w*|del\b|hata\w*|cancel\w*|remove\w*|clear\w*|mitado\w*|forget\w*|clean\w*|karna\b|krna\b|kardo\b|krdo\b|laga\b|daal\b|bana\b|set\b)\b",
         low_prompt
     ))
+    words_count = len(low_prompt.split())
+    has_explicit_greeting = bool(re.search(
+        r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)\b",
+        low_prompt
+    ))
+    is_standalone_vocative = (words_count <= 2 and low_prompt in ("bhai", "bhy", "bro", "yaar", "dost", "suno", "hey bhai", "hi bro"))
     is_pure_casual_chat = (
         not has_action_words
-        and bool(re.search(
-            r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast|bhai|bhy|bro|yaar|dost)\b",
-            low_prompt
-        ))
+        and words_count <= 6
+        and (has_explicit_greeting or is_standalone_vocative)
     )
 
     print("Check 1:", time.time() - start_ts)
@@ -842,7 +856,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     active_tool_names = set()
 
     if not is_pure_casual_chat:
-        has_rem = bool(re.search(r"\b(reminder|reminders|remind|yaad|alarm|task|tasks|todo|baje|bje|am|pm)\b", low_prompt))
+        has_rem = bool(re.search(r"\b(remind\w*|remid\w*|rmeind\w*|yaad|alarm|task|tasks|todo|baje|bje|am|pm|dlt|dlet|del|delete|hata|hatao|cancel|mitado)\b", low_prompt))
         has_cal = bool(re.search(r"(\b(meet|meeting|meetings|calendar|event|events|schedule|call|calls|slot|slots|free|busy|availability|appointment|appointments|host|reschedule|cancel\s+meet|doctor|interview|trip|plan|plans|movie|dinner|lunch|party|wedding)\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|bje|baje)\b)", low_prompt))
         has_cont = bool(re.search(r"\b(contact|contacts|phone|number|call|commit|commitment|promise|promises|bhejna|dena|milna)\b", low_prompt))
         has_mem = bool(re.search(r"\b(note|notes|fact|facts|save|store|yaad|remember|memory|search|dhundo|pata\s+karo|ticket|pnr|flight|clear\s+chat)\b", low_prompt))
@@ -880,8 +894,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         if has_integ:
             active_tool_names.update({"check_integrations_status", "connect_integration"})
 
+        # If user expresses ANY delete/cancellation intent, ensure delete tools are present
+        if bool(re.search(r"\b(dlt|dlet|del|delete|hata|hatao|cancel|remove|clear|mitado)\b", low_prompt)):
+            active_tool_names.update({"delete_reminder", "delete_meeting", "list_reminders", "get_schedule"})
+
         if not active_tool_names:
-            active_tool_names = {"create_reminder", "list_reminders", "get_schedule", "save_note_or_fact", "search_memory", "search_web", "get_weather", "check_integrations_status"}
+            active_tool_names = {"create_reminder", "list_reminders", "delete_reminder", "get_schedule", "save_note_or_fact", "search_memory", "search_web", "get_weather", "check_integrations_status"}
         
     # Build effective_tools adhering to token budgets
     effective_tools = [
