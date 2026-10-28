@@ -1198,6 +1198,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 except Exception:
                     pass
 
+                try:
+                    from api_v1 import _invalidate_all_app_caches
+                    _invalidate_all_app_caches()
+                except Exception:
+                    pass
+
                 res = {
                     "status": "success",
                     "title": args.title,

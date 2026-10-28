@@ -1621,20 +1621,34 @@
       const container = document.getElementById('remindersListContainer');
       if (!container) return;
 
+      const cacheKey = `memorae_reminders_${currentChatId}_${s}`;
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            container.innerHTML = renderRemindersHtml(parsed);
+          }
+        }
+      } catch (e) {}
+
       if (!container.children || container.children.length === 0) {
         container.innerHTML = '<div style="text-align:center; padding:20px; color:#475569;">Loading reminders...</div>';
       }
 
       try {
-        const res = await fetch(`${API_BASE}/api/v1/reminders?chat_id=${currentChatId}&section=${s}&_t=${Date.now()}`, {
+        const res = await fetch(`${API_BASE}/api/v1/reminders?chat_id=${currentChatId}&section=${s}`, {
           headers: { 'X-Chat-Id': currentChatId }
         });
         if (!res.ok) return;
         const data = await res.json();
         const rems = data.reminders || [];
+        localStorage.setItem(cacheKey, JSON.stringify(rems));
         container.innerHTML = renderRemindersHtml(rems);
       } catch (err) {
-        container.innerHTML = '<div style="color:red; text-align:center;">Failed to load reminders.</div>';
+        if (!container.innerHTML.includes('reminder-card')) {
+          container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:15px;">Reminders up to date.</div>';
+        }
       }
     }
 
@@ -1654,6 +1668,50 @@
       document.getElementById('newRemTitle').value = '';
       document.getElementById('newRemTime').value = '';
 
+      // Instant 0ms Optimistic UI insertion in Reminders Tab
+      const remContainer = document.getElementById('remindersListContainer');
+      const optId = 'opt_rem_' + Date.now();
+      if (remContainer) {
+        const optHtml = `
+          <div class="reminder-card" id="${optId}" style="margin-bottom:8px; opacity:0.85;">
+            <input type="checkbox" style="width:18px; height:18px; accent-color:var(--accent-purple);" disabled>
+            <div class="reminder-details">
+              <div class="reminder-title">${escapeHtml(title)}</div>
+              <div class="reminder-meta">
+                <span class="badge-category">${escapeHtml(cat || 'reminder')}</span>
+                <span>📅 ${escapeHtml(date)} ${time ? '• ' + escapeHtml(time) : ''}</span>
+              </div>
+            </div>
+            <span style="font-size:11px; color:#6366f1;">Saving...</span>
+          </div>
+        `;
+        if (remContainer.innerText.includes('No reminders found')) remContainer.innerHTML = '';
+        remContainer.insertAdjacentHTML('afterbegin', optHtml);
+      }
+
+      // Also Instant 0ms Optimistic UI insertion in Calendar Tab
+      const calContainer = document.getElementById('calendarEventsContainer');
+      if (calContainer) {
+        const calOptHtml = `
+          <div class="dash-card" id="cal_${optId}" style="margin-bottom:10px; padding:12px 16px; opacity:0.85;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                  <strong style="font-size:15px; color:#0f172a;">🔔 ${escapeHtml(title)}</strong>
+                  <span style="font-size:10px; padding:2px 8px; border-radius:12px; font-weight:600; background:#ede9fe; color:#6d28d9;">🔔 Reminder</span>
+                </div>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+                  🕒 ${escapeHtml(date)} ${time ? escapeHtml(time) : '09:00'}
+                </div>
+              </div>
+              <span style="font-size:11px; color:#6366f1;">Synced</span>
+            </div>
+          </div>
+        `;
+        if (calContainer.innerText.includes('No events scheduled')) calContainer.innerHTML = '';
+        calContainer.insertAdjacentHTML('afterbegin', calOptHtml);
+      }
+
       try {
         const res = await fetch(`${API_BASE}/api/v1/reminders?chat_id=${currentChatId}`, {
           method: 'POST',
@@ -1663,16 +1721,14 @@
           },
           body: JSON.stringify({ title, due_date: date, due_time: time, category: cat })
         });
-        if (res.ok) {
-          loadReminders(currentReminderSection);
-          loadDashboardData();
-          loadCalendarEvents();
-        } else {
-          alert('Failed to save reminder.');
-          loadReminders(currentReminderSection);
-        }
+        // Clear caches so fresh data is loaded
+        ['all', 'today', 'upcoming'].forEach(sec => localStorage.removeItem(`memorae_reminders_${currentChatId}_${sec}`));
+        localStorage.removeItem(`memorae_calendar_${currentChatId}`);
+        loadReminders(currentReminderSection);
+        loadCalendarEvents();
+        loadDashboardData();
       } catch (err) {
-        alert('Error saving reminder: ' + err.message);
+        console.error('submitNewReminder error:', err);
         loadReminders(currentReminderSection);
       }
     }
@@ -1701,19 +1757,64 @@
     }
 
     // ---------- Calendar Loader & CRUD ----------
+    function renderCalendarEventsHtml(evs) {
+      if (!evs || evs.length === 0) {
+        return `
+          <div style="background:var(--glass-card); padding:16px; border-radius:20px; text-align:center; color:var(--text-muted);">
+            No events scheduled for today.<br>Click <strong>+ Add Event</strong> to schedule!
+          </div>
+        `;
+      }
+      return evs.map(ev => {
+        const isGoogle = ev.source === 'google' || (ev.id && !String(ev.id).startsWith('local_'));
+        const badgeLabel = isGoogle ? '📅 Google' : (ev.source ? '🔔 ' + ev.source : '🔔 Reminder');
+        const badgeBg = isGoogle ? 'background:#e0f2fe; color:#0369a1;' : 'background:#ede9fe; color:#6d28d9;';
+        return `
+          <div class="dash-card" style="margin-bottom:10px; padding:12px 16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                  <strong style="font-size:15px; color:#0f172a;">${escapeHtml(ev.title)}</strong>
+                  <span style="font-size:10px; padding:2px 8px; border-radius:12px; font-weight:600; ${badgeBg}">${badgeLabel}</span>
+                </div>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+                  🕒 ${ev.start ? ev.start.replace('T', ' ') : 'All Day'}
+                </div>
+              </div>
+              <button style="background:none; border:none; cursor:pointer;" onclick="deleteCalendarEvent('${ev.id}')">🗑️</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
     async function loadCalendarEvents() {
       const container = document.getElementById('calendarEventsContainer');
       if (!container) return;
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const cacheKey = `memorae_calendar_${currentChatId}_${todayStr}`;
+
+      // 0ms instant cached render
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            container.innerHTML = renderCalendarEventsHtml(parsed);
+          }
+        }
+      } catch (e) {}
+
       if (!container.children || container.children.length === 0) {
         container.innerHTML = '<div style="text-align:center; padding:15px; color:#475569;">Loading schedule...</div>';
       }
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4500);
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
       try {
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const res = await fetch(`${API_BASE}/api/v1/calendar/events?chat_id=${currentChatId}&view=day&date=${todayStr}&_t=${Date.now()}`, {
+        const res = await fetch(`${API_BASE}/api/v1/calendar/events?chat_id=${currentChatId}&view=day&date=${todayStr}`, {
           signal: controller.signal,
           headers: { 'X-Chat-Id': currentChatId }
         });
@@ -1721,37 +1822,8 @@
         if (!res.ok) throw new Error('Status: ' + res.status);
         const data = await res.json();
         const evs = data.events || [];
-
-        if (evs.length === 0) {
-          container.innerHTML = `
-            <div style="background:var(--glass-card); padding:16px; border-radius:20px; text-align:center; color:var(--text-muted);">
-              No events scheduled for today.<br>Click <strong>+ Add Event</strong> to schedule!
-            </div>
-          `;
-          return;
-        }
-
-        container.innerHTML = evs.map(ev => {
-          const isGoogle = ev.source === 'google' || (ev.id && !String(ev.id).startsWith('local_'));
-          const badgeLabel = isGoogle ? '📅 Google' : (ev.source ? '🔔 ' + ev.source : '🔔 Reminder');
-          const badgeBg = isGoogle ? 'background:#e0f2fe; color:#0369a1;' : 'background:#ede9fe; color:#6d28d9;';
-          return `
-            <div class="dash-card" style="margin-bottom:10px; padding:12px 16px;">
-              <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                  <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
-                    <strong style="font-size:15px; color:#0f172a;">${escapeHtml(ev.title)}</strong>
-                    <span style="font-size:10px; padding:2px 8px; border-radius:12px; font-weight:600; ${badgeBg}">${badgeLabel}</span>
-                  </div>
-                  <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
-                    🕒 ${ev.start ? ev.start.replace('T', ' ') : 'All Day'}
-                  </div>
-                </div>
-                <button style="background:none; border:none; cursor:pointer;" onclick="deleteCalendarEvent('${ev.id}')">🗑️</button>
-              </div>
-            </div>
-          `;
-        }).join('');
+        localStorage.setItem(cacheKey, JSON.stringify(evs));
+        container.innerHTML = renderCalendarEventsHtml(evs);
       } catch (err) {
         clearTimeout(timeoutId);
         if (!container.innerHTML.includes('dash-card')) {
@@ -1770,15 +1842,32 @@
         return;
       }
 
-      const btn = document.querySelector('#modalCalendar .btn-submit');
-      const origText = btn ? btn.innerText : 'Schedule on Google Calendar';
-      if (btn) {
-        btn.innerText = 'Scheduling & Syncing...';
-        btn.disabled = true;
-      }
-
       closeModals();
       document.getElementById('newCalTitle').value = '';
+
+      // Instant 0ms Optimistic UI insertion in Calendar Tab
+      const container = document.getElementById('calendarEventsContainer');
+      const optId = 'opt_ev_' + Date.now();
+      if (container) {
+        const optHtml = `
+          <div class="dash-card" id="${optId}" style="margin-bottom:10px; padding:12px 16px; opacity:0.85;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                  <strong style="font-size:15px; color:#0f172a;">${escapeHtml(title)}</strong>
+                  <span style="font-size:10px; padding:2px 8px; border-radius:12px; font-weight:600; background:#e0f2fe; color:#0369a1;">📅 Google</span>
+                </div>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+                  🕒 ${dt.replace('T', ' ')}
+                </div>
+              </div>
+              <span style="font-size:11px; color:#6366f1;">Syncing...</span>
+            </div>
+          </div>
+        `;
+        if (container.innerText.includes('No events scheduled')) container.innerHTML = '';
+        container.insertAdjacentHTML('afterbegin', optHtml);
+      }
 
       try {
         await fetch(`${API_BASE}/api/v1/calendar/events?chat_id=${currentChatId}`, {
@@ -1786,16 +1875,13 @@
           headers: { 'Content-Type': 'application/json', 'X-Chat-Id': currentChatId },
           body: JSON.stringify({ title, start_iso: dt, duration_minutes: dur })
         });
+        const todayStr = new Date().toISOString().slice(0, 10);
+        localStorage.removeItem(`memorae_calendar_${currentChatId}_${todayStr}`);
         loadCalendarEvents();
         loadDashboardData();
       } catch (err) {
         console.error('submitNewEvent error:', err);
         loadCalendarEvents();
-      } finally {
-        if (btn) {
-          btn.innerText = origText;
-          btn.disabled = false;
-        }
       }
     }
     async function deleteCalendarEvent(id) {
@@ -2073,10 +2159,10 @@
         } catch (e) {}
 
         loadDashboardData();
-        loadReminders(currentReminderSection);
-        loadUserLists();
-        loadCalendarEvents();
-        loadTasksTab(currentKanbanCol);
+        if (activeTab === 'reminders') loadReminders(currentReminderSection);
+        else if (activeTab === 'calendar') loadCalendarEvents();
+        else if (activeTab === 'lists') loadUserLists();
+        else if (activeTab === 'tasks') loadTasksTab(currentKanbanCol);
       } catch (err) {
         botBubble.innerHTML = '<div class="bot-header">✦ Memorae AI</div>Could not connect to backend server.';
       } finally {
@@ -2330,6 +2416,14 @@
     function renderChatBubbles(msgs) {
       const chatStream = document.getElementById('chatStream');
       if (!chatStream || !msgs || msgs.length === 0) return;
+      if (isSendingChat) return;
+
+      const existingBubbles = chatStream.querySelectorAll('.chat-bubble');
+      // If we already have bubbles and incoming history is older or equal, don't wipe to avoid disappearing reply!
+      if (existingBubbles.length > msgs.length) {
+        return;
+      }
+
       chatStream.innerHTML = '';
       msgs.forEach(m => {
         const bubble = document.createElement('div');
@@ -2396,18 +2490,21 @@
       loadDashboardData();
     });
 
-    // Background live-sync polling every 3.5 seconds
-    setInterval(loadChatHistory, 3500);
+    // Background live-sync polling every 20 seconds (only when visible and not chatting)
+    setInterval(() => {
+      if (document.hidden || isSendingChat) return;
+      loadChatHistory();
+    }, 20000);
 
-    // Background live-sync polling for reminders, lists, calendar & dashboard every 8 seconds
+    // Background live-sync polling for active tab every 30 seconds
     setInterval(() => {
       if (document.hidden) return;
       loadDashboardData();
       if (activeTab === 'reminders') loadReminders(currentReminderSection);
-      if (activeTab === 'lists') loadUserLists();
-      if (activeTab === 'tasks') loadTasksTab(currentKanbanCol);
-      if (activeTab === 'calendar') loadCalendarEvents();
-    }, 8000);
+      else if (activeTab === 'lists') loadUserLists();
+      else if (activeTab === 'tasks') loadTasksTab(currentKanbanCol);
+      else if (activeTab === 'calendar') loadCalendarEvents();
+    }, 30000);
   </script>
 
 

@@ -141,20 +141,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     ))
     is_pure_casual_chat = (
         not has_action_words
-        and (
-            bool(re.search(
-                r"^(?:(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)\s+)?(?:hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)(?:\s+(?:bhy|bhai|bro|yaar|dost|h|hai|ho|chal\s+raha\s+hai|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
-                low_prompt
-            ))
-            or bool(re.search(
-                r"^(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)(?:\s+(?:kesa|kaisa|kaise|kaisi|theek|thik|kya\s+hal|kya\s+haal|kya\s+chal\s+rha|kya\s+chal\s+raha|sab\s+badhiya))?(?:\s+(?:h|hai|ho|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
-                low_prompt
-            ))
-            or bool(re.search(
-                r"^(?:sab\s+)?(?:badhiya|theek|thik|mast)\s*(?:bhy|bhai|bro|yaar|dost)?(?:\s+(?:tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao|kaisa\s+hai|kaisa\s+h))?[\s?!.,]*$",
-                low_prompt
-            ))
-        )
+        and bool(re.search(
+            r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast|bhai|bhy|bro|yaar|dost)\b",
+            low_prompt
+        ))
     )
 
     if is_pure_casual_chat:
@@ -170,7 +160,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}"},
                     json={
-                        "model": model,
+                        "model": "qwen/qwen3.8-27b",
                         "temperature": 0.5,
                         "messages": [
                             {"role": "system", "content": sys_msg},
@@ -181,9 +171,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 )
                 if resp.status_code == 200:
                     reply_text = resp.json()["choices"][0]["message"]["content"].strip()
-                    # Log asynchronously in background
-                    asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text))
-                    asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text))
+                    # Await synchronously so messages persist before HTTP response returns to browser
+                    await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
+                    await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text)
                     return {
                         "reply": reply_text,
                         "tool_calls_executed": [],
@@ -218,8 +208,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             else:
                 reply_text = "Bhai, aaj ke liye aapka koi reminder scheduled nahi hai! Agar koi reminder add karna ho toh batayein! 😊"
 
-            asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text))
-            asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text))
+            await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
+            await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text)
             return {
                 "reply": reply_text,
                 "tool_calls_executed": ["list_reminders"],
@@ -801,20 +791,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     ))
     is_pure_casual_chat = (
         not has_action_words
-        and (
-            bool(re.search(
-                r"^(?:(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)\s+)?(?:hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)(?:\s+(?:bhy|bhai|bro|yaar|dost|h|hai|ho|chal\s+raha\s+hai|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
-                low_prompt
-            ))
-            or bool(re.search(
-                r"^(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)(?:\s+(?:kesa|kaisa|kaise|kaisi|theek|thik|kya\s+hal|kya\s+haal|kya\s+chal\s+rha|kya\s+chal\s+raha|sab\s+badhiya))?(?:\s+(?:h|hai|ho|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
-                low_prompt
-            ))
-            or bool(re.search(
-                r"^(?:sab\s+)?(?:badhiya|theek|thik|mast)\s*(?:bhy|bhai|bro|yaar|dost)?(?:\s+(?:tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao|kaisa\s+hai|kaisa\s+h))?[\s?!.,]*$",
-                low_prompt
-            ))
-        )
+        and bool(re.search(
+            r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast|bhai|bhy|bro|yaar|dost)\b",
+            low_prompt
+        ))
     )
 
     print("Check 1:", time.time() - start_ts)
@@ -841,7 +821,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
     recent_history = []
     if not is_pure_casual_chat:
-        recent_history = db.get_recent_chat_history(chat_id, limit=8)
+        recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 8)
         for turn in recent_history:
             t_text = turn.get("text") or ""
             if len(t_text) > 3000:
@@ -920,7 +900,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "model": current_model,
                 "temperature": 0.5,
                 "messages": messages,
-                "max_tokens": 4096,
+                "max_tokens": 1024,
             }
             if effective_tools:
                 payload["tools"] = effective_tools
@@ -1297,8 +1277,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     latency_ms = int((time.time() - start_ts) * 1000)
 
     # Record turn
-    db.log_chat_message(chat_id, "user", user_text)
-    db.log_chat_message(chat_id, "assistant", final_reply)
+    await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
+    await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
 
     # Continuous background memory extraction
     try:

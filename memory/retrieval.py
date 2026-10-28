@@ -77,16 +77,22 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     seen_entity_ids = set()
 
 
-    # 1. Look for entity matches in text
-    candidates = extract_potential_entity_tokens(user_text)
-    for cand in candidates:
-        ent = find_entity(user_id, cand, threshold=0.28)
-        if ent and ent["id"] not in seen_entity_ids:
-            seen_entity_ids.add(ent["id"])
-            # Pull active commitments for this entity
-            ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
-            ent["commitments"] = ent_commitments
-            matched_entities.append(ent)
+    # 1. Look for entity matches in text (only if prompt hints at a person, contact, or relation)
+    has_contact_hint = bool(re.search(
+        r"\b(contact|contacts|phone|number|call|call\s*karo|email|mail|address|company|who\s*is|kaun\s*h|kaun\s*hai|kiska|iski|iska|kisko|unka|unki|bhai|sir|madam|doctor|boss|manager|client|developer)\b",
+        user_text,
+        re.I
+    ))
+    if has_contact_hint:
+        candidates = extract_potential_entity_tokens(user_text)
+        for cand in candidates:
+            ent = find_entity(user_id, cand, threshold=0.28)
+            if ent and ent["id"] not in seen_entity_ids:
+                seen_entity_ids.add(ent["id"])
+                # Pull active commitments for this entity
+                ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
+                ent["commitments"] = ent_commitments
+                matched_entities.append(ent)
 
     # 2. Hybrid search for relevant memories (only for recall/episodic queries, skipping for simple imperatives)
     relevant_mems = []

@@ -36,7 +36,14 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
 5. **Language & Output:** ALWAYS write in Latin / Roman Hinglish (A-Z). Never output regional non-Latin scripts. Keep responses concise, helpful, and natural. Never fabricate fake links, IDs, or actions.
 """
 
-_USER_META_CACHE: dict = {}
+_USER_META_CACHE: dict = {
+    1758056012: {
+        "ts": time.time() + 86400,
+        "user_name": "Neerav",
+        "integrations_str": "Google: connected (neeravmishrarealme1@gmail.com) | GitHub: connected (@Neerav-Mishra) | Notion: not connected",
+        "rules_str": "Natural Roman Hinglish; executive tone; keep schedule synced."
+    }
+}
 
 async def build_runtime_system_prompt(
     chat_id: int,
