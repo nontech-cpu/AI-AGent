@@ -137,7 +137,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # 0. Pure casual greetings / check-ins fast path (Instant <0.9s response, zero DB lag)
     low_prompt = user_text.lower().strip()
     has_action_words = bool(re.search(
-        r"\b(remind|reminder|meet|meeting|calendar|schedule|call|task|todo|note|notes|notion|git|github|mail|email|gmail|send|upload|drive|pdf|weather|search|rate|price|gold|sona|convert|calc|dollar|inr|ticket|pnr|flight|wipe|delete|forget|clean)\b",
+        r"\b(remind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|forget\w*|clean\w*)\b",
         low_prompt
     ))
     is_pure_casual_chat = (
@@ -189,12 +189,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             pass
 
     # 0.1 High-speed Reminder & Today's Schedule Query Fast-Path (Instant <0.1s response)
-    is_rem_ask = bool(re.search(
-        r"\b(aaj\s*k[eaie]\s*reminder|mere\s*reminder|kya\s*reminder|koi\s*reminder|reminder\s*(?:ky|kya|bta|bata|dikha|sunao|check)|reminders?\s*(?:dikhao|btao|batao|kya\s*h|kya\s*hai|hai|h|check|sunao)|aaj\s*ka\s*schedule|aaj\s*kya\s*hai)\b",
-        low_prompt
-    ))
     is_rem_write = bool(re.search(r"\b(add|set|create|laga|daal|dal|bana|bna|delete|hata|khatam|cancel|reschedule)\b", low_prompt))
-    if is_rem_ask and not is_rem_write:
+    is_rem_ask = (not is_rem_write) and bool(re.search(r"\b(remind\w*|schedule\w*|agenda)\b", low_prompt))
+    if is_rem_ask:
         try:
             today_date = now_ist.date()
             items = db.items_for_date(chat_id, today_date)
@@ -787,7 +784,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     
     # Pure casual greetings / check-ins: zero tool overhead and zero DB latency for 0.4s natural chat
     has_action_words = bool(re.search(
-        r"\b(remind|reminder|meet|meeting|calendar|schedule|call|task|todo|note|notes|notion|git|github|mail|email|gmail|send|upload|drive|pdf|weather|search|rate|price|gold|sona|convert|calc|dollar|inr|ticket|pnr|flight|wipe|delete|forget|clean)\b",
+        r"\b(remind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|forget\w*|clean\w*)\b",
         low_prompt
     ))
     is_pure_casual_chat = (

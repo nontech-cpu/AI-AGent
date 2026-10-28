@@ -1595,7 +1595,7 @@
               ${r.amount ? `<span>₹${r.amount}</span>` : ''}
             </div>
           </div>
-          <button style="background:none; border:none; cursor:pointer; font-size:16px;" onclick="deleteReminder(${r.id})">🗑️</button>
+          <button style="background:none; border:none; cursor:pointer; font-size:16px;" onclick="deleteReminder(${r.id}, this)">🗑️</button>
         </div>
       `).join('');
     }
@@ -1746,12 +1746,19 @@
       loadDashboardData();
     }
 
-    async function deleteReminder(id) {
+    async function deleteReminder(id, btnEl) {
       if (!confirm('Are you sure you want to delete this reminder?')) return;
 
-      // Instant 0ms optimistic removal from DOM
-      const card = document.querySelector(`.reminder-card[data-id="${id}"]`) || event?.target?.closest('.reminder-card');
-      if (card) card.remove();
+      const card = btnEl ? btnEl.closest('.reminder-card') : (document.querySelector(`.reminder-card[data-id="${id}"]`) || event?.target?.closest('.reminder-card'));
+      if (btnEl) {
+        btnEl.innerHTML = '<span style="font-size:11px; color:#ef4444; font-weight:700;">Deleting...</span>';
+      }
+      if (card) {
+        card.style.opacity = '0.35';
+        card.style.transform = 'scale(0.97)';
+        card.style.transition = 'all 0.25s ease';
+        setTimeout(() => { if (card) card.remove(); }, 250);
+      }
 
       ['all', 'today', 'upcoming', 'completed'].forEach(sec => {
         localStorage.removeItem(`memorae_reminders_${currentChatId}_${sec}`);
@@ -1794,7 +1801,7 @@
                   🕒 ${ev.start ? ev.start.replace('T', ' ') : 'All Day'}
                 </div>
               </div>
-              <button style="background:none; border:none; cursor:pointer;" onclick="deleteCalendarEvent('${ev.id}')">🗑️</button>
+              <button style="background:none; border:none; cursor:pointer;" onclick="deleteCalendarEvent('${ev.id}', this)">🗑️</button>
             </div>
           </div>
         `;
@@ -1897,12 +1904,19 @@
         loadCalendarEvents();
       }
     }
-    async function deleteCalendarEvent(id) {
+    async function deleteCalendarEvent(id, btnEl) {
       if (!confirm('Cancel this event?')) return;
 
-      // Instant 0ms optimistic removal from DOM
-      const card = event?.target?.closest('.dash-card');
-      if (card) card.remove();
+      const card = btnEl ? btnEl.closest('.dash-card') : (event?.target?.closest('.dash-card'));
+      if (btnEl) {
+        btnEl.innerHTML = '<span style="font-size:11px; color:#ef4444; font-weight:700;">Deleting...</span>';
+      }
+      if (card) {
+        card.style.opacity = '0.35';
+        card.style.transform = 'scale(0.97)';
+        card.style.transition = 'all 0.25s ease';
+        setTimeout(() => { if (card) card.remove(); }, 250);
+      }
 
       const todayStr = new Date().toISOString().slice(0, 10);
       localStorage.removeItem(`memorae_calendar_${currentChatId}_${todayStr}`);

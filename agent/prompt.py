@@ -170,8 +170,13 @@ async def build_runtime_system_prompt(
         else:
             today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
             try:
+                from db import items_for_date, canonical_chat_id
+                cid_can = canonical_chat_id(chat_id)
+                db_rems = items_for_date(cid_can, today_d)
+                if db_rems:
+                    today_sched["reminders"] = db_rems
                 from main import get_unified_schedule
-                asyncio.create_task(get_unified_schedule(chat_id, today_d))
+                asyncio.create_task(get_unified_schedule(cid_can, today_d))
             except Exception:
                 pass
 
