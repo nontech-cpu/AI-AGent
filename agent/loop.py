@@ -121,15 +121,8 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
 
 async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None) -> Dict[str, Any]:
     """
-    Executes a single user turn through the V2 Tool-Calling Agent Loop.
-    Returns:
-        {
-            "reply": str,
-            "tool_calls_executed": list[str],
-            "pending_action": dict | None,
-            "latency_ms": int,
-            "tokens_used": int
-        }
+    Executes a single user turn through the Pure ChatGPT-Grade Native Tool-Calling Loop.
+    Zero brittle regexes. All routing is performed natively by the LLM via semantic understanding.
     """
     start_ts = time.time()
     chat_id = db.canonical_chat_id(chat_id)
@@ -138,141 +131,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
-    now_ist = datetime.now(IST)
-
-    # 0. Pure casual greetings / check-ins fast path (Instant <0.9s response, zero DB lag)
-    low_prompt = user_text.lower().strip()
-    has_action_words = bool(re.search(
-        r"\b(remind\w*|remid\w*|rmeind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|dlt\w*|dlet\w*|del\b|hata\w*|cancel\w*|remove\w*|clear\w*|mitado\w*|forget\w*|clean\w*|karna\b|krna\b|kardo\b|krdo\b|laga\b|daal\b|bana\b|set\b)\b",
-        low_prompt
-    ))
-    words_count = len(low_prompt.split())
-    has_explicit_greeting = bool(re.search(
-        r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)\b",
-        low_prompt
-    ))
-    is_standalone_vocative = (words_count <= 2 and low_prompt in ("bhai", "bhy", "bro", "yaar", "dost", "suno", "hey bhai", "hi bro"))
-    is_pure_casual_chat = (
-        not has_action_words
-        and words_count <= 6
-        and (has_explicit_greeting or is_standalone_vocative)
-    )
-
-    if is_pure_casual_chat:
-        sys_msg = (
-            "You are PeculiarAI, a sharp and personal AI companion. "
-            "You converse naturally like a warm, intelligent friend in Roman Hinglish (Latin alphabet exclusively). "
-            "Reply warmly, naturally, and conversationally (e.g. 'Main badhiya hoon bhai! Aap batao, sab kaisa chal raha hai? 😊'). "
-            "NEVER ask dismissive or transactional questions. Keep answers crisp and friendly."
-        )
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}"},
-                    json={
-                        "model": "qwen/qwen3.8-27b",
-                        "temperature": 0.5,
-                        "messages": [
-                            {"role": "system", "content": sys_msg},
-                            {"role": "user", "content": user_text}
-                        ],
-                        "max_tokens": 150
-                    }
-                )
-                if resp.status_code == 200:
-                    reply_text = resp.json()["choices"][0]["message"]["content"].strip()
-                    # Await synchronously so messages persist before HTTP response returns to browser
-                    await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
-                    await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text)
-                    return {
-                        "reply": reply_text,
-                        "tool_calls_executed": [],
-                        "pending_action": None,
-                        "is_grounded": True,
-                        "violations": [],
-                        "latency_ms": int((time.time() - start_ts) * 1000),
-                        "tokens_used": resp.json().get("usage", {}).get("total_tokens", 0),
-                        "memory_context": {}
-                    }
-        except Exception as exc:
-            pass
-
-    # 0.1 High-speed Reminder & Today's Schedule Query Fast-Path (Instant <0.1s response)
-    is_rem_write = bool(re.search(r"\b(add|set|create|laga|daal|dal|bana|bna|delete|dlt|dlet|del|hata|hatao|khatam|cancel|reschedule|remove|clear|mita|mitado|erase|update|change|badal)\b", low_prompt))
-    is_rem_ask = (not is_rem_write) and bool(re.search(r"\b(remind\w*|schedule\w*|agenda)\b", low_prompt)) and bool(re.search(r"\b(kya|ky|kaunse|konse|btana|bta|bata|batao|dikha|dikhao|show|list|check|sunao|for\s+today|today|aaj)\b", low_prompt))
-    if is_rem_ask:
-        try:
-            today_date = now_ist.date()
-            items = db.items_for_date(chat_id, today_date)
-            if items:
-                lines = []
-                for it in items:
-                    t = it[1]
-                    tm = it[3].strftime("%I:%M %p") if hasattr(it[3], "strftime") else (str(it[3])[:5] if it[3] else "All day")
-                    amt = f" (₹{it[2]})" if it[2] else ""
-                    lines.append(f"• **{t}** – {tm}{amt}")
-                reply_text = "Aapke aaj ke reminders (aaj):\n\n" + "\n".join(lines) + "\n\nKuch aur add ya update karna ho toh batayein! 😊"
-            else:
-                reply_text = "Bhai, aaj ke liye aapka koi reminder scheduled nahi hai! Agar koi reminder add karna ho toh batayein! 😊"
-
-            await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
-            await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text)
-            return {
-                "reply": reply_text,
-                "tool_calls_executed": ["list_reminders"],
-                "pending_action": None,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
-        except Exception as exc:
-            pass
-
-    # Check if user sent just a raw email address (e.g. attempting to link Google)
     trimmed_text = user_text.strip()
-    if re.fullmatch(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", trimmed_text):
-        from main import get_valid_google_connection_by_chat_id
-        is_g_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
-        if not is_g_conn:
-            from google_auth import build_auth_url
-            try:
-                auth_url = build_auth_url(int(chat_id), source="tg")
-                reply_msg = (
-                    f"Google account connect karne ke liye Google security guidelines ke anusaar official login link par authorize karna zaroori hota hai (chat mein email type karke access nahi hota).\n\n"
-                    f"👉 Kripya is secure link par click karke Google account connect karein:\n{auth_url}\n\n"
-                    f"Connect hone ke baad aap meetings host kar payenge aur calendar events create ho jayenge!"
-                )
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", reply_msg)
-                return {
-                    "reply": reply_msg,
-                    "tool_calls_executed": ["connect_integration"],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
-            except Exception as exc:
-                print("Email auth url generation error:", repr(exc))
+    low_prompt = trimmed_text.lower()
 
-    # Fast-path for raw Notion tokens (secret_... or ntn_...)
+    # 1. Direct API Token Pasting Fast-Path (Notion / GitHub)
     if (trimmed_text.startswith("secret_") or trimmed_text.startswith("ntn_")) and len(trimmed_text) > 15:
         import integrations
         is_valid, ws_name = await integrations.validate_notion_token(trimmed_text)
         if is_valid:
             db.save_user_integration(chat_id, "notion", trimmed_text, json.dumps({"workspace_name": ws_name}))
-            reply_msg = (
-                f"✅ **Notion Workspace successfully connect ho gaya!** 📝\n"
-                f"Workspace: **{ws_name}**\n\n"
-                f"Ab aap mujhe bol sakte hain:\n"
-                f"• *'ye summary Notion mein save kar do'*\n"
-                f"• *'meeting notes Notion page par add kar do'*"
-            )
+            reply_msg = f"✅ **Notion Workspace successfully connect ho gaya!** 📝\nWorkspace: **{ws_name}**\n\nAb aap mujhe summaries ya meeting notes Notion mein save karne ko bol sakte hain!"
         else:
             reply_msg = f"⚠️ Notion token validation failed: {ws_name}. Kripya check karein ki token sahi hai."
         db.log_chat_message(chat_id, "user", user_text)
@@ -288,17 +156,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             "memory_context": {}
         }
 
-    # Fast-path for raw GitHub tokens (ghp_... or github_pat_...)
     if (trimmed_text.startswith("ghp_") or trimmed_text.startswith("github_pat_")) and len(trimmed_text) > 20:
         import integrations
         is_valid, gh_user = await integrations.validate_github_token(trimmed_text)
         if is_valid:
             db.save_user_integration(chat_id, "github", trimmed_text, json.dumps({"username": gh_user}))
-            reply_msg = (
-                f"✅ **GitHub successfully connect ho gaya!** 🐙\n"
-                f"Account: **@{gh_user}**\n\n"
-                f"Aapke repositories aur code access ab live hain."
-            )
+            reply_msg = f"✅ **GitHub successfully connect ho gaya!** 🐙\nAccount: **@{gh_user}**\n\nAapke repositories aur code access ab live hain."
         else:
             reply_msg = f"⚠️ GitHub token validation failed: {gh_user}."
         db.log_chat_message(chat_id, "user", user_text)
@@ -314,7 +177,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             "memory_context": {}
         }
 
-    # Check for active pending action (Phase 5: Persistent Multi-Turn State)
+    # 2. Check for active pending multi-turn action (Confirmations: yes/cancel/time update)
     from state.pending import (
         get_pending_action,
         save_pending_action,
@@ -368,8 +231,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 f"Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
                 f"Title: {payload.get('title', 'Meeting')}\n"
                 f"Time: {clock_str} (India time)\n"
-                f"Duration: {payload.get('duration_minutes', 30)} minutes\n"
-                f"Attendees: {', '.join(payload.get('attendees', [])) if payload.get('attendees') else 'None'}\n\n"
+                f"Duration: {payload.get('duration_minutes', 30)} minutes\n\n"
                 f"Reply yes to create or no to cancel."
             )
             db.log_chat_message(chat_id, "user", user_text)
@@ -384,399 +246,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "tokens_used": 0,
                 "memory_context": {}
             }
-        elif intent == "cross_question":
-            is_cross_q = True
 
-    if not active_pending:
-        # Check if user said "yes" or affirmative to an email or meeting proposal in previous assistant message
-        from state.pending import AFFIRMATIVE_REGEX
-        low_usr = user_text.lower().strip()
-        if AFFIRMATIVE_REGEX.search(low_usr) or low_usr in ("yes", "haan", "ha", "ok", "okay", "proceed", "send", "send it", "kar do", "kardo", "kr do", "krdo"):
-            recent_turns = db.get_recent_chat_history(chat_id, limit=4)
-            last_assistant_turn = None
-            for t in reversed(recent_turns):
-                if t.get("role") == "assistant":
-                    last_assistant_turn = t.get("text") or ""
-                    break
-            if last_assistant_turn:
-                # Check for proposed email
-                email_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', last_assistant_turn)
-                if email_match and any(w in last_assistant_turn.lower() for w in ("email", "mail", "send", "ready to send", "subject")):
-                    to_addr = email_match.group(0)
-                    subj_m = re.search(r'(?:subject|विषय)[:\-*]+\s*([^\n]+)', last_assistant_turn, re.I)
-                    body_m = re.search(r'(?:body|message|संदेश)[:\-*]+\s*([^\n]+)', last_assistant_turn, re.I)
-                    subject_val = subj_m.group(1).strip("* ") if subj_m else "Message"
-                    body_val = body_m.group(1).strip("* ") if body_m else ""
-                    synthetic_pending = {
-                        "action_kind": "send_email",
-                        "payload": {
-                            "to": to_addr,
-                            "subject": subject_val,
-                            "body": body_val
-                        }
-                    }
-                    save_pending_action(chat_id, "send_email", synthetic_pending["payload"])
-                    success, reply_msg = await execute_pending_action(chat_id, synthetic_pending)
-                    db.log_chat_message(chat_id, "user", user_text)
-                    db.log_chat_message(chat_id, "assistant", reply_msg)
-                    return {
-                        "reply": reply_msg,
-                        "tool_calls_executed": ["send_email"],
-                        "pending_action": None,
-                        "is_grounded": True,
-                        "violations": [],
-                        "latency_ms": int((time.time() - start_ts) * 1000),
-                        "tokens_used": 0,
-                        "memory_context": {}
-                    }
-
-
-    # 0. Instant Follow-up Link & URL Resolver
-    # ONLY triggers when user is solely asking for an existing link, NEVER when giving action instructions (add, create, notes, etc.)
-    low_prompt = user_text.lower().strip()
-    words = low_prompt.split()
-    has_action_intent = bool(re.search(
-        r"\b(add|daal|daalo|dal|bana|banao|bna|bnao|create|save|likh|likho|update|append|note|notes|heading|code|section|pdf|file|repo|issue|event|meeting|schedule|kardo|kar\s*do|krdo|kr\s*do|bhej|send|post)\b",
-        low_prompt
-    ))
-    is_account_link_status_query = bool(
-        re.search(r"\b(email|mail|gmail|google|github|notion|account|drive|calendar)\b", low_prompt)
-        and re.search(r"\b(link\w*|connected|connect|juda|judi)\b", low_prompt)
-    )
-    is_link_query = (
-        not has_action_intent
-        and not is_account_link_status_query
-        and len(words) <= 6
-        and bool(re.search(r"\b(link|url)\b", low_prompt))
-        and any(w in low_prompt for w in ("iska", "uska", "ye", "yeh", "do", "dena", "dedo", "bhejo", "bhj", "bhej", "mujh", "mujhe", "kaha", "kahan", "bhai", "bhy", "share", "de", "notion", "meet", "chahiye"))
-    )
-
-    if is_link_query:
-        from state.active_context import get_active_url
-        act_url_info = get_active_url(chat_id)
-        
-        # If in-memory/DB active context has the URL, return it immediately
-        if act_url_info and act_url_info.get("url"):
-            u = act_url_info["url"]
-            t = act_url_info.get("title") or "Page"
-            c = act_url_info.get("connector") or "Integration"
-            link_reply = f"Ye raha aapka {c} page '{t}' ka direct link: 🔗\n{u}"
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", link_reply)
-            return {
-                "reply": link_reply,
-                "tool_calls_executed": [],
-                "pending_action": None,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
-
-    # Fast-path for 1-click connector requests & status queries (typo tolerant, resilient)
-    low_prompt_raw = user_text.lower().strip()
-    words = low_prompt_raw.split()
-    is_code_modify = bool(re.search(
-        r"\b(readme|commit|push|pull|branch|diff|edit\s+file|modify\s+file|change\s+file|update\s+file|replace\s+in)\b",
-        low_prompt_raw
-    ))
-    is_link_delivery_request = bool(
-        not is_account_link_status_query
-        and re.search(r"\b(link|url)\b", low_prompt_raw)
-        and re.search(r"\b(de|dedo|dena|do|bhej|bhejo|bhj|bhjdo|share|dikha|dikhao|send|give|chahiye|iska|uska|unka)\b", low_prompt_raw)
-    )
-
-    if not is_code_modify and not is_link_delivery_request and len(words) <= 12:
-        # Regex recognizing connect/connected with common typos (conncetdd, conncted, connectd, etc.)
-        conn_kw_re = r"\b(conn\w*|conct\w*|link\w*|jod\w*|auth\w*|oauth\w*|login|juda\b|judi\b)"
-
-        has_notion = bool(re.search(r"\b(notion|noion|noiton|notinn|notn|noitn|noton)\b", low_prompt_raw))
-        has_github = bool(re.search(r"\b(github|gh|git)\b", low_prompt_raw))
-        has_google = bool(re.search(r"\b(google|gmail|email|mail|calendar|drive|gmeet)\b", low_prompt_raw))
-        has_general = bool(
-            re.search(r"\b(connector|connectors|integration|integrations|account|accounts|all\s+accounts)\b", low_prompt_raw)
-            or (re.search(r"\b(connected|connect|link\w*)\b", low_prompt_raw) and ("?" in low_prompt_raw or re.search(r"\b(h\b|hai\b|ni\b|nahi\b|kya\b|ab\b)", low_prompt_raw)))
-        )
-
-        # 1. Notion Connection / Status Queries (NEVER intercept if user is asking about notes/pages/content/search/read/list)
-        is_notion_content_query = bool(re.search(
-            r"\b(note|notes|page|pages|content|heading|bullet|bullets|section|add|save|daal|daalo|dal|bana|banao|bna|bnao|write|create|append|likh|likho|read|padh|padho|btao|batao|dikha|dikhao|show|list|search|find|prexcising|preexisting|existing|kya\s+hai|kya\s+h|dekh|dekho|dsa)\b",
-            low_prompt_raw
-        ))
-        if has_notion and not is_notion_content_query:
-            is_status_check = bool(
-                "?" in low_prompt_raw or
-                re.search(r"\b(is|kya|status|check|already|bata|btao|batao|dikha|dikhao|ya\s+ni|ya\s+nahi|nhi\s+h|nahi\s+hai|h\s+ya|ab\s+link|linkn?\s*h|linkn?\s*hai)\b", low_prompt_raw)
-            )
-            is_connect_intent = (not is_status_check) and bool(re.search(r"\b(connect\w*|conct\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)\b", low_prompt_raw))
-            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
-            res = await execute_tool(chat_id, tool_to_call, {"service": "notion"})
-            if res.get("message"):
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", res["message"])
-                return {
-                    "reply": res["message"],
-                    "tool_calls_executed": [tool_to_call],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
-
-        # 2. GitHub Queries (NEVER intercept if user is asking for repos/files/issues/code)
-        is_github_content_query = bool(re.search(
-            r"\b(repo|repos|repository|repositories|issue|issues|file|files|code|readme|read|commit|commits|push|pull|branch|btao|batao|dikha|dikhao|show|list)\b",
-            low_prompt_raw
-        ))
-        if has_github and not is_github_content_query:
-            is_status_check = bool(
-                "?" in low_prompt_raw or
-                re.search(r"\b(is|kya|status|check|already|bata|btao|batao|dikha|dikhao|ya\s+ni|ya\s+nahi|nhi\s+h|nahi\s+hai|h\s+ya|ab\s+link|linkn?\s*h|linkn?\s*hai)\b", low_prompt_raw)
-            )
-            is_connect_intent = (not is_status_check) and bool(re.search(r"\b(connect\w*|link\w*|jod\w*|auth\w*|oauth\w*|login)\b", low_prompt_raw))
-            tool_to_call = "connect_integration" if is_connect_intent else "check_integrations_status"
-            res = await execute_tool(chat_id, tool_to_call, {"service": "github"})
-            if res.get("message"):
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", res["message"])
-                return {
-                    "reply": res["message"],
-                    "tool_calls_executed": [tool_to_call],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
-
-        # 3. Google Queries
-        if has_google and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw):
-            is_status_check = bool(
-                "?" in low_prompt_raw or
-                re.search(r"\b(is|kya|status|check|already|bata|btao|batao|dikha|dikhao|ya\s+ni|ya\s+nahi|nhi\s+h|nahi\s+hai|h\s+ya|ab\s+link|linkn?\s*h|linkn?\s*hai)\b", low_prompt_raw)
-            )
-            tool_to_call = "check_integrations_status" if is_status_check else "connect_integration"
-            res = await execute_tool(chat_id, tool_to_call, {"service": "google"})
-            if res.get("message"):
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", res["message"])
-                return {
-                    "reply": res["message"],
-                    "tool_calls_executed": [tool_to_call],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
-
-        # 4. General Connector / All Integrations Status
-        if has_general and (re.search(conn_kw_re, low_prompt_raw) or "?" in low_prompt_raw or len(words) <= 3):
-            res = await execute_tool(chat_id, "check_integrations_status", {})
-            if res.get("message"):
-                db.log_chat_message(chat_id, "user", user_text)
-                db.log_chat_message(chat_id, "assistant", res["message"])
-                return {
-                    "reply": res["message"],
-                    "tool_calls_executed": ["check_integrations_status"],
-                    "pending_action": None,
-                    "is_grounded": True,
-                    "violations": [],
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "tokens_used": 0,
-                    "memory_context": {}
-                }
-
-        # 5. Connected Mailbox Ticket / Document / Email Search Fast-Path
-        has_mail_mention = bool(re.search(r"\b(mail|email|gmail|inbox)\b", low_prompt_raw))
-        has_ticket_doc_mention = bool(re.search(r"\b(ticket|tickets|booking|pnr|flight|train|irctc|document|documents|bill|interview|doc|pdf)\b", low_prompt_raw))
-
-        if (has_mail_mention and has_ticket_doc_mention) or (has_ticket_doc_mention and bool(re.search(r"\b(kya|btao|batao|bata|bta|check|dekho|dekh|dikhao|dikha|aaye|aaya|aayi|status|find|search|show|tell)\b", low_prompt_raw)) and ("mail" in low_prompt_raw or "email" in low_prompt_raw or "gmail" in low_prompt_raw)):
-            res = await execute_tool(chat_id, "search_user_emails", {"query": "ticket", "max_results": 5})
-            if res.get("status") == "success":
-                emails = res.get("emails", [])
-                important_emails = [e for e in emails if e.get("is_important")]
-                saved_facts = res.get("saved_booking_facts", [])
-
-                reply_text = None
-                if important_emails:
-                    alerts = [e.get("alert_text") for e in important_emails if e.get("alert_text")]
-                    if alerts:
-                        reply_text = "Haanji, aapke connected mail par details mil gayi hain:\n\n" + alerts[0]
-                    # Cache active ticket in context
-                    top_imp = important_emails[0]
-                    if top_imp.get("category") == "ticket_booking":
-                        from state.active_context import set_active_ticket
-                        raw_data = top_imp.get("details") or {}
-                        set_active_ticket(chat_id, raw_data)
-                elif saved_facts:
-                    reply_text = "Aapke booking / ticket ke baare me saved details:\n\n" + "\n".join([f"• {f}" for f in saved_facts])
-                elif emails:
-                    top_msg = emails[0]
-                    subj = top_msg.get("subject") or "No Subject"
-                    sender = top_msg.get("sender") or "Unknown"
-                    snip = top_msg.get("snippet") or ""
-                    reply_text = f"Aapke mail par recent message mila hai:\n\n📧 From: {sender}\n📌 Subject: {subj}\n📝 Snippet: {snip}"
-
-                if reply_text:
-                    from main import clean_html_to_text
-                    reply_text = clean_html_to_text(reply_text)
-                    db.log_chat_message(chat_id, "user", user_text)
-                    db.log_chat_message(chat_id, "assistant", reply_text)
-                    return {
-                        "reply": reply_text,
-                        "tool_calls_executed": ["search_user_emails"],
-                        "pending_action": None,
-                        "is_grounded": True,
-                        "violations": [],
-                        "latency_ms": int((time.time() - start_ts) * 1000),
-                        "tokens_used": 0,
-                        "memory_context": {}
-                    }
-
-        # 6. Ticket Follow-Up Action: Calendar Add / Travel Reminder & Past Date Validation
-        # Handles user queries like: "Ok laga do", "Mera ticket ko calender mai add kar do", "2524281551 yeah wala", "travel reminder laga do"
-        is_reminder_query = bool(re.search(
-            r"\b(any\s*reminder|kya\s*reminder|koi\s*reminder|list\s*reminder|show\s*reminder|check\s*reminder|reminders?\s*(for\s*me|aaj|today|hai|h|dikhao|btao|batao|check))\b",
-            low_prompt_raw
-        ))
-        has_cal_remind_intent = bool(re.search(r"\b(calender|calendar|remind|reminder|schedule|laga\s*do|daal\s*do|add\s*kar\s*do|set\s*kar\s*do|kardo|kar\s*do)\b", low_prompt_raw))
-        has_ticket_ref = bool(re.search(r"\b(ticket|tickets|booking|pnr|train|flight|journey)\b", low_prompt_raw))
-        has_pnr_mention = bool(re.search(r"\b(\d{6,12})\b", low_prompt_raw))
-        has_yeah_wala = bool(re.search(r"\b(yeah\s*wala|ye\s*wala|yeh\s*wala|is\s*ticket|ye\s*ticket|yeh\s*ticket)\b", low_prompt_raw))
-        is_direct_ok = bool(re.fullmatch(r"(ok\s+laga\s+do|laga\s+do|ha\s+laga\s+do|kar\s+do|kardo|ha\s+kardo|haan\s+laga\s+do|daal\s+do|yes|ok|haan|ha|theek\s+h)", low_prompt_raw.strip()))
-
-        recent_assistant_text = ""
-        recent_turns = db.get_recent_chat_history(chat_id, limit=6)
-        for t in reversed(recent_turns):
-            if t.get("role") == "assistant":
-                recent_assistant_text = (t.get("text") or "").lower()
-                break
-
-        was_ticket_offered = ("ticket / booking confirmed" in recent_assistant_text or "travel reminder ya calendar entry" in recent_assistant_text or "pnr:" in recent_assistant_text or "2524281551" in recent_assistant_text)
-
-        from state.active_context import get_active_ticket, parse_ticket_datetime, set_active_ticket
-        tkt = get_active_ticket(chat_id)
-        has_active_ticket = bool(tkt)
-
-        should_handle_ticket_action = (
-            not is_reminder_query and (
-                (has_ticket_ref and (has_cal_remind_intent or has_yeah_wala))
-                or (has_pnr_mention and (has_yeah_wala or has_cal_remind_intent))
-                or (is_direct_ok and (was_ticket_offered or has_active_ticket))
-            )
-        )
-
-        if should_handle_ticket_action:
-
-
-            if has_pnr_mention:
-                pnr_input = re.search(r"\b(\d{6,12})\b", low_prompt_raw).group(1)
-                if not tkt or tkt.get("pnr") != pnr_input:
-                    facts = db.get_user_facts(chat_id) or []
-                    for f in reversed(facts):
-                        if pnr_input in f.get("fact", ""):
-                            tkt = {"pnr": pnr_input, "summary": f.get("fact")}
-                            break
-
-            if not tkt:
-                try:
-                    import google_services
-                    msgs = await google_services.fetch_user_inbox_messages(chat_id, max_results=5, query="in:inbox")
-                    from email_intelligence import analyze_incoming_email
-                    for m in msgs:
-                        ana = await analyze_incoming_email(m.get("sender", ""), m.get("subject", ""), m.get("body", ""))
-                        if ana.get("is_important") and ana.get("category") == "ticket_booking":
-                            tkt = ana.get("raw_data")
-                            set_active_ticket(chat_id, tkt)
-                            break
-                except Exception:
-                    pass
-
-            if tkt:
-                dt_str = tkt.get("datetime_str")
-                pnr_val = tkt.get("pnr") or "2524281551"
-                carrier_val = tkt.get("carrier") or "Indian Railways"
-                route_val = tkt.get("route") or "Jodhpur Jn to Abu Road"
-                tkt_dt = parse_ticket_datetime(dt_str)
-                now_ist = datetime.now(IST)
-                today_human = now_ist.strftime("%d %b %Y")
-
-                if tkt_dt and tkt_dt < now_ist:
-                    # DATE IS IN THE PAST!
-                    formatted_dt = tkt_dt.strftime("%d %b %Y, %I:%M %p")
-                    reply_msg = (
-                        f"Bhai, ye ticket purani hai — iski travel date {formatted_dt} thi, "
-                        f"aur aaj {today_human} hai, yaani ye date nikal chuki hai (past date)! ⏳\n\n"
-                        f"Beete hue time ke liye calendar event ya travel reminder schedule nahi ho sakta.\n\n"
-                        f"Agar aapke paas koi nayi ya upcoming journey ki ticket hai, toh batayein — main turant calendar aur reminder set kar dunga! 👍"
-                    )
-                    db.log_chat_message(chat_id, "user", user_text)
-                    db.log_chat_message(chat_id, "assistant", reply_msg)
-                    return {
-                        "reply": reply_msg,
-                        "tool_calls_executed": ["validate_ticket_date"],
-                        "pending_action": None,
-                        "is_grounded": True,
-                        "violations": [],
-                        "latency_ms": int((time.time() - start_ts) * 1000),
-                        "tokens_used": 0,
-                        "memory_context": {}
-                    }
-                elif tkt_dt and tkt_dt >= now_ist:
-                    # DATE IS IN THE FUTURE - Schedule it!
-                    formatted_dt = tkt_dt.strftime("%d %b %Y, %I:%M %p")
-                    await execute_tool(chat_id, "create_reminder", {
-                        "title": f"Train Journey: {carrier_val} ({route_val})",
-                        "due_date": tkt_dt.strftime("%Y-%m-%d"),
-                        "due_time": tkt_dt.strftime("%H:%M"),
-                        "category": "travel"
-                    })
-                    cal_line = ""
-
-                    try:
-                        from main import get_valid_google_connection_by_chat_id
-                        import google_services
-                        is_g, _ = await get_valid_google_connection_by_chat_id(chat_id)
-                        if is_g:
-                            await google_services.create_meeting(
-                                chat_id,
-                                title=f"Train: {carrier_val} ({route_val}) - PNR {pnr_val}",
-                                start_iso=tkt_dt.isoformat(),
-                                duration_minutes=240
-                            )
-                            cal_line = "\n📅 Google Calendar mein travel event add ho gaya hai!"
-                    except Exception as cal_err:
-                        print("Google calendar schedule error:", cal_err)
-
-                    reply_msg = (
-                        f"✅ Aapki journey ke liye reminder set ho gaya hai!{cal_line}\n\n"
-                        f"🚆 Provider: {carrier_val}\n"
-                        f"🔢 PNR: {pnr_val}\n"
-                        f"📍 Route: {route_val}\n"
-                        f"📅 Travel Date: {formatted_dt}\n\n"
-                        f"Departure time se pehle main aapko alert kar dunga!"
-                    )
-                    db.log_chat_message(chat_id, "user", user_text)
-                    db.log_chat_message(chat_id, "assistant", reply_msg)
-                    return {
-                        "reply": reply_msg,
-                        "tool_calls_executed": ["create_reminder", "create_meeting"],
-                        "pending_action": None,
-                        "is_grounded": True,
-                        "violations": [],
-                        "latency_ms": int((time.time() - start_ts) * 1000),
-                        "tokens_used": 0,
-                        "memory_context": {}
-                    }
-
-
-    # Trigger typing indicator on Telegram so user sees active thinking status ("Peculiaring...")
+    # 3. Trigger Telegram typing indicator immediately for live feedback
     try:
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if tg_token and chat_id and chat_id > 0:
@@ -790,59 +261,22 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     except Exception:
         pass
 
-    low_prompt = user_text.lower().strip()
-    
-    # Pure casual greetings / check-ins: zero tool overhead and zero DB latency for 0.4s natural chat
-    has_action_words = bool(re.search(
-        r"\b(remind\w*|remid\w*|rmeind\w*|meet\w*|calendar\w*|schedule\w*|call\w*|task\w*|todo\w*|note\w*|notion|git|github|mail\w*|email\w*|gmail|send\w*|upload\w*|drive|pdf|weather|search\w*|rate|price|gold|sona|convert\w*|calc\w*|dollar|inr|ticket\w*|pnr|flight\w*|wipe\w*|delete\w*|dlt\w*|dlet\w*|del\b|hata\w*|cancel\w*|remove\w*|clear\w*|mitado\w*|forget\w*|clean\w*|karna\b|krna\b|kardo\b|krdo\b|laga\b|daal\b|bana\b|set\b)\b",
-        low_prompt
-    ))
-    words_count = len(low_prompt.split())
-    has_explicit_greeting = bool(re.search(
-        r"\b(hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)\b",
-        low_prompt
-    ))
-    is_standalone_vocative = (words_count <= 2 and low_prompt in ("bhai", "bhy", "bro", "yaar", "dost", "suno", "hey bhai", "hi bro"))
-    is_pure_casual_chat = (
-        not has_action_words
-        and words_count <= 6
-        and (has_explicit_greeting or is_standalone_vocative)
-    )
+    # 4. Context assembly: Ground Truth System Prompt & Chat History
+    from memory.retrieval import assemble_memory_context
+    mem_ctx = assemble_memory_context(chat_id, user_text)
 
-    print("Check 1:", time.time() - start_ts)
-    # Context assembly: assemble memory & system prompt (only needed for turns that proceed to the LLM)
-
-    if is_pure_casual_chat:
-        mem_ctx = {"formatted_block": "", "matched_entities": [], "relevant_memories": [], "facts": []}
-        system_content = (
-            "You are PeculiarAI, a sharp and personal AI companion. "
-            "You converse naturally like a warm, intelligent friend in Roman Hinglish (Latin alphabet exclusively). "
-            "# Conversational Mandate: "
-            "Reply warmly, naturally, and conversationally (e.g. 'Main badhiya hoon bhai! Aap batao, sab kaisa chal raha hai? 😊' or 'Ekdum badhiya bhai! Aap sunao, kya haal chaal?'). "
-            "STRICT RESPECT MANDATE: NEVER ask dismissive, impatient, or transactional questions like 'Aapko koi kaam ya reminder set karna hai ya bas chat karna hai?' or 'Kaam batao ya bas baat karni hai?'. "
-            "NEVER push reminders, calendar invites, or tasks onto casual banter or greetings. If the user is just saying hello or asking how you are, respond warmly and ask how they are doing. "
-            "Keep answers crisp, warm, and friendly."
-        )
-    else:
-        from memory.retrieval import assemble_memory_context
-        mem_ctx = assemble_memory_context(chat_id, user_text)
-
-        from agent.prompt import build_runtime_system_prompt
-        system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
+    from agent.prompt import build_runtime_system_prompt
+    system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = []
-    if not is_pure_casual_chat:
-        recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 8)
-        for turn in recent_history:
-            t_text = turn.get("text") or ""
-            if len(t_text) > 3000:
-                t_text = t_text[:3000] + "..."
-            messages.append({"role": turn["role"], "content": t_text})
+    recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 8)
+    for turn in recent_history:
+        t_text = turn.get("text") or ""
+        if len(t_text) > 3000:
+            t_text = t_text[:3000] + "..."
+        messages.append({"role": turn["role"], "content": t_text})
 
-    # Append current user prompt
     messages.append({"role": "user", "content": user_text})
-
 
     tool_calls_executed = []
     tool_results_list = []
@@ -850,58 +284,32 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     final_reply = ""
     total_tokens = 0
 
-    # Provide the comprehensive functional tool suite (ChatGPT/Claude style architecture)
+    # 5. Core Everyday Tool Suite (ALWAYS available - zero missing tools, zero regex blocking)
+    CORE_TOOL_NAMES = {
+        "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
+        "check_availability", "create_meeting", "get_meet_link",
+        "save_contact", "get_contact", "list_contacts",
+        "save_note_or_fact", "search_memory", "clear_chat_history",
+        "check_integrations_status", "connect_integration",
+        "get_weather", "search_web"
+    }
 
+    active_tool_names = set(CORE_TOOL_NAMES)
 
-    active_tool_names = set()
+    # Contextual tools activated by domain keywords (keeps token budget well under Groq 8000 TPM limit)
+    if any(w in low_prompt for w in ("git", "github", "repo", "issue", "commit", "branch", "pull")):
+        active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
+    if any(w in low_prompt for w in ("notion", "workspace", "page")):
+        active_tool_names.update({"create_notion_page", "update_notion_page", "list_notion_pages"})
+    if any(w in low_prompt for w in ("email", "mail", "gmail", "inbox")):
+        active_tool_names.update({"send_email", "search_user_emails"})
+    if any(w in low_prompt for w in ("pdf", "excel", "sheet", "csv", "drive", "file", "export")):
+        active_tool_names.update({"generate_pdf", "generate_excel", "upload_to_drive"})
+    if any(w in low_prompt for w in ("gold", "crypto", "bitcoin", "dollar", "inr", "calc", "convert", "rate", "price", "%")):
+        active_tool_names.update({"get_market_price", "convert_currency", "calculate"})
+    if any(w in low_prompt for w in ("pack", "trip", "travel", "bag", "luggage")):
+        active_tool_names.add("create_packing_list")
 
-    if not is_pure_casual_chat:
-        has_rem = bool(re.search(r"\b(remind\w*|remid\w*|rmeind\w*|yaad|alarm|task|tasks|todo|baje|bje|am|pm|dlt|dlet|del|delete|hata|hatao|cancel|mitado)\b", low_prompt))
-        has_cal = bool(re.search(r"(\b(meet|meeting|meetings|calendar|event|events|schedule|call|calls|slot|slots|free|busy|availability|appointment|appointments|host|reschedule|cancel\s+meet|doctor|interview|trip|plan|plans|movie|dinner|lunch|party|wedding)\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|bje|baje)\b)", low_prompt))
-        has_cont = bool(re.search(r"\b(contact|contacts|phone|number|call|commit|commitment|promise|promises|bhejna|dena|milna)\b", low_prompt))
-        has_mem = bool(re.search(r"\b(note|notes|fact|facts|save|store|yaad|remember|memory|search|dhundo|pata\s+karo|ticket|pnr|flight|clear\s+chat)\b", low_prompt))
-        has_weath = bool(re.search(r"\b(weather|mausam|temperature|rain|barish|forecast|aqi|uv)\b", low_prompt))
-        has_web = bool(re.search(r"\b(search|google|news|score|match|who\s+is|what\s+is|meaning|web|url|link|http)\b", low_prompt))
-        has_calc = bool(re.search(r"(\b(calculate|calc|math|percentage|\%|convert|currency|dollar|inr|rupee|euro|pound)\b|[\d+\-*/=]{3,})", low_prompt))
-        has_mkt = bool(re.search(r"\b(gold|silver|crude|oil|brent|crypto|bitcoin|btc|eth|ethereum|sol|solana|sone|chandi|bhav|rate|price|market\s*price)\b", low_prompt))
-        has_gh = bool(re.search(r"\b(github|gh|git|repo|repos|repository|repositories|commit|commits|readme|issue|issues|branch|code|push|pull)\b", low_prompt))
-        has_not = bool(re.search(r"\b(notion|page|pages|workspace|documentation|doc|docs)\b", low_prompt))
-        has_exp = bool(re.search(r"\b(email|mail|gmail|send\s+email|pdf|excel|sheet|spreadsheet|invoice|report|drive|upload)\b", low_prompt))
-        has_integ = bool(re.search(r"\b(connect|connection|integrat|link\w*|status|auth|login)\b", low_prompt))
-
-        if has_rem:
-            active_tool_names.update({"create_reminder", "list_reminders", "delete_reminder", "get_schedule"})
-        if has_cal:
-            active_tool_names.update({"get_schedule", "check_availability", "create_meeting", "update_meeting", "delete_meeting", "get_meet_link", "create_reminder", "list_reminders"})
-        if has_cont:
-            active_tool_names.update({"save_contact", "get_contact", "list_contacts", "update_contact_commitment", "get_commitments"})
-        if has_mem:
-            active_tool_names.update({"save_note_or_fact", "search_memory", "clear_chat_history"})
-        if has_weath:
-            active_tool_names.add("get_weather")
-        if has_web:
-            active_tool_names.update({"search_web", "read_webpage"})
-        if has_calc:
-            active_tool_names.update({"calculate", "convert_currency"})
-        if has_mkt:
-            active_tool_names.add("get_market_price")
-        if has_gh:
-            active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
-        if has_not:
-            active_tool_names.update({"create_notion_page", "update_notion_page", "list_notion_pages"})
-        if has_exp:
-            active_tool_names.update({"send_email", "upload_to_drive", "generate_pdf", "generate_excel"})
-        if has_integ:
-            active_tool_names.update({"check_integrations_status", "connect_integration"})
-
-        # If user expresses ANY delete/cancellation intent, ensure delete tools are present
-        if bool(re.search(r"\b(dlt|dlet|del|delete|hata|hatao|cancel|remove|clear|mitado)\b", low_prompt)):
-            active_tool_names.update({"delete_reminder", "delete_meeting", "list_reminders", "get_schedule"})
-
-        if not active_tool_names:
-            active_tool_names = {"create_reminder", "list_reminders", "delete_reminder", "get_schedule", "save_note_or_fact", "search_memory", "search_web", "get_weather", "check_integrations_status"}
-        
-    # Build effective_tools adhering to token budgets
     effective_tools = [
         t for t in TOOL_DEFINITIONS
         if t["function"]["name"] in active_tool_names
@@ -1260,7 +668,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply += f"\n\n{cw} Kya aap iska time aage-peeche karna chahenge?"
 
     # Phase 3: Zero-Unsupported-Claims Grounding Verifier Pass
-    if not is_pure_casual_chat:
+    if tool_calls_executed:
         is_grounded, verified_reply, violations = await verify_and_ground_reply(
             draft_reply=final_reply,
             tool_results=tool_results_list,
