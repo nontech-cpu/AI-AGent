@@ -1772,31 +1772,32 @@
 
       const btn = document.querySelector('#modalCalendar .btn-submit');
       const origText = btn ? btn.innerText : 'Schedule on Google Calendar';
-      if (btn) btn.innerText = 'Scheduling & Syncing...';
+      if (btn) {
+        btn.innerText = 'Scheduling & Syncing...';
+        btn.disabled = true;
+      }
+
+      closeModals();
+      document.getElementById('newCalTitle').value = '';
 
       try {
-        const res = await fetch(`${API_BASE}/api/v1/calendar/events?chat_id=${currentChatId}`, {
+        await fetch(`${API_BASE}/api/v1/calendar/events?chat_id=${currentChatId}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Chat-Id': currentChatId },
           body: JSON.stringify({ title, start_iso: dt, duration_minutes: dur })
         });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-          closeModals();
-          document.getElementById('newCalTitle').value = '';
-          loadCalendarEvents();
-          loadDashboardData();
-          alert(data.message || 'Event scheduled successfully and synced to Google Calendar & Telegram!');
-        } else {
-          alert('Could not schedule event: ' + (data.detail || res.statusText || 'Unknown error'));
-        }
+        loadCalendarEvents();
+        loadDashboardData();
       } catch (err) {
-        alert('Event scheduling error: ' + err.message);
+        console.error('submitNewEvent error:', err);
+        loadCalendarEvents();
       } finally {
-        if (btn) btn.innerText = origText;
+        if (btn) {
+          btn.innerText = origText;
+          btn.disabled = false;
+        }
       }
     }
-
     async function deleteCalendarEvent(id) {
       if (!confirm('Cancel this event?')) return;
       await fetch(`${API_BASE}/api/v1/calendar/events/${id}?chat_id=${currentChatId}`, { method: 'DELETE' });

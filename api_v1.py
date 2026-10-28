@@ -44,6 +44,17 @@ router = APIRouter(prefix="/api/v1", tags=["Mobile App API v1"])
 # doc_id -> {"filename": str, "content": str, "summary": str, "chat_id": int, "created_at": datetime}
 DOCUMENT_TRUNK: Dict[str, Dict[str, Any]] = {}
 _CALENDAR_EVENTS_CACHE: Dict[Any, Any] = {}
+def _invalidate_all_app_caches():
+    _CALENDAR_EVENTS_CACHE.clear()
+    _DASHBOARD_CACHE.clear()
+    _REMINDERS_CACHE.clear()
+    _LISTS_CACHE.clear()
+    _TASKS_CACHE.clear()
+
+_DASHBOARD_CACHE: Dict[Any, Any] = {}
+_TASKS_CACHE: Dict[Any, Any] = {}
+_LISTS_CACHE: Dict[Any, Any] = {}
+_REMINDERS_CACHE: Dict[Any, Any] = {}
 
 
 # ---------- Authentication & User Helper ----------
@@ -1570,6 +1581,10 @@ LIST_TEMPLATES = {
 
 @router.get("/dashboard/overview", summary="Memorae Dashboard Overview")
 async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
+    now_ts = pytime.time()
+    cached = _DASHBOARD_CACHE.get(chat_id)
+    if cached and (now_ts < cached.get("exp", 0)):
+        return cached["data"]
     """
     Returns the complete aggregated data for the Memorae Dashboard & Portal screens:
     - User Profile & Greeting ("Good afternoon, dev")
@@ -1584,16 +1599,19 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
     hr = now.hour
     time_greeting = "Good morning" if hr < 12 else ("Good afternoon" if hr < 17 else "Good evening")
     
-    # 1. User & Persona
-    persona = get_persona(chat_id) or "Dev"
-    
-    # 2. Tasks
-    board = get_board_cards(chat_id)
+    def _fetch_db_overview():
+        p = get_persona(chat_id) or "Dev"
+        b = get_board_cards(chat_id)
+        sl = get_smart_lists(chat_id)
+        ur = get_upcoming_reminders(chat_id, now)
+        ti = items_for_date(chat_id, now.date())
+        return p, b, sl, ur, ti
+
+    persona, board, smart_lists, upcoming_raw, today_items = await asyncio.to_thread(_fetch_db_overview)
+
     today_tasks = board.get("today", [])
     queue_tasks = board.get("queue", [])
-    
-    # 3. Lists
-    smart_lists = get_smart_lists(chat_id)
+
     recent_lists = []
     for sl in smart_lists[:5]:
         total_items = len(sl.get("items", []))
@@ -1606,8 +1624,6 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
             "completed_items": completed_items
         })
 
-    # 4. Reminders
-    upcoming_raw = get_upcoming_reminders(chat_id, now)
     highlighted_reminders = []
     seen_titles = set()
     for r in upcoming_raw[:5]:
@@ -1623,8 +1639,6 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
             "is_today": (hasattr(remind_dt, "date") and remind_dt.date() == now.date())
         })
 
-    # Include local items for today
-    today_items = items_for_date(chat_id, now.date())
     for it in today_items:
         if it[1] not in seen_titles and len(highlighted_reminders) < 5:
             seen_titles.add(it[1])
@@ -1646,7 +1660,10 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
         from google_services import list_calendar_events
         start_day = datetime(now.year, now.month, now.day, 0, 0, 0).isoformat() + "Z"
         end_day = datetime(now.year, now.month, now.day, 23, 59, 59).isoformat() + "Z"
-        ev_list = await list_calendar_events(chat_id, time_min_iso=start_day, time_max_iso=end_day)
+        ev_list = await asyncio.wait_for(
+            list_calendar_events(chat_id, time_min_iso=start_day, time_max_iso=end_day),
+            timeout=2.0
+        )
         is_google_connected = True
         for ev in ev_list:
             today_events.append({
@@ -1668,7 +1685,7 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
                 })
                 minutes_booked += 30
 
-    return {
+    res_dash = {
         "user_profile": {
             "name": persona,
             "greeting": f"{time_greeting}, {persona.lower()}",
@@ -1723,6 +1740,8 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
             "today_tasks": today_tasks
         }
     }
+    _DASHBOARD_CACHE[chat_id] = {"exp": now_ts + 45.0, "data": res_dash}
+    return res_dash
 
 
 # ---------- Reminders Section Endpoints ----------
@@ -1732,6 +1751,11 @@ async def get_user_reminders(
     section: Optional[str] = Query("all", description="today | upcoming | all | completed"),
     chat_id: int = Depends(get_current_chat_id)
 ):
+    now_ts = pytime.time()
+    c_key = (chat_id, section)
+    cached = _REMINDERS_CACHE.get(c_key)
+    if cached and (now_ts < cached.get("exp", 0)):
+        return cached["data"]
     """
     Returns reminders divided into Today, Upcoming, All, or Completed.
     """
@@ -1811,7 +1835,9 @@ async def get_user_reminders(
         elif section in ("all", None):
             results.append(item_data)
 
-    return {"section": section, "count": len(results), "reminders": results}
+    res_rem = {"section": section, "count": len(results), "reminders": results}
+    _REMINDERS_CACHE[c_key] = {"exp": now_ts + 45.0, "data": res_rem}
+    return res_rem
 
 
 @router.post("/reminders", summary="Create New Reminder")
@@ -1844,15 +1870,15 @@ async def create_user_reminder(
 
     # 1. Real-time Telegram notification sync
     try:
-        from main import say
+        from main import tg
         time_str = f" at {due_t.strftime('%I:%M %p')}" if due_t else ""
         tg_text = (
-            f"🔔 **New Reminder Set (via Web Companion)**:\n"
-            f"• **{body.title}**\n"
+            f"🔔 *New Reminder Set (via Web Companion)*:\n"
+            f"• *{body.title}*\n"
             f"📅 Due: {due_d}{time_str}\n"
             f"✅ Synced to your Telegram assistant."
         )
-        asyncio.create_task(say(target_chat_id, tg_text))
+        asyncio.create_task(tg("sendMessage", {"chat_id": target_chat_id, "text": tg_text}))
     except Exception as exc:
         print("[api_v1] Telegram reminder notify error:", exc)
 
@@ -1870,7 +1896,7 @@ async def create_user_reminder(
     except Exception:
         pass
 
-    _CALENDAR_EVENTS_CACHE.clear()
+    _invalidate_all_app_caches()
     return {
         "status": "ok",
         "reminder_id": item_id,
@@ -2125,96 +2151,62 @@ async def create_calendar_event_route(
     chat_id: int = Depends(get_current_chat_id)
 ):
     """
-    Creates a new event or meeting directly on Google Calendar with instant fallback and local mirroring.
+    Creates a new event with instant local mirroring (<0.1s response) and background Google Calendar sync.
     """
     target_chat_id = _resolve_calendar_chat_id(chat_id)
     clean_dt = None
     try:
         from dateutil import parser as dt_parser
         clean_dt = dt_parser.parse(body.start_iso)
-        clean_iso = clean_dt.isoformat()
     except Exception:
-        clean_iso = body.start_iso
+        clean_dt = datetime.now(IST)
 
-    try:
-        from google_services import create_meeting
-        res = await create_meeting(
-            chat_id=target_chat_id,
-            title=body.title,
-            start_iso=clean_iso,
-            duration_minutes=body.duration_minutes or 30,
-            attendees=body.attendees or []
-        )
-        # Mirror into local memory and schedule reminder notification
-        if clean_dt:
-            try:
-                now_ist = datetime.now(IST)
-                mid = save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
-                plan = build_plan(clean_dt.date(), clean_dt.time(), now_ist)
-                if plan.get("reminders") and mid:
-                    add_reminders(mid, plan["reminders"])
-                if target_chat_id != chat_id:
-                    save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
-            except Exception:
-                pass
+    # 1. Immediately mirror to local database in < 0.05s
+    now_ist = datetime.now(IST)
+    mid = save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+    plan = build_plan(clean_dt.date(), clean_dt.time(), now_ist)
+    if plan.get("reminders") and mid:
+        add_reminders(mid, plan["reminders"])
+    if target_chat_id != chat_id:
+        save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
 
-        # Real-time Telegram sync notification
+    _invalidate_all_app_caches()
+    if "_DASHBOARD_CACHE" in globals():
+        _DASHBOARD_CACHE.clear()
+
+    # 2. Background Google Calendar and Telegram sync
+    async def _async_sync():
         try:
-            from main import say
-            time_label = clean_dt.strftime("%d %b %Y, %I:%M %p") if clean_dt else str(body.start_iso)
+            from google_services import create_meeting
+            res = await create_meeting(
+                chat_id=target_chat_id,
+                title=body.title,
+                start_iso=clean_dt.isoformat(),
+                duration_minutes=body.duration_minutes or 30,
+                attendees=body.attendees or []
+            )
+            from main import tg
+            time_label = clean_dt.strftime("%d %b %Y, %I:%M %p")
             meet_str = f"\n🔗 Video Meet: {res.get('meet_url')}" if res and res.get('meet_url') else ""
-            cal_str = f"\n📆 Google Calendar: {res.get('htmlLink')}" if res and res.get('htmlLink') else ""
             msg = (
-                f"📅 **New Calendar Event Scheduled (via Web)**:\n"
-                f"• **{body.title}**\n"
+                f"📅 *New Calendar Event Scheduled (via Companion App)*:\n"
+                f"• *{body.title}*\n"
                 f"⏰ Time: {time_label}"
-                f"{meet_str}{cal_str}\n"
+                f"{meet_str}\n"
                 f"✅ Synced to your Google Calendar & Telegram."
             )
-            asyncio.create_task(say(target_chat_id, msg))
-        except Exception:
-            pass
+            await tg("sendMessage", {"chat_id": target_chat_id, "text": msg})
+        except Exception as exc:
+            print("[api_v1] background google calendar sync notice:", exc)
 
-        _CALENDAR_EVENTS_CACHE.clear()
-        return {
-            "status": "ok",
-            "event": res,
-            "message": f"Calendar event '{body.title}' scheduled successfully on Google Calendar."
-        }
-    except Exception as exc:
-        print("[api_v1] create_calendar_event error:", repr(exc))
-        try:
-            if not clean_dt:
-                from dateutil import parser as dt_parser
-                clean_dt = dt_parser.parse(body.start_iso)
-            now_ist = datetime.now(IST)
-            iid = save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
-            plan = build_plan(clean_dt.date(), clean_dt.time(), now_ist)
-            if plan.get("reminders") and iid:
-                add_reminders(iid, plan["reminders"])
-            if target_chat_id != chat_id:
-                save_memory(chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
+    asyncio.create_task(_async_sync())
 
-            try:
-                from main import say
-                time_label = clean_dt.strftime("%d %b %Y, %I:%M %p") if clean_dt else str(body.start_iso)
-                msg = (
-                    f"📅 **New Event Scheduled (Local Schedule)**:\n"
-                    f"• **{body.title}**\n"
-                    f"⏰ Time: {time_label}\n"
-                    f"✅ Synced to your Telegram assistant."
-                )
-                asyncio.create_task(say(target_chat_id, msg))
-            except Exception:
-                pass
-
-            return {
-                "status": "ok",
-                "local_id": iid,
-                "message": f"Event saved in local schedule: {body.title}"
-            }
-        except Exception as local_err:
-            raise HTTPException(status_code=500, detail=f"Failed to create event: {str(exc)}")
+    return {
+        "status": "ok",
+        "id": f"local_{mid}",
+        "title": body.title,
+        "message": f"Calendar event '{body.title}' scheduled successfully!"
+    }
 
 
 @router.delete("/calendar/events/{event_id}", summary="Delete Calendar Event")
@@ -2225,7 +2217,7 @@ async def delete_calendar_event_route(
     """
     Deletes an event from Google Calendar or local schedule.
     """
-    _CALENDAR_EVENTS_CACHE.clear()
+    _invalidate_all_app_caches()
     target_chat_id = _resolve_calendar_chat_id(chat_id)
     if event_id.startswith("local_"):
         try:
