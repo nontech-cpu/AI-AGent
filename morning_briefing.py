@@ -414,7 +414,7 @@ async def morning_briefing_job():
     tasks = []
     for u in users:
         cid = u.get("chat_id")
-        if cid:
+        if cid and not str(cid).startswith("998877"):
             tasks.append(process_user_morning_briefing(cid, u, now_ist))
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)

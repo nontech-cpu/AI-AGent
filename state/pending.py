@@ -15,7 +15,7 @@ from timing import IST
 
 logger = logging.getLogger("peculiar_state")
 
-_TABLE_INITIALIZED = False
+_TABLE_INITIALIZED = (db.engine.dialect.name != "sqlite")
 
 
 def ensure_pending_table():

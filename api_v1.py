@@ -1,4 +1,5 @@
 import os
+import time as pytime
 import io
 import re
 import secrets
@@ -42,6 +43,7 @@ router = APIRouter(prefix="/api/v1", tags=["Mobile App API v1"])
 # In-memory document trunk storage for fast mobile Q&A
 # doc_id -> {"filename": str, "content": str, "summary": str, "chat_id": int, "created_at": datetime}
 DOCUMENT_TRUNK: Dict[str, Dict[str, Any]] = {}
+_CALENDAR_EVENTS_CACHE: Dict[Any, Any] = {}
 
 
 # ---------- Authentication & User Helper ----------
@@ -1868,6 +1870,7 @@ async def create_user_reminder(
     except Exception:
         pass
 
+    _CALENDAR_EVENTS_CACHE.clear()
     return {
         "status": "ok",
         "reminder_id": item_id,
@@ -1995,35 +1998,55 @@ async def get_calendar_events_route(
     chat_id: int = Depends(get_current_chat_id)
 ):
     """
-    Fetches calendar events for the calendar view (month grid, week, or day/upcoming).
-    Synchronized with Google Calendar if connected, with fallback to local scheduled database items.
+    Fetches unified calendar schedule (Google Calendar + local reminders/meetings) with high-speed caching.
     """
     now = datetime.now(IST)
     target_d = date_str or now.strftime("%Y-%m-%d")
     target_chat_id = _resolve_calendar_chat_id(chat_id)
+
+    cache_key = (target_chat_id, view, date_str, month_str)
+    now_ts = pytime.time()
+    cached = _CALENDAR_EVENTS_CACHE.get(cache_key)
+    if cached and (now_ts < cached.get("exp", 0)):
+        return cached["data"]
+
     is_connected = False
     events = []
 
-    try:
-        from google_services import list_calendar_events
-        if month_str:
+    # Calculate date range
+    if month_str:
+        try:
             parts = month_str.split("-")
             y, m = int(parts[0]), int(parts[1])
-            start_iso = datetime(y, m, 1, 0, 0, 0).isoformat() + "Z"
-            end_iso = datetime(y, m + 1 if m < 12 else 1, 1 if m < 12 else 1, 0, 0, 0).isoformat() + "Z" if m < 12 else datetime(y + 1, 1, 1, 0, 0, 0).isoformat() + "Z"
-        elif date_str:
-            t_dt = datetime.strptime(date_str, "%Y-%m-%d")
-            start_iso = datetime(t_dt.year, t_dt.month, t_dt.day, 0, 0, 0).isoformat() + "Z"
-            end_iso = datetime(t_dt.year, t_dt.month, t_dt.day, 23, 59, 59).isoformat() + "Z"
-        else:
-            # Default companion view: Today + upcoming 7 days
-            start_iso = datetime(now.year, now.month, now.day, 0, 0, 0).isoformat() + "Z"
-            future_dt = now + timedelta(days=7)
-            end_iso = datetime(future_dt.year, future_dt.month, future_dt.day, 23, 59, 59).isoformat() + "Z"
+            start_d = date(y, m, 1)
+            next_m = m + 1 if m < 12 else 1
+            next_y = y if m < 12 else y + 1
+            end_d = date(next_y, next_m, 1) - timedelta(days=1)
+        except Exception:
+            start_d = now.date()
+            end_d = start_d + timedelta(days=7)
+    elif date_str:
+        try:
+            start_d = datetime.strptime(date_str, "%Y-%m-%d").date()
+            end_d = start_d
+        except Exception:
+            start_d = now.date()
+            end_d = start_d
+    else:
+        start_d = now.date()
+        end_d = start_d + timedelta(days=7)
 
-        ev_list = await list_calendar_events(target_chat_id, time_min_iso=start_iso, time_max_iso=end_iso)
+    # 1. Fetch Google Calendar events with strict 2.5s timeout
+    try:
+        from google_services import list_calendar_events
+        start_iso = datetime.combine(start_d, time.min).isoformat() + "Z"
+        end_iso = datetime.combine(end_d, time.max).isoformat() + "Z"
+        g_list = await asyncio.wait_for(
+            list_calendar_events(target_chat_id, time_min_iso=start_iso, time_max_iso=end_iso),
+            timeout=2.5
+        )
         is_connected = True
-        for ev in ev_list:
+        for ev in (g_list or []):
             events.append({
                 "id": ev.get("id"),
                 "title": ev.get("summary") or "Meeting",
@@ -2031,38 +2054,57 @@ async def get_calendar_events_route(
                 "end": ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date"),
                 "link": ev.get("htmlLink") or ev.get("hangoutLink"),
                 "location": ev.get("location", ""),
-                "description": ev.get("description", "")
+                "description": ev.get("description", ""),
+                "source": "google"
             })
     except Exception:
         pass
 
-    # Mirror or supplement with local items
-    if not events:
-        try:
-            days_to_check = [target_d]
-            if not date_str and not month_str:
-                days_to_check = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]
-            for d_str in days_to_check:
-                t_dt = datetime.strptime(d_str, "%Y-%m-%d").date()
-                for cid in set([target_chat_id, chat_id]):
-                    rows = items_for_date(cid, t_dt)
-                    for r in rows:
-                        if r[0] in ("meeting", "appointment", "calendar"):
-                            item_id = str(r[4])
-                            if not any(e["id"] == item_id for e in events):
-                                events.append({
-                                    "id": item_id,
-                                    "title": r[1],
-                                    "start": f"{d_str}T{r[3] or '10:00:00'}",
-                                    "link": None,
-                                    "location": "",
-                                    "description": ""
-                                })
-        except Exception:
-            pass
+    # 2. Fetch local items (reminders, meetings, travel, appointments) in a SINGLE query
+    try:
+        def _fetch_local():
+            with engine.connect() as conn:
+                return conn.execute(
+                    text(
+                        "SELECT m.id, m.category, m.title, m.due_date, m.due_time, m.amount "
+                        "FROM memory_items m JOIN users u ON u.id = m.user_id "
+                        "WHERE u.telegram_chat_id IN (:c1, :c2) "
+                        "AND m.due_date BETWEEN :s AND :e "
+                        "ORDER BY m.due_date, m.due_time NULLS FIRST, m.id"
+                    ),
+                    {"c1": chat_id, "c2": target_chat_id, "s": start_d, "e": end_d}
+                ).fetchall()
 
+        local_rows = await asyncio.to_thread(_fetch_local)
+        for row in local_rows:
+            r_id, r_cat, r_title, r_date, r_time, r_amt = row
+            r_date_str = str(r_date)
+            r_time_str = r_time.strftime("%H:%M:%S") if hasattr(r_time, "strftime") else (str(r_time) if r_time else "10:00:00")
+            r_start = f"{r_date_str}T{r_time_str}"
+
+            # Deduplicate against Google Calendar events with similar title
+            norm_local = re.sub(r"^[⏰⏳▶🔔📅\s]+", "", str(r_title)).strip().lower()
+            duplicate = any(
+                norm_local in re.sub(r"^[⏰⏳▶🔔📅\s]+", "", str(e.get("title", ""))).strip().lower()
+                and str(e.get("start", ""))[:10] == r_date_str
+                for e in events
+            )
+            if not duplicate:
+                events.append({
+                    "id": f"local_{r_id}",
+                    "title": f"🔔 {r_title}" if r_cat == "reminder" else r_title,
+                    "start": r_start,
+                    "link": None,
+                    "location": "",
+                    "description": f"{r_cat.capitalize()} ({'₹' + str(r_amt) if r_amt else ''})",
+                    "source": r_cat
+                })
+    except Exception as exc:
+        print("[api_v1.calendar] local query error:", exc)
+
+    events.sort(key=lambda x: str(x.get("start") or ""))
     minutes_booked = len(events) * 30
-    return {
+    res_data = {
         "view": view,
         "date": target_d,
         "month": month_str or now.strftime("%Y-%m"),
@@ -2072,6 +2114,9 @@ async def get_calendar_events_route(
         "status_summary": f"{len(events)} events • {minutes_booked}m booked" if events else "No events scheduled",
         "events": events
     }
+
+    _CALENDAR_EVENTS_CACHE[cache_key] = {"exp": now_ts + 45.0, "data": res_data}
+    return res_data
 
 
 @router.post("/calendar/events", summary="Create Calendar Event")
@@ -2130,6 +2175,7 @@ async def create_calendar_event_route(
         except Exception:
             pass
 
+        _CALENDAR_EVENTS_CACHE.clear()
         return {
             "status": "ok",
             "event": res,
@@ -2179,9 +2225,22 @@ async def delete_calendar_event_route(
     """
     Deletes an event from Google Calendar or local schedule.
     """
+    _CALENDAR_EVENTS_CACHE.clear()
+    target_chat_id = _resolve_calendar_chat_id(chat_id)
+    if event_id.startswith("local_"):
+        try:
+            local_id = int(event_id.replace("local_", ""))
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": local_id})
+                conn.execute(text("DELETE FROM memory_items WHERE id = :id"), {"id": local_id})
+            return {"status": "ok", "message": "Local scheduled event removed."}
+        except Exception as exc:
+            print("[api_v1] delete local event error:", exc)
+            return {"status": "ok", "message": "Event removed."}
+
     try:
         from google_services import delete_calendar_event
-        await delete_calendar_event(chat_id, event_id)
+        await delete_calendar_event(target_chat_id, event_id)
         return {"status": "ok", "message": "Event deleted from Google Calendar."}
     except Exception as exc:
         print("[api_v1] delete_calendar_event error:", repr(exc))

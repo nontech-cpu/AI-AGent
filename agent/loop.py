@@ -130,8 +130,108 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
-    model = os.getenv("GROQ_MODEL") or "qwen/qwen3.8-27b"
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
     now_ist = datetime.now(IST)
+
+    # 0. Pure casual greetings / check-ins fast path (Instant <0.9s response, zero DB lag)
+    low_prompt = user_text.lower().strip()
+    has_action_words = bool(re.search(
+        r"\b(remind|reminder|meet|meeting|calendar|schedule|call|task|todo|note|notes|notion|git|github|mail|email|gmail|send|upload|drive|pdf|weather|search|rate|price|gold|sona|convert|calc|dollar|inr|ticket|pnr|flight|wipe|delete|forget|clean)\b",
+        low_prompt
+    ))
+    is_pure_casual_chat = (
+        not has_action_words
+        and (
+            bool(re.search(
+                r"^(?:(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)\s+)?(?:hi+|hello+|hey+|hlo+|namaste|good\s+(?:morning|evening|afternoon|night)|gm|gn|kaisa\s+h|kaisa\s+hai|kesa\s+h|kesa\s+hai|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|sab\s+theek|sab\s+thik|badhiya|theek|thik|mast)(?:\s+(?:bhy|bhai|bro|yaar|dost|h|hai|ho|chal\s+raha\s+hai|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
+                low_prompt
+            ))
+            or bool(re.search(
+                r"^(?:aur\s+)?(?:bhy|bhai|bro|yaar|dost)(?:\s+(?:kesa|kaisa|kaise|kaisi|theek|thik|kya\s+hal|kya\s+haal|kya\s+chal\s+rha|kya\s+chal\s+raha|sab\s+badhiya))?(?:\s+(?:h|hai|ho|tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao))?[\s?!.,]*$",
+                low_prompt
+            ))
+            or bool(re.search(
+                r"^(?:sab\s+)?(?:badhiya|theek|thik|mast)\s*(?:bhy|bhai|bro|yaar|dost)?(?:\s+(?:tu\s+bata|tum\s+batao|aap\s+batao|bata|batao|sunao|kaisa\s+hai|kaisa\s+h))?[\s?!.,]*$",
+                low_prompt
+            ))
+        )
+    )
+
+    if is_pure_casual_chat:
+        sys_msg = (
+            "You are PeculiarAI, a sharp and personal AI companion. "
+            "You converse naturally like a warm, intelligent friend in Roman Hinglish (Latin alphabet exclusively). "
+            "Reply warmly, naturally, and conversationally (e.g. 'Main badhiya hoon bhai! Aap batao, sab kaisa chal raha hai? 😊'). "
+            "NEVER ask dismissive or transactional questions. Keep answers crisp and friendly."
+        )
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json={
+                        "model": model,
+                        "temperature": 0.5,
+                        "messages": [
+                            {"role": "system", "content": sys_msg},
+                            {"role": "user", "content": user_text}
+                        ],
+                        "max_tokens": 150
+                    }
+                )
+                if resp.status_code == 200:
+                    reply_text = resp.json()["choices"][0]["message"]["content"].strip()
+                    # Log asynchronously in background
+                    asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text))
+                    asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text))
+                    return {
+                        "reply": reply_text,
+                        "tool_calls_executed": [],
+                        "pending_action": None,
+                        "is_grounded": True,
+                        "violations": [],
+                        "latency_ms": int((time.time() - start_ts) * 1000),
+                        "tokens_used": resp.json().get("usage", {}).get("total_tokens", 0),
+                        "memory_context": {}
+                    }
+        except Exception as exc:
+            pass
+
+    # 0.1 High-speed Reminder & Today's Schedule Query Fast-Path (Instant <0.1s response)
+    is_rem_ask = bool(re.search(
+        r"\b(aaj\s*k[eaie]\s*reminder|mere\s*reminder|kya\s*reminder|koi\s*reminder|reminder\s*(?:ky|kya|bta|bata|dikha|sunao|check)|reminders?\s*(?:dikhao|btao|batao|kya\s*h|kya\s*hai|hai|h|check|sunao)|aaj\s*ka\s*schedule|aaj\s*kya\s*hai)\b",
+        low_prompt
+    ))
+    is_rem_write = bool(re.search(r"\b(add|set|create|laga|daal|dal|bana|bna|delete|hata|khatam|cancel|reschedule)\b", low_prompt))
+    if is_rem_ask and not is_rem_write:
+        try:
+            today_date = now_ist.date()
+            items = db.items_for_date(chat_id, today_date)
+            if items:
+                lines = []
+                for it in items:
+                    t = it[1]
+                    tm = it[3].strftime("%I:%M %p") if hasattr(it[3], "strftime") else (str(it[3])[:5] if it[3] else "All day")
+                    amt = f" (₹{it[2]})" if it[2] else ""
+                    lines.append(f"• **{t}** – {tm}{amt}")
+                reply_text = "Aapke aaj ke reminders (aaj):\n\n" + "\n".join(lines) + "\n\nKuch aur add ya update karna ho toh batayein! 😊"
+            else:
+                reply_text = "Bhai, aaj ke liye aapka koi reminder scheduled nahi hai! Agar koi reminder add karna ho toh batayein! 😊"
+
+            asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text))
+            asyncio.create_task(asyncio.to_thread(db.log_chat_message, chat_id, "assistant", reply_text))
+            return {
+                "reply": reply_text,
+                "tool_calls_executed": ["list_reminders"],
+                "pending_action": None,
+                "is_grounded": True,
+                "violations": [],
+                "latency_ms": int((time.time() - start_ts) * 1000),
+                "tokens_used": 0,
+                "memory_context": {}
+            }
+        except Exception as exc:
+            pass
 
     # Check if user sent just a raw email address (e.g. attempting to link Google)
     trimmed_text = user_text.strip()
@@ -717,6 +817,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         )
     )
 
+    print("Check 1:", time.time() - start_ts)
     # Context assembly: assemble memory & system prompt (only needed for turns that proceed to the LLM)
 
     if is_pure_casual_chat:
@@ -825,11 +926,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 payload["tools"] = effective_tools
                 payload["tool_choice"] = "auto"
 
+            print("Check 2 (calling Groq):", time.time() - start_ts)
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {groq_key}"},
                 json=payload
             )
+            print("Check 3 (Groq responded):", time.time() - start_ts)
 
 
 
@@ -1161,16 +1264,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply += f"\n\n{cw} Kya aap iska time aage-peeche karna chahenge?"
 
     # Phase 3: Zero-Unsupported-Claims Grounding Verifier Pass
-    is_grounded, verified_reply, violations = await verify_and_ground_reply(
-        draft_reply=final_reply,
-        tool_results=tool_results_list,
-        memory_context=mem_ctx,
-        user_query=user_text,
-        recent_history=recent_history
-    )
-    if not is_grounded:
-        print(f"Grounding Verifier intercepted unsupported claims: {violations}")
-        final_reply = verified_reply
+    if not is_pure_casual_chat:
+        is_grounded, verified_reply, violations = await verify_and_ground_reply(
+            draft_reply=final_reply,
+            tool_results=tool_results_list,
+            memory_context=mem_ctx,
+            user_query=user_text,
+            recent_history=recent_history
+        )
+        if not is_grounded:
+            print(f"Grounding Verifier intercepted unsupported claims: {violations}")
+            final_reply = verified_reply
+    else:
+        is_grounded = True
+        violations = []
 
     # Guardrail: Fake-Success Prevention in code
     is_fake_ok, fake_err = check_fake_success_guard(final_reply, tool_results_list)

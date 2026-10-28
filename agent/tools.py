@@ -1219,12 +1219,29 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             if args.date_str:
                 d_val = date.fromisoformat(args.date_str)
                 items = db.items_for_date(chat_id, d_val)
+                # items_for_date returns: (category, title, amount, due_time, id)
+                formatted = [
+                    {
+                        "id": it[4],
+                        "category": it[0],
+                        "title": it[1],
+                        "due_date": args.date_str,
+                        "due_time": str(it[3]) if it[3] else None
+                    }
+                    for it in items
+                ]
             else:
                 items = db.list_memories(chat_id)
-            formatted = [
-                {"category": it[0], "title": it[1], "due_date": str(it[3]) if len(it) > 3 and it[3] else None, "due_time": str(it[4]) if len(it) > 4 and it[4] else None}
-                for it in items
-            ]
+                # list_memories returns: (category, title, amount, due_date, due_time)
+                formatted = [
+                    {
+                        "category": it[0],
+                        "title": it[1],
+                        "due_date": str(it[3]) if len(it) > 3 and it[3] else None,
+                        "due_time": str(it[4]) if len(it) > 4 and it[4] else None
+                    }
+                    for it in items
+                ]
             return {"reminders": formatted}
 
         elif tool_name == "get_schedule":
