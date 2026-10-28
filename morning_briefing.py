@@ -411,12 +411,13 @@ async def morning_briefing_job():
     """
     now_ist = datetime.now(IST)
     users = db.get_all_active_telegram_users()
+    tasks = []
     for u in users:
-        try:
-            cid = u["chat_id"]
-            await process_user_morning_briefing(cid, u, now_ist)
-        except Exception as user_err:
-            print(f"[morning_briefing_job] error for user {u}:", repr(user_err))
+        cid = u.get("chat_id")
+        if cid:
+            tasks.append(process_user_morning_briefing(cid, u, now_ist))
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def morning_briefing_loop():

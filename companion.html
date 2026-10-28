@@ -1481,6 +1481,11 @@
             if (el) el.innerText = userLabel + syncIcon;
             const inputEl = document.getElementById('settingsChatIdInput');
             if (inputEl) inputEl.value = currentChatId;
+
+            // Trigger immediate sync of chat history and dashboard with resolved user id
+            restoreCachedChat();
+            loadChatHistory();
+            loadDashboardData();
           }
         }
       } catch (err) {
@@ -2037,7 +2042,7 @@
       chatStream.scrollTop = chatStream.scrollHeight;
 
       try {
-        const res = await fetch(`${API_BASE}/api/v1/chat/message', {
+        const res = await fetch(`${API_BASE}/api/v1/chat/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
