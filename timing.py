@@ -29,8 +29,6 @@ def build_plan(due_date, due_time, now=None):
         mins = (due_dt - now).total_seconds() / 60
         if mins <= 0:
             return {"status": "past", "minutes": None, "reminders": []}
-        if mins <= URGENT_MINUTES:
-            return {"status": "urgent", "minutes": max(1, round(mins)), "reminders": []}
 
         # Subah 9 wale reminders: sirf tab jab event me kam se kam 1 ghanta ho
         for d, label in ((due_date - timedelta(days=1), "day_before"),
@@ -43,6 +41,9 @@ def build_plan(due_date, due_time, now=None):
             at = due_dt - timedelta(minutes=mins_before)
             if at > now:
                 reminders.append((at, label))
+        # Exact due time reminder
+        if due_dt > now:
+            reminders.append((due_dt, "at_time"))
     else:
         if due_date < now.date():
             return {"status": "past", "minutes": None, "reminders": []}
@@ -52,15 +53,16 @@ def build_plan(due_date, due_time, now=None):
             if at > now:
                 reminders.append((at, label))
 
-    status = "scheduled" if reminders else "none"
-    return {"status": status, "minutes": None, "reminders": reminders}
+    status = "urgent" if (due_time is not None and mins <= URGENT_MINUTES) else ("scheduled" if reminders else "none")
+    return {"status": status, "minutes": max(1, round(mins)) if (due_time is not None and mins <= URGENT_MINUTES) else None, "reminders": reminders}
 
 
 def event_over(due_date, due_time, now):
     if due_date is None:
         return False
     if due_time is not None:
-        return _at(due_date, due_time) <= now
+        # Event is only considered over if ended more than 45 minutes ago (prevents premature drop on exact match)
+        return (_at(due_date, due_time) + timedelta(minutes=45)) <= now
     return due_date < now.date()
 
 

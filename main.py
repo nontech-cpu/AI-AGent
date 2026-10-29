@@ -3529,31 +3529,48 @@ async def process_document(chat_id, doc, caption=""):
 # ---------- Reminders ----------
 
 HEADS = {
-    "day_before": "🔔 Due tomorrow",
-    "due_day": "⏰ Due today",
-    "15min": "⏳ In 15 minutes",
+    "day_before": "📅 Due tomorrow",
+    "due_day": "☀️ Due today",
+    "15min": "⏰ In 15 minutes",
     "5min": "⚡ In 5 minutes",
+    "at_time": "🔔 It's time",
+    "reminder": "🔔 Reminder",
 }
 
 
 def reminder_text(label, category, title, amount, due_time):
-    line = f"{HEADS.get(label, '🔔 Reminder')}: {CATEGORIES.get(category, category)}: {title}"
-    if due_time:
-        line += f" at {due_time.strftime('%H:%M')}"
-    if amount is not None:
-        line += f" | {amount}"
-    return line
+    head = HEADS.get(label, '🔔 Reminder')
+    time_str = f" at {due_time.strftime('%I:%M %p')}" if due_time else ""
+    amt_str = f" | {amount}" if amount is not None else ""
+    cat_str = f" [{CATEGORIES.get(category, category)}]" if category and category != "reminder" else ""
+    return f"{head}:{cat_str} {title}{time_str}{amt_str}"
 
 
 async def run_reminders():
     now = datetime.now(IST)
     for rid, chat_id, category, title, amount, due_date, due_time, label in get_pending_reminders(now):
-        # Event nikal chuka (jaise laptop band tha) to purana reminder mat bhejo
+        # Event nikal chuka (jaise laptop band tha aur 45+ mins ho gaye) to purana reminder mat bhejo
         if event_over(due_date, due_time, now):
             mark_sent(rid)
             continue
         reply_lang.set(get_language(chat_id))
-        await say(chat_id, reminder_text(label, category, title, amount, due_time))
+        msg_text = reminder_text(label, category, title, amount, due_time)
+        
+        # Deliver to user chat_id and linked canonical/desktop Telegram accounts
+        target_ids = {chat_id}
+        from db import CANONICAL_CHAT_ID_MAP
+        if chat_id in CANONICAL_CHAT_ID_MAP:
+            target_ids.add(CANONICAL_CHAT_ID_MAP[chat_id])
+        for orig, canon in CANONICAL_CHAT_ID_MAP.items():
+            if canon == chat_id:
+                target_ids.add(orig)
+                
+        for cid in target_ids:
+            try:
+                await say(cid, msg_text)
+            except Exception as e:
+                print(f"Error sending reminder {rid} to {cid}:", e)
+                
         mark_sent(rid)
 
 
