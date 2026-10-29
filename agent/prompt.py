@@ -273,7 +273,7 @@ async def build_runtime_system_prompt(
     # 8. Available Tools Catalog
     available_tools_str = (
         "Memory & Contacts: save_contact, get_contact, list_contacts, update_contact_commitment, get_commitments, save_note_or_fact, search_memory, clear_chat_history | "
-        "Tasks & Reminders: create_reminder, list_reminders, delete_reminder | "
+        "Tasks & Reminders: create_reminder, list_reminders, delete_reminder, manage_smart_list, create_packing_list | "
         "Calendar & Schedule: get_schedule, check_availability, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
         "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages | "

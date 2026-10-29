@@ -65,6 +65,12 @@ class UpdateGitHubFileArgs(BaseModel):
     content: str = Field(..., description="New or updated content for the file.")
     commit_message: Optional[str] = Field("Update file via PeculiarAI", description="Git commit message.")
 
+class ManageSmartListArgs(BaseModel):
+    action: str = Field(..., description="Action to perform: 'create', 'add_items', 'get', 'list_all', 'delete'.")
+    list_name: Optional[str] = Field(None, description="Name of the checklist/smart list e.g. 'Groceries', 'Packing', 'Work Deliverables'.")
+    items: Optional[List[str]] = Field(None, description="List of item titles to add or include.")
+    category: Optional[str] = Field("general", description="Category of list e.g. 'groceries', 'travel', 'work', 'personal'.")
+
 class CreatePackingListArgs(BaseModel):
     trip_title: str = Field(..., description="Title of the trip or packing list e.g. 'Goa Trip'.")
     items: List[str] = Field(..., description="List of items to pack e.g. ['Passport', 'Aadhaar Card', 'Photo', 'Charger'].")
@@ -339,6 +345,23 @@ TOOL_DEFINITIONS = [
                     "query": {"type": "string", "description": "Keywords of the ticket, flight, booking, or fact to delete from memory."}
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_smart_list",
+            "description": "Create, view, add items to, or delete user checklists and smart lists (e.g. 'Grocery list', 'Shopping list', 'Work items'). Fully synchronized with the Web Companion Lists tab.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "add_items", "get", "list_all", "delete"], "description": "Action to perform."},
+                    "list_name": {"type": ["string", "null"], "description": "Name of the checklist/smart list e.g. 'Groceries', 'Shopping'."},
+                    "items": {"type": ["array", "null"], "items": {"type": "string"}, "description": "List of item names e.g. ['Milk', 'Eggs', 'Bread']."},
+                    "category": {"type": ["string", "null"], "description": "Optional category e.g. 'groceries', 'work', 'travel', 'personal'."}
+                },
+                "required": ["action"]
             }
         }
     },
@@ -1059,6 +1082,51 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "query": args.query,
                 "message": f"Ticket/Fact matching '{args.query}' has been successfully deleted from memory."
             }
+
+        elif tool_name == "manage_smart_list":
+            args = ManageSmartListArgs(**arguments)
+            act = args.action.lower()
+            if act in ("create", "add_items"):
+                lname = args.list_name or "My List"
+                lid = db.find_or_create_smart_list(chat_id, lname, category=args.category or "general")
+                added = []
+                if args.items:
+                    for itm in args.items:
+                        db.add_smart_list_item(chat_id, lid, itm)
+                        added.append(itm)
+                try:
+                    from api_v1 import _invalidate_all_app_caches
+                    _invalidate_all_app_caches(chat_id)
+                except Exception:
+                    pass
+                return {"status": "success", "message": f"List '{lname}' saved with {len(added)} items.", "list_name": lname, "items": added}
+            elif act == "get":
+                lists = db.get_smart_lists(chat_id)
+                target = None
+                lname = (args.list_name or "").lower()
+                for l in lists:
+                    if lname in l["name"].lower():
+                        target = l
+                        break
+                if target:
+                    return {"status": "success", "list": target}
+                return {"status": "error", "message": f"List '{args.list_name}' not found.", "available_lists": [l["name"] for l in lists]}
+            elif act == "list_all":
+                lists = db.get_smart_lists(chat_id)
+                return {"status": "success", "lists": [{"name": l["name"], "items_count": len(l.get("items", []))} for l in lists]}
+            elif act == "delete":
+                lists = db.get_smart_lists(chat_id)
+                lname = (args.list_name or "").lower()
+                for l in lists:
+                    if lname in l["name"].lower():
+                        db.delete_smart_list(chat_id, l["id"])
+                        try:
+                            from api_v1 import _invalidate_all_app_caches
+                            _invalidate_all_app_caches(chat_id)
+                        except Exception:
+                            pass
+                        return {"status": "success", "message": f"List '{l['name']}' deleted."}
+                return {"status": "error", "message": f"List '{args.list_name}' not found."}
 
         elif tool_name == "create_packing_list":
             args = CreatePackingListArgs(**arguments)
