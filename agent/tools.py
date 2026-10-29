@@ -1240,8 +1240,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             rem_id = arguments.get("reminder_id")
             from db import canonical_chat_id, engine, text, items_for_date
             from timing import IST
-            from datetime import datetime
-            import re
             can_cid = canonical_chat_id(chat_id)
 
             # Robust keyword cleaning: remove asterisks, times (- 05:30 PM), filler words
