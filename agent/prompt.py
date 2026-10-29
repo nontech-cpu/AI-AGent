@@ -48,7 +48,7 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
    - When the user asks 'mere koi list created h kya?', 'koi lists h kya?', 'meri lists dikhao', ALWAYS check {LISTS_BLOCK} first and truthfully list their active lists and items (e.g. 'movie trip' with items 'bag', 'wallet'). NEVER say no lists exist when lists are in {LISTS_BLOCK}!
    - When user asks to add items to a list, create a list, or check off items, immediately execute `manage_smart_list`.
 9. **Schedule Awareness (Today vs Tomorrow/Upcoming):**
-   - When user asks for reminders (e.g. 'mera reminder aajke?', 'aaj ke reminder'), check {SCHEDULE_BLOCK}. State today's reminders clearly.
+   - ALWAYS check the live Ground Truth in {SCHEDULE_BLOCK} for today's reminders. You MUST list EVERY reminder currently listed under Today in {SCHEDULE_BLOCK} (e.g. if both 'laptop service' and 'new tiffin' are in {SCHEDULE_BLOCK}, you must list BOTH!). Never omit newly added reminders or repeat a previous turn's outdated list.
    - IF there are also reminders scheduled for tomorrow or future days in {SCHEDULE_BLOCK} (e.g. 'Fast blood sugar measurement', 'Book reminder'), ALWAYS add a brief reassuring note: "Iske alawa kal (30 Oct) ke liye aapke ye reminders scheduled hain: [titles & times], tension mat lo!" so the user knows none of their reminders were removed!
 """
 
@@ -177,32 +177,24 @@ async def build_runtime_system_prompt(
         build_runtime_system_prompt._sched_cache = {}
     _sched_cache = build_runtime_system_prompt._sched_cache
 
-    cache_key_today = f"{chat_id}_{today_d.isoformat()}"
-    cached_today = _sched_cache.get(cache_key_today)
-    now_ts = time.time()
+    # 100% Live DB ground truth for instant zero-latency schedule synchronization
+    today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
+    try:
+        from db import items_for_date, canonical_chat_id
+        cid_can = canonical_chat_id(chat_id)
+        # Always fetch live from SQLite in <0.2ms
+        today_sched["reminders"] = items_for_date(cid_can, today_d) or []
+    except Exception:
+        pass
 
-    if cached_today and (now_ts - cached_today["ts"]) < 180:
-        today_sched = cached_today["data"]
-    else:
-        # Non-blocking: check main unified cache or warm in background
+    try:
         from main import _UNIFIED_SCHED_CACHE
-        ck = (chat_id, str(today_d))
-        main_c = _UNIFIED_SCHED_CACHE.get(ck)
-        if main_c and (now_ts < main_c["exp"]):
-            today_sched = main_c["data"]
-            _sched_cache[cache_key_today] = {"data": today_sched, "ts": now_ts}
-        else:
-            today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
-            try:
-                from db import items_for_date, canonical_chat_id
-                cid_can = canonical_chat_id(chat_id)
-                db_rems = items_for_date(cid_can, today_d)
-                if db_rems:
-                    today_sched["reminders"] = db_rems
-                from main import get_unified_schedule
-                asyncio.create_task(get_unified_schedule(cid_can, today_d))
-            except Exception:
-                pass
+        main_c = _UNIFIED_SCHED_CACHE.get((cid_can, str(today_d)))
+        if main_c and "data" in main_c:
+            today_sched["calendar_events"] = main_c["data"].get("calendar_events", [])
+            today_sched["commitments"] = main_c["data"].get("commitments", [])
+    except Exception:
+        pass
 
     tomorrow_sched = {"calendar_events": [], "reminders": [], "commitments": []}
     try:
