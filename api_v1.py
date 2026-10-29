@@ -44,12 +44,22 @@ router = APIRouter(prefix="/api/v1", tags=["Mobile App API v1"])
 # doc_id -> {"filename": str, "content": str, "summary": str, "chat_id": int, "created_at": datetime}
 DOCUMENT_TRUNK: Dict[str, Dict[str, Any]] = {}
 _CALENDAR_EVENTS_CACHE: Dict[Any, Any] = {}
-def _invalidate_all_app_caches():
+def _invalidate_all_app_caches(chat_id: Optional[int] = None):
     _CALENDAR_EVENTS_CACHE.clear()
     _DASHBOARD_CACHE.clear()
     _REMINDERS_CACHE.clear()
     _LISTS_CACHE.clear()
     _TASKS_CACHE.clear()
+    try:
+        from main import invalidate_unified_schedule_cache
+        invalidate_unified_schedule_cache(chat_id)
+    except Exception:
+        pass
+    try:
+        from agent.prompt import invalidate_prompt_schedule_cache
+        invalidate_prompt_schedule_cache(chat_id)
+    except Exception:
+        pass
 
 _DASHBOARD_CACHE: Dict[Any, Any] = {}
 _TASKS_CACHE: Dict[Any, Any] = {}

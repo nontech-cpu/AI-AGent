@@ -299,3 +299,16 @@ async def build_runtime_system_prompt(
     prompt = prompt.replace("{ACTIVE_CONTEXT}", active_ctx_str)
 
     return prompt
+
+def invalidate_prompt_schedule_cache(chat_id=None):
+    """Instantly busts prompt schedule cache so the bot's next turn sees newly created/deleted items immediately."""
+    if hasattr(build_runtime_system_prompt, "_sched_cache"):
+        if chat_id is None:
+            build_runtime_system_prompt._sched_cache.clear()
+        else:
+            cid_str = str(chat_id)
+            build_runtime_system_prompt._sched_cache = {
+                k: v for k, v in build_runtime_system_prompt._sched_cache.items()
+                if not k.startswith(cid_str)
+            }
+
