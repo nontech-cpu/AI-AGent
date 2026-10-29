@@ -81,6 +81,7 @@ class CreateReminderArgs(BaseModel):
     due_date: str = Field(..., description="Due date in YYYY-MM-DD format.")
     due_time: Optional[str] = Field(None, description="Due time in HH:MM format (24h) if specified.")
     category: Optional[str] = Field("appointments", description="Category of reminder.")
+    force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict.")
 
 class ListRemindersArgs(BaseModel):
     date_str: Optional[str] = Field(None, description="Optional date filter in YYYY-MM-DD format.")
@@ -392,7 +393,8 @@ TOOL_DEFINITIONS = [
                     "title": {"type": "string", "description": "Task or reminder title."},
                     "due_date": {"type": "string", "description": "Date in YYYY-MM-DD format."},
                     "due_time": {"type": ["string", "null"], "description": "Time in HH:MM 24h format."},
-                    "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."}
+                    "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
+                    "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict exists."}
                 },
                 "required": ["title", "due_date"]
             }
@@ -1175,11 +1177,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             existing_items = db.items_for_date(chat_id, d_val)
             matched_existing_ids = []
 
+            clean_arg = re.sub(r'[^a-zA-Z0-9 ]+', '', args.title.lower()).strip()
             for row in existing_items:
                 row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
                 row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
+                clean_row = re.sub(r'[^a-zA-Z0-9 ]+', '', row_title.lower()).strip()
                 row_tokens = set(re.findall(r'[a-zA-Z0-9]+', row_title.lower())) - stop_kw
-                if arg_tokens and row_tokens and (arg_tokens & row_tokens):
+                # Only match if identical or EXACT same substantive tokens (never match across different subjects!)
+                if clean_arg == clean_row or (arg_tokens and row_tokens and arg_tokens == row_tokens):
                     matched_existing_ids.append((row_id, row_title))
 
             matched_id_set = {mid for mid, _ in matched_existing_ids if mid is not None}
@@ -1191,16 +1196,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
                 if row_id in matched_id_set:
                     continue
-                row_tokens = set(re.findall(r'[a-zA-Z0-9]+', row_title.lower())) - stop_kw
-                if arg_tokens and row_tokens and (arg_tokens & row_tokens):
-                    continue
                 row_time = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
                 if t_val and row_time:
                     try:
                         r_h = row_time.hour if hasattr(row_time, "hour") else int(str(row_time).split(":")[0])
                         r_m = row_time.minute if hasattr(row_time, "minute") else int(str(row_time).split(":")[1])
                         diff_mins = abs((t_val.hour * 60 + t_val.minute) - (r_h * 60 + r_m))
-                        if diff_mins < 60:
+                        # Direct time collision (within 15 minutes)
+                        if diff_mins < 15:
                             conflicts.append(f"'{row_title}' at {r_h:02d}:{r_m:02d}")
                     except Exception:
                         pass
@@ -1218,6 +1221,18 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                             conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' at {ev_dt.strftime('%I:%M %p')}")
             except Exception:
                 pass
+
+            # Check if there is an unforced direct time clash
+            if conflicts and not getattr(args, "force", False) and not matched_existing_ids:
+                return {
+                    "status": "conflict_detected",
+                    "has_conflict": True,
+                    "conflicts": conflicts,
+                    "title": args.title,
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
+                    "message": f"Time Conflict: {args.due_time} par already {', '.join(conflicts)} scheduled hai! Reminder create NAHI kiya gaya hai. User ko politely inform karo ki is samay par already yeh task scheduled hai aur pucho ki kya kisi aur time par shift karein ya fir bhi isi time par dono ka reminder lagana hai."
+                }
 
             if matched_existing_ids:
                 primary_id, primary_title = matched_existing_ids[0]
