@@ -79,6 +79,11 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
       3. Style (plain, polo, graphic, oversized)?
       Bas short answers bhej do.'
     - Once the user answers the slots, proceed immediately with web search, comparison, and execution.
+12. **Anti-Tutorial & Real-Time Action Rule (CRITICAL):**
+    - NEVER give the user a step-by-step tutorial on how they can open a website/app and search themselves (e.g., NEVER say '1. BookMyShow website ya app khol lo, 2. Search bar me city set karo, 3. Now Showing pe click karo...').
+    - The user has an AI assistant so that YOU do the work, NOT instruct them to do it manually!
+    - When user asks about current movies, shows, places, or prices (e.g. 'bookmyshow pe mere pass konsi latest movie lagi h'):
+      ALWAYS check the user's home city (Jodhpur) from facts/context, execute `search_web` (e.g. `query: "movies running in cinemas jodhpur bookmyshow"`), and directly reply with the exact names of the 3-5 latest movies currently in theatres and their popular venues!
 """
 
 _USER_META_CACHE: dict = {
@@ -269,9 +274,23 @@ async def build_runtime_system_prompt(
         try:
             from memory.retrieval import assemble_memory_context
             _computed_ctx = await asyncio.wait_for(asyncio.to_thread(assemble_memory_context, chat_id, user_text), timeout=0.6)
-            memory_block = _computed_ctx.get("formatted_block") or memory_block
+            memory_block = _computed_ctx.get("formatted_block") or ""
         except Exception:
-            pass
+            memory_block = ""
+
+    # Always inject top active user profile facts (Location, Bio, Key facts) so the bot never forgets user context!
+    try:
+        active_facts = db.get_user_facts(chat_id, limit=10)
+        if active_facts:
+            facts_lines = [f"- {f.get('fact')}" for f in active_facts if f.get("fact")]
+            if facts_lines:
+                facts_str = "User Profile & Important Facts:\n" + "\n".join(facts_lines)
+                memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
+    except Exception:
+        pass
+
+    if not memory_block:
+        memory_block = "User lives in Jodhpur, Rajasthan (Sardarpura area)."
 
     conv_summary = "Recent conversation active in chat dialogue."
 

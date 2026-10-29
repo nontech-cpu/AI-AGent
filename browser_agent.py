@@ -84,3 +84,4 @@ async def search_and_compare_products(query: str, site: str = "amazon") -> Dict[
     search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}+{site}+india"
     res = await browse_and_extract_content(search_url)
     return res
+
