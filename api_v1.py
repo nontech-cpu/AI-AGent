@@ -1822,8 +1822,12 @@ async def get_user_reminders(
         elif hasattr(t_val, "strftime"):
             t_time = t_val
 
-        is_today = (d_date == now_date or not d_date)
-        is_upcoming = (not is_completed) and (d_date is None or d_date >= now_date)
+        is_today = (d_date == now_date)
+        is_upcoming = (not is_completed) and (
+            (d_date is not None and d_date > now_date) or
+            (d_date == now_date and (t_time is None or t_time >= now.time())) or
+            (d_date is None)
+        )
 
         item_data = {
             "id": item_id,

@@ -25,6 +25,7 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
 - User Rules: {USER_RULES}
 - Recent Chat: {CONVERSATION_SUMMARY}
 - Memory & Facts: {MEMORY_BLOCK}
+- Active Checklists & Smart Lists: {LISTS_BLOCK}
 - Unified Schedule: {SCHEDULE_BLOCK}
 - Active Context: {ACTIVE_CONTEXT}
 
@@ -42,6 +43,13 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
      NEVER lecture or reply with generic health tips, advice articles, or essays unless the user explicitly asked an informational question (e.g. 'sugar measure kaise karte hain?').
    - When user gives MULTIPLE intents in one message (e.g. 'mera dost ka sugar 84 tha save it and 10 bje reminder laga do'):
      ALWAYS call BOTH tools in your turn (`save_note_or_fact` AND `create_reminder`)! NEVER claim in text that a reminder was set without executing `create_reminder`!
+8. **Checklists & Smart Lists Sync (CRITICAL):**
+   - You have live access to user checklists via {LISTS_BLOCK} and the tool `manage_smart_list`.
+   - When the user asks 'mere koi list created h kya?', 'koi lists h kya?', 'meri lists dikhao', ALWAYS check {LISTS_BLOCK} first and truthfully list their active lists and items (e.g. 'movie trip' with items 'bag', 'wallet'). NEVER say no lists exist when lists are in {LISTS_BLOCK}!
+   - When user asks to add items to a list, create a list, or check off items, immediately execute `manage_smart_list`.
+9. **Schedule Awareness (Today vs Tomorrow/Upcoming):**
+   - When user asks for reminders (e.g. 'mera reminder aajke?', 'aaj ke reminder'), check {SCHEDULE_BLOCK}. State today's reminders clearly.
+   - IF there are also reminders scheduled for tomorrow or future days in {SCHEDULE_BLOCK} (e.g. 'Fast blood sugar measurement', 'Book reminder'), ALWAYS add a brief reassuring note: "Iske alawa kal (30 Oct) ke liye aapke ye reminders scheduled hain: [titles & times], tension mat lo!" so the user knows none of their reminders were removed!
 """
 
 _USER_META_CACHE: dict = {
@@ -197,6 +205,29 @@ async def build_runtime_system_prompt(
                 pass
 
     tomorrow_sched = {"calendar_events": [], "reminders": [], "commitments": []}
+    try:
+        from db import items_for_date, canonical_chat_id
+        cid_can = canonical_chat_id(chat_id)
+        db_tm_rems = items_for_date(cid_can, tomorrow_d)
+        if db_tm_rems:
+            tomorrow_sched["reminders"] = db_tm_rems
+    except Exception:
+        pass
+
+    # 2b. Active Checklists & Smart Lists
+    lists_str = "None created yet."
+    try:
+        from db import get_smart_lists, canonical_chat_id
+        cid_can = canonical_chat_id(chat_id)
+        u_lists = get_smart_lists(cid_can)
+        if u_lists:
+            formatted_lists = []
+            for l in u_lists:
+                items_summary = ", ".join([it["title"] for it in l.get("items", [])[:8]])
+                formatted_lists.append(f"• {l['name']} ({len(l.get('items', []))} items: {items_summary or 'empty'})")
+            lists_str = "\n".join(formatted_lists)
+    except Exception:
+        lists_str = "None created yet."
 
 
     # 3. Pending Actions
@@ -294,6 +325,7 @@ async def build_runtime_system_prompt(
     prompt = prompt.replace("{USER_RULES}", rules_str)
     prompt = prompt.replace("{CONVERSATION_SUMMARY}", conv_summary)
     prompt = prompt.replace("{MEMORY_BLOCK}", memory_block)
+    prompt = prompt.replace("{LISTS_BLOCK}", lists_str)
     prompt = prompt.replace("{SCHEDULE_BLOCK}", schedule_block)
     prompt = prompt.replace("{AVAILABLE_TOOLS}", available_tools_str)
     prompt = prompt.replace("{ACTIVE_CONTEXT}", active_ctx_str)

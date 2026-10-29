@@ -1721,7 +1721,17 @@
           },
           body: JSON.stringify({ title, due_date: date, due_time: time, category: cat })
         });
-        // Clear caches so fresh data is loaded
+        // Auto-switch filter tab so newly created reminder is immediately in view
+        const todayIso = new Date().toISOString().slice(0, 10);
+        if (date > todayIso && currentReminderSection === 'today') {
+          currentReminderSection = 'all';
+          document.querySelectorAll('.filter-tab').forEach(t => {
+            if (t.innerText.toLowerCase() === 'all') {
+              document.querySelectorAll('.filter-tab').forEach(x => x.classList.remove('active'));
+              t.classList.add('active');
+            }
+          });
+        }
         ['all', 'today', 'upcoming'].forEach(sec => localStorage.removeItem(`memorae_reminders_${currentChatId}_${sec}`));
         localStorage.removeItem(`memorae_calendar_${currentChatId}`);
         loadReminders(currentReminderSection);

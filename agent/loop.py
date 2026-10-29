@@ -286,7 +286,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # 5. Core Everyday Tool Suite (ALWAYS available - zero missing tools, zero regex blocking)
     CORE_TOOL_NAMES = {
-        "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
+        "create_reminder", "delete_reminder", "list_reminders", "manage_smart_list", "get_schedule",
         "check_availability", "create_meeting", "get_meet_link",
         "save_contact", "get_contact", "list_contacts",
         "save_note_or_fact", "search_memory", "clear_chat_history",
