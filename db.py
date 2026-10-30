@@ -96,6 +96,34 @@ def get_categories(chat_id):
     return list(row[0]) if row and row[0] else []
 
 
+def get_user_language(chat_id) -> str:
+    chat_id = canonical_chat_id(chat_id)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT language FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id},
+            ).first()
+            if row and row[0]:
+                return str(row[0]).strip().lower()
+    except Exception as exc:
+        print("get_user_language error:", exc)
+    return "hinglish"
+
+
+def set_user_language(chat_id, lang: str):
+    chat_id = canonical_chat_id(chat_id)
+    clean_lang = "english" if "eng" in str(lang).lower() else "hinglish"
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE users SET language = :l WHERE telegram_chat_id = :c"),
+                {"l": clean_lang, "c": chat_id},
+            )
+    except Exception as exc:
+        print("set_user_language error:", exc)
+
+
 def save_memory(chat_id, category, title, amount, due_date, due_time):
     chat_id = canonical_chat_id(chat_id)
     category = category or "appointments"

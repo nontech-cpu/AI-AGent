@@ -1073,14 +1073,16 @@ async def ask_persona(chat_id):
 async def apply_persona(chat_id, persona):
     set_persona(chat_id, persona)
     set_categories(chat_id, DEFAULTS[persona])
-    set_state(chat_id, None)
+    set_state(chat_id, "onboarding_language")
     names = ", ".join(CATEGORIES[c] for c in DEFAULTS[persona])
-    await say(chat_id,
-              f"Great, you're set up as {PERSONA_LABELS[persona]}. I'll keep track of: {names}.\n\n"
-              "Just tell me things to remember, like 'Electricity bill 1200 due on 25 Oct' "
-              "or 'Meeting tomorrow at 5 PM'. Ask 'what's on today?' anytime. "
-              "To change what I track, say something like 'stop tracking work'. "
-              "You can also send voice notes in your own language.")
+    await say(
+        chat_id,
+        f"Great, you're set up as {PERSONA_LABELS[persona]}. I'll keep track of: {names}.\n\n"
+        "Which language do you prefer to chat in?\n\n"
+        "1. English\n"
+        "2. Hinglish (Hindi + English mix)\n\n"
+        "Reply with 1, 2, or just reply in your preferred language."
+    )
 
 
 async def handle_persona_answer(chat_id, text):
@@ -3089,6 +3091,37 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if state == "persona":
         await handle_persona_answer(chat_id, clean)
         return
+
+    if state == "onboarding_language":
+        clean_low = clean.strip().lower()
+        if "eng" in clean_low or clean_low == "1":
+            db.set_user_language(chat_id, "english")
+            set_state(chat_id, None)
+            await say(
+                chat_id,
+                "Awesome! I'll chat with you in English from now on.\n\n"
+                "You can tell me anything to remember, schedule meetings, or track your tasks. How can I help you today?"
+            )
+            return
+        elif "hing" in clean_low or "hindi" in clean_low or clean_low == "2":
+            db.set_user_language(chat_id, "hinglish")
+            set_state(chat_id, None)
+            await say(
+                chat_id,
+                "Badhiya! Main aapse Hinglish mein baat karunga.\n\n"
+                "Aap mujhe kuch bhi yaad rakhne ko, reminder lagane ko ya schedule manage karne ko bol sakte hain. Bataiye aaj kya plan hai?"
+            )
+            return
+        else:
+            if any(w in clean_low for w in ("bhai", "karo", "kya", "hai", "mujhe", "mera", "theek", "shuru")):
+                db.set_user_language(chat_id, "hinglish")
+                set_state(chat_id, None)
+                await say(chat_id, "Theek hai! Main Hinglish mein continue karunga. Bataiye kya madad karoon?")
+            else:
+                db.set_user_language(chat_id, "english")
+                set_state(chat_id, None)
+                await say(chat_id, "Great! I will continue in English. How can I help you today?")
+            return
 
     if state == "persona_confirm":
         yn = yes_no(clean)

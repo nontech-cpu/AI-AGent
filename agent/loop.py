@@ -42,7 +42,7 @@ GROUNDING & TRUTH CONTRACT:
    - ALWAYS write EXCLUSIVELY in Latin / Roman English alphabet (A-Z, a-z).
    - STRICT BAN ON REGIONAL SCRIPTS: NEVER EVER output Tamil (தமிழ்), Telugu, Kannada, Malayalam, Bengali, Gujarati, Punjabi, Odia, or any non-Latin scripts under any circumstances!
    - Even if the user asks or sends voice transcription in Hindi / Devanagari script (e.g. 'रनिया, रोई को क्या बताना था?'):
-     Understand the Hindi question, but ALWAYS reply in natural Roman Hinglish (e.g. '**Ananya Roy** ko Tuesday ko pitch deck bhejna tha.').
+     Understand the question and reply in the user's preferred language (100% pure English if user speaks/prefers English; natural Roman Hinglish if user speaks Hinglish).
    - METADATA / FIELD LABELS: ALWAYS use clean English labels: **Name:**, **Role:**, **Company:**, **Phone:**, **Email:**, **Commitment:**, **Date:**, **Time:**. NEVER translate metadata labels into regional languages!
 8. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
 9. THIRD-PARTY CONNECTORS & INTEGRATIONS (GitHub, Notion, Google):
@@ -133,6 +133,41 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
     trimmed_text = user_text.strip()
     low_prompt = trimmed_text.lower()
+
+    # 0. Explicit Language Preference Switch Fast-Path
+    eng_switch_match = re.search(r"(?:talk\s*(?:to\s*me\s*)?in\s*eng(?:lish)?|speak\s*(?:in\s*)?eng(?:lish)?|in\s*english\s*pls|english\s*(?:please|plz)|switch\s*to\s*english|english\s*me\s*(?:baat|bolo)|english\s*language|pls\s*talk\s*(?:to\s*)?me\s*(?:in\s*|kn\s*)?eng(?:lish)?|talk\s*me\s*(?:in\s*|kn\s*)?eng)", low_prompt, re.I)
+    hing_switch_match = re.search(r"(?:talk\s*in\s*hinglish|speak\s*in\s*hinglish|hinglish\s*me\s*(?:baat|bolo)|hindi\s*me\s*(?:baat|bolo)|switch\s*to\s*hinglish|switch\s*to\s*hindi)", low_prompt, re.I)
+
+    if eng_switch_match:
+        db.set_user_language(chat_id, "english")
+        reply_msg = "Understood! I'll speak with you in English from now on. How can I help you today?"
+        db.log_chat_message(chat_id, "user", user_text)
+        db.log_chat_message(chat_id, "assistant", reply_msg)
+        return {
+            "reply": reply_msg,
+            "tool_calls_executed": [],
+            "pending_action": None,
+            "is_grounded": True,
+            "violations": [],
+            "latency_ms": int((time.time() - start_ts) * 1000),
+            "tokens_used": 0,
+            "memory_context": {}
+        }
+    elif hing_switch_match:
+        db.set_user_language(chat_id, "hinglish")
+        reply_msg = "Theek hai bhai! Ab se main aapse Hinglish mein baat karunga. Bataiye kya madad karoon?"
+        db.log_chat_message(chat_id, "user", user_text)
+        db.log_chat_message(chat_id, "assistant", reply_msg)
+        return {
+            "reply": reply_msg,
+            "tool_calls_executed": [],
+            "pending_action": None,
+            "is_grounded": True,
+            "violations": [],
+            "latency_ms": int((time.time() - start_ts) * 1000),
+            "tokens_used": 0,
+            "memory_context": {}
+        }
 
     # 1. Direct API Token Pasting Fast-Path (Notion / GitHub)
     if (trimmed_text.startswith("secret_") or trimmed_text.startswith("ntn_")) and len(trimmed_text) > 15:
