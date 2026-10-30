@@ -376,25 +376,26 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
         if now_ist >= trig_time and now_ist <= ev_time + timedelta(minutes=30):
             should_send = True
             active_early = early_event
-        elif now_ist.hour >= 8 and now_ist.hour < 22:
-            # Fallback: If early wake-up window passed but briefing was never sent today,
-            # send standard daily briefing so user isn't left without their daily overview!
+        elif 8 <= now_ist.hour < 11:
             should_send = True
             active_early = None
     else:
-        # Standard Morning Briefing: Triggers from 08:00 AM IST onwards (until 22:00 PM if not sent)
-        if now_ist.hour >= 8 and now_ist.hour < 22:
+        # Standard Morning Briefing: STRICTLY triggers in morning between 08:00 AM and 10:30 AM IST
+        if 8 <= now_ist.hour < 11:
             should_send = True
             active_early = None
 
     if should_send:
+        # Atomic check-and-set to prevent duplicate dispatch across concurrent instances
+        if db.is_morning_briefing_sent(chat_id, today_str):
+            return False
+        db.record_morning_briefing_sent(chat_id, today_str, "standard_morning")
+
         msg_text, trigger_kind = await build_morning_briefing_message(
             chat_id, user_info, now_ist.date(), early_event=active_early, unified_sched=unified_sched
         )
         sent_ok = await send_telegram_message(chat_id, msg_text)
         if sent_ok:
-            db.record_morning_briefing_sent(chat_id, today_str, trigger_kind)
-            # Log turn in chat history
             try:
                 db.log_chat_message(chat_id, "assistant", msg_text)
             except Exception:

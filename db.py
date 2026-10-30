@@ -34,6 +34,16 @@ def give_consent(chat_id):
             """),
             {"c": chat_id},
         )
+    # If onboarding happens after morning hours (after 10:30 AM IST),
+    # mark today's morning briefing as skipped so new user never receives 'Good Morning' in the evening!
+    try:
+        from datetime import datetime
+        from timing import IST
+        now_ist = datetime.now(IST)
+        if now_ist.hour >= 11:
+            record_morning_briefing_sent(chat_id, now_ist.strftime("%Y-%m-%d"), "onboarding_afternoon_skipped")
+    except Exception:
+        pass
 
 
 def has_consent(chat_id):
