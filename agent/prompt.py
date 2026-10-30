@@ -305,14 +305,20 @@ async def build_runtime_system_prompt(
         except Exception:
             memory_block = ""
 
-    # Always inject top active user profile facts (Location, Bio, Key facts) so the bot never forgets user context!
+    # Contextual Memory RAG: Search specifically for facts & past history matching user query!
     try:
-        active_facts = db.get_user_facts(chat_id, limit=10)
-        if active_facts:
-            facts_lines = [f"- {f.get('fact')}" for f in active_facts if f.get("fact")]
-            if facts_lines:
-                facts_str = "User Profile & Important Facts:\n" + "\n".join(facts_lines)
-                memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
+        matched_rag_facts = db.search_relevant_user_facts(chat_id, user_text, limit=4)
+        if matched_rag_facts:
+            rag_lines = [f"• {f}" for f in matched_rag_facts]
+            rag_str = "Contextually Retrieved Past Facts & Memory (RAG):\n" + "\n".join(rag_lines)
+            memory_block = f"{memory_block}\n{rag_str}".strip() if memory_block else rag_str
+        else:
+            top_facts = db.get_user_facts(chat_id, limit=2)
+            if top_facts:
+                facts_lines = [f"• {f.get('fact')}" for f in top_facts if f.get('fact')]
+                if facts_lines:
+                    facts_str = "User Profile:\n" + "\n".join(facts_lines)
+                    memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
     except Exception:
         pass
 

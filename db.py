@@ -1234,6 +1234,123 @@ def delete_matching_user_facts(chat_id, query):
     return deleted_count
 
 
+def search_relevant_user_facts(chat_id, query_text: str, limit: int = 4) -> list:
+    """
+    Contextual Memory RAG: Extracts search tokens from query_text and retrieves
+    matching facts, episodic memories, and relevant historical chat snippets.
+    Prevents unrelated recent chatter from polluting the LLM context or wasting tokens.
+    """
+    chat_id = canonical_chat_id(chat_id)
+    if not query_text or not str(query_text).strip():
+        return []
+
+    import re
+    stopwords = {
+        "hai", "bhy", "bhai", "mera", "meri", "mere", "mujhe", "kya", "tha", "thi",
+        "the", "ko", "koo", "ka", "ki", "ke", "aur", "and", "karo", "bhejna", "kar",
+        "bolo", "batao", "batana", "meeting", "reminder", "today", "tomorrow", "time",
+        "please", "help", "with", "from", "toh", "krdo", "kardo", "krna", "mtlb",
+        "aaj", "kal", "parso", "subah", "shaam", "sham", "dopahar", "raat", "saath", "sath",
+        "bhi", "yeh", "kuch", "pehle", "baad", "waqt", "nhi", "nahi", "nahin", "hain",
+        "naam", "sirf", "theek", "thik", "badhiya", "rha", "raha", "rahe", "rahi",
+        "hlo", "hello", "hey", "namaste", "task", "tasks", "wala", "wali", "wale",
+        "jab", "tab", "kidhar", "kahan", "kab", "kisko", "kaun", "kiska", "main", "mein",
+        "hum", "tum", "aap", "unka", "unki", "uska", "uski", "wahan", "idhar", "udhar",
+        "stayed", "hotel", "trip", "about", "what", "where", "when", "which", "give"
+    }
+
+    words = re.findall(r'[a-zA-Z0-9]{3,}', query_text.lower())
+    search_tokens = [w for w in words if w not in stopwords][:4]
+
+    matched_facts = []
+    seen = set()
+
+    if not search_tokens:
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT fact FROM user_facts "
+                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                        "AND status = 'active' ORDER BY updated_at DESC LIMIT 2"
+                    ),
+                    {"cid": chat_id}
+                ).fetchall()
+                for r in rows:
+                    if r[0] and r[0].lower() not in seen:
+                        seen.add(r[0].lower())
+                        matched_facts.append(r[0])
+        except Exception:
+            pass
+        return matched_facts
+
+    try:
+        with engine.connect() as conn:
+            # 1. Search in user_facts table matching search tokens
+            for tok in search_tokens:
+                pat = f"%{tok}%"
+                rows = conn.execute(
+                    text(
+                        "SELECT fact FROM user_facts "
+                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                        "AND status = 'active' AND LOWER(fact) LIKE :pat LIMIT :lim"
+                    ),
+                    {"cid": chat_id, "pat": pat, "lim": limit}
+                ).fetchall()
+                for r in rows:
+                    f_str = r[0].strip()
+                    if f_str and f_str.lower() not in seen:
+                        seen.add(f_str.lower())
+                        matched_facts.append(f_str)
+                if len(matched_facts) >= limit:
+                    break
+
+            # 2. Search in memories table (semantic facts & notes)
+            if len(matched_facts) < limit:
+                for tok in search_tokens:
+                    pat = f"%{tok}%"
+                    rows = conn.execute(
+                        text(
+                            "SELECT content FROM memories "
+                            "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                            "AND status = 'active' AND LOWER(content) LIKE :pat LIMIT :lim"
+                        ),
+                        {"cid": chat_id, "pat": pat, "lim": limit - len(matched_facts)}
+                    ).fetchall()
+                    for r in rows:
+                        f_str = r[0].strip()
+                        if f_str and f_str.lower() not in seen:
+                            seen.add(f_str.lower())
+                            matched_facts.append(f_str)
+                    if len(matched_facts) >= limit:
+                        break
+
+            # 3. Search in historical chat_logs (user statements from previous sessions)
+            if len(matched_facts) < limit:
+                for tok in search_tokens:
+                    pat = f"%{tok}%"
+                    rows = conn.execute(
+                        text(
+                            "SELECT message FROM chat_logs "
+                            "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                            "AND role = 'user' AND LOWER(message) LIKE :pat "
+                            "AND LENGTH(message) < 250 ORDER BY id DESC LIMIT 2"
+                        ),
+                        {"cid": chat_id, "pat": pat}
+                    ).fetchall()
+                    for r in rows:
+                        f_str = r[0].strip()
+                        if f_str and f_str.lower() not in seen and f_str.lower() != query_text.lower():
+                            seen.add(f_str.lower())
+                            matched_facts.append(f"Past note: \"{f_str}\"")
+                    if len(matched_facts) >= limit:
+                        break
+    except Exception as exc:
+        print("search_relevant_user_facts error:", repr(exc))
+
+    return matched_facts[:limit]
+
+
 # ---------- User Third-Party Integrations (Notion, GitHub, etc.) ----------
 
 def save_user_integration(chat_id, service: str, api_key: str, config_data: str = "{}"):

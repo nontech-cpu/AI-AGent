@@ -269,11 +269,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 4)
+    recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 3)
     for turn in recent_history:
         t_text = turn.get("text") or ""
-        if len(t_text) > 800:
-            t_text = t_text[:800] + "..."
+        if len(t_text) > 350:
+            t_text = t_text[:350] + "..."
         messages.append({"role": turn["role"], "content": t_text})
 
     messages.append({"role": "user", "content": user_text})
@@ -284,26 +284,41 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     final_reply = ""
     total_tokens = 0
 
-    # 5. Core Everyday Tool Suite (ALWAYS available - zero missing tools, zero regex blocking)
-    # Essential Core Tools (Lean payload to stay well within Groq 8000 TPM limit)
-    CORE_TOOL_NAMES = {
-        "create_reminder", "delete_reminder", "list_reminders", "manage_smart_list",
-        "get_schedule", "create_meeting", "save_note_or_fact", "search_memory",
-        "get_weather", "search_web"
-    }
+    # 5. Dynamic Context-Aware Lean Tool Suite (Zero token waste on unused domains)
+    active_tool_names = set()
 
-    active_tool_names = set(CORE_TOOL_NAMES)
+    has_reminder_intent = any(w in low_prompt for w in ("remind", "reminder", "yaad", "schedule", "kal", "aaj", "baje", "task", "subah", "shaam", "sham", "dopahar", "raat", "roj", "daily", "har din", "dawai", "sugar", "delete", "hata do", "cancel"))
+    has_meeting_intent = any(w in low_prompt for w in ("meet", "meeting", "calendar", "availability", "free slot", "slot", "call"))
+    has_list_intent = any(w in low_prompt for w in ("list", "todo", "groceries", "shopping", "checklist", "pack", "bag", "items"))
+    has_weather_intent = any(w in low_prompt for w in ("weather", "mausam", "rain", "barish", "temp", "temperature", "forecast"))
+    has_places_intent = any(w in low_prompt for w in ("cafe", "coffee", "restaurant", "food", "khana", "nearby", "aas paas", "spots", "shop", "hotel"))
+    has_search_intent = any(w in low_prompt for w in ("search", "google", "web", "find", "check online", "dhundo"))
+    has_memory_intent = any(w in low_prompt for w in ("yaad rakh", "remember", "save note", "note", "kahan", "kab", "kisko", "kaun", "purani", "pichli", "stayed", "ruka"))
+    has_contact_intent = any(w in low_prompt for w in ("contact", "phone", "number", "email id", "save contact", "dost ka phone"))
+    has_correction_intent = any(w in low_prompt for w in ("galat", "jhoot", "wrong", "galti", "correct", "sahi nahi", "kuch bhi"))
 
+    if has_reminder_intent:
+        active_tool_names.update({"create_reminder", "delete_reminder", "list_reminders", "get_schedule"})
+    if has_meeting_intent:
+        active_tool_names.update({"create_meeting", "get_schedule", "check_availability", "get_meet_link"})
+    if has_list_intent:
+        active_tool_names.update({"manage_smart_list", "create_packing_list"})
+    if has_weather_intent:
+        active_tool_names.add("get_weather")
+    if has_places_intent:
+        active_tool_names.add("find_nearby_places")
+    if has_search_intent:
+        active_tool_names.add("search_web")
+    if has_memory_intent:
+        active_tool_names.update({"save_note_or_fact", "search_memory"})
+    if has_contact_intent:
+        active_tool_names.update({"save_contact", "get_contact", "list_contacts"})
+    if has_correction_intent:
+        active_tool_names.add("learn_user_correction")
+
+    # Domain integrations
     if any(w in low_prompt for w in ("movie", "cinema", "theatre", "show", "hall", "ticket", "bookmyshow")):
         active_tool_names.add("get_movie_showtimes")
-    if any(w in low_prompt for w in ("contact", "phone", "number", "email id", "dost ka phone", "save contact")):
-        active_tool_names.update({"save_contact", "get_contact", "list_contacts"})
-    if any(w in low_prompt for w in ("meet", "meeting", "availability", "free slot", "slot")):
-        active_tool_names.update({"check_availability", "get_meet_link"})
-    if any(w in low_prompt for w in ("integration", "connect", "link", "notion", "github", "account")):
-        active_tool_names.update({"check_integrations_status", "connect_integration"})
-
-    # Contextual tools activated by domain keywords (keeps token budget well under Groq 8000 TPM limit)
     if any(w in low_prompt for w in ("git", "github", "repo", "issue", "commit", "branch", "pull")):
         active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
     if any(w in low_prompt for w in ("notion", "workspace", "page")):
@@ -316,12 +331,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         active_tool_names.update({"get_market_price", "convert_currency", "calculate"})
     if any(w in low_prompt for w in ("deep research", "research", "compare", "plan trip", "detailed analysis", "poora plan", "guide")):
         active_tool_names.add("deep_research")
-    if any(w in low_prompt for w in ("galat", "jhoot" , "nahi hai", "mat bolo", "wrong", "galti", "correct", "sahi nahi", "kuch bhi")):
-        active_tool_names.add("learn_user_correction")
-    if any(w in low_prompt for w in ("cafe", "coffee" , "restaurant", "food", "khana", "dost", "nearby", "aas paas", "spots", "shop")):
-        active_tool_names.add("find_nearby_places")
-    if any(w in low_prompt for w in ("pack", "trip", "travel", "bag", "luggage")):
-        active_tool_names.add("create_packing_list")
 
     effective_tools = [
         t for t in TOOL_DEFINITIONS
@@ -417,6 +426,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Execute tool
                 tool_result = await execute_tool(chat_id, fn_name, args_dict)
                 tool_results_list.append(tool_result)
+
+                # Pillar 1 Optimization: Single-turn direct response (Saves ~3,500 tokens on redundant 2nd LLM call!)
+                if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list", "find_nearby_places"):
+                    if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
+                        final_reply = tool_result["message"]
+                        break
 
                 # Track active conversation context for seamless multi-turn references ("pehla wala", "usko", etc.)
                 try:
@@ -574,7 +589,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "content": clean_json
                 })
 
-            if pending_action:
+            if pending_action or final_reply:
                 break
 
     if not final_reply:

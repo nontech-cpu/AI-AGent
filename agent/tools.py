@@ -1500,6 +1500,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 except Exception:
                     pass
 
+                time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
+                date_str = d_val.strftime("%d %b") if d_val else "specified date"
                 res = {
                     "status": "success",
                     "title": args.title,
@@ -1507,7 +1509,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "due_time": args.due_time,
                     "rescheduled": False,
                     "conflicts": conflicts,
-                    "has_conflict": len(conflicts) > 0
+                    "has_conflict": len(conflicts) > 0,
+                    "message": f"Done bhai! '{args.title}' ka reminder {date_str} ko {time_str} ke liye set kar diya hai."
                 }
 
             if conflicts:

@@ -158,6 +158,10 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                         memory_type="semantic_fact",
                         structured={"category": fact_item.get("category", "general")}
                     )
+                    try:
+                        db.save_user_fact(chat_id, fact_str, fact_item.get("category", "general"))
+                    except Exception:
+                        pass
 
             # 4. Persist Corrections (Self-Learning from User Feedback)
             for corr in parsed.get("corrections", []):
