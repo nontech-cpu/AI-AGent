@@ -105,7 +105,7 @@ Language Mandate: {LANGUAGE_MANDATE}
         • Nayyi Navelli: INOX 7:30 PM
 13. **Concise & Accurate Token Efficiency (CRITICAL):**
     - Answer ONLY what the user asked. No unsolicited essays, lectures, or apologies.
-    - Keep responses sharp, accurate, and within 2 to 5 lines or clean bullet points in natural Roman Hinglish.
+    - Keep responses sharp, accurate, and within 2 to 5 lines or clean bullet points in the user's active language ({LANG_STYLE}).
 14. **Zero-Hallucination & Honesty Mandate for Local Places & Cuisines (CRITICAL):**
     - ABSOLUTE TRUTH CONTRACT: NEVER invent, fabricate, or guess restaurant or shop names (e.g. NEVER mention non-existent places like 'Dasaprakash', 'Shree Ganpat', or 'Cafe 51' in Jodhpur!).
     - ONLY cite businesses that explicitly appear in the live `find_nearby_places` or `search_web` tool results.
@@ -146,15 +146,25 @@ async def build_runtime_system_prompt(
     now_ist = datetime.now(IST)
     weekday = now_ist.strftime("%A")
     now_ist_str = now_ist.strftime("%I:%M %p, %d %B %Y")
-    user_lang = db.get_user_language(chat_id) if hasattr(db, "get_user_language") else "hinglish"
+    user_lang = db.get_user_language(chat_id) if hasattr(db, "get_user_language") else None
     if user_lang == "english":
         lang_style = "English. Preferred language is ENGLISH. You must reply 100% in natural, fluent, professional English (no Hindi/Hinglish words like 'bhai', 'kya', 'hai')."
         lang_mandate = "The user has chosen to speak in ENGLISH. ALWAYS reply 100% in pure, professional, natural English. Do NOT use Hindi or Hinglish words."
-    else:
-        lang_style = "Roman Hinglish (natural conversational Hindi/English mix in Latin script A-Z). If user asks in English or asks to switch to English, immediately adapt to English."
+    elif user_lang == "german":
+        lang_style = "German (Deutsch). You must reply 100% in natural, fluent, grammatically correct German."
+        lang_mandate = "The user has chosen to speak in GERMAN (Deutsch). ALWAYS reply 100% in natural, fluent German."
+    elif user_lang == "spanish":
+        lang_style = "Spanish (Español). Reply 100% in natural, fluent Spanish."
+        lang_mandate = "The user has chosen to speak in SPANISH. ALWAYS reply 100% in natural, fluent Spanish."
+    elif user_lang == "french":
+        lang_style = "French (Français). Reply 100% in natural, fluent French."
+        lang_mandate = "The user has chosen to speak in FRENCH. ALWAYS reply 100% in natural, fluent French."
+    elif user_lang == "hinglish":
+        lang_style = "Roman Hinglish (natural conversational Hindi/English mix in Latin script A-Z)."
         lang_mandate = "The user speaks in Roman Hinglish. Reply in natural Roman Hinglish."
-
-
+    else:
+        lang_style = "Dynamic Language Mirroring. Naturally detect and mirror the user's language (English, German, Hinglish, Spanish, etc.)."
+        lang_mandate = "Match the language of the user's message. If the user writes in English, reply in English. If German, reply in German. If Roman Hinglish, reply in Roman Hinglish. If user asks for a specific language, switch immediately to that language."
     global _USER_META_CACHE
 
     cached_meta = _USER_META_CACHE.get(chat_id)

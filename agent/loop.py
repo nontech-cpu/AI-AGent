@@ -42,7 +42,7 @@ GROUNDING & TRUTH CONTRACT:
    - ALWAYS write EXCLUSIVELY in Latin / Roman English alphabet (A-Z, a-z).
    - STRICT BAN ON REGIONAL SCRIPTS: NEVER EVER output Tamil (தமிழ்), Telugu, Kannada, Malayalam, Bengali, Gujarati, Punjabi, Odia, or any non-Latin scripts under any circumstances!
    - Even if the user asks or sends voice transcription in Hindi / Devanagari script (e.g. 'रनिया, रोई को क्या बताना था?'):
-     Understand the question and reply in the user's preferred language (100% pure English if user speaks/prefers English; natural Roman Hinglish if user speaks Hinglish).
+     Understand the question and reply in the user's preferred or active language (e.g. 100% fluent German if German; 100% pure English if English; natural Roman Hinglish if Hinglish).
    - METADATA / FIELD LABELS: ALWAYS use clean English labels: **Name:**, **Role:**, **Company:**, **Phone:**, **Email:**, **Commitment:**, **Date:**, **Time:**. NEVER translate metadata labels into regional languages!
 8. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
 9. THIRD-PARTY CONNECTORS & INTEGRATIONS (GitHub, Notion, Google):
@@ -119,6 +119,26 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
+def detect_explicit_language_switch(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    if t in ("german", "deutsch", "in german", "speak german", "talk in german", "german please", "german language"):
+        return "german"
+    if any(p in t for p in ("talk in german", "speak in german", "switch to german", "german mein", "auf deutsch", "sprechen sie deutsch")):
+        return "german"
+    if t in ("english", "eng", "in english", "speak english", "talk in english", "english please", "switch to english"):
+        return "english"
+    if any(p in t for p in ("talk me in eng", "talk in english", "speak in english", "switch to english", "talk to me in english", "talk me kn eng", "pls talk me in eng", "english me baat", "english mein baat")):
+        return "english"
+    if t in ("hinglish", "hindi", "in hinglish", "hinglish me", "hinglish me baat karo", "hindi me baat karo", "switch to hinglish", "switch to hindi"):
+        return "hinglish"
+    if any(p in t for p in ("talk in hinglish", "speak in hinglish", "switch to hinglish", "hinglish me", "hinglish mein", "hindi me baat", "hindi mein baat")):
+        return "hinglish"
+    if t in ("spanish", "espanol", "español", "in spanish", "speak spanish", "habla espanol"):
+        return "spanish"
+    if t in ("french", "francais", "français", "in french", "speak french", "parlez francais"):
+        return "french"
+    return None
+
 async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None) -> Dict[str, Any]:
     """
     Executes a single user turn through the Pure ChatGPT-Grade Native Tool-Calling Loop.
@@ -134,40 +154,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     trimmed_text = user_text.strip()
     low_prompt = trimmed_text.lower()
 
-    # 0. Explicit Language Preference Switch Fast-Path
-    eng_switch_match = re.search(r"(?:talk\s*(?:to\s*me\s*)?in\s*eng(?:lish)?|speak\s*(?:in\s*)?eng(?:lish)?|in\s*english\s*pls|english\s*(?:please|plz)|switch\s*to\s*english|english\s*me\s*(?:baat|bolo)|english\s*language|pls\s*talk\s*(?:to\s*)?me\s*(?:in\s*|kn\s*)?eng(?:lish)?|talk\s*me\s*(?:in\s*|kn\s*)?eng)", low_prompt, re.I)
-    hing_switch_match = re.search(r"(?:talk\s*in\s*hinglish|speak\s*in\s*hinglish|hinglish\s*me\s*(?:baat|bolo)|hindi\s*me\s*(?:baat|bolo)|switch\s*to\s*hinglish|switch\s*to\s*hindi)", low_prompt, re.I)
-
-    if eng_switch_match:
-        db.set_user_language(chat_id, "english")
-        reply_msg = "Understood! I'll speak with you in English from now on. How can I help you today?"
-        db.log_chat_message(chat_id, "user", user_text)
-        db.log_chat_message(chat_id, "assistant", reply_msg)
-        return {
-            "reply": reply_msg,
-            "tool_calls_executed": [],
-            "pending_action": None,
-            "is_grounded": True,
-            "violations": [],
-            "latency_ms": int((time.time() - start_ts) * 1000),
-            "tokens_used": 0,
-            "memory_context": {}
-        }
-    elif hing_switch_match:
-        db.set_user_language(chat_id, "hinglish")
-        reply_msg = "Theek hai bhai! Ab se main aapse Hinglish mein baat karunga. Bataiye kya madad karoon?"
-        db.log_chat_message(chat_id, "user", user_text)
-        db.log_chat_message(chat_id, "assistant", reply_msg)
-        return {
-            "reply": reply_msg,
-            "tool_calls_executed": [],
-            "pending_action": None,
-            "is_grounded": True,
-            "violations": [],
-            "latency_ms": int((time.time() - start_ts) * 1000),
-            "tokens_used": 0,
-            "memory_context": {}
-        }
+    # 0. Semantic Language Switch Detection & Persistence
+    detected_lang = detect_explicit_language_switch(trimmed_text)
+    if detected_lang and hasattr(db, "set_user_language"):
+        db.set_user_language(chat_id, detected_lang)
 
     # 1. Direct API Token Pasting Fast-Path (Notion / GitHub)
     if (trimmed_text.startswith("secret_") or trimmed_text.startswith("ntn_")) and len(trimmed_text) > 15:

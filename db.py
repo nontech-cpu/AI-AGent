@@ -96,7 +96,7 @@ def get_categories(chat_id):
     return list(row[0]) if row and row[0] else []
 
 
-def get_user_language(chat_id) -> str:
+def get_user_language(chat_id):
     chat_id = canonical_chat_id(chat_id)
     try:
         with engine.connect() as conn:
@@ -108,12 +108,12 @@ def get_user_language(chat_id) -> str:
                 return str(row[0]).strip().lower()
     except Exception as exc:
         print("get_user_language error:", exc)
-    return "hinglish"
+    return None
 
 
 def set_user_language(chat_id, lang: str):
     chat_id = canonical_chat_id(chat_id)
-    clean_lang = "english" if "eng" in str(lang).lower() else "hinglish"
+    clean_lang = str(lang).strip().lower()
     try:
         with engine.begin() as conn:
             conn.execute(
