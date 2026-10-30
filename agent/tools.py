@@ -1360,16 +1360,58 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 rule_text = f"Daily recurring reminder: {args.title} at {time_str}"
                 db.add_user_rule(chat_id, rule_text)
 
-                for day_offset in range(14):
-                    cur_d = d_val + timedelta(days=day_offset)
-                    day_existing = db.items_for_date(chat_id, cur_d)
-                    if any(args.title.lower() in (r.get("title") or "").lower() for r in day_existing if isinstance(r, dict)):
+                # Clean up any pre-existing duplicates or distant future dates for this title
+                try:
+                    with db.engine.begin() as conn:
+                        conn.execute(
+                            db.text(
+                                "DELETE FROM reminders WHERE item_id IN ("
+                                "  SELECT id FROM memory_items "
+                                "  WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                "  AND LOWER(title) = LOWER(:t) AND due_date > :max_d"
+                                ")"
+                            ),
+                            {"cid": chat_id, "t": args.title, "max_d": d_val + timedelta(days=1)}
+                        )
+                        conn.execute(
+                            db.text(
+                                "DELETE FROM memory_items "
+                                "WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                "AND LOWER(title) = LOWER(:t) AND due_date > :max_d"
+                            ),
+                            {"cid": chat_id, "t": args.title, "max_d": d_val + timedelta(days=1)}
+                        )
+                except Exception as ex_clean:
+                    logger.warning(f"Cleanup future recurrence error: {ex_clean}")
+
+                # Create ONLY for today (if time hasn't passed) and tomorrow (the upcoming instance)
+                now_curr = datetime.now(IST)
+                today_d = now_curr.date()
+
+                target_dates = []
+                if d_val == today_d:
+                    if not t_val or t_val >= now_curr.time():
+                        target_dates.append(d_val)
+                    target_dates.append(d_val + timedelta(days=1))
+                else:
+                    target_dates.append(d_val)
+
+                for tgt_d in target_dates:
+                    day_existing = db.items_for_date(chat_id, tgt_d)
+                    already_exists = False
+                    for r in day_existing:
+                        r_title = r.get("title") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
+                        if args.title.lower() in (r_title or "").lower():
+                            already_exists = True
+                            break
+                    if already_exists:
                         continue
-                    cid = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=cur_d, due_time=t_val)
+
+                    cid = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=tgt_d, due_time=t_val)
                     try:
                         from timing import build_plan
                         from db import add_reminders
-                        plan = build_plan(cur_d, t_val)
+                        plan = build_plan(tgt_d, t_val)
                         if plan.get("reminders") and cid:
                             add_reminders(cid, plan["reminders"])
                     except Exception:
@@ -1387,7 +1429,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "due_date": args.due_date,
                     "due_time": args.due_time,
                     "recurrence": "daily",
-                    "message": f"Done bhai! '{args.title}' ka daily reminder roz subah {time_str} ke liye set kar diya hai. Jab tak aap band karne ko nahi bolenge, yeh roz active rahega!"
+                    "message": f"Done bhai! '{args.title}' ka daily reminder roz subah {time_str} ke liye set kar diya hai. Backend isko dynamically roz aage badhayega jab tak aap ise cancel nahi karte!"
                 }
 
             if matched_existing_ids:

@@ -1,3 +1,4 @@
+import re
 """
 PeculiarAI — Proactive Heartbeat Daemon
 Autonomously monitors schedule, reminders, weather anomalies, and evening wrap-up.
@@ -135,6 +136,97 @@ async def check_evening_wrapup(now_ist: datetime):
             await broadcast_alert(msg, specific_chat_id=cid)
 
 
+async def roll_daily_recurring_reminders(now_ist: datetime):
+    """
+    Dynamically advances daily recurring reminders day-by-day.
+    Reads active daily recurring rules from user_rules and ensures exactly ONE upcoming
+    instance exists (for tomorrow) without spamming the future calendar or DB.
+    """
+    today = now_ist.date()
+    tomorrow = today + timedelta(days=1)
+
+    for cid in TARGET_CHAT_IDS:
+        try:
+            cid_can = db.canonical_chat_id(cid)
+            rules = db.get_user_rules(cid_can) or []
+            for r in rules:
+                rule_str = r.get("rule", "") if isinstance(r, dict) else str(r)
+                if "daily recurring reminder:" in rule_str.lower():
+                    m = re.search(r"daily recurring reminder:\s*(.+?)\s+at\s+(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)", rule_str, re.IGNORECASE)
+                    if not m:
+                        continue
+                    rem_title = m.group(1).strip()
+                    rem_time_str = m.group(2).strip()
+
+                    rem_time = None
+                    for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%H:%M:%S"):
+                        try:
+                            rem_time = datetime.strptime(rem_time_str, fmt).time()
+                            break
+                        except Exception:
+                            pass
+                    if not rem_time:
+                        continue
+
+                    # Check if tomorrow already has this reminder
+                    tomorrow_items = db.items_for_date(cid_can, tomorrow) or []
+                    has_tomorrow = False
+                    for it in tomorrow_items:
+                        t_str = it.get("title") if isinstance(it, dict) else (it[1] if len(it) > 1 else "")
+                        if rem_title.lower() in (t_str or "").lower():
+                            has_tomorrow = True
+                            break
+
+                    if not has_tomorrow:
+                        # Clean up any potential stale future entries first beyond tomorrow
+                        try:
+                            with db.engine.begin() as conn:
+                                conn.execute(
+                                    db.text(
+                                        "DELETE FROM reminders WHERE item_id IN ("
+                                        "  SELECT id FROM memory_items WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                        "  AND LOWER(title) = LOWER(:t) AND due_date > :tom"
+                                        ")"
+                                    ),
+                                    {"cid": cid_can, "t": rem_title, "tom": tomorrow}
+                                )
+                                conn.execute(
+                                    db.text(
+                                        "DELETE FROM memory_items WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                        "AND LOWER(title) = LOWER(:t) AND due_date > :tom"
+                                    ),
+                                    {"cid": cid_can, "t": rem_title, "tom": tomorrow}
+                                )
+                        except Exception as ce:
+                            logger.warning(f"Error cleaning future entries during auto-roll: {ce}")
+
+                        cid_mem = db.save_memory(
+                            cid_can,
+                            category="appointments",
+                            title=rem_title,
+                            amount=None,
+                            due_date=tomorrow,
+                            due_time=rem_time
+                        )
+                        try:
+                            from timing import build_plan
+                            from db import add_reminders
+                            plan = build_plan(tomorrow, rem_time)
+                            if plan.get("reminders") and cid_mem:
+                                add_reminders(cid_mem, plan["reminders"])
+                        except Exception as pe:
+                            logger.error(f"Build plan error during recurring roll: {pe}")
+
+                        try:
+                            from api_v1 import _invalidate_all_app_caches
+                            _invalidate_all_app_caches()
+                        except Exception:
+                            pass
+                        logger.info(f"Dynamically rolled recurring reminder '{rem_title}' for {tomorrow} for user {cid_can}")
+        except Exception as ex:
+            logger.error(f"Error rolling daily recurring reminders for {cid}: {ex}")
+
+
 async def heartbeat_loop():
     """Continuous background monitoring daemon running inside FastAPI lifespan."""
     logger.info("Starting Proactive Heartbeat Daemon...")
@@ -144,6 +236,7 @@ async def heartbeat_loop():
             now_ist = datetime.now(IST)
             await check_15min_upcoming_alerts(now_ist)
             await check_evening_wrapup(now_ist)
+            await roll_daily_recurring_reminders(now_ist)
         except Exception as exc:
             logger.error(f"Heartbeat loop iteration error: {repr(exc)}")
         await asyncio.sleep(60)  # tick every 60 seconds

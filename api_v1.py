@@ -1789,6 +1789,7 @@ async def get_user_reminders(
 
     results = []
     seen_ids = set()
+    seen_upcoming_titles = set()
     now_date = now.date()
 
     for r in rows:
@@ -1843,6 +1844,10 @@ async def get_user_reminders(
         if section == "today" and is_today:
             results.append(item_data)
         elif section == "upcoming" and is_upcoming:
+            norm_title = (r[2] or "").strip().lower()
+            if norm_title in seen_upcoming_titles:
+                continue
+            seen_upcoming_titles.add(norm_title)
             results.append(item_data)
         elif section in ("completed", "done") and is_completed:
             results.append(item_data)
