@@ -121,21 +121,21 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
 
 def detect_explicit_language_switch(text: str) -> Optional[str]:
     t = text.strip().lower()
-    if t in ("german", "deutsch", "in german", "speak german", "talk in german", "german please", "german language"):
+    if any(w in t for w in ("german", "deutsch")):
         return "german"
-    if any(p in t for p in ("talk in german", "speak in german", "switch to german", "german mein", "auf deutsch", "sprechen sie deutsch")):
-        return "german"
-    if t in ("english", "eng", "in english", "speak english", "talk in english", "english please", "switch to english"):
-        return "english"
-    if any(p in t for p in ("talk me in eng", "talk in english", "speak in english", "switch to english", "talk to me in english", "talk me kn eng", "pls talk me in eng", "english me baat", "english mein baat")):
-        return "english"
-    if t in ("hinglish", "hindi", "in hinglish", "hinglish me", "hinglish me baat karo", "hindi me baat karo", "switch to hinglish", "switch to hindi"):
-        return "hinglish"
-    if any(p in t for p in ("talk in hinglish", "speak in hinglish", "switch to hinglish", "hinglish me", "hinglish mein", "hindi me baat", "hindi mein baat")):
-        return "hinglish"
-    if t in ("spanish", "espanol", "español", "in spanish", "speak spanish", "habla espanol"):
+    has_eng = any(w in t for w in ("english", "englsih", "englsh", "angrezi")) or bool(re.search(r"\beng\b", t))
+    if has_eng:
+        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "only", "pls", "please", "me", "mein", "switch", "continue", "language", "shuru", "use")
+        if len(t.split()) <= 3 or any(w in t for w in intent_words):
+            return "english"
+    has_hin = any(w in t for w in ("hindi", "hinglish", "hindlish"))
+    if has_hin:
+        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "me", "mein", "switch", "continue", "language", "shuru", "merse", "humse", "use")
+        if len(t.split()) <= 3 or any(w in t for w in intent_words):
+            return "hinglish"
+    if any(w in t for w in ("spanish", "espanol", "español")):
         return "spanish"
-    if t in ("french", "francais", "français", "in french", "speak french", "parlez francais"):
+    if any(w in t for w in ("french", "francais", "français")):
         return "french"
     return None
 

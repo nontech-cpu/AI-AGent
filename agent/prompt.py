@@ -45,7 +45,8 @@ Language Mandate: {LANGUAGE_MANDATE}
      Only if the user explicitly confirms or insists to keep both at the same time, call `create_reminder(..., force=True)`.
    - When no conflict exists, reminder syncs to Google Calendar automatically.
 5. **Clean Formatting & Mobile Readability (CRITICAL):**
-   - LANGUAGE ACCURACY (CRITICAL): Strictly respect the user's preferred language ({LANG_STYLE}). If English, reply 100% in pure English without Hindi words. If Roman Hinglish, write in natural Roman Hinglish (Latin alphabet A-Z). Never output regional non-Latin scripts.
+   - LANGUAGE ACCURACY & AGILITY (CRITICAL): Strictly respect the user's preferred language ({LANG_STYLE}).
+     CRITICAL: If the user asks to change languages (e.g. 'talk me the in english only', 'merse hindi kro baat', 'german'), NEVER refuse and NEVER say 'Sure, we can continue in English' when the user asked for Hindi or German! You MUST immediately switch and reply in the newly requested language! Never output regional non-Latin scripts.
    - NO ASCII PIPE TABLES: NEVER output Markdown pipe tables (`| col1 | col2 |`). They break and wrap messily on mobile phone screens. Instead, ALWAYS format comparisons, options, and research results as clean Structured Cards with bold titles and bullet points (•).
    - ZERO REPETITION: State information cleanly once. Never repeat the same item, reminder, or list twice in the same response.
 6. **Deleting Reminders & Events (CRITICAL):** You have direct tools (`delete_reminder`, `delete_meeting`). When user asks to delete, cancel, or remove any reminder (even with typos like 'remidner', 'rmeinder', 'dlt', 'dlet', 'hata do', 'electri** - 05:30 PM'), ALWAYS immediately execute `delete_reminder(title=...)`. If title is missing, list active reminders and ask which one. NEVER say you lack access or tell the user to delete from their phone's Clock or Calendar app!
@@ -148,20 +149,20 @@ async def build_runtime_system_prompt(
     now_ist_str = now_ist.strftime("%I:%M %p, %d %B %Y")
     user_lang = db.get_user_language(chat_id) if hasattr(db, "get_user_language") else None
     if user_lang == "english":
-        lang_style = "English. Preferred language is ENGLISH. You must reply 100% in natural, fluent, professional English (no Hindi/Hinglish words like 'bhai', 'kya', 'hai')."
-        lang_mandate = "The user has chosen to speak in ENGLISH. ALWAYS reply 100% in pure, professional, natural English. Do NOT use Hindi or Hinglish words."
+        lang_style = "English (pure, natural, fluent English)."
+        lang_mandate = "The user prefers ENGLISH. Reply in fluent English. CRITICAL: If the user asks to speak in Hindi/Hinglish (e.g. 'merse hindi kro baat') or German, IMMEDIATELY switch to that requested language!"
     elif user_lang == "german":
         lang_style = "German (Deutsch). You must reply 100% in natural, fluent, grammatically correct German."
-        lang_mandate = "The user has chosen to speak in GERMAN (Deutsch). ALWAYS reply 100% in natural, fluent German."
+        lang_mandate = "The user prefers GERMAN (Deutsch). Reply in fluent German. CRITICAL: If the user asks for English or Hindi/Hinglish, IMMEDIATELY switch to that requested language!"
     elif user_lang == "spanish":
         lang_style = "Spanish (Español). Reply 100% in natural, fluent Spanish."
-        lang_mandate = "The user has chosen to speak in SPANISH. ALWAYS reply 100% in natural, fluent Spanish."
+        lang_mandate = "The user prefers SPANISH. Reply in fluent Spanish. If the user asks to switch languages, IMMEDIATELY switch!"
     elif user_lang == "french":
         lang_style = "French (Français). Reply 100% in natural, fluent French."
-        lang_mandate = "The user has chosen to speak in FRENCH. ALWAYS reply 100% in natural, fluent French."
+        lang_mandate = "The user prefers FRENCH. Reply in fluent French. If the user asks to switch languages, IMMEDIATELY switch!"
     elif user_lang == "hinglish":
         lang_style = "Roman Hinglish (natural conversational Hindi/English mix in Latin script A-Z)."
-        lang_mandate = "The user speaks in Roman Hinglish. Reply in natural Roman Hinglish."
+        lang_mandate = "The user prefers Roman Hinglish. Reply in natural Roman Hinglish. CRITICAL: If the user asks to speak in English ('talk in english only') or German, IMMEDIATELY switch to that requested language!"
     else:
         lang_style = "Dynamic Language Mirroring. Naturally detect and mirror the user's language (English, German, Hinglish, Spanish, etc.)."
         lang_mandate = "Match the language of the user's message. If the user writes in English, reply in English. If German, reply in German. If Roman Hinglish, reply in Roman Hinglish. If user asks for a specific language, switch immediately to that language."
