@@ -207,12 +207,12 @@ def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
 
 # Regular expressions for affirmative and negative intent in English and Roman Hinglish
 AFFIRMATIVE_REGEX = re.compile(
-    r"^(yes|yeah|yep|yup|haan|haanji|han|ha|kar do|kardo|kr do|krdo|kar de|karde|kr de|krde|bhej do|bhejdo|bhej de|bhejde|bhejo|send|send it|send kar do|send krdo|bilkul|sure|proceed|confirm|ok|okay|theek hai|thik hai|create it|kar dena|kardena|bana do|banado|schedule kar do|schedule krdo|yes please)\b",
+    r"^(yes|yeah|yep|yup|ja|jawohl|si|oui|haan|haanji|han|ha|kar do|kardo|kr do|krdo|kar de|karde|kr de|krde|bhej do|bhejdo|bhej de|bhejde|bhejo|send|send it|send kar do|send krdo|bilkul|sure|proceed|confirm|ok|okay|theek hai|thik hai|create it|kar dena|kardena|bana do|banado|schedule kar do|schedule krdo|yes please)\b",
     re.I
 )
 
 NEGATIVE_REGEX = re.compile(
-    r"^(no|nope|cancel|mat karo|mat kro|mat karna|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it|cancel it|cancel kar do|cancel krdo)\b|meeting ka ni|ye nahi|ye mat|nhi chahiye|nahi chahiye",
+    r"^(no|nope|nein|non|cancel|mat karo|mat kro|mat karna|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it|cancel it|cancel kar do|cancel krdo)\b|meeting ka ni|ye nahi|ye mat|nhi chahiye|nahi chahiye",
     re.I
 )
 

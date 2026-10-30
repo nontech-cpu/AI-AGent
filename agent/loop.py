@@ -757,9 +757,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         violations.append(fake_err)
         final_reply = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
 
-    # Guardrail: Anti-Rude / Anti-Transactional Filter (Ensure warm, respectful companion persona)
-    if re.search(r"\b(bas\s+chat\s+karna\s+hai|kaam\s+batao\s+ya\s+bas|kaam\s+karna\s+hai\s+ya\s+bas|kaam\s+hai\s+ya\s+bas|kuch\s+kaam\s+hai\s+ya\s+bas)\b", final_reply, re.I):
-        final_reply = "Bhai, main ekdum badhiya hoon! Aap sunao, sab kaisa chal raha hai? 😊"
 
     # Guardrail: Repeat Suppression
     final_reply = check_repeat_guard(chat_id, final_reply)

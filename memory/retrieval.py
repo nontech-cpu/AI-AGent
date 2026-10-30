@@ -77,38 +77,31 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     seen_entity_ids = set()
 
 
-    # 1. Look for entity matches in text (only if prompt hints at a person, contact, or relation)
-    has_contact_hint = bool(re.search(
-        r"\b(contact|contacts|phone|number|call|call\s*karo|email|mail|address|company|who\s*is|kaun\s*h|kaun\s*hai|kiska|iski|iska|kisko|unka|unki|bhai|sir|madam|doctor|boss|manager|client|developer)\b",
-        user_text,
-        re.I
-    ))
-    if has_contact_hint:
-        candidates = extract_potential_entity_tokens(user_text)
-        for cand in candidates:
-            ent = find_entity(user_id, cand, threshold=0.28)
-            if ent and ent["id"] not in seen_entity_ids:
-                seen_entity_ids.add(ent["id"])
-                # Pull active commitments for this entity
-                ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
-                ent["commitments"] = ent_commitments
-                matched_entities.append(ent)
+    # 1. Look for entity matches in text via clean candidate tokens (No brittle regex gates)
+    candidates = extract_potential_entity_tokens(user_text)
+    for cand in candidates:
+        ent = find_entity(user_id, cand, threshold=0.28)
+        if ent and ent["id"] not in seen_entity_ids:
+            seen_entity_ids.add(ent["id"])
+            # Pull active commitments for this entity
+            ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
+            ent["commitments"] = ent_commitments
+            matched_entities.append(ent)
 
-    # 2. Hybrid search for relevant memories (only for recall/episodic queries, skipping for simple imperatives)
+    # 2. Hybrid semantic RAG memory search (semantic vector + keyword search without brittle keyword blocks)
     relevant_mems = []
-    if re.search(r"\b(search|yaad|dhundo|kya tha|pata karo|purani|ticket number|pnr|flight number)\b", user_text, re.I):
+    if len(user_text.strip().split()) >= 2:
         try:
             relevant_mems = search_memories_hybrid(user_id, user_text, limit=3)
         except Exception:
             relevant_mems = []
 
-    # 3. User facts (only if relevant to user preferences/facts query or if recall requested)
+    # 3. User facts & preferences (always provide top 3 relevant facts for context grounding)
     facts = []
-    if re.search(r"\b(fact|facts|preference|preferences|profile|about me|pasand|aadat|habit|rule|rules|favourite|favorite)\b", user_text, re.I):
-        try:
-            facts = get_user_semantic_facts(user_id)[:3]
-        except Exception:
-            facts = []
+    try:
+        facts = get_user_semantic_facts(user_id)[:3]
+    except Exception:
+        facts = []
 
     # Format into context string
     lines = ["<memory>"]

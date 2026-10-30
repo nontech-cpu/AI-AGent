@@ -116,7 +116,7 @@ def deterministic_verify(
     if "github" in user_query.lower() or "repo" in user_query.lower():
         # Check if a GitHub repository listing tool was specifically executed to list user repos
         has_repo_listing = any(isinstance(tr, dict) and "repositories" in tr for tr in tool_results)
-        is_asking_repos = bool(re.search(r"\b(repo|repos|repository|repositories)\b", user_query, re.I)) and bool(re.search(r"\b(list|show|dikha|bata|btao|batao|kaun|all|mere|mera|meri|my|names|naam|tell|get)\b", user_query, re.I))
+        is_asking_repos = bool(re.search(r"\b(repo|repos|repository|repositories)\b", user_query, re.I)) and bool(re.search(r"\b(list|show|dikha|bata|btao|batao|kaun|all|mere|mera|meri|my|meine|zeige|welche|names|naam|tell|get)\b", user_query, re.I))
         if has_repo_listing and is_asking_repos:
             real_repos = set()
             gh_user = ""
