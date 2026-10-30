@@ -148,21 +148,38 @@ async def build_runtime_system_prompt(
     weekday = now_ist.strftime("%A")
     now_ist_str = now_ist.strftime("%I:%M %p, %d %B %Y")
     user_lang = db.get_user_language(chat_id) if hasattr(db, "get_user_language") else None
-    if user_lang == "english":
-        lang_style = "English (pure, natural, fluent English)."
-        lang_mandate = "The user prefers ENGLISH. Reply in fluent English. CRITICAL: If the user asks to speak in Hindi/Hinglish (e.g. 'merse hindi kro baat') or German, IMMEDIATELY switch to that requested language!"
-    elif user_lang == "german":
-        lang_style = "German (Deutsch). You must reply 100% in natural, fluent, grammatically correct German."
-        lang_mandate = "The user prefers GERMAN (Deutsch). Reply in fluent German. CRITICAL: If the user asks for English or Hindi/Hinglish, IMMEDIATELY switch to that requested language!"
+    if user_lang == "german":
+        lang_style = "German (Deutsch)"
+        lang_mandate = (
+            "STRICT GERMAN LANGUAGE MANDATE (CRITICAL):\n"
+            "The user wants to communicate in GERMAN (Deutsch).\n"
+            "You MUST speak, write, and respond 100% in pure, grammatically correct GERMAN!\n"
+            "Even if the user writes in Hindi or English (e.g. 'bhy merko german m krni h baat' or 'u start'), "
+            "you MUST reply completely in GERMAN! Do NOT reply in Hinglish saying 'Theek hai bhai German mein baat karte hain'! "
+            "Start speaking in German immediately right now! Example: 'Hallo! Gerne sprechen wir ab jetzt Deutsch. Wie kann ich dir heute helfen?'"
+        )
+    elif user_lang == "english":
+        lang_style = "English"
+        lang_mandate = (
+            "STRICT ENGLISH LANGUAGE MANDATE (CRITICAL):\n"
+            "The user wants to communicate in ENGLISH.\n"
+            "You MUST speak, write, and respond 100% in pure, professional, natural English!\n"
+            "Even if the user writes in Hindi/Hinglish asking to speak in English, you MUST reply completely in English without any Hindi words!\n"
+            "Exception: Only switch away from English if the user explicitly asks to speak in another language (e.g. 'hindi me bolo', 'german me baat karo')."
+        )
     elif user_lang == "spanish":
-        lang_style = "Spanish (Español). Reply 100% in natural, fluent Spanish."
-        lang_mandate = "The user prefers SPANISH. Reply in fluent Spanish. If the user asks to switch languages, IMMEDIATELY switch!"
+        lang_style = "Spanish (Español)"
+        lang_mandate = "The user communicates in SPANISH. ALWAYS reply 100% in natural, fluent Spanish!"
     elif user_lang == "french":
-        lang_style = "French (Français). Reply 100% in natural, fluent French."
-        lang_mandate = "The user prefers FRENCH. Reply in fluent French. If the user asks to switch languages, IMMEDIATELY switch!"
+        lang_style = "French (Français)"
+        lang_mandate = "The user communicates in FRENCH. ALWAYS reply 100% in natural, fluent French!"
     elif user_lang == "hinglish":
-        lang_style = "Roman Hinglish (natural conversational Hindi/English mix in Latin script A-Z)."
-        lang_mandate = "The user prefers Roman Hinglish. Reply in natural Roman Hinglish. CRITICAL: If the user asks to speak in English ('talk in english only') or German, IMMEDIATELY switch to that requested language!"
+        lang_style = "Roman Hinglish (Hindi/English mix in Latin alphabet A-Z)"
+        lang_mandate = (
+            "STRICT ROMAN HINGLISH MANDATE (CRITICAL):\n"
+            "The user wants to communicate in natural, friendly Roman Hinglish (Latin alphabet A-Z).\n"
+            "Exception: If the user explicitly asks to speak in English ('talk in english only') or German ('german me baat karo'), you MUST immediately switch to that language and start speaking in it!"
+        )
     else:
         lang_style = "Dynamic Language Mirroring. Naturally detect and mirror the user's language (English, German, Hinglish, Spanish, etc.)."
         lang_mandate = "Match the language of the user's message. If the user writes in English, reply in English. If German, reply in German. If Roman Hinglish, reply in Roman Hinglish. If user asks for a specific language, switch immediately to that language."

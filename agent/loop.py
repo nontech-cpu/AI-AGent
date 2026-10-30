@@ -679,7 +679,18 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         if isinstance(last_res, dict) and last_res.get("message"):
             final_reply = last_res["message"]
 
-    # Conversational recovery fallback: if still empty and no tools ran, answer the user conversationally without tools
+    # Conversational recovery fallback: dynamically respect the user's active language
+    active_user_lang = db.get_user_language(chat_id) if hasattr(db, "get_user_language") else None
+    if active_user_lang == "german":
+        fb_sys = "You are PeculiarAI. You MUST reply completely in natural, fluent GERMAN. Do not mention tools or internal codes."
+        default_fb_msg = "Hallo! Wie kann ich dir heute weiterhelfen? Möchtest du Termine planen oder deine Aufgaben besprechen?"
+    elif active_user_lang == "english":
+        fb_sys = "You are PeculiarAI. You MUST reply completely in natural, professional ENGLISH. Do not use Hindi words."
+        default_fb_msg = "Hello! How can I assist you today? Would you like to check your schedule or set a reminder?"
+    else:
+        fb_sys = "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish."
+        default_fb_msg = "Bataiye, main aapki kya madad karun? Schedule ya kisi update ke baare me bataiye!"
+
     if not final_reply:
         try:
             async with httpx.AsyncClient(timeout=10.0) as fb_client:
@@ -690,7 +701,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         "model": model,
                         "temperature": 0.5,
                         "messages": [
-                            {"role": "system", "content": "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish. Do not mention tools, internal codes, or technical errors."},
+                            {"role": "system", "content": fb_sys},
                             {"role": "user", "content": user_text}
                         ],
                         "max_tokens": 1024,
@@ -705,9 +716,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not final_reply:
         if tool_results_list:
             last_res = tool_results_list[-1]
-            final_reply = last_res.get("message") or "Done! Aapka request complete ho gaya hai."
+            final_reply = last_res.get("message") or default_fb_msg
         else:
-            final_reply = "Bataiye bhai, main aapki kya madad karun? Schedule ya kisi update ke baare me bataiye!"
+            final_reply = default_fb_msg
 
     if "<tool_call>" in final_reply:
         final_reply = re.sub(r"<tool_call>.*?</tool_call>", "", final_reply, flags=re.DOTALL | re.IGNORECASE).strip()
