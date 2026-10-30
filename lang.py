@@ -52,7 +52,7 @@ def detect_text_language(message):
 
     # Check for Hinglish
     extended_hinglish = HINGLISH_WORDS | {
-        "bhy", "bhai", "mekro", "merko", "mereko", "mujhe", "mujh", "tu", "teri", "tera",
+        "bhy", "bhai", "mekro", "merko", "mereko", "merse", "hindi", "kro", "baat", "mujhe", "mujh", "tu", "teri", "tera",
         "tere", "k", "ke", "ki", "ko", "se", "ne", "me", "mein", "par", "pe", "ab", "abhi",
         "bna", "bnaa", "banao", "bhejo", "bhej", "de", "dede", "dena", "daal", "daalkr",
         "kr", "krde", "krdo", "karna", "karo", "rhe", "rha", "rhi", "aaya", "aayi", "aaye",
