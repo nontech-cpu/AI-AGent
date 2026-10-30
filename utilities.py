@@ -829,20 +829,9 @@ async def get_movie_showtimes(city: str = "Jodhpur", area: Optional[str] = "Sard
 
     formatted_summary = "\n".join(lines)
 
-    # Grounded reality check for Jodhpur specific common categories
-    note = ""
-    if "jodhpur" in clean_city.lower() and any(w in clean_cat.lower() for w in ("south indian", "dosa", "idli", "sambar")):
-        note = (
-            "Local Jodhpur Ground Truth: Jodhpur is primarily a Marwari/Rajasthani food hub. "
-            "For authentic specialized South Indian sit-down dining, the #1 premier destination across the city is Sankalp Restaurant (Residency Road, Sardarpura). "
-            "In Ratanada, there are no big luxury South Indian dining halls; locals eat South Indian at casual spots like Dosa Junction or Ramdev Dosa Corner (UIT Road, Ratanada), "
-            "or travel 10 minutes to Sankalp on Residency Road. Be completely honest about this distinction to the user!"
-        )
-
     return {
         "status": "success",
         "city": clean_city,
-        "local_grounding_note": note,
         "area": clean_area,
         "platform": "BookMyShow",
         "theatres": theatres,
