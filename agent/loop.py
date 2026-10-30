@@ -1,6 +1,6 @@
 """
 PeculiarAI V2 Agent Execution Loop
-Native tool-calling loop using Groq (openai/gpt-oss-120b or llama-3.3-70b-versatile).
+Native tool-calling loop using Groq (openai/gpt-oss-120b or openai/gpt-oss-20b).
 Strict Zero-Hallucination Grounding Contract: Model acts via tools or acknowledges missing data.
 """
 import os
@@ -310,7 +310,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     # 5. Dynamic Context-Aware Lean Tool Suite (Zero token waste on unused domains)
-    active_tool_names = set()
+    # Core assistant tools are ALWAYS enabled to guarantee semantic understanding and zero hallucination on typos
+    active_tool_names = {
+        "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
+        "check_availability", "save_note_or_fact", "search_memory",
+        "save_contact", "get_contact", "manage_smart_list"
+    }
 
     has_reminder_intent = any(w in low_prompt for w in ("remind", "reminder", "yaad", "schedule", "kal", "aaj", "baje", "task", "subah", "shaam", "sham", "dopahar", "raat", "roj", "daily", "har din", "dawai", "sugar", "delete", "hata do", "cancel"))
     has_meeting_intent = any(w in low_prompt for w in ("meet", "meeting", "calendar", "availability", "free slot", "slot", "call"))
@@ -389,31 +394,27 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
 
 
-            # Intelligent Retry with Backoff for 429 Rate Limits / Transient Errors
-            if resp.status_code == 429:
-                print(f"Agent Loop 429 Rate Limit on {current_model}. Backing off and retrying in 3.5s...")
-                for retry_attempt in range(3):
-                    await asyncio.sleep(3.5 * (retry_attempt + 1))
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json=payload
-                    )
-                    if resp.status_code == 200:
-                        break
-                    print(f"Retry {retry_attempt + 1} status: {resp.status_code}")
-
-            if resp.status_code != 200:
-                print("Agent Loop Groq Error:", resp.status_code, resp.text[:300])
-                # Try one final pause and retry on current model before giving up
-                await asyncio.sleep(4.0)
+            # Intelligent Fallback for 429 Rate Limits / Transient Errors
+            if resp.status_code == 429 or resp.status_code != 200:
+                print(f"Agent Loop error {resp.status_code} on {current_model}. Falling back to openai/gpt-oss-20b...")
+                current_model = "openai/gpt-oss-20b"
+                payload["model"] = current_model
+                await asyncio.sleep(0.5)
                 resp = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}"},
                     json=payload
                 )
                 if resp.status_code != 200:
-                    break
+                    print(f"Fallback retry status: {resp.status_code}")
+                    await asyncio.sleep(1.5)
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json=payload
+                    )
+                    if resp.status_code != 200:
+                        break
 
             resp_data = resp.json()
             choice = resp_data["choices"][0]
@@ -698,7 +699,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}"},
                     json={
-                        "model": model,
+                        "model": "openai/gpt-oss-20b",
                         "temperature": 0.5,
                         "messages": [
                             {"role": "system", "content": fb_sys},

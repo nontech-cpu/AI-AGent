@@ -89,7 +89,7 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                 json={
-                    "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+                    "model": "openai/gpt-oss-20b",
                     "messages": [
                         {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                         {

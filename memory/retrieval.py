@@ -32,7 +32,10 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "baad", "waqt", "nhi", "nahi", "nahin", "hain", "naam", "sirf",
         "kesa", "kaisa", "kaise", "kaisi", "theek", "thik", "badhiya", "badia", "mast",
         "haal", "hal", "chal", "rha", "raha", "rahe", "rahi", "hlo", "hello", "hey", "namaste",
-        "reminders", "schedule", "events", "calendar", "weather", "notion", "github", "task", "tasks", "list", "lists", "calc", "calculate"
+        "reminders", "schedule", "events", "calendar", "weather", "notion", "github", "task", "tasks", "list", "lists", "calc", "calculate",
+        "what", "when", "where", "which", "whose", "whom", "will", "would", "could", "should", "have", "has", "had", "does", "done", "doing", "been",
+        "are", "for", "the", "you", "all", "not", "can", "how", "let", "may", "was", "were",
+        "about", "some", "any", "tell", "show", "give", "want", "need", "your", "yours", "their", "there", "here", "this", "that", "these", "those"
     }
     candidates = [w for w in words if w not in stopwords][:3]
     return candidates

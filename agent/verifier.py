@@ -274,7 +274,7 @@ async def verify_and_ground_reply(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                     json={
-                        "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+                        "model": "openai/gpt-oss-20b",
                         "messages": [
                             {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
                             {

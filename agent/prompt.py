@@ -46,7 +46,7 @@ Language Mandate: {LANGUAGE_MANDATE}
    - When no conflict exists, reminder syncs to Google Calendar automatically.
 5. **Clean Formatting & Mobile Readability (CRITICAL):**
    - LANGUAGE ACCURACY & AGILITY (CRITICAL): Strictly respect the user's preferred language ({LANG_STYLE}).
-     CRITICAL: If the user asks to change languages (e.g. 'talk me the in english only', 'merse hindi kro baat', 'german'), NEVER refuse and NEVER say 'Sure, we can continue in English' when the user asked for Hindi or German! You MUST immediately switch and reply in the newly requested language! Never output regional non-Latin scripts.
+     CRITICAL: If the user asks to change languages (e.g. 'talk in english only', 'merse hindi kro baat', 'german me baat karo'), switch IMMEDIATELY and reply in the newly requested language without refusal or apologies. Never output regional non-Latin scripts.
    - NO ASCII PIPE TABLES: NEVER output Markdown pipe tables (`| col1 | col2 |`). They break and wrap messily on mobile phone screens. Instead, ALWAYS format comparisons, options, and research results as clean Structured Cards with bold titles and bullet points (•).
    - ZERO REPETITION: State information cleanly once. Never repeat the same item, reminder, or list twice in the same response.
 6. **Deleting Reminders & Events (CRITICAL):** You have direct tools (`delete_reminder`, `delete_meeting`). When user asks to delete, cancel, or remove any reminder (even with typos like 'remidner', 'rmeinder', 'dlt', 'dlet', 'hata do', 'electri** - 05:30 PM'), ALWAYS immediately execute `delete_reminder(title=...)`. If title is missing, list active reminders and ask which one. NEVER say you lack access or tell the user to delete from their phone's Clock or Calendar app!
@@ -64,11 +64,12 @@ Language Mandate: {LANGUAGE_MANDATE}
    - You have live access to user checklists via {LISTS_BLOCK} and the tool `manage_smart_list`.
    - When the user asks 'mere koi list created h kya?', 'koi lists h kya?', 'meri lists dikhao', ALWAYS check {LISTS_BLOCK} first and truthfully list their active lists and items (e.g. 'movie trip' with items 'bag', 'wallet'). NEVER say no lists exist when lists are in {LISTS_BLOCK}!
    - When user asks to add items to a list, create a list, or check off items, immediately execute `manage_smart_list`.
-9. **Schedule Awareness (Today vs Tomorrow/Upcoming) & Zero Repetition:**
-   - ALWAYS check the live Ground Truth in {SCHEDULE_BLOCK}.
-   - When user asks about TODAY (e.g. 'aaj kya schedule hai', 'aaj ke reminders'): list today's reminders clearly once.
-   - When user asks about TOMORROW (e.g. 'mera kl reminder kya h', 'kal ke reminder'): list tomorrow's reminders clearly ONCE.
-   - STRICT PROHIBITION ON REPETITIVE BOILERPLATE: NEVER append redundant duplicate sentences like "Iske alawa kal ke liye aapke ye reminders scheduled hain... Tension mat lo!" when you have already listed those reminders above! Answer clearly, neatly, and once.
+9. **Schedule & Ground Truth Awareness (Today vs Tomorrow) & Zero Hallucination (CRITICAL):**
+   - You ALREADY HAVE live Ground Truth in {SCHEDULE_BLOCK} and saved notes in {MEMORY_BLOCK}.
+   - When user asks about TODAY (e.g. 'aaj kya schedule hai', 'aaj ke reminders'): answer directly from Today's schedule in {SCHEDULE_BLOCK}.
+   - When user asks about TOMORROW (e.g. 'what are my rmeidner for tommmorrow?', 'mera kl reminder kya h', 'kal ke reminder'): answer directly from Tomorrow's schedule in {SCHEDULE_BLOCK}! State them clearly and cleanly.
+   - ZERO HALLUCINATION MANDATE: NEVER claim: 'mujhe aapka personal calendar ya notes abhi tak nahi pata' or 'mere paas personal calendar ya notes ka access nahi hai'! You have live access right in {SCHEDULE_BLOCK}. Answer directly from it.
+   - STRICT PROHIBITION ON REPETITIVE BOILERPLATE: State information once. Never repeat the same reminder twice.
 
 # INSTINCT-STYLE EXECUTIVE AGENT PROTOCOLS (ZERO FLUFF, ACTION-FIRST, SLOT-FILLING)
 10. **Zero Fluff & No Apologies:**
@@ -274,37 +275,60 @@ async def build_runtime_system_prompt(
         build_runtime_system_prompt._sched_cache = {}
     _sched_cache = build_runtime_system_prompt._sched_cache
 
-    # 100% Live DB ground truth for instant zero-latency schedule synchronization
-    today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
-    try:
-        from db import items_for_date, canonical_chat_id
-        cid_can = canonical_chat_id(chat_id)
-        # Always fetch live from SQLite in <0.2ms
-        today_sched["reminders"] = items_for_date(cid_can, today_d) or []
-    except Exception:
-        pass
+    sched_cache_key = (chat_id, str(today_d))
+    cached_sched = _sched_cache.get(sched_cache_key)
+    if cached_sched and (now_ts - cached_sched.get("ts", 0) < 30.0):
+        today_sched = cached_sched["today"]
+        tomorrow_sched = cached_sched["tomorrow"]
+        lists_str = cached_sched["lists_str"]
+    else:
+        today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
+        try:
+            from db import items_for_date, canonical_chat_id
+            cid_can = canonical_chat_id(chat_id)
+            today_sched["reminders"] = items_for_date(cid_can, today_d) or []
+        except Exception:
+            pass
 
-    try:
-        from main import _UNIFIED_SCHED_CACHE
-        main_c = _UNIFIED_SCHED_CACHE.get((cid_can, str(today_d)))
-        if main_c and "data" in main_c:
-            today_sched["calendar_events"] = main_c["data"].get("calendar_events", [])
-            today_sched["commitments"] = main_c["data"].get("commitments", [])
-    except Exception:
-        pass
+        try:
+            from main import _UNIFIED_SCHED_CACHE
+            main_c = _UNIFIED_SCHED_CACHE.get((cid_can, str(today_d)))
+            if main_c and "data" in main_c:
+                today_sched["calendar_events"] = main_c["data"].get("calendar_events", [])
+                today_sched["commitments"] = main_c["data"].get("commitments", [])
+        except Exception:
+            pass
 
-    tomorrow_sched = {"calendar_events": [], "reminders": [], "commitments": []}
-    try:
-        from db import items_for_date, canonical_chat_id
-        cid_can = canonical_chat_id(chat_id)
-        db_tm_rems = items_for_date(cid_can, tomorrow_d)
-        if db_tm_rems:
-            tomorrow_sched["reminders"] = db_tm_rems
-    except Exception:
-        pass
+        tomorrow_sched = {"calendar_events": [], "reminders": [], "commitments": []}
+        try:
+            from db import items_for_date, canonical_chat_id
+            cid_can = canonical_chat_id(chat_id)
+            db_tm_rems = items_for_date(cid_can, tomorrow_d)
+            if db_tm_rems:
+                tomorrow_sched["reminders"] = db_tm_rems
+        except Exception:
+            pass
 
-    # 2b. Active Checklists & Smart Lists
-    lists_str = "None created yet."
+        lists_str = "None created yet."
+        try:
+            from db import get_smart_lists, canonical_chat_id
+            cid_can = canonical_chat_id(chat_id)
+            u_lists = get_smart_lists(cid_can)
+            if u_lists:
+                formatted_lists = []
+                for l in u_lists:
+                    items_summary = ", ".join([it["title"] for it in l.get("items", [])[:8]])
+                    formatted_lists.append(f"• {l['name']} ({len(l.get('items', []))} items: {items_summary or 'empty'})")
+                lists_str = "\n".join(formatted_lists)
+        except Exception:
+            lists_str = "None created yet."
+
+        _sched_cache[sched_cache_key] = {
+            "ts": now_ts,
+            "today": today_sched,
+            "tomorrow": tomorrow_sched,
+            "lists_str": lists_str
+        }
     try:
         from db import get_smart_lists, canonical_chat_id
         cid_can = canonical_chat_id(chat_id)
@@ -455,9 +479,9 @@ def invalidate_prompt_schedule_cache(chat_id=None):
         if chat_id is None:
             build_runtime_system_prompt._sched_cache.clear()
         else:
-            cid_str = str(chat_id)
+            cid_int = int(chat_id) if str(chat_id).isdigit() else chat_id
             build_runtime_system_prompt._sched_cache = {
                 k: v for k, v in build_runtime_system_prompt._sched_cache.items()
-                if not k.startswith(cid_str)
+                if k[0] != cid_int
             }
 

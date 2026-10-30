@@ -944,6 +944,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "connector": conn.name,
                     "message": err_msg
                 }
+            if tool_name in ("create_reminder", "delete_reminder", "create_meeting", "delete_meeting", "manage_smart_list"):
+                try:
+                    from agent.prompt import invalidate_prompt_schedule_cache
+                    invalidate_prompt_schedule_cache(chat_id)
+                except Exception:
+                    pass
             if isinstance(tool_res.data, dict):
                 return tool_res.data
             return {"status": "success", "result": tool_res.data}
