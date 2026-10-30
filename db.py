@@ -88,6 +88,7 @@ def get_categories(chat_id):
 
 def save_memory(chat_id, category, title, amount, due_date, due_time):
     chat_id = canonical_chat_id(chat_id)
+    category = category or "appointments"
     tm = due_time
     d = due_date
     if engine.dialect.name == "sqlite":
@@ -885,6 +886,7 @@ def get_user_rules(chat_id):
     ]
 
 
+save_user_rule = None  # set below
 def add_user_rule(chat_id, rule_text):
     with engine.begin() as conn:
         row = conn.execute(
@@ -896,6 +898,7 @@ def add_user_rule(chat_id, rule_text):
         ).first()
     return row[0] if row else None
 
+save_user_rule = add_user_rule
 
 def delete_user_rule(chat_id, rule_id):
     with engine.begin() as conn:

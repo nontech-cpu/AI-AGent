@@ -269,11 +269,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 8)
+    recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 4)
     for turn in recent_history:
         t_text = turn.get("text") or ""
-        if len(t_text) > 3000:
-            t_text = t_text[:3000] + "..."
+        if len(t_text) > 800:
+            t_text = t_text[:800] + "..."
         messages.append({"role": turn["role"], "content": t_text})
 
     messages.append({"role": "user", "content": user_text})
@@ -285,16 +285,23 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     # 5. Core Everyday Tool Suite (ALWAYS available - zero missing tools, zero regex blocking)
+    # Essential Core Tools (Lean payload to stay well within Groq 8000 TPM limit)
     CORE_TOOL_NAMES = {
-        "create_reminder", "delete_reminder", "list_reminders", "manage_smart_list", "get_schedule",
-        "check_availability", "create_meeting", "get_meet_link",
-        "save_contact", "get_contact", "list_contacts",
-        "save_note_or_fact", "search_memory", "clear_chat_history",
-        "check_integrations_status", "connect_integration",
-        "get_weather", "search_web", "get_movie_showtimes", "find_nearby_places", "learn_user_correction", "deep_research"
+        "create_reminder", "delete_reminder", "list_reminders", "manage_smart_list",
+        "get_schedule", "create_meeting", "save_note_or_fact", "search_memory",
+        "get_weather", "search_web"
     }
 
     active_tool_names = set(CORE_TOOL_NAMES)
+
+    if any(w in low_prompt for w in ("movie", "cinema", "theatre", "show", "hall", "ticket", "bookmyshow")):
+        active_tool_names.add("get_movie_showtimes")
+    if any(w in low_prompt for w in ("contact", "phone", "number", "email id", "dost ka phone", "save contact")):
+        active_tool_names.update({"save_contact", "get_contact", "list_contacts"})
+    if any(w in low_prompt for w in ("meet", "meeting", "availability", "free slot", "slot")):
+        active_tool_names.update({"check_availability", "get_meet_link"})
+    if any(w in low_prompt for w in ("integration", "connect", "link", "notion", "github", "account")):
+        active_tool_names.update({"check_integrations_status", "connect_integration"})
 
     # Contextual tools activated by domain keywords (keeps token budget well under Groq 8000 TPM limit)
     if any(w in low_prompt for w in ("git", "github", "repo", "issue", "commit", "branch", "pull")):
@@ -332,7 +339,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "messages": messages,
                 "max_tokens": 1024,
             }
-            if effective_tools:
+            # Only send tools schema on iteration 0 to allow tool selection.
+            # Iteration 1+ is summarizing executed tool results, so omitting tools saves ~3,500 tokens!
+            if effective_tools and iteration == 0:
                 payload["tools"] = effective_tools
                 payload["tool_choice"] = "auto"
 
@@ -346,36 +355,29 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
 
 
-            # Multi-tier auto-fallback on 429 Rate Limit
+            # Intelligent Retry with Backoff for 429 Rate Limits / Transient Errors
             if resp.status_code == 429:
-                for fb_model in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
-                    if current_model != fb_model:
-                        print(f"Agent Loop 429 Rate Limit on {current_model}. Switching to fallback model {fb_model}...")
-                        current_model = fb_model
-                        payload["model"] = current_model
-                        await asyncio.sleep(1.5)
-                        resp = await client.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {groq_key}"},
-                            json=payload
-                        )
-                        if resp.status_code == 200:
-                            break
+                print(f"Agent Loop 429 Rate Limit on {current_model}. Backing off and retrying in 3.5s...")
+                for retry_attempt in range(3):
+                    await asyncio.sleep(3.5 * (retry_attempt + 1))
+                    resp = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json=payload
+                    )
+                    if resp.status_code == 200:
+                        break
+                    print(f"Retry {retry_attempt + 1} status: {resp.status_code}")
 
             if resp.status_code != 200:
                 print("Agent Loop Groq Error:", resp.status_code, resp.text[:300])
-                for fb_model in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
-                    if current_model != fb_model:
-                        current_model = fb_model
-                        payload["model"] = current_model
-                        await asyncio.sleep(1.0)
-                        resp = await client.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {groq_key}"},
-                            json=payload
-                        )
-                        if resp.status_code == 200:
-                            break
+                # Try one final pause and retry on current model before giving up
+                await asyncio.sleep(4.0)
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json=payload
+                )
                 if resp.status_code != 200:
                     break
 
@@ -631,7 +633,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             elif isinstance(last_res, dict) and last_res.get("question"):
                 final_reply = last_res["question"]
 
-    # Conversational recovery fallback: if still empty, answer the user conversationally without tools
+    # If tools executed successfully, prioritize their formatted outcome over empty string
+    if not final_reply and tool_results_list:
+        last_res = tool_results_list[-1]
+        if isinstance(last_res, dict) and last_res.get("message"):
+            final_reply = last_res["message"]
+
+    # Conversational recovery fallback: if still empty and no tools ran, answer the user conversationally without tools
     if not final_reply:
         try:
             async with httpx.AsyncClient(timeout=10.0) as fb_client:
@@ -639,7 +647,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}"},
                     json={
-                        "model": "openai/gpt-oss-20b",
+                        "model": model,
                         "temperature": 0.5,
                         "messages": [
                             {"role": "system", "content": "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish. Do not mention tools, internal codes, or technical errors."},
@@ -655,7 +663,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             print("Conversational recovery error:", repr(fb_err))
 
     if not final_reply:
-        final_reply = "Bataiye bhai, main aapki kya madad karun? Schedule ya kisi update ke baare me bataiye!"
+        if tool_results_list:
+            last_res = tool_results_list[-1]
+            final_reply = last_res.get("message") or "Done! Aapka request complete ho gaya hai."
+        else:
+            final_reply = "Bataiye bhai, main aapki kya madad karun? Schedule ya kisi update ke baare me bataiye!"
 
     if "<tool_call>" in final_reply:
         final_reply = re.sub(r"<tool_call>.*?</tool_call>", "", final_reply, flags=re.DOTALL | re.IGNORECASE).strip()

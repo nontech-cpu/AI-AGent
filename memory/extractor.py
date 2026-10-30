@@ -81,6 +81,9 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
         if clean_user in {"hi", "hello", "hey", "yes", "no", "haan", "ok", "theek hai"}:
             return
 
+        # Debounce slightly to prioritize foreground user turns over background extraction
+        await asyncio.sleep(2.0)
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",

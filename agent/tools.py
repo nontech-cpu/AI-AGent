@@ -81,6 +81,7 @@ class CreateReminderArgs(BaseModel):
     due_date: str = Field(..., description="Due date in YYYY-MM-DD format.")
     due_time: Optional[str] = Field(None, description="Due time in HH:MM format (24h) if specified.")
     category: Optional[str] = Field("appointments", description="Category of reminder.")
+    recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily' (for roj, daily, har din, jbtk m na khu), 'weekly', or 'none'.")
     force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict.")
 
 class ListRemindersArgs(BaseModel):
@@ -413,6 +414,7 @@ TOOL_DEFINITIONS = [
                     "due_date": {"type": "string", "description": "Date in YYYY-MM-DD format."},
                     "due_time": {"type": ["string", "null"], "description": "Time in HH:MM 24h format."},
                     "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
+                    "recurrence": {"type": ["string", "null"], "description": "Recurrence pattern: 'daily' for every day (roj, daily, har din, jbtk m na khu), 'weekly' for every week, or 'none' for single occurrence."},
                     "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict exists."}
                 },
                 "required": ["title", "due_date"]
@@ -1351,6 +1353,43 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "message": f"Time Conflict: {args.due_time} par already {', '.join(conflicts)} scheduled hai! Reminder create NAHI kiya gaya hai. User ko politely inform karo ki is samay par already yeh task scheduled hai aur pucho ki kya kisi aur time par shift karein ya fir bhi isi time par dono ka reminder lagana hai."
                 }
 
+            is_daily = (getattr(args, "recurrence", "none") or "").lower() in ("daily", "roj", "every_day", "everyday")
+            time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
+
+            if is_daily:
+                rule_text = f"Daily recurring reminder: {args.title} at {time_str}"
+                db.add_user_rule(chat_id, rule_text)
+
+                for day_offset in range(14):
+                    cur_d = d_val + timedelta(days=day_offset)
+                    day_existing = db.items_for_date(chat_id, cur_d)
+                    if any(args.title.lower() in (r.get("title") or "").lower() for r in day_existing if isinstance(r, dict)):
+                        continue
+                    cid = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=cur_d, due_time=t_val)
+                    try:
+                        from timing import build_plan
+                        from db import add_reminders
+                        plan = build_plan(cur_d, t_val)
+                        if plan.get("reminders") and cid:
+                            add_reminders(cid, plan["reminders"])
+                    except Exception:
+                        pass
+
+                try:
+                    from api_v1 import _invalidate_all_app_caches
+                    _invalidate_all_app_caches()
+                except Exception:
+                    pass
+
+                return {
+                    "status": "success",
+                    "title": args.title,
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
+                    "recurrence": "daily",
+                    "message": f"Done bhai! '{args.title}' ka daily reminder roz subah {time_str} ke liye set kar diya hai. Jab tak aap band karne ko nahi bolenge, yeh roz active rahega!"
+                }
+
             if matched_existing_ids:
                 primary_id, primary_title = matched_existing_ids[0]
                 # Update existing memory item
@@ -1383,7 +1422,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "message": f"Done! '{primary_title or args.title}' ka reminder {time_str} par shift kar diya hai."
                 }
             else:
-                item_id = db.save_memory(chat_id, args.category, args.title, amount=None, due_date=d_val, due_time=t_val)
+                item_id = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=d_val, due_time=t_val)
                 try:
                     from timing import build_plan
                     from db import add_reminders
@@ -1478,6 +1517,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": r_id})
                     conn.execute(text("DELETE FROM memory_items WHERE id = :id"), {"id": r_id})
                     deleted_titles.append(r_title)
+
+            try:
+                rules = db.get_user_rules(can_cid)
+                for r in rules:
+                    r_text = (r.get("rule") or "").lower()
+                    if clean_kw in r_text or any(tk in r_text for tk in clean_kw.split() if len(tk) >= 3):
+                        db.delete_user_rule(can_cid, r.get("id"))
+            except Exception:
+                pass
 
             try:
                 from api_v1 import _invalidate_all_app_caches
@@ -2433,7 +2481,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "learn_user_correction":
             args = LearnCorrectionArgs(**arguments)
-            import db
             ok = db.save_user_correction(chat_id, args.wrong_concept, args.correct_rule, args.category or "user_feedback")
             return {
                 "status": "success" if ok else "error",
