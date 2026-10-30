@@ -291,7 +291,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         "save_contact", "get_contact", "list_contacts",
         "save_note_or_fact", "search_memory", "clear_chat_history",
         "check_integrations_status", "connect_integration",
-        "get_weather", "search_web"
+        "get_weather", "search_web", "get_movie_showtimes"
     }
 
     active_tool_names = set(CORE_TOOL_NAMES)
@@ -445,6 +445,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         m_title = tool_result.get("title", "Meeting")
                         m_url = tool_result.get("meet_url") or tool_result.get("hangoutLink") or ""
                         update_active_context(chat_id, connector="Google Calendar", topic=m_title, url=m_url)
+                    elif fn_name == "get_movie_showtimes":
+                        m_list = [m.get("title", "") for m in tool_result.get("movies", [])]
+                        update_active_context(chat_id, connector="BookMyShow", topic="movies in Jodhpur", objects=m_list)
                     elif fn_name == "send_email":
                         to_email = args_dict.get("to")
                         update_active_context(chat_id, connector="Gmail", topic=f"email to {to_email}" if to_email else "email")
@@ -611,6 +614,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 time_part = f" at {t_time}" if t_time else ""
                 date_part = f" ({t_date})" if t_date else ""
                 final_reply = f"Reminder set ho gaya hai! 📅 **{t_name}**{date_part}{time_part}."
+            elif isinstance(last_res, dict) and "movies" in last_res:
+                final_reply = last_res.get("summary") or last_res.get("message")
             elif isinstance(last_res, dict) and last_res.get("trip_title"):
                 final_reply = f"Packing list '{last_res.get('trip_title')}' create kar di gayi hai!"
             elif isinstance(last_res, dict) and last_res.get("question"):

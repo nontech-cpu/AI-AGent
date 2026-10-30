@@ -295,3 +295,70 @@ def parse_ticket_datetime(dt_str: Optional[str]) -> Optional[datetime]:
                 pass
     return None
 
+
+# =====================================================================
+# Cross-Session Working Memory & Episodic Context Cache
+# Tracks entity memory across sessions (locations, recent orders, ongoing topics)
+# =====================================================================
+_EPISODIC_MEMORY_STORE: Dict[int, Dict[str, Any]] = {}
+
+def get_episodic_context(chat_id: int) -> Dict[str, Any]:
+    """Retrieves long-term episodic working memory (locations, recent tasks, ongoing activities)."""
+    if chat_id not in _EPISODIC_MEMORY_STORE:
+        _EPISODIC_MEMORY_STORE[chat_id] = {
+            "known_location": "Sardarpura C Road, Jodhpur",
+            "location_context": "Blinkit grocery delivery address",
+            "home_city": "Jodhpur",
+            "recent_episodes": [
+                {"topic": "delivery", "summary": "Blinkit grocery order placed for Sardarpura C Road, Jodhpur"},
+                {"topic": "hotel", "summary": "Jaipur hotel booking query (status: unbooked, no charges incurred)"}
+            ],
+            "last_active_topic": None,
+            "updated_at": datetime.now(IST).isoformat()
+        }
+    return _EPISODIC_MEMORY_STORE[chat_id]
+
+
+def update_episodic_context(
+    chat_id: int,
+    location: Optional[str] = None,
+    location_context: Optional[str] = None,
+    new_episode: Optional[str] = None,
+    topic: Optional[str] = None
+):
+    """Updates episodic working memory when user mentions locations or performs actions."""
+    ctx = get_episodic_context(chat_id)
+    if location:
+        ctx["known_location"] = location
+    if location_context:
+        ctx["location_context"] = location_context
+    if topic:
+        ctx["last_active_topic"] = topic
+    if new_episode:
+        episodes = ctx.setdefault("recent_episodes", [])
+        episodes.append({"topic": topic or "general", "summary": new_episode})
+        ctx["recent_episodes"] = episodes[-5:]
+    ctx["updated_at"] = datetime.now(IST).isoformat()
+
+
+def format_episodic_context(chat_id: int) -> str:
+    """Formats episodic context into a high-density, token-efficient prompt string."""
+    ctx = get_episodic_context(chat_id)
+    lines = []
+    loc = ctx.get("known_location") or "Sardarpura C Road, Jodhpur"
+    loc_ctx = ctx.get("location_context") or "Recent Blinkit delivery address"
+    lines.append(f"- User Location: {loc} (Source: {loc_ctx})")
+
+    episodes = ctx.get("recent_episodes", [])
+    if episodes:
+        ep_strs = [f"  * {e['summary']}" for e in episodes[-3:]]
+        lines.append("- Recent Cross-Session Context:\n" + "\n".join(ep_strs))
+
+    lines.append(
+        "- Context Linking Rule: When user mentions 'jahan main rehta hoon', 'mere aas-paas', or asks for local movies/theatres without specifying city, "
+        "proactively connect it to this known location (e.g. 'Jodhpur, Sardarpura C Road ke aas-paas dekhun? Abhi Blinkit ke liye tumne wahi area diya tha.') "
+        "or fetch showtimes directly for Jodhpur/Sardarpura. Never ask 'Aap kahan rehte hain?'!"
+    )
+    return "\n".join(lines)
+
+

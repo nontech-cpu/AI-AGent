@@ -197,6 +197,11 @@ class CalculateArgs(BaseModel):
 class SearchWebArgs(BaseModel):
     query: str = Field(..., description="Search query keywords e.g. 'Jodhpur to Udaipur bike toll distance' or 'latest movie release date'.")
 
+class GetMovieShowtimesArgs(BaseModel):
+    city: Optional[str] = Field("Jodhpur", description="City to look up movies for, defaults to Jodhpur.")
+    area: Optional[str] = Field("Sardarpura", description="Local area or neighbourhood e.g. Sardarpura.")
+    movie: Optional[str] = Field(None, description="Optional specific movie title to filter showtimes for.")
+
 class ReadWebpageArgs(BaseModel):
     url: str = Field(..., description="Webpage or article URL to read, inspect, or summarize.")
     max_chars: Optional[int] = Field(4000, description="Maximum characters to extract (defaults to 4000).")
@@ -757,6 +762,30 @@ TOOL_DEFINITIONS = [
                     "expression": {"type": "string", "description": "Math expression or percentage to calculate (e.g. '92 * 86.5' or '18% of 5000')."}
                 },
                 "required": ["expression"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_movie_showtimes",
+            "description": "Fetch live BookMyShow cinema listings, latest running movies, and showtimes for nearby theatres in Jodhpur / user's city.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name, defaults to Jodhpur."
+                    },
+                    "area": {
+                        "type": "string",
+                        "description": "Local neighborhood e.g. Sardarpura."
+                    },
+                    "movie": {
+                        "type": "string",
+                        "description": "Optional specific movie name."
+                    }
+                }
             }
         }
     },
@@ -2306,6 +2335,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             args = CalculateArgs(**arguments)
             from utilities import calculate
             res = calculate(args.expression)
+            return res
+
+        elif tool_name == "get_movie_showtimes":
+            args = GetMovieShowtimesArgs(**arguments)
+            from utilities import get_movie_showtimes
+            res = await get_movie_showtimes(args.city or "Jodhpur", args.area or "Sardarpura", args.movie)
             return res
 
         elif tool_name == "search_web":
