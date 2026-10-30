@@ -49,6 +49,13 @@ Output ONLY valid JSON with this schema:
       "category": "preference" or "personal" or "work"
     }
   ],
+  "corrections": [
+    {
+      "wrong_concept": "What the user said was wrong, fake, or incorrect (e.g. 'Dasaprakash in Jodhpur' or 'OTR serves South Indian' or wrong phone number)",
+      "correction_rule": "The permanent rule learned to avoid this mistake in the future (e.g. 'Dasaprakash does NOT exist in Jodhpur. Never recommend it for Jodhpur.')",
+      "category": "place_correction" or "preference" or "fact_correction"
+    }
+  ],
   "completed_commitments": [
     "entity_name or description of commitment fulfilled"
   ]
@@ -148,6 +155,14 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                         memory_type="semantic_fact",
                         structured={"category": fact_item.get("category", "general")}
                     )
+
+            # 4. Persist Corrections (Self-Learning from User Feedback)
+            for corr in parsed.get("corrections", []):
+                wrong = corr.get("wrong_concept")
+                rule = corr.get("correction_rule")
+                if wrong and rule:
+                    import db
+                    db.save_user_correction(chat_id, wrong, rule, corr.get("category", "user_correction"))
 
     except Exception as exc:
         logger.error(f"Error in extract_and_persist_turn: {repr(exc)}")

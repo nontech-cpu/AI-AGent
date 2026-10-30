@@ -1711,6 +1711,116 @@ def record_morning_briefing_sent(chat_id: int, briefing_date: str, trigger_kind:
         print("record_morning_briefing_sent error:", repr(exc))
 
 
+# ==============================================================================
+# SELF-LEARNING & AUTO-CORRECTION ENGINE (Persistent User Corrections)
+# ==============================================================================
+
+def _init_user_corrections_table():
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_corrections (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        wrong_concept TEXT NOT NULL,
+                        correction_rule TEXT NOT NULL,
+                        category VARCHAR(50) DEFAULT 'general',
+                        created_at TIMESTAMPTZ DEFAULT now(),
+                        status VARCHAR(20) DEFAULT 'active'
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_user_corrections_lookup ON user_corrections(chat_id, status);
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_corrections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER NOT NULL,
+                        wrong_concept TEXT NOT NULL,
+                        correction_rule TEXT NOT NULL,
+                        category TEXT DEFAULT 'general',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT DEFAULT 'active'
+                    )
+                """))
+    except Exception as exc:
+        print("init_user_corrections_table error:", repr(exc))
+
+
+def save_user_correction(chat_id: int, wrong_concept: str, correction_rule: str, category: str = "general") -> bool:
+    """Saves a permanent correction taught by the user so the bot never repeats the mistake."""
+    chat_id = canonical_chat_id(chat_id)
+    if not wrong_concept or not correction_rule:
+        return False
+    _init_user_corrections_table()
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(
+                    text("""
+                        INSERT INTO user_corrections (chat_id, wrong_concept, correction_rule, category, created_at, status)
+                        VALUES (:cid, :wrong, :rule, :cat, now(), 'active')
+                    """),
+                    {"cid": chat_id, "wrong": wrong_concept.strip(), "rule": correction_rule.strip(), "cat": category.strip()}
+                )
+            else:
+                conn.execute(
+                    text("""
+                        INSERT INTO user_corrections (chat_id, wrong_concept, correction_rule, category, created_at, status)
+                        VALUES (:cid, :wrong, :rule, :cat, CURRENT_TIMESTAMP, 'active')
+                    """),
+                    {"cid": chat_id, "wrong": wrong_concept.strip(), "rule": correction_rule.strip(), "cat": category.strip()}
+                )
+            return True
+    except Exception as exc:
+        print("save_user_correction error:", repr(exc))
+        return False
+
+
+def get_user_corrections(chat_id: int, limit: int = 15):
+    """Retrieves all active user corrections for prompt injection."""
+    chat_id = canonical_chat_id(chat_id)
+    _init_user_corrections_table()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT id, wrong_concept, correction_rule, category, created_at
+                    FROM user_corrections
+                    WHERE chat_id = :cid AND status = 'active'
+                    ORDER BY id DESC LIMIT :lim
+                """),
+                {"cid": chat_id, "lim": limit}
+            ).fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "wrong_concept": r[1],
+                    "correction_rule": r[2],
+                    "category": r[3],
+                    "created_at": str(r[4])
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        print("get_user_corrections error:", repr(exc))
+        return []
+
+
+def format_user_corrections(chat_id: int) -> str:
+    """Formats active corrections into a sharp, unbreachable prompt block."""
+    corrections = get_user_corrections(chat_id)
+    if not corrections:
+        return "None recorded yet. Follow user instructions strictly."
+    lines = []
+    for c in corrections:
+        lines.append(f"• DO NOT say/assume: '{c['wrong_concept']}' -> PERMANENT TRUTH: {c['correction_rule']}")
+    return "\n".join(lines)
+
+
+
 def get_all_active_telegram_users() -> list[dict]:
     """Retrieves all registered and consented users with valid Telegram chat IDs."""
     try:

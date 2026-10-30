@@ -25,6 +25,8 @@ RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s sharp 
 - Integrations: {CONNECTED_INTEGRATIONS}
 - Pending Actions: {PENDING_ACTIONS}
 - User Rules: {USER_RULES}
+- Learned Corrections & Rules (NEVER VIOLATE):
+{LEARNED_CORRECTIONS_BLOCK}
 - Memory & Facts: {MEMORY_BLOCK}
 - Active Checklists: {LISTS_BLOCK}
 - Unified Schedule: {SCHEDULE_BLOCK}
@@ -381,6 +383,11 @@ async def build_runtime_system_prompt(
     prompt = prompt.replace("{PENDING_ACTIONS}", pending_str)
     prompt = prompt.replace("{USER_RULES}", rules_str)
     prompt = prompt.replace("{CONVERSATION_SUMMARY}", conv_summary)
+    try:
+        corrections_str = db.format_user_corrections(chat_id)
+    except Exception:
+        corrections_str = "None recorded yet."
+    prompt = prompt.replace("{LEARNED_CORRECTIONS_BLOCK}", corrections_str)
     prompt = prompt.replace("{MEMORY_BLOCK}", memory_block)
     prompt = prompt.replace("{LISTS_BLOCK}", lists_str)
     prompt = prompt.replace("{SCHEDULE_BLOCK}", schedule_block)

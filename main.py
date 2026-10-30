@@ -3586,11 +3586,13 @@ async def reminder_loop():
 @asynccontextmanager
 async def lifespan(app):
     from morning_briefing import morning_briefing_loop
+    from heartbeat import heartbeat_loop
     tasks = [
         asyncio.create_task(reminder_loop()),
         asyncio.create_task(mailbox_loop()),
         asyncio.create_task(connected_user_gmail_monitor_loop()),
         asyncio.create_task(morning_briefing_loop()),
+        asyncio.create_task(heartbeat_loop()),
     ]
     yield
     for t in tasks:

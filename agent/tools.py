@@ -197,6 +197,15 @@ class CalculateArgs(BaseModel):
 class SearchWebArgs(BaseModel):
     query: str = Field(..., description="Search query keywords e.g. 'Jodhpur to Udaipur bike toll distance' or 'latest movie release date'.")
 
+class DeepResearchArgs(BaseModel):
+    topic: str = Field(..., description="The subject or question to deeply research.")
+    goal: Optional[str] = Field(None, description="Specific desired outcome or target.")
+
+class LearnCorrectionArgs(BaseModel):
+    wrong_concept: str = Field(..., description="What was incorrect or falsely stated (e.g. 'Dasaprakash in Jodhpur').")
+    correct_rule: str = Field(..., description="The permanent true rule learned from the user.")
+    category: Optional[str] = Field("user_feedback", description="Category e.g. 'place_correction', 'user_preference'.")
+
 class FindNearbyPlacesArgs(BaseModel):
     category: str = Field(..., description="Category of places e.g. 'cafe', 'coffee shop', 'restaurant', 'gym'.")
     area: Optional[str] = Field(None, description="Local neighborhood or area e.g. 'Sardarpura', 'Ratanada'.")
@@ -773,6 +782,52 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "deep_research",
+            "description": "Trigger an autonomous 3-agent research team for complex queries, trip planning, market comparisons, or multi-faceted evaluations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "The subject or question to deeply research."
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "Specific outcome or goal e.g. 'Compare budget options with prices'."
+                    }
+                },
+                "required": ["topic"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "learn_user_correction",
+            "description": "Permanently learn and record a user correction or feedback rule so the assistant never repeats the mistake in any future conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wrong_concept": {
+                        "type": "string",
+                        "description": "What was incorrect or falsely claimed."
+                    },
+                    "correct_rule": {
+                        "type": "string",
+                        "description": "The exact permanent rule learned to avoid this mistake."
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category e.g. 'place_correction', 'preference'."
+                    }
+                },
+                "required": ["wrong_concept", "correct_rule"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_nearby_places",
             "description": "Discover real, verified local places, top cafes, coffee shops, restaurants, and amenities in a specific neighborhood or city. Zero hallucination.",
             "parameters": {
@@ -1103,6 +1158,9 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 print("Cognitive fact save fallback:", exc)
 
             db.save_user_fact(chat_id, args.text, category=args.category)
+            lower_fact = args.text.lower()
+            if any(w in lower_fact for w in ("nahi hai", "not", "never", "galat", "wrong", "fake", "dont", "mat")):
+                db.save_user_correction(chat_id, args.text, args.text, "user_correction")
             return {"status": "success", "saved_fact": args.text}
 
         elif tool_name == "clear_chat_history":
@@ -2366,6 +2424,22 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             from utilities import calculate
             res = calculate(args.expression)
             return res
+
+        elif tool_name == "deep_research":
+            args = DeepResearchArgs(**arguments)
+            from agent.deep_research import run_deep_research
+            res = await run_deep_research(args.topic, args.goal)
+            return res
+
+        elif tool_name == "learn_user_correction":
+            args = LearnCorrectionArgs(**arguments)
+            import db
+            ok = db.save_user_correction(chat_id, args.wrong_concept, args.correct_rule, args.category or "user_feedback")
+            return {
+                "status": "success" if ok else "error",
+                "learned_rule": args.correct_rule,
+                "message": f"Understood and permanently recorded: '{args.correct_rule}'"
+            }
 
         elif tool_name == "find_nearby_places":
             args = FindNearbyPlacesArgs(**arguments)
