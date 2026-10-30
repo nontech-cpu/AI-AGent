@@ -238,27 +238,64 @@ def clean_html_to_text(s: str) -> str:
     return s
 
 
+def format_for_telegram_html(text: str) -> str:
+    if not text:
+        return ""
+    import html
+    s = html.escape(text, quote=False)
+    s = re.sub(r"```(?:[a-zA-Z0-9_\-\+]+)?\n?(.*?)```", r"<pre>\1</pre>", s, flags=re.DOTALL)
+    s = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s, flags=re.DOTALL)
+    s = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"<i>\1</i>", s, flags=re.DOTALL)
+    s = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"<i>\1</i>", s, flags=re.DOTALL)
+    return s
+
+
+def strip_markdown_formatting(text: str) -> str:
+    if not text:
+        return ""
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    s = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
+    s = re.sub(r"`([^`]+)`", r"\1", text)
+    return s
+
+
 async def tg(method, payload):
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
-            await client.post(f"{API}/{method}", json=payload)
+            resp = await client.post(f"{API}/{method}", json=payload)
+            return resp
     except Exception as exc:
         logging.getLogger("uvicorn").warning(f"Telegram tg({method}) error: {exc}")
+        return None
+
+
+async def send_telegram_text(chat_id: int, text: str):
+    """Sends message with parse_mode=HTML, with automatic fallback to clean plain text."""
+    from utilities import convert_tables_to_cards
+    text = convert_tables_to_cards(text)
+    html_text = format_for_telegram_html(text)
+    resp = await tg("sendMessage", {"chat_id": chat_id, "text": html_text, "parse_mode": "HTML"})
+    if resp is None or resp.status_code != 200:
+        plain_text = strip_markdown_formatting(text)
+        await tg("sendMessage", {"chat_id": chat_id, "text": plain_text})
 
 
 async def say_raw(chat_id, text):
     """Bina translate kiye bhejta hai (jaise voice ka transcript)."""
-    text = clean_html_to_text(text)
+    from utilities import convert_tables_to_cards
+    text = convert_tables_to_cards(text)
     record_chat_turn(chat_id, "assistant", text)
-    await tg("sendMessage", {"chat_id": chat_id, "text": text})
+    await send_telegram_text(chat_id, text)
 
 
 async def say(chat_id, text):
     """User ki language me (agar English nahi hai) bhejta hai."""
     text = await localize(text, reply_lang.get())
-    text = clean_html_to_text(text)
+    from utilities import convert_tables_to_cards
+    text = convert_tables_to_cards(text)
     record_chat_turn(chat_id, "assistant", text)
-    await tg("sendMessage", {"chat_id": chat_id, "text": text})
+    await send_telegram_text(chat_id, text)
 
 
 

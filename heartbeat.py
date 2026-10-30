@@ -23,26 +23,38 @@ _EVENING_WRAPUP_SENT = set()
 TARGET_CHAT_IDS = [1234828592, 1758056012]
 
 async def send_proactive_telegram(chat_id: int, message: str) -> bool:
-    """Dispatches proactive message directly to user's Telegram."""
+    """Dispatches proactive message directly to user's Telegram with clean HTML rendering."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token or not chat_id:
         return False
+    from utilities import convert_tables_to_cards
+    from main import format_for_telegram_html, strip_markdown_formatting
+    clean_msg = convert_tables_to_cards(message)
+    html_msg = format_for_telegram_html(clean_msg)
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={
                     "chat_id": chat_id,
-                    "text": message,
-                    "parse_mode": "Markdown"
+                    "text": html_msg,
+                    "parse_mode": "HTML"
                 }
             )
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            plain = strip_markdown_formatting(clean_msg)
+            resp2 = await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": plain
+                }
+            )
+            return resp2.status_code == 200
     except Exception as exc:
         logger.error(f"Proactive telegram send error for {chat_id}: {repr(exc)}")
         return False
-
-
 async def broadcast_alert(message: str, specific_chat_id: Optional[int] = None):
     """Sends alert to Telegram and persists in DB so Web Companion sees it immediately."""
     targets = [specific_chat_id] if specific_chat_id else TARGET_CHAT_IDS
@@ -135,3 +147,4 @@ async def heartbeat_loop():
         except Exception as exc:
             logger.error(f"Heartbeat loop iteration error: {repr(exc)}")
         await asyncio.sleep(60)  # tick every 60 seconds
+

@@ -884,3 +884,77 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: st
         "results": results[:6],
         "message": f"Live search results for {clean_cat} in {clean_area or clean_city} fetched successfully."
     }
+
+
+# ==============================================================================
+# 9. TABLE-TO-CARD FORMATTER (Structured Mobile-Friendly Layout)
+# ==============================================================================
+
+def convert_tables_to_cards(text: str) -> str:
+    """
+    Transforms ASCII/Markdown pipe tables (| col1 | col2 |) into clean, beautifully-structured
+    mobile cards with bullet points and bold titles.
+    Eliminates ugly wrapped pipe symbols (|) on mobile and chat apps.
+    """
+    if not text or "|" not in text:
+        return text
+
+    lines = text.split("\n")
+    new_lines = []
+    table_lines = []
+    in_table = False
+
+    def flush_table(t_lines: List[str]) -> List[str]:
+        if not t_lines:
+            return []
+        rows = []
+        for l in t_lines:
+            cleaned = l.strip()
+            if cleaned.startswith("|"):
+                cleaned = cleaned[1:]
+            if cleaned.endswith("|"):
+                cleaned = cleaned[:-1]
+            cols = [c.strip() for c in cleaned.split("|")]
+            # Ignore separator lines like |---|---|
+            if all(re.match(r"^:?-+:?$", c) for c in cols if c):
+                continue
+            rows.append(cols)
+
+        if not rows:
+            return []
+        headers = rows[0]
+        data_rows = rows[1:] if len(rows) > 1 else []
+        if not data_rows:
+            return [" ".join(headers)]
+
+        cards = []
+        for r_idx, row in enumerate(data_rows):
+            title = row[0] if len(row) > 0 and row[0] else f"Option {r_idx + 1}"
+            card = [f"📍 **{title}**"]
+            for col_idx in range(1, max(len(headers), len(row))):
+                h = headers[col_idx] if col_idx < len(headers) else f"Field {col_idx + 1}"
+                val = row[col_idx] if col_idx < len(row) else ""
+                if val:
+                    card.append(f"• **{h}:** {val}")
+            cards.append("\n".join(card))
+        return ["\n\n".join(cards)]
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|") and "|" in stripped[1:-1]:
+            table_lines.append(stripped)
+            in_table = True
+        else:
+            if in_table:
+                new_lines.extend(flush_table(table_lines))
+                table_lines = []
+                in_table = False
+            new_lines.append(line)
+
+    if in_table:
+        new_lines.extend(flush_table(table_lines))
+
+    res = "\n".join(new_lines)
+    # Post-clean: Remove any remaining standalone table divider artifacts (e.g. |---|---|)
+    res = re.sub(r"^\s*\|?\s*(?::?-+:?\s*\|)+\s*$", "", res, flags=re.MULTILINE)
+    return res

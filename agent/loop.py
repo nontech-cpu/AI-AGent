@@ -712,6 +712,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # Guardrail: Repeat Suppression
     final_reply = check_repeat_guard(chat_id, final_reply)
 
+    # Clean Structure: Convert ASCII pipe tables into mobile-friendly cards
+    from utilities import convert_tables_to_cards
+    final_reply = convert_tables_to_cards(final_reply)
+
 
     latency_ms = int((time.time() - start_ts) * 1000)
 

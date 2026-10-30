@@ -27,7 +27,7 @@ Your mission:
 1. Synthesize an authoritative, structured, and crystal-clear executive research brief in natural Roman Hinglish.
 2. Structure with clean Markdown sections:
    - 📌 **Executive Summary** (2 lines)
-   - 📊 **Comparison / Key Options** (Clear Markdown Table or structured bullets with prices, ratings, locations)
+   - 📊 **Key Options & Comparison** (Format as clean structured CARDS with bullet points, e.g. '📍 Option Name', '• Travel Time: ...', '• Cost: ...', '• Pros/Cons: ...'. STRICT RULE: NEVER output ASCII pipe tables '| col | col |' because they look broken and cluttered on mobile devices!)
    - 💡 **Actionable Recommendation / Next Steps**
 3. Zero-Hallucination: ONLY cite real facts and figures present in the gathered data. Never guess or invent links.
 """
@@ -116,6 +116,9 @@ async def run_deep_research(topic: str, goal: Optional[str] = None) -> Dict[str,
     if not final_dossier:
         final_dossier = f"Research completed for '{clean_topic}'. Found {len(evidence_blocks)} data points across {len(search_queries)} search angles."
 
+    from utilities import convert_tables_to_cards
+    final_dossier = convert_tables_to_cards(final_dossier)
+
     return {
         "status": "success",
         "topic": clean_topic,
@@ -125,3 +128,4 @@ async def run_deep_research(topic: str, goal: Optional[str] = None) -> Dict[str,
         "summary": final_dossier,
         "message": final_dossier
     }
+
