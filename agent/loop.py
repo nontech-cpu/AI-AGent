@@ -291,7 +291,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         "save_contact", "get_contact", "list_contacts",
         "save_note_or_fact", "search_memory", "clear_chat_history",
         "check_integrations_status", "connect_integration",
-        "get_weather", "search_web", "get_movie_showtimes"
+        "get_weather", "search_web", "get_movie_showtimes", "find_nearby_places"
     }
 
     active_tool_names = set(CORE_TOOL_NAMES)
@@ -307,6 +307,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         active_tool_names.update({"generate_pdf", "generate_excel", "upload_to_drive"})
     if any(w in low_prompt for w in ("gold", "crypto", "bitcoin", "dollar", "inr", "calc", "convert", "rate", "price", "%")):
         active_tool_names.update({"get_market_price", "convert_currency", "calculate"})
+    if any(w in low_prompt for w in ("cafe", "coffee", "restaurant", "food", "khana", "dost", "nearby", "aas paas", "spots", "shop")):
+        active_tool_names.add("find_nearby_places")
     if any(w in low_prompt for w in ("pack", "trip", "travel", "bag", "luggage")):
         active_tool_names.add("create_packing_list")
 
@@ -614,6 +616,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 time_part = f" at {t_time}" if t_time else ""
                 date_part = f" ({t_date})" if t_date else ""
                 final_reply = f"Reminder set ho gaya hai! 📅 **{t_name}**{date_part}{time_part}."
+            elif isinstance(last_res, dict) and "places" in last_res:
+                final_reply = last_res.get("summary") or last_res.get("message")
             elif isinstance(last_res, dict) and "movies" in last_res:
                 final_reply = last_res.get("summary") or last_res.get("message")
             elif isinstance(last_res, dict) and last_res.get("trip_title"):

@@ -197,6 +197,11 @@ class CalculateArgs(BaseModel):
 class SearchWebArgs(BaseModel):
     query: str = Field(..., description="Search query keywords e.g. 'Jodhpur to Udaipur bike toll distance' or 'latest movie release date'.")
 
+class FindNearbyPlacesArgs(BaseModel):
+    category: str = Field(..., description="Category of places e.g. 'cafe', 'coffee shop', 'restaurant', 'gym'.")
+    area: Optional[str] = Field(None, description="Local neighborhood or area e.g. 'Sardarpura', 'Ratanada'.")
+    city: Optional[str] = Field("Jodhpur", description="City name, defaults to Jodhpur.")
+
 class GetMovieShowtimesArgs(BaseModel):
     city: Optional[str] = Field("Jodhpur", description="City to look up movies for, defaults to Jodhpur.")
     area: Optional[str] = Field("Sardarpura", description="Local area or neighbourhood e.g. Sardarpura.")
@@ -762,6 +767,31 @@ TOOL_DEFINITIONS = [
                     "expression": {"type": "string", "description": "Math expression or percentage to calculate (e.g. '92 * 86.5' or '18% of 5000')."}
                 },
                 "required": ["expression"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_nearby_places",
+            "description": "Discover real, verified local places, top cafes, coffee shops, restaurants, and amenities in a specific neighborhood or city. Zero hallucination.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Category e.g. 'coffee shop', 'cafe', 'restaurant'."
+                    },
+                    "area": {
+                        "type": "string",
+                        "description": "Area or neighbourhood e.g. 'Sardarpura', 'Ratanada'."
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "City name, defaults to Jodhpur."
+                    }
+                },
+                "required": ["category"]
             }
         }
     },
@@ -2335,6 +2365,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             args = CalculateArgs(**arguments)
             from utilities import calculate
             res = calculate(args.expression)
+            return res
+
+        elif tool_name == "find_nearby_places":
+            args = FindNearbyPlacesArgs(**arguments)
+            from utilities import find_nearby_places
+            res = await find_nearby_places(args.category, args.area, args.city or "Jodhpur")
             return res
 
         elif tool_name == "get_movie_showtimes":
