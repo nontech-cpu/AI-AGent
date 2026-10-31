@@ -8,6 +8,7 @@ import json
 import logging
 import difflib
 import time
+from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy import text
 import db
@@ -58,6 +59,30 @@ def _init_sqlite_if_needed():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS measurements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    subject_entity_id INTEGER,
+                    metric TEXT NOT NULL,
+                    value REAL NOT NULL,
+                    unit TEXT,
+                    measured_at TIMESTAMP NOT NULL,
+                    context TEXT,
+                    source_memory_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS failed_extractions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    raw_text TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    attempts INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.commit()
@@ -486,6 +511,116 @@ def save_memory_item(
 
         conn.commit()
         return mem_id
+
+
+def save_measurement(
+    user_id: int,
+    metric: str,
+    value: float,
+    unit: Optional[str],
+    measured_at: datetime,
+    subject_entity_id: Optional[int] = None,
+    context: Optional[str] = None,
+    source_memory_id: Optional[int] = None
+) -> int:
+    """Stores a structured numerical health or physical measurement."""
+    _init_sqlite_if_needed()
+    is_pg = db.engine.dialect.name == "postgresql"
+    with db.engine.begin() as conn:
+        if is_pg:
+            res = conn.execute(
+                text("""
+                    INSERT INTO measurements (
+                        user_id, subject_entity_id, metric, value, unit, measured_at, context, source_memory_id
+                    ) VALUES (
+                        :uid, :eid, :metric, :val, :unit, :mat, :ctx, :smid
+                    ) RETURNING id
+                """),
+                {
+                    "uid": user_id, "eid": subject_entity_id, "metric": metric.lower().strip(),
+                    "val": float(value), "unit": unit.strip() if unit else None,
+                    "mat": measured_at, "ctx": context, "smid": source_memory_id
+                }
+            )
+            return res.fetchone()[0]
+        else:
+            if hasattr(measured_at, "strftime"):
+                mat_str = measured_at.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                mat_str = str(measured_at).replace("T", " ")[:19]
+
+            conn.execute(
+                text("""
+                    INSERT INTO measurements (
+                        user_id, subject_entity_id, metric, value, unit, measured_at, context, source_memory_id
+                    ) VALUES (
+                        :uid, :eid, :metric, :val, :unit, :mat, :ctx, :smid
+                    )
+                """),
+                {
+                    "uid": user_id, "eid": subject_entity_id, "metric": metric.lower().strip(),
+                    "val": float(value), "unit": unit.strip() if unit else None,
+                    "mat": mat_str,
+                    "ctx": context, "smid": source_memory_id
+                }
+            )
+            res = conn.execute(text("SELECT last_insert_rowid()"))
+            return res.fetchone()[0]
+
+
+def get_measurements(
+    user_id: int,
+    metric: Optional[str] = None,
+    subject_entity_id: Optional[int] = None,
+    date_from: Optional[Any] = None,
+    date_to: Optional[Any] = None,
+    limit: int = 10
+) -> List[Dict[str, Any]]:
+    """Retrieves structured measurements via exact SQL lookup."""
+    _init_sqlite_if_needed()
+    where_clauses = ["m.user_id = :uid"]
+    params: Dict[str, Any] = {"uid": user_id, "lim": limit}
+    if metric:
+        where_clauses.append("LOWER(m.metric) = :metric")
+        params["metric"] = metric.lower().strip()
+    if subject_entity_id is not None:
+        where_clauses.append("m.subject_entity_id = :eid")
+        params["eid"] = subject_entity_id
+    if date_from:
+        d_val = str(date_from).replace("T", " ")
+        if len(d_val) == 10:
+            d_val = f"{d_val} 00:00:00"
+        where_clauses.append("m.measured_at >= :dfrom")
+        params["dfrom"] = d_val
+    if date_to:
+        d_val = str(date_to).replace("T", " ")
+        if len(d_val) == 10:
+            d_val = f"{d_val} 23:59:59"
+        where_clauses.append("m.measured_at <= :dto")
+        params["dto"] = d_val
+
+    sql = f"""
+        SELECT m.id, m.metric, m.value, m.unit, m.measured_at, m.context, e.name as subject_name
+        FROM measurements m
+        LEFT JOIN entities e ON e.id = m.subject_entity_id
+        WHERE {" AND ".join(where_clauses)}
+        ORDER BY m.measured_at DESC
+        LIMIT :lim
+    """
+    with db.engine.connect() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "metric": r[1],
+                "value": float(r[2]) if r[2] is not None else 0.0,
+                "unit": r[3],
+                "measured_at": str(r[4]),
+                "context": r[5],
+                "subject": r[6] or "user"
+            }
+            for r in rows
+        ]
 
 
 def search_memories_hybrid(

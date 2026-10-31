@@ -221,6 +221,13 @@ class ReadWebpageArgs(BaseModel):
     url: str = Field(..., description="Webpage or article URL to read, inspect, or summarize.")
     max_chars: Optional[int] = Field(4000, description="Maximum characters to extract (defaults to 4000).")
 
+class GetMeasurementsArgs(BaseModel):
+    subject: Optional[str] = Field(None, description="Who the measurement belongs to: 'user', 'friend', person's name, or null.")
+    metric: Optional[str] = Field(None, description="Metric or reading type: 'glucose', 'sugar', 'blood_pressure', 'weight', etc.")
+    date_from: Optional[str] = Field(None, description="Start date filter in YYYY-MM-DD format.")
+    date_to: Optional[str] = Field(None, description="End date filter in YYYY-MM-DD format.")
+    limit: Optional[int] = Field(10, description="Max readings to return (default 10).")
+
 
 # -------------------------------------------------------------
 # 2. Tool Definitions for Groq Function Calling
@@ -239,6 +246,23 @@ TOOL_DEFINITIONS = [
                     "time_range": {"type": ["string", "null"], "description": "Optional time filter."}
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_measurements",
+            "description": "Exact SQL lookup for numerical health readings (glucose/sugar, blood pressure, weight, etc.) by metric, subject ('user', 'friend', or person's name), and date range. ALWAYS use this instead of fuzzy vector search for health numbers, daily logs, trends, or 'kal ki reading'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {"type": ["string", "null"], "description": "Subject: 'user', 'friend', or name of person."},
+                    "metric": {"type": ["string", "null"], "description": "Reading metric: 'glucose', 'sugar', 'blood_pressure', 'weight', etc."},
+                    "date_from": {"type": ["string", "null"], "description": "Start date in YYYY-MM-DD format."},
+                    "date_to": {"type": ["string", "null"], "description": "End date in YYYY-MM-DD format."},
+                    "limit": {"type": ["integer", "null"], "description": "Max readings to fetch (default 10)."}
+                }
             }
         }
     },
@@ -973,6 +997,76 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "chat_matches": [f"{l['role']}: {l['text']}" for l in logs],
                 "fact_matches": [f["fact"] for f in matched_facts]
             }
+
+        elif tool_name == "get_measurements":
+            args = GetMeasurementsArgs(**arguments)
+            try:
+                from memory.store import resolve_user_id, find_entity, get_measurements
+                uid = resolve_user_id(chat_id)
+                eid = None
+                if args.subject and args.subject.lower() not in ("user", "self", "me", "mera", "meri", "mere"):
+                    ent = find_entity(uid, args.subject)
+                    if ent:
+                        eid = ent["id"]
+
+                readings = get_measurements(
+                    user_id=uid,
+                    metric=args.metric,
+                    subject_entity_id=eid,
+                    date_from=args.date_from,
+                    date_to=args.date_to,
+                    limit=args.limit or 10
+                )
+                # Fallback between sugar / glucose
+                if not readings and args.metric:
+                    m_low = args.metric.lower()
+                    if "sugar" in m_low:
+                        readings = get_measurements(
+                            user_id=uid,
+                            metric="glucose",
+                            subject_entity_id=eid,
+                            date_from=args.date_from,
+                            date_to=args.date_to,
+                            limit=args.limit or 10
+                        )
+                    elif "glucose" in m_low:
+                        readings = get_measurements(
+                            user_id=uid,
+                            metric="sugar",
+                            subject_entity_id=eid,
+                            date_from=args.date_from,
+                            date_to=args.date_to,
+                            limit=args.limit or 10
+                        )
+
+                # Format readings cleanly for model consumption
+                formatted_readings = []
+                for r in readings:
+                    sub = r.get("subject_name") or args.subject or "user"
+                    m_at = str(r.get("measured_at") or r.get("created_at") or "")
+                    ctx = f" ({r['context']})" if r.get("context") else ""
+                    formatted_readings.append({
+                        "id": r.get("id"),
+                        "subject": sub,
+                        "metric": r.get("metric"),
+                        "value": float(r.get("value")) if r.get("value") is not None else None,
+                        "unit": r.get("unit"),
+                        "measured_at": m_at,
+                        "context": r.get("context"),
+                        "summary": f"{sub}: {r.get('metric')} = {r.get('value')} {r.get('unit', '')}{ctx} on {m_at[:10]}"
+                    })
+
+                return {
+                    "status": "success",
+                    "subject": args.subject or "user",
+                    "metric": args.metric,
+                    "date_from": args.date_from,
+                    "date_to": args.date_to,
+                    "count": len(formatted_readings),
+                    "readings": formatted_readings
+                }
+            except Exception as exc:
+                return {"status": "error", "message": f"Failed to retrieve measurements: {exc}"}
 
         elif tool_name == "get_contact":
             args = GetContactArgs(**arguments)

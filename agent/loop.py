@@ -20,7 +20,7 @@ from timing import IST
 import db
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from memory.retrieval import assemble_memory_context
-from memory.extractor import extract_and_persist_turn
+from memory.extractor import extract_and_persist_turn, schedule_extraction_task
 from agent.verifier import verify_and_ground_reply
 from connectors.guardrails import (
     sanitize_untrusted_content,
@@ -314,10 +314,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     active_tool_names = {
         "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
         "check_availability", "save_note_or_fact", "search_memory",
-        "save_contact", "get_contact", "manage_smart_list"
+        "save_contact", "get_contact", "manage_smart_list", "get_measurements"
     }
 
-    has_reminder_intent = any(w in low_prompt for w in ("remind", "reminder", "yaad", "schedule", "kal", "aaj", "baje", "task", "subah", "shaam", "sham", "dopahar", "raat", "roj", "daily", "har din", "dawai", "sugar", "delete", "hata do", "cancel"))
+    has_reminder_intent = any(w in low_prompt for w in ("remind", "reminder", "yaad", "schedule", "kal", "aaj", "baje", "task", "subah", "shaam", "sham", "dopahar", "raat", "roj", "daily", "har din", "dawai", "delete", "hata do", "cancel"))
+    has_health_intent = any(w in low_prompt for w in ("sugar", "glucose", "reading", "readings", "bp", "pressure", "weight", "fasting", "post-meal", "test", "health", "mg/dl"))
     has_meeting_intent = any(w in low_prompt for w in ("meet", "meeting", "calendar", "availability", "free slot", "slot", "call"))
     has_list_intent = any(w in low_prompt for w in ("list", "todo", "groceries", "shopping", "checklist", "pack", "bag", "items"))
     has_weather_intent = any(w in low_prompt for w in ("weather", "mausam", "rain", "barish", "temp", "temperature", "forecast"))
@@ -345,6 +346,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         active_tool_names.update({"save_contact", "get_contact", "list_contacts"})
     if has_correction_intent:
         active_tool_names.add("learn_user_correction")
+    if has_health_intent:
+        active_tool_names.add("get_measurements")
 
     # Domain integrations
     if any(w in low_prompt for w in ("movie", "cinema", "theatre", "show", "hall", "ticket", "bookmyshow")):
@@ -786,7 +789,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Continuous background memory extraction
     try:
-        asyncio.create_task(extract_and_persist_turn(chat_id, user_text, final_reply))
+        schedule_extraction_task(chat_id, user_text, final_reply)
     except Exception as exc:
         print("Background extractor task launch error:", exc)
 

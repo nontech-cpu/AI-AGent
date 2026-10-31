@@ -95,9 +95,27 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     relevant_mems = []
     if len(user_text.strip().split()) >= 2:
         try:
-            relevant_mems = search_memories_hybrid(user_id, user_text, limit=3)
+            raw_mems = search_memories_hybrid(user_id, user_text, limit=6)
+            # Filter out reminders (reminders belong in reminders table) and archived rows
+            for rm in raw_mems:
+                if rm.get("status") == "archived":
+                    continue
+                if rm.get("memory_type") == "reminder":
+                    continue
+                relevant_mems.append(rm)
+                if len(relevant_mems) >= 4:
+                    break
         except Exception:
             relevant_mems = []
+
+    # 2.5 Structured Measurements lookup if query touches health/measurements
+    measurements = []
+    if any(w in low for w in ("sugar", "glucose", "reading", "readings", "bp", "weight", "fasting", "post-meal", "test", "kal ki", "aaj ki", "trend")):
+        try:
+            from memory.store import get_measurements
+            measurements = get_measurements(user_id, limit=5)
+        except Exception:
+            measurements = []
 
     # 3. User facts & preferences (always provide top 3 relevant facts for context grounding)
     facts = []
@@ -126,10 +144,26 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                     lines.append(f"  Pending Promise/Commitment: \"{c['commitment']}\"")
         lines.append("")
 
+    if measurements:
+        lines.append("[Structured Measurements & Health Readings]:")
+        for meas in measurements:
+            sub = meas.get("subject_name") or "User"
+            metric = meas.get("metric", "reading")
+            val = meas.get("value")
+            unit = meas.get("unit", "")
+            ctx = f" ({meas['context']})" if meas.get("context") else ""
+            m_date = str(meas.get("measured_at") or meas.get("created_at") or "")[:10]
+            lines.append(f"• [{m_date}] {sub}'s {metric}: {val} {unit}{ctx}".strip())
+        lines.append("")
+
     if relevant_mems:
         lines.append("[Relevant Past Notes & Memories]:")
         for m in relevant_mems:
-            lines.append(f"• [{m['memory_type']}] {m['content']}")
+            structured = m.get("structured") or {}
+            event_d = structured.get("event_date") or (str(m.get("created_at"))[:10] if m.get("created_at") else None)
+            subj = structured.get("subject") or m.get("entity_name") or "User"
+            tag = f"{event_d}, {subj}" if event_d else f"{m['memory_type']}"
+            lines.append(f"• [{tag}] {m['content']}")
         lines.append("")
 
     if facts:
@@ -140,11 +174,12 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
 
     lines.append("</memory>")
 
-    formatted = "\n".join(lines) if (matched_entities or relevant_mems or facts) else ""
+    formatted = "\n".join(lines) if (matched_entities or measurements or relevant_mems or facts) else ""
 
     res = {
         "formatted_block": formatted,
         "matched_entities": matched_entities,
+        "measurements": measurements,
         "relevant_memories": relevant_mems,
         "facts": facts
     }
