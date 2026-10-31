@@ -121,47 +121,78 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
+LANGUAGE_ALIASES = {
+    "hinglish": ["hinglish", "hinglsih", "hnglish", "hindlish", "hindi", "hindii", "hindish"],
+    "english": ["english", "englsih", "englsh", "eng", "angrezi", "angreji", "englis"],
+    "german": ["german", "deutsch", "deutch", "germn", "allemand"],
+    "spanish": ["spanish", "espanol", "español", "spnish"],
+    "french": ["french", "francais", "français", "frnch"],
+    "marathi": ["marathi", "mrathi"],
+    "gujarati": ["gujarati", "gujarathi", "gujti"],
+    "punjabi": ["punjabi", "panjabi"],
+    "bengali": ["bengali", "bangla"],
+    "tamil": ["tamil", "tamizh"],
+    "telugu": ["telugu", "telegu"],
+    "kannada": ["kannada", "kanada"],
+    "japanese": ["japanese", "japnese", "nihongo"],
+    "russian": ["russian", "ruski"],
+    "arabic": ["arabic", "arabi"],
+    "italian": ["italian", "italiano"],
+    "chinese": ["chinese", "mandarin"],
+    "korean": ["korean", "hangul"],
+    "portuguese": ["portuguese", "portugues"],
+}
+
+ALIAS_TO_CANONICAL = {}
+for canon_name, aliases in LANGUAGE_ALIASES.items():
+    for al in aliases:
+        ALIAS_TO_CANONICAL[al] = canon_name
+
+INTENT_WORDS = {
+    "talk", "tlak", "speak", "spek", "spk", "baat", "bat", "bolo", "bol", "bola", 
+    "switch", "change", "continue", "use", "in", "ign", "mein", "me", "m", 
+    "only", "pls", "please", "now", "ab", "se", "sirf", "merse", "humse"
+}
+
 def detect_explicit_language_switch(text: str) -> Optional[str]:
     t = text.strip().lower()
 
-    # 0. Contrastive negation: 'X nahi Y' or 'not X, Y' (e.g. 'english nhi hinglish bola', 'merse hinglsih m baat kro english m nhi')
-    contrast_match = re.search(
-        r'\b(english|englsih|hindi|hinglish|hinglsih|german|deutsch|spanish|french)\s+(?:me\s+|m\s+)?(?:nahi|nhi|na|not|mat|chhod\s+ke|ke\s+alawa)\s+(?:balki\s+|par\s+|sirf\s+)?(english|englsih|hindi|hinglish|hinglsih|german|deutsch|spanish|french)\b',
-        t
-    )
-    if contrast_match:
-        rejected, selected = contrast_match.groups()
-        if selected in ('hindi', 'hinglish', 'hinglsih'):
-            return 'hinglish'
-        if selected in ('german', 'deutsch'):
-            return 'german'
-        return selected
+    # 1. Contrastive: 'X nahi Y' or 'not X, Y' (e.g. 'english nhi hinglish', 'merse hinglsih m baat kro english m nhi')
+    contrast = re.search(r'\b([a-z]{3,15})\s+(?:me\s+|m\s+)?(?:nahi|nhi|na|not|mat|chhod\s+ke|ke\s+alawa)\s+(?:balki\s+|par\s+|sirf\s+)?([a-z]{3,15})\b', t)
+    if contrast:
+        rej, sel = contrast.groups()
+        if sel in ALIAS_TO_CANONICAL:
+            return ALIAS_TO_CANONICAL[sel]
 
-    def is_negated(lang_name: str) -> bool:
-        return bool(re.search(rf'\b{lang_name}\s+(?:me\s+|m\s+)?(?:nahi|nhi|na|not|mat)\b', t)) or bool(re.search(rf'\b(?:mat|dont|never|nahi|nhi)\s+{lang_name}\b', t))
+    # 2. Dynamic patterns: "talk to me in X", "speak in X", "X me baat karo", "X me bolo"
+    dyn_match = re.search(r'\b(?:talk|tlak|speak|spek|chat|write|continue)\s+(?:to\s+me\s+)?(?:the\s+)?(?:in|ign)\s+([a-z]{3,15})\b', t)
+    if dyn_match:
+        cand = dyn_match.group(1)
+        canon = ALIAS_TO_CANONICAL.get(cand, cand)
+        return canon
 
-    # 1. German
-    if any(w in t for w in ("german", "deutsch")) and not is_negated("german") and not is_negated("deutsch"):
-        return "german"
+    dyn_match_hi = re.search(r'\b([a-z]{3,15})\s+(?:me|mein|m)\s+(?:baat|bat|bolo|bol|likho)\b', t)
+    if dyn_match_hi:
+        cand = dyn_match_hi.group(1)
+        canon = ALIAS_TO_CANONICAL.get(cand, cand)
+        return canon
 
-    # 2. Hinglish / Hindi (robust to common typos: hinglsih, hnglish, hindlish)
-    has_hin = any(w in t for w in ("hindi", "hinglish", "hinglsih", "hindlish", "hnglish"))
-    if has_hin and not is_negated("hindi") and not is_negated("hinglish") and not is_negated("hinglsih"):
-        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "bola", "me", "mein", "m", "switch", "continue", "language", "shuru", "merse", "humse", "use", "only", "pls", "please")
-        if len(t.split()) <= 8 or any(w in t for w in intent_words):
-            return "hinglish"
+    # 3. Check for negated languages vs preferred languages
+    found_langs = []
+    for word in re.findall(r'\b[a-z]{3,15}\b', t):
+        if word in ALIAS_TO_CANONICAL:
+            canon = ALIAS_TO_CANONICAL[word]
+            if canon not in [l[0] for l in found_langs]:
+                is_neg = bool(re.search(rf'\b{word}\s+(?:me\s+|m\s+)?(?:nahi|nhi|na|not|mat)\b', t)) or bool(re.search(rf'\b(?:mat|dont|never)\s+{word}\b', t))
+                found_langs.append((canon, is_neg))
 
-    # 3. English (only if not negated e.g. "english m nhi" / "english nahi" MUST NOT trigger English)
-    has_eng = any(w in t for w in ("english", "englsih", "englsh", "angrezi")) or bool(re.search(r"\beng\b", t))
-    if has_eng and not is_negated("english") and not is_negated("englsih") and not is_negated("angrezi"):
-        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "bola", "only", "pls", "please", "me", "mein", "m", "switch", "continue", "language", "shuru", "use")
-        if len(t.split()) <= 4 or any(w in t for w in intent_words):
-            return "english"
+    if found_langs:
+        non_neg = [canon for canon, neg in found_langs if not neg]
+        if non_neg:
+            has_intent = any(w in t.split() for w in INTENT_WORDS) or len(t.split()) <= 6
+            if has_intent:
+                return non_neg[-1]
 
-    if any(w in t for w in ("spanish", "espanol", "español")) and not is_negated("spanish"):
-        return "spanish"
-    if any(w in t for w in ("french", "francais", "français")) and not is_negated("french"):
-        return "french"
     return None
 
 async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None) -> Dict[str, Any]:
@@ -732,18 +763,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     if not final_reply:
         try:
+            # Fallback must ALWAYS preserve the ground truth system prompt and memory block!
+            recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the memory and context above in {active_user_lang or "user language"}. Zero medical disclaimers or refusals."
             async with httpx.AsyncClient(timeout=10.0) as fb_client:
                 fb_resp = await fb_client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}"},
                     json={
                         "model": "openai/gpt-oss-20b",
-                        "temperature": 0.5,
+                        "temperature": 0.3,
                         "messages": [
-                            {"role": "system", "content": fb_sys},
+                            {"role": "system", "content": recovery_system},
                             {"role": "user", "content": user_text}
                         ],
-                        "max_tokens": 1024,
+                        "max_tokens": 512,
                     }
                 )
                 if fb_resp.status_code == 200:
