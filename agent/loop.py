@@ -581,6 +581,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 except Exception as ctx_err:
                     print("Active context update error:", repr(ctx_err))
 
+                # Code Interpreter File Delivery Fast-Completion
+                if fn_name == "execute_python_code" and tool_result.get("files_sent"):
+                    files_str = ", ".join(tool_result["files_sent"])
+                    final_reply = f"✅ Maine aapka document **{files_str}** generate karke Telegram par bhej diya hai! Check kar lijiye."
+                    break
+
                 # Two-phase confirmation interception
                 if tool_result.get("status") == "needs_confirmation":
                     act = tool_result.get("action", "")

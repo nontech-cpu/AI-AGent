@@ -256,6 +256,27 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "execute_python_code",
+            "description": "Universal Python Code Interpreter & Document Generator (like ChatGPT Code Interpreter). Executes Python code to dynamically generate PDFs (using reportlab or fpdf), PowerPoint presentations (using pptx), Excel sheets / CSVs (using pandas/openpyxl), charts/graphs (using matplotlib), or execute complex mathematical calculations and data transformations. Any generated file is automatically delivered directly to the user's Telegram chat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Complete, executable Python script. Write clean code with all necessary imports (reportlab, fpdf, pptx, pandas, openpyxl, matplotlib, math, etc.) to accomplish the task or generate the file."
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "description": "Short explanation of the code and created file, e.g. 'ML vs DL comparison PDF', 'Q4 Sales Forecast Excel', 'AI Overview Slides'."
+                    }
+                },
+                "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_memory",
             "description": "Search user's persistent episodic memory, past conversations, and facts for any topic, person, or promise.",
             "parameters": {
@@ -1080,6 +1101,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             if isinstance(tool_res.data, dict):
                 return tool_res.data
             return {"status": "success", "result": tool_res.data}
+
+        if tool_name == "execute_python_code":
+            from agent.sandbox import run_python_sandbox
+            code = arguments.get("code") or ""
+            purpose = arguments.get("purpose") or ""
+            return await run_python_sandbox(chat_id, code, purpose)
 
         if tool_name == "search_memory":
             args = SearchMemoryArgs(**arguments)
@@ -2809,7 +2836,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
 
 CORE_TOOL_NAMES = {
-    "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
+    "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "check_availability", "save_note_or_fact", "search_memory",
     "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment"
 }
@@ -2853,14 +2880,12 @@ def is_action_or_tool_intent(user_text: str) -> bool:
 
 def route_tools(user_text: str) -> List[Dict[str, Any]]:
     """
-    Selects relevant tools for the user turn:
-    - If the user is asking a conversational, educational, or general question, returns [] (ZERO tools)
-      so the model behaves like pure ChatGPT/Gemini without tool-calling distractions.
-    - If an action or service intent is detected, routes only relevant tools.
+    Pure Neural Network Tool Routing:
+    - Core Tools (execute_python_code, Reminders, Calendar, Memory, Contacts, Health) are ALWAYS provided.
+    - Up to 4 domain tools are dynamically matched via semantic vector similarity (Neural Network vector space).
+    - ZERO regexes, zero hardcoded keyword gates. The LLM's neural network autonomously decides
+      whether to call a tool or reply directly with conversational text.
     """
-    if not is_action_or_tool_intent(user_text):
-        return []
-
     from memory.store import embed_text
     domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
 
@@ -2876,21 +2901,7 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
     core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
     user_emb = embed_text(user_text, is_query=True)
     if not user_emb or not _DOMAIN_TOOL_EMBED_CACHE:
-        low = user_text.lower()
-        extra_domain = []
-        for dt in domain_tools:
-            fname = dt["function"]["name"].lower()
-            if any(k in low for k in ("github", "repo", "git")) and "github" in fname:
-                extra_domain.append(dt)
-            elif any(k in low for k in ("notion", "page")) and "notion" in fname:
-                extra_domain.append(dt)
-            elif any(k in low for k in ("meet", "meeting", "calendar", "google")) and any(x in fname for x in ("meeting", "google", "event")):
-                extra_domain.append(dt)
-            elif any(k in low for k in ("email", "mail", "gmail")) and any(x in fname for x in ("mail", "gmail")):
-                extra_domain.append(dt)
-            elif any(k in low for k in ("file", "csv", "excel", "pdf", "sheet", "upload")) and any(x in fname for x in ("file", "drive")):
-                extra_domain.append(dt)
-        return core_tools + extra_domain[:4]
+        return core_tools
 
     # Score domain tools by semantic similarity
     scored_domain = []
@@ -2909,9 +2920,4 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
         if sim >= 0.22
     ]
 
-    # If top tool has reasonable similarity, include it
-    if not selected_domain_tools and scored_domain and scored_domain[0][0] >= 0.18:
-        selected_domain_tools = [scored_domain[0][1]]
-
-    core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
     return core_tools + selected_domain_tools
