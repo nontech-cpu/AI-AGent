@@ -1287,8 +1287,7 @@ async def mailbox_loop():
                 await handle_mail(m)
         except Exception as e:
             print("mailbox error:", e)
-        # Check frequently so website email-link status normally updates within 5-10 seconds.
-        await asyncio.sleep(5)
+        await asyncio.sleep(60)
 
 
 async def connected_user_gmail_monitor_loop():
@@ -1401,7 +1400,7 @@ async def connected_user_gmail_monitor_loop():
         except Exception as loop_err:
             print("connected_user_gmail_monitor_loop error:", repr(loop_err))
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(120)
 
 
 # ---------- Google connection ----------
