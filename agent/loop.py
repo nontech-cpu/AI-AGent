@@ -361,24 +361,26 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         older_turns = all_turns[:-8]
         recent_turns = all_turns[-8:]
         if not running_summary and len(older_turns) >= 2:
-            try:
-                summary_prompt = "Summarize the following earlier conversation turns between user and assistant into a concise 2-3 sentence background context:\n" + "\n".join([f"{t['role']}: {t['text'][:200]}" for t in older_turns])
-                async with httpx.AsyncClient(timeout=10.0) as sm_client:
-                    sm_res = await sm_client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json={
-                            "model": "openai/gpt-oss-20b",
-                            "messages": [{"role": "user", "content": summary_prompt}],
-                            "max_tokens": 150,
-                            "temperature": 0.2
-                        }
-                    )
-                    if sm_res.status_code == 200:
-                        running_summary = sm_res.json()["choices"][0]["message"]["content"].strip()
-                        save_conversation_summary(uid, running_summary)
-            except Exception as sm_exc:
-                logger.warning(f"Error computing conversation summary: {sm_exc}")
+            async def _bg_summarize():
+                try:
+                    summary_prompt = "Summarize the following earlier conversation turns between user and assistant into a concise 2-3 sentence background context:\n" + "\n".join([f"{t['role']}: {t['text'][:200]}" for t in older_turns])
+                    async with httpx.AsyncClient(timeout=10.0) as sm_client:
+                        sm_res = await sm_client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {groq_key}"},
+                            json={
+                                "model": "openai/gpt-oss-20b",
+                                "messages": [{"role": "user", "content": summary_prompt}],
+                                "max_tokens": 150,
+                                "temperature": 0.2
+                            }
+                        )
+                        if sm_res.status_code == 200:
+                            s = sm_res.json()["choices"][0]["message"]["content"].strip()
+                            save_conversation_summary(uid, s)
+                except Exception as sm_exc:
+                    logger.warning(f"Error computing conversation summary in bg: {sm_exc}")
+            asyncio.create_task(_bg_summarize())
     else:
         recent_turns = all_turns
 
@@ -861,36 +863,32 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         f"tools={tool_calls_executed} retrieved={retrieved_summary}"
     )
 
-    # Record turn
-    await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
-    await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
+    # Non-blocking background persistence & tracing (do NOT delay response delivery to user)
+    async def _post_turn_persist():
+        try:
+            await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
+            await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
+            schedule_extraction_task(chat_id, user_text, final_reply)
+            from connectors.trace import log_turn_trace
+            is_suspect = (not is_grounded) or (not is_fake_ok)
+            suspect_reason = "; ".join(violations) if violations else None
+            log_turn_trace(
+                chat_id=chat_id,
+                message=user_text,
+                tools_called=tool_calls_executed,
+                tool_results=tool_results_list,
+                guard_results={"is_grounded": is_grounded, "fake_success_ok": is_fake_ok, "violations": violations},
+                latency_ms=latency_ms,
+                tokens=total_tokens,
+                reply_path="tool_calling_v2",
+                detected_connector=None,
+                is_suspect=is_suspect,
+                suspect_reason=suspect_reason
+            )
+        except Exception as post_err:
+            logger.warning(f"Post-turn persist error: {post_err}")
 
-    # Continuous background memory extraction
-    try:
-        schedule_extraction_task(chat_id, user_text, final_reply)
-    except Exception as exc:
-        print("Background extractor task launch error:", exc)
-
-    # Observability Turn Trace
-    try:
-        from connectors.trace import log_turn_trace
-        is_suspect = (not is_grounded) or (not is_fake_ok)
-        suspect_reason = "; ".join(violations) if violations else None
-        log_turn_trace(
-            chat_id=chat_id,
-            message=user_text,
-            tools_called=tool_calls_executed,
-            tool_results=tool_results_list,
-            guard_results={"is_grounded": is_grounded, "fake_success_ok": is_fake_ok, "violations": violations},
-            latency_ms=latency_ms,
-            tokens=total_tokens,
-            reply_path="tool_calling_v2",
-            detected_connector=None,
-            is_suspect=is_suspect,
-            suspect_reason=suspect_reason
-        )
-    except Exception as t_err:
-        print("Trace logging error:", repr(t_err))
+    asyncio.create_task(_post_turn_persist())
 
     return {
         "reply": final_reply,

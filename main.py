@@ -3704,6 +3704,20 @@ async def commitment_nudge_loop():
 async def lifespan(app):
     from morning_briefing import morning_briefing_loop
     from heartbeat import heartbeat_loop
+
+    async def _warmup():
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1")).fetchall()
+            from memory.retrieval import assemble_memory_context
+            from agent.prompt import build_runtime_system_prompt
+            for cid in (1758056012, 1234828592):
+                m_ctx = assemble_memory_context(cid, "ping")
+                await build_runtime_system_prompt(cid, "ping", mem_ctx=m_ctx)
+        except Exception as w_err:
+            logging.getLogger("uvicorn").warning(f"Startup warmup notice: {w_err}")
+    asyncio.create_task(_warmup())
+
     tasks = [
         asyncio.create_task(reminder_loop()),
         asyncio.create_task(commitment_nudge_loop()),

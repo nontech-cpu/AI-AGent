@@ -162,6 +162,10 @@ def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
 
 
 _RESOLVED_USER_ID_CACHE: Dict[int, int] = {}
+_MEASUREMENTS_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+_CORE_PROFILE_CACHE: Dict[int, Dict[str, Any]] = {}
+_CONV_SUMMARY_CACHE: Dict[int, Dict[str, Any]] = {}
+
 
 def resolve_user_id(chat_id_or_user_id: int) -> int:
     """Resolves telegram_chat_id or direct user_id into the internal users.id primary key."""
@@ -399,7 +403,7 @@ def find_entity(user_id: int, query: str, threshold: float = 0.22) -> Optional[D
 
     now_ts = time.time()
     cached = _USER_ENTITIES_CACHE.get(user_id)
-    if not cached or (now_ts - cached["ts"] > 45.0):
+    if not cached or (now_ts - cached["ts"] > 300.0):
         try:
             with db.engine.connect() as conn:
                 all_records = conn.execute(
@@ -687,6 +691,10 @@ def get_measurements(
     limit: int = 10
 ) -> List[Dict[str, Any]]:
     """Retrieves structured measurements via exact SQL lookup."""
+    now_ts = time.time()
+    ck = (user_id, metric, subject_entity_id, str(date_from), str(date_to), limit)
+    if ck in _MEASUREMENTS_CACHE and (now_ts - _MEASUREMENTS_CACHE[ck]["ts"] < 120.0):
+        return _MEASUREMENTS_CACHE[ck]["data"]
     _init_sqlite_if_needed()
     where_clauses = ["m.user_id = :uid"]
     params: Dict[str, Any] = {"uid": user_id, "lim": limit}
@@ -719,7 +727,7 @@ def get_measurements(
     """
     with db.engine.connect() as conn:
         rows = conn.execute(text(sql), params).fetchall()
-        return [
+        res_list = [
             {
                 "id": r[0],
                 "metric": r[1],
@@ -732,6 +740,8 @@ def get_measurements(
             }
             for r in rows
         ]
+        _MEASUREMENTS_CACHE[ck] = {"ts": now_ts, "data": res_list}
+        return res_list
 
 
 def search_memories_hybrid(
@@ -1146,6 +1156,9 @@ def forget_memory(user_id: int, id_or_keyword: str) -> bool:
 
 def get_core_profile(user_id: int) -> str:
     """Loads ~300 tokens of always-true core user profile directly (NO retrieval needed)."""
+    now_ts = time.time()
+    if user_id in _CORE_PROFILE_CACHE and (now_ts - _CORE_PROFILE_CACHE[user_id]["ts"] < 300.0):
+        return _CORE_PROFILE_CACHE[user_id]["data"]
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         rows = conn.execute(text("""
@@ -1157,21 +1170,30 @@ def get_core_profile(user_id: int) -> str:
         """), {"uid": user_id}).fetchall()
         facts = [r[0] for r in rows]
         if not facts:
+            _CORE_PROFILE_CACHE[user_id] = {"ts": now_ts, "data": ""}
             return ""
-        return "\n".join([f"• {f}" for f in facts])
+        res_profile = "\n".join([f"• {f}" for f in facts])
+        _CORE_PROFILE_CACHE[user_id] = {"ts": now_ts, "data": res_profile}
+        return res_profile
 
 
 def get_conversation_summary(user_id: int) -> Optional[str]:
     """Retrieves cached running summary of earlier conversation turns."""
+    now_ts = time.time()
+    if user_id in _CONV_SUMMARY_CACHE and (now_ts - _CONV_SUMMARY_CACHE[user_id]["ts"] < 300.0):
+        return _CONV_SUMMARY_CACHE[user_id]["summary"]
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         row = conn.execute(text("""
             SELECT summary FROM conversation_summaries WHERE user_id = :uid
         """), {"uid": user_id}).fetchone()
-        return row[0] if row else None
+        sum_val = row[0] if row else None
+        _CONV_SUMMARY_CACHE[user_id] = {"ts": now_ts, "summary": sum_val}
+        return sum_val
 
 
 def save_conversation_summary(user_id: int, summary: str):
+    _CONV_SUMMARY_CACHE[user_id] = {"ts": time.time(), "summary": summary}
     """Saves or updates running conversation summary."""
     _init_sqlite_if_needed()
     is_pg = db.engine.dialect.name == "postgresql"

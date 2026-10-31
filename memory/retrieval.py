@@ -36,7 +36,8 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "what", "when", "where", "which", "whose", "whom", "will", "would", "could", "should", "have", "has", "had", "does", "done", "doing", "been",
         "are", "for", "the", "you", "all", "not", "can", "how", "let", "may", "was", "were",
         "about", "some", "any", "tell", "show", "give", "want", "need", "your", "yours", "their", "there", "here", "this", "that", "these", "those",
-        "merse", "mujhse", "tumse", "isse", "usse", "baat", "english", "hinglish", "hindi", "german", "deutsch", "french", "spanish", "language", "bhasha"
+        "merse", "mujhse", "tumse", "isse", "usse", "baat", "english", "hinglish", "hindi", "german", "deutsch", "french", "spanish", "language", "bhasha",
+        "detail", "detial", "explain", "exlain", "ml", "dl", "ai", "machine", "learning", "deep", "neural", "network", "code", "coding", "meaning", "define", "definition", "samjhao", "samjha", "smjhao", "smjha"
     }
     candidates = [w for w in tokens if w.lower() not in stopwords][:4]
     return candidates
@@ -81,20 +82,29 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             ent["commitments"] = ent_commitments
             matched_entities.append(ent)
 
-    # 2. Hybrid RAG retrieval on EVERY turn: vector + tsvector full-text + trigram merged via RRF (k=60)
+    # 2. Hybrid RAG retrieval: vector + tsvector full-text + trigram merged via RRF (k=60)
     relevant_mems = []
-    try:
-        raw_mems = search_memories_hybrid(user_id, user_text, limit=6, min_score=0.015)
-        for rm in raw_mems:
-            if rm.get("status") == "archived":
-                continue
-            if rm.get("memory_type") == "reminder":
-                continue
-            relevant_mems.append(rm)
-            if len(relevant_mems) >= 4:
-                break
-    except Exception:
-        relevant_mems = []
+    _MEM_INTENT_KWS = (
+        "glucose", "sugar", "reading", "bp", "weight", "height", "diet", "medicine",
+        "doctor", "report", "saved", "note", "yaad", "remember", "record", "kya tha",
+        "kya thi", "mera", "meri", "mere", "my", "mine", "maine", "usne", "profile",
+        "habit", "kl ke", "kal ke", "aaj ke", "pichla", "previous", "history", "blood",
+        "fasting", "pp", "test", "check"
+    )
+    should_search_hybrid = any(kw in low for kw in _MEM_INTENT_KWS) or len(user_text.split()) > 10
+    if should_search_hybrid:
+        try:
+            raw_mems = search_memories_hybrid(user_id, user_text, limit=6, min_score=0.015)
+            for rm in raw_mems:
+                if rm.get("status") == "archived":
+                    continue
+                if rm.get("memory_type") == "reminder":
+                    continue
+                relevant_mems.append(rm)
+                if len(relevant_mems) >= 4:
+                    break
+        except Exception:
+            relevant_mems = []
 
     # 2.5 Structured Measurements lookup: Always include latest measurements for instant recall & short follow-ups (e.g. 'kl ke?')
     measurements = []

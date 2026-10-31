@@ -243,7 +243,7 @@ async def build_runtime_system_prompt(
 
     sched_cache_key = (chat_id, str(today_d))
     cached_sched = _sched_cache.get(sched_cache_key)
-    if cached_sched and (now_ts - cached_sched.get("ts", 0) < 30.0):
+    if cached_sched and (now_ts - cached_sched.get("ts", 0) < 300.0):
         today_sched = cached_sched["today"]
         tomorrow_sched = cached_sched["tomorrow"]
         lists_str = cached_sched["lists_str"]
