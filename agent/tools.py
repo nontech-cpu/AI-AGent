@@ -257,17 +257,17 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "execute_python_code",
-            "description": "Universal Python Code Interpreter & Document Generator (like ChatGPT Code Interpreter). Executes Python code to dynamically generate PDFs (using reportlab or fpdf), PowerPoint presentations (using pptx), Excel sheets / CSVs (using pandas/openpyxl), charts/graphs (using matplotlib), or execute complex mathematical calculations and data transformations. Any generated file is automatically delivered directly to the user's Telegram chat.",
+            "description": "Universal Python Code Interpreter (like ChatGPT Code Interpreter). Executes Python code to dynamically generate PDFs (using reportlab), PowerPoint presentations (using pptx), Excel/CSV (using pandas/openpyxl), charts (using matplotlib), or execute calculations. Any created file is automatically delivered directly to Telegram. For PDF use reportlab: from reportlab.lib.pagesizes import letter; from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer; from reportlab.lib.styles import getSampleStyleSheet; doc = SimpleDocTemplate('name.pdf', pagesize=letter); styles = getSampleStyleSheet(); doc.build([Paragraph('Title', styles['Title']), Spacer(1, 12), Paragraph('Text', styles['Normal'])])",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Complete, executable Python script. Write clean code with all necessary imports (reportlab, fpdf, pptx, pandas, openpyxl, matplotlib, math, etc.) to accomplish the task or generate the file."
+                        "description": "Complete executable Python script with imports. Save output file in current directory (e.g. 'doc.pdf', 'slides.pptx', 'data.xlsx', 'chart.png')."
                     },
                     "purpose": {
                         "type": "string",
-                        "description": "Short explanation of the code and created file, e.g. 'ML vs DL comparison PDF', 'Q4 Sales Forecast Excel', 'AI Overview Slides'."
+                        "description": "Short explanation of the file or task, e.g. 'ML vs DL comparison PDF'."
                     }
                 },
                 "required": ["code"]
