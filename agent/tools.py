@@ -2824,14 +2824,43 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
         return 0.0
     return dot / (norm_a * norm_b)
 
+def is_action_or_tool_intent(user_text: str) -> bool:
+    """
+    Returns True ONLY if the user is asking the assistant to take an action,
+    execute an external integration, check live schedule/calendar, or query tools.
+    For general chat, learning, explanations, questions, coding, or chit-chat, returns False.
+    """
+    low = user_text.lower().strip()
+    service_keywords = (
+        'weather', 'github', 'repo', 'notion', 'email', 'gmail', 'inbox', 'pdf', 'excel',
+        'remind', 'reminder', 'meeting', 'calendar', 'schedule', 'contact', 'packing list',
+        'delete', 'cancel', 'hatao', 'hata do', 'save', 'store', 'likh lo', 'glucose', 'sugar',
+        'blood', 'reading', 'smart list', 'checklist'
+    )
+    if any(sk in low for sk in service_keywords):
+        return True
+
+    edu_indicators = (
+        'difference', 'diffrnc', 'difrnc', 'farq', 'kya farq', 'kya antar', 'explain', 'samjhao', 'smjhao',
+        'detail m', 'detail mein', 'kya hota hai', 'kya h', 'what is', 'what are',
+        'how does', 'why is', 'code', 'python', 'script', 'meaning', 'define', 'concept', 'batao'
+    )
+    if any(e in low for e in edu_indicators):
+        return False
+
+    return False
+
+
 def route_tools(user_text: str) -> List[Dict[str, Any]]:
     """
-    Selects relevant tools for the user turn without hardcoded regex/keyword gating:
-    - Always includes CORE_TOOL_NAMES.
-    - Computes dense multilingual embedding similarity between user_text and domain tool descriptions.
-    - Selects top 3-4 domain tools (or any with similarity >= 0.22).
-    - If unsure or embedding fails, safely falls back to all tools.
+    Selects relevant tools for the user turn:
+    - If the user is asking a conversational, educational, or general question, returns [] (ZERO tools)
+      so the model behaves like pure ChatGPT/Gemini without tool-calling distractions.
+    - If an action or service intent is detected, routes only relevant tools.
     """
+    if not is_action_or_tool_intent(user_text):
+        return []
+
     from memory.store import embed_text
     domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
 

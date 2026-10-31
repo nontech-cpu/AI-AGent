@@ -772,21 +772,25 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     if not final_reply:
         try:
-            # Fallback must ALWAYS preserve the ground truth system prompt and memory block!
             rec_lang = active_user_lang or "user language"
-            recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the memory and context above in {rec_lang}. Zero medical disclaimers or refusals."
-            async with httpx.AsyncClient(timeout=10.0) as fb_client:
+            recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the conversation history and memory above in {rec_lang}. Do not mention tools, internal codes, or schedules unless explicitly asked."
+            rec_messages = [{"role": "system", "content": recovery_system}]
+            for turn in recent_turns:
+                t_text = (turn.get("text") or "").strip()
+                if len(t_text) > 300:
+                    t_text = t_text[:297] + "..."
+                rec_messages.append({"role": turn.get("role", "user"), "content": t_text})
+            rec_messages.append({"role": "user", "content": user_text})
+
+            async with httpx.AsyncClient(timeout=15.0) as fb_client:
                 fb_resp = await fb_client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {groq_key}"},
                     json={
-                        "model": "openai/gpt-oss-20b",
-                        "temperature": 0.3,
-                        "messages": [
-                            {"role": "system", "content": recovery_system},
-                            {"role": "user", "content": user_text}
-                        ],
-                        "max_tokens": 512,
+                        "model": current_model,
+                        "temperature": 0.4,
+                        "messages": rec_messages,
+                        "max_tokens": 800,
                     }
                 )
                 if fb_resp.status_code == 200:
