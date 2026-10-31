@@ -4997,7 +4997,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.0.5"}
+    return {"status": "pong", "version": "v2.0.7"}
 
 @app.get("/debug/test_turn")
 async def debug_test_turn(request: Request):
