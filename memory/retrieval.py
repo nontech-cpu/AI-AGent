@@ -96,14 +96,13 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     except Exception:
         relevant_mems = []
 
-    # 2.5 Structured Measurements lookup if query touches health/measurements
+    # 2.5 Structured Measurements lookup: Always include latest measurements for instant recall & short follow-ups (e.g. 'kl ke?')
     measurements = []
-    if any(w in low for w in ("sugar", "glucose", "reading", "readings", "bp", "weight", "fasting", "post-meal", "test", "kal ki", "aaj ki", "trend")):
-        try:
-            from memory.store import get_measurements
-            measurements = get_measurements(user_id, limit=5)
-        except Exception:
-            measurements = []
+    try:
+        from memory.store import get_measurements
+        measurements = get_measurements(user_id, limit=5)
+    except Exception:
+        measurements = []
 
     # 2.8 Core User Profile (~300 tokens always-on profile, no retrieval needed)
     core_profile = ""
