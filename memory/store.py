@@ -10,7 +10,7 @@ import difflib
 import time
 import re
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 from sqlalchemy import text
 import db
 
@@ -85,6 +85,24 @@ def _init_sqlite_if_needed():
                     context TEXT,
                     source_memory_id INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS commitments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    subject_entity_id INTEGER,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    target_date TEXT,
+                    condition_type TEXT NOT NULL DEFAULT 'date',
+                    condition_details TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    nudge_count INTEGER NOT NULL DEFAULT 0,
+                    max_nudges INTEGER NOT NULL DEFAULT 3,
+                    last_nudged_at TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.execute(text("""
@@ -1111,3 +1129,177 @@ def save_conversation_summary(user_id: int, summary: str):
                 INSERT OR REPLACE INTO conversation_summaries (user_id, summary, updated_at)
                 VALUES (:uid, :summary, CURRENT_TIMESTAMP)
             """), {"uid": user_id, "summary": summary.strip()})
+
+
+# ==============================================================================
+# Phase 3: Commitments State Machine & Proactive Nudge Storage
+# ==============================================================================
+
+def create_commitment(
+    user_id: int,
+    title: str,
+    description: Optional[str] = None,
+    target_date: Optional[Union[datetime, str]] = None,
+    condition_type: str = "date",
+    condition_details: Optional[Dict[str, Any]] = None,
+    subject_entity_id: Optional[int] = None
+) -> int:
+    """Creates a commitment entry with pending status."""
+    _init_sqlite_if_needed()
+    is_pg = db.engine.dialect.name == "postgresql"
+    cond_details_json = json.dumps(condition_details or {}, ensure_ascii=False)
+
+    with db.engine.begin() as conn:
+        if is_pg:
+            res = conn.execute(
+                text("""
+                    INSERT INTO commitments (
+                        user_id, subject_entity_id, title, description, target_date,
+                        condition_type, condition_details, status, nudge_count, max_nudges
+                    ) VALUES (
+                        :uid, :eid, :title, :desc, :tdate,
+                        :ctype, CAST(:cdetails AS JSONB), 'pending', 0, 3
+                    ) RETURNING id
+                """),
+                {
+                    "uid": user_id, "eid": subject_entity_id, "title": title.strip(),
+                    "desc": description.strip() if description else None,
+                    "tdate": target_date, "ctype": condition_type,
+                    "cdetails": cond_details_json
+                }
+            )
+            return res.fetchone()[0]
+        else:
+            tdate_str = target_date.strftime("%Y-%m-%d %H:%M:%S") if hasattr(target_date, "strftime") else (str(target_date) if target_date else None)
+            res = conn.execute(
+                text("""
+                    INSERT INTO commitments (
+                        user_id, subject_entity_id, title, description, target_date,
+                        condition_type, condition_details, status, nudge_count, max_nudges
+                    ) VALUES (
+                        :uid, :eid, :title, :desc, :tdate,
+                        :ctype, :cdetails, 'pending', 0, 3
+                    )
+                """),
+                {
+                    "uid": user_id, "eid": subject_entity_id, "title": title.strip(),
+                    "desc": description.strip() if description else None,
+                    "tdate": tdate_str, "ctype": condition_type,
+                    "cdetails": cond_details_json
+                }
+            )
+            r = conn.execute(text("SELECT last_insert_rowid()")).fetchone()
+            return r[0]
+
+
+def get_commitments(user_id: int, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetches commitments for a given user, optionally filtered by status."""
+    _init_sqlite_if_needed()
+    query = "SELECT id, user_id, subject_entity_id, title, description, target_date, condition_type, condition_details, status, nudge_count, max_nudges, last_nudged_at, created_at FROM commitments WHERE user_id = :uid"
+    params: Dict[str, Any] = {"uid": user_id}
+    if status:
+        query += " AND status = :st"
+        params["st"] = status
+    query += " ORDER BY id DESC"
+
+    with db.engine.connect() as conn:
+        rows = conn.execute(text(query), params).fetchall()
+        result = []
+        for r in rows:
+            cd = r[7]
+            if isinstance(cd, str):
+                try:
+                    cd = json.loads(cd)
+                except Exception:
+                    cd = {}
+            result.append({
+                "id": r[0],
+                "user_id": r[1],
+                "subject_entity_id": r[2],
+                "title": r[3],
+                "description": r[4],
+                "target_date": r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5]) if r[5] else None,
+                "condition_type": r[6],
+                "condition_details": cd or {},
+                "status": r[8],
+                "nudge_count": r[9],
+                "max_nudges": r[10],
+                "last_nudged_at": r[11].isoformat() if hasattr(r[11], "isoformat") else str(r[11]) if r[11] else None,
+                "created_at": r[12].isoformat() if hasattr(r[12], "isoformat") else str(r[12])
+            })
+        return result
+
+
+def update_commitment_status(
+    commitment_id: int,
+    user_id: int,
+    status: Optional[str] = None,
+    increment_nudge: bool = False
+) -> bool:
+    """Updates status or increments nudge_count for a commitment."""
+    _init_sqlite_if_needed()
+    with db.engine.begin() as conn:
+        updates = ["updated_at = CURRENT_TIMESTAMP"]
+        params: Dict[str, Any] = {"cid": commitment_id, "uid": user_id}
+
+        if status:
+            updates.append("status = :status")
+            params["status"] = status
+
+        if increment_nudge:
+            updates.append("nudge_count = nudge_count + 1")
+            updates.append("last_nudged_at = CURRENT_TIMESTAMP")
+
+        set_clause = ", ".join(updates)
+        res = conn.execute(
+            text(f"UPDATE commitments SET {set_clause} WHERE id = :cid AND user_id = :uid"),
+            params
+        )
+        return res.rowcount > 0
+
+
+def get_commitments_due_for_nudge(now_dt: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Returns all pending commitments ready to be nudged (nudge_count < max_nudges)."""
+    _init_sqlite_if_needed()
+    now_dt = now_dt or datetime.now()
+    is_pg = db.engine.dialect.name == "postgresql"
+
+    with db.engine.connect() as conn:
+        if is_pg:
+            rows = conn.execute(text("""
+                SELECT c.id, c.user_id, u.telegram_chat_id, c.title, c.description, c.nudge_count, c.max_nudges, c.target_date, c.condition_type, c.condition_details
+                FROM commitments c
+                JOIN users u ON u.id = c.user_id
+                WHERE c.status = 'pending'
+                  AND c.nudge_count < c.max_nudges
+                  AND (c.target_date IS NULL OR c.target_date <= :now OR c.condition_type != 'date')
+                ORDER BY c.id ASC
+            """), {"now": now_dt}).fetchall()
+        else:
+            now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+            rows = conn.execute(text("""
+                SELECT c.id, c.user_id, u.telegram_chat_id, c.title, c.description, c.nudge_count, c.max_nudges, c.target_date, c.condition_type, c.condition_details
+                FROM commitments c
+                JOIN users u ON u.id = c.user_id
+                WHERE c.status = 'pending'
+                  AND c.nudge_count < c.max_nudges
+                  AND (c.target_date IS NULL OR c.target_date <= :now OR c.condition_type != 'date')
+                ORDER BY c.id ASC
+            """), {"now": now_str}).fetchall()
+
+        results = []
+        for r in rows:
+            results.append({
+                "id": r[0],
+                "user_id": r[1],
+                "chat_id": r[2],
+                "title": r[3],
+                "description": r[4],
+                "nudge_count": r[5],
+                "max_nudges": r[6],
+                "target_date": str(r[7]) if r[7] else None,
+                "condition_type": r[8],
+                "condition_details": json.loads(r[9]) if isinstance(r[9], str) else (r[9] or {})
+            })
+        return results
+

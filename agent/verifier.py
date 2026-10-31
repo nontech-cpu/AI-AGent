@@ -86,20 +86,26 @@ def deterministic_verify(
 
     # 2. Fake Action Completion Claim Check
     completed_action_phrases = [
-        "meeting create kar di",
-        "meeting schedule kar di",
-        "meeting book kar di",
-        "meeting set ho gayi",
-        "email bhej diya",
-        "email send kar diya",
-        "drive pe upload kar diya"
+        ("meeting create kar di", ["create_meeting"]),
+        ("meeting schedule kar di", ["create_meeting"]),
+        ("meeting book kar di", ["create_meeting"]),
+        ("meeting set ho gayi", ["create_meeting"]),
+        ("email bhej diya", ["send_email"]),
+        ("email send kar diya", ["send_email"]),
+        ("drive pe upload kar diya", ["upload_drive"]),
+        ("reminder set kar diya", ["create_reminder"]),
+        ("reminder laga diya", ["create_reminder"]),
+        ("reminder save kar diya", ["create_reminder"]),
+        ("notion pe save kar diya", ["create_notion_page", "update_notion_page", "append_notion_page"]),
+        ("notion page bana di", ["create_notion_page", "update_notion_page", "append_notion_page"]),
     ]
     low_reply = draft_reply.lower()
-    for phrase in completed_action_phrases:
+    for phrase, required_actions in completed_action_phrases:
         if phrase in low_reply:
-            # Check if any tool result had status "success" for that action
             action_succeeded = any(
-                isinstance(tr, dict) and tr.get("status") == "success" and tr.get("action") in ["create_meeting", "send_email", "upload_drive"]
+                isinstance(tr, dict) and tr.get("status") in ("success", "ok") and
+                (tr.get("action") in required_actions or tr.get("tool_name") in required_actions or
+                 any(act in str(tr.get("message", "")).lower() for act in required_actions))
                 for tr in tool_results
             )
             needs_confirm = any(
@@ -109,8 +115,9 @@ def deterministic_verify(
             if not action_succeeded:
                 violations.append(f"Claimed action completed without success: '{phrase}'")
                 if needs_confirm:
-                    # Replace with confirmation inquiry
-                    return False, "Maine meeting details prepare kar li hain. Kya aap confirm karte hain ki ise create kar doon? (Reply yes/no)", violations
+                    return False, "Maine details prepare kar li hain. Kya aap confirm karte hain ki ise proceed kar doon? (Reply yes/no)", violations
+                else:
+                    return False, f"Maine koshish ki lekin '{phrase}' complete nahi ho paya. Kripya check karein.", violations
 
     # 3. Fake GitHub Repositories Check
     if "github" in user_query.lower() or "repo" in user_query.lower():

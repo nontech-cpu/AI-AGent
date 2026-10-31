@@ -3660,12 +3660,53 @@ async def reminder_loop():
         await asyncio.sleep(30)
 
 
+async def run_commitment_nudges():
+    try:
+        from memory.store import get_commitments_due_for_nudge, update_commitment_status
+        due_items = get_commitments_due_for_nudge()
+        for item in due_items:
+            cid = item["id"]
+            chat_id = item["chat_id"]
+            title = item["title"]
+            nudge_cnt = item["nudge_count"] + 1
+            max_cnt = item["max_nudges"]
+
+            msg_text = (
+                f"🔔 **Commitment Follow-up (Nudge {nudge_cnt}/{max_cnt}):**\n"
+                f"'{title}'\n\n"
+                f"Kya yeh task/promise complete ho gaya hai? (Reply 'done' ya 'later')"
+            )
+            try:
+                await say(chat_id, msg_text)
+            except Exception as e:
+                print(f"Error sending commitment nudge {cid} to {chat_id}:", e)
+
+            update_commitment_status(
+                commitment_id=cid,
+                user_id=item["user_id"],
+                status="nudged" if nudge_cnt >= max_cnt else "pending",
+                increment_nudge=True
+            )
+    except Exception as exc:
+        print("run_commitment_nudges error:", exc)
+
+
+async def commitment_nudge_loop():
+    while True:
+        try:
+            await run_commitment_nudges()
+        except Exception as e:
+            print("commitment loop error:", e)
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app):
     from morning_briefing import morning_briefing_loop
     from heartbeat import heartbeat_loop
     tasks = [
         asyncio.create_task(reminder_loop()),
+        asyncio.create_task(commitment_nudge_loop()),
         asyncio.create_task(mailbox_loop()),
         asyncio.create_task(connected_user_gmail_monitor_loop()),
         asyncio.create_task(morning_briefing_loop()),

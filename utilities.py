@@ -499,6 +499,8 @@ async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[st
 # 4. SAFE MATH CALCULATOR (AST Evaluator)
 # ==============================================================================
 
+import math
+
 _SAFE_OPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -511,32 +513,75 @@ _SAFE_OPS = {
     ast.UAdd: operator.pos,
 }
 
+_SAFE_FUNCS = {
+    "abs": abs,
+    "round": round,
+    "min": min,
+    "max": max,
+    "pow": math.pow,
+    "sqrt": math.sqrt,
+    "log": math.log,
+    "log10": math.log10,
+    "ceil": math.ceil,
+    "floor": math.floor,
+}
+
+_SAFE_CONSTS = {
+    "pi": math.pi,
+    "e": math.e,
+}
+
 def _eval_node(node):
-    if isinstance(node, ast.Constant):
-        return node.value
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.body)
+    elif isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)):
+            return node.value
+        raise ValueError(f"Constant of type {type(node.value).__name__} is not allowed")
     elif isinstance(node, ast.BinOp):
         left = _eval_node(node.left)
         right = _eval_node(node.right)
         op_func = _SAFE_OPS.get(type(node.op))
         if op_func is None:
-            raise ValueError(f"Unsupported operator: {type(node.op)}")
-        if type(node.op) in (ast.Div, ast.FloorDiv, ast.Mod) and right == 0:
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+        if isinstance(node.op, ast.Pow):
+            if right > 1000 or right < -1000:
+                raise ValueError("Exponent too large (max 1000)")
+        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0:
             raise ZeroDivisionError("Division by zero")
-        return op_func(left, right)
+        res = op_func(left, right)
+        if len(str(res)) > 500:
+            raise ValueError("Result number is too large")
+        return res
     elif isinstance(node, ast.UnaryOp):
         operand = _eval_node(node.operand)
         op_func = _SAFE_OPS.get(type(node.op))
         if op_func is None:
-            raise ValueError(f"Unsupported unary operator: {type(node.op)}")
+            raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
         return op_func(operand)
-    raise ValueError(f"Unsupported expression node: {type(node)}")
+    elif isinstance(node, ast.Name):
+        if node.id in _SAFE_CONSTS:
+            return _SAFE_CONSTS[node.id]
+        raise ValueError(f"Unknown or unauthorized identifier: '{node.id}'")
+    elif isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("Call must be a direct function name")
+        fname = node.func.id
+        if fname not in _SAFE_FUNCS:
+            raise ValueError(f"Function '{fname}' is not permitted")
+        args = [_eval_node(arg) for arg in node.args]
+        return _SAFE_FUNCS[fname](*args)
+    raise ValueError(f"Unsupported expression node: {type(node).__name__}")
 
 def calculate(expression: str) -> Dict[str, Any]:
     """
     Safely calculates mathematical expressions without using unsafe eval().
-    Supports: arithmetic (+, -, *, /, **, %), percentages ('18% of 4500'), and grouping.
+    Supports: arithmetic (+, -, *, /, //, %, **), parentheses (), percentages ('18% of 4500'),
+    safe math functions (sqrt, abs, round, min, max, log, log10, ceil, floor), and constants (pi, e).
     """
     clean_expr = expression.strip()
+    if not clean_expr:
+        return {"status": "error", "success": False, "message": "Expression cannot be empty."}
 
     # Handle percentage shorthand: "18% of 5000" -> "(18 / 100) * 5000"
     perc_match = re.match(r"^([\d\.]+)\s*%\s*(?:of\s*)?([\d\.]+)$", clean_expr, re.I)
@@ -552,22 +597,13 @@ def calculate(expression: str) -> Dict[str, Any]:
             "formatted": f"🧮 **Calculation:** {p_val}% of {b_val} = **{res}**"
         }
 
-    # Clean characters allowed: digits, spaces, decimal, +, -, *, /, %, (, ), **
-    sanitized = re.sub(r"[^0-9\.\+\-\*\/\%\(\)\s]", "", clean_expr)
-    if not sanitized.strip():
-        return {
-            "status": "error",
-            "success": False,
-            "message": "Invalid mathematical expression."
-        }
-
     try:
-        parsed_tree = ast.parse(sanitized, mode="eval")
+        parsed_tree = ast.parse(clean_expr, mode="eval")
         result = _eval_node(parsed_tree.body)
         if isinstance(result, float) and result.is_integer():
             result = int(result)
         elif isinstance(result, float):
-            result = round(result, 4)
+            result = round(result, 6)
 
         return {
             "status": "success",
@@ -586,7 +622,7 @@ def calculate(expression: str) -> Dict[str, Any]:
         return {
             "status": "error",
             "success": False,
-            "message": f"Calculation error: {repr(exc)}"
+            "message": f"Calculation error: {str(exc)}"
         }
 
 

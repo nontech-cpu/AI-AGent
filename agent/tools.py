@@ -221,6 +221,25 @@ class ReadWebpageArgs(BaseModel):
     url: str = Field(..., description="Webpage or article URL to read, inspect, or summarize.")
     max_chars: Optional[int] = Field(4000, description="Maximum characters to extract (defaults to 4000).")
 
+class ManageCommitmentArgs(BaseModel):
+    action: str = Field(..., description="Action to perform: 'create', 'list', 'update', 'complete', 'cancel'.")
+    title: Optional[str] = Field(None, description="Title or promise of the commitment (e.g. 'check with user after ₹1000 spend', 'send proposal to Rahul').")
+    description: Optional[str] = Field(None, description="Additional context or details.")
+    target_date: Optional[str] = Field(None, description="Target date in YYYY-MM-DD or ISO format.")
+    condition_type: Optional[str] = Field("date", description="Condition trigger type: 'date', 'threshold', 'follow_up', 'manual'.")
+    condition_details: Optional[Dict[str, Any]] = Field(None, description="Condition details e.g. {'amount': 1000, 'metric': 'expense'}.")
+    commitment_id: Optional[int] = Field(None, description="Commitment ID when completing, updating, or cancelling.")
+    status: Optional[str] = Field(None, description="Status when updating: 'pending', 'completed', 'cancelled', 'dismissed'.")
+
+class WebSearchArgs(BaseModel):
+    query: str = Field(..., description="Search query keywords to look up on the live web.")
+    num_results: Optional[int] = Field(5, description="Number of results to return.")
+
+class FetchUrlArgs(BaseModel):
+    url: str = Field(..., description="URL of the webpage to fetch and read.")
+    max_chars: Optional[int] = Field(4000, description="Max characters to extract.")
+
+
 class GetMeasurementsArgs(BaseModel):
     subject: Optional[str] = Field(None, description="Who the measurement belongs to: 'user', 'friend', person's name, or null.")
     metric: Optional[str] = Field(None, description="Metric or reading type: 'glucose', 'sugar', 'blood_pressure', 'weight', etc.")
@@ -914,6 +933,90 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Perform live internet web search for real-time external knowledge, current events, flights, weather, places, or general facts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query terms."
+                    },
+                    "num_results": {
+                        "type": ["integer", "null"],
+                        "description": "Number of results to return (default 5)."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "Fetch and extract readable text from any public web page URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to fetch."
+                    }
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_commitment",
+            "description": "Create, list, update, complete, or cancel commitments and proactive follow-up promises (e.g. 'follow up after spending ₹1000', 'call Rahul on Monday').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "list", "update", "complete", "cancel"],
+                        "description": "Action to perform."
+                    },
+                    "title": {
+                        "type": ["string", "null"],
+                        "description": "Title or promise of the commitment."
+                    },
+                    "description": {
+                        "type": ["string", "null"],
+                        "description": "Additional context or details."
+                    },
+                    "target_date": {
+                        "type": ["string", "null"],
+                        "description": "Target date in YYYY-MM-DD or ISO format."
+                    },
+                    "condition_type": {
+                        "type": ["string", "null"],
+                        "description": "Condition type: 'date', 'threshold', 'follow_up', 'manual'."
+                    },
+                    "condition_details": {
+                        "type": ["object", "null"],
+                        "description": "Condition details e.g. {'amount': 1000, 'metric': 'expense'}."
+                    },
+                    "commitment_id": {
+                        "type": ["integer", "null"],
+                        "description": "Commitment ID to update, complete, or cancel."
+                    },
+                    "status": {
+                        "type": ["string", "null"],
+                        "description": "New status: 'pending', 'completed', 'cancelled', 'dismissed'."
+                    }
+                },
+                "required": ["action"]
             }
         }
     },
@@ -2646,17 +2749,60 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             res = await get_movie_showtimes(args.city or "Jodhpur", args.area or "Sardarpura", args.movie)
             return res
 
-        elif tool_name == "search_web":
-            args = SearchWebArgs(**arguments)
+        elif tool_name in ("search_web", "web_search"):
+            q = arguments.get("query") or arguments.get("q") or ""
+            n = arguments.get("num_results") or arguments.get("max_results") or 5
             from utilities import search_web
-            res = await search_web(args.query)
+            res = await search_web(q, max_results=int(n))
             return res
 
-        elif tool_name == "read_webpage":
-            args = ReadWebpageArgs(**arguments)
+        elif tool_name in ("read_webpage", "fetch_url"):
+            u = arguments.get("url") or ""
+            m_chars = arguments.get("max_chars") or 4000
             from utilities import read_webpage
-            res = await read_webpage(args.url, args.max_chars or 4000)
+            res = await read_webpage(u, max_chars=int(m_chars))
             return res
+
+        elif tool_name == "manage_commitment":
+            args = ManageCommitmentArgs(**arguments)
+            from memory.store import (
+                resolve_user_id, create_commitment, get_commitments, update_commitment_status
+            )
+            uid = resolve_user_id(chat_id)
+            if args.action == "create":
+                if not args.title:
+                    return {"status": "error", "message": "Title is required to create a commitment."}
+                cid = create_commitment(
+                    user_id=uid,
+                    title=args.title,
+                    description=args.description,
+                    target_date=args.target_date,
+                    condition_type=args.condition_type or "date",
+                    condition_details=args.condition_details
+                )
+                return {
+                    "status": "success",
+                    "commitment_id": cid,
+                    "title": args.title,
+                    "message": f"Commitment '{args.title}' successfully recorded with ID #{cid}."
+                }
+            elif args.action == "list":
+                items = get_commitments(user_id=uid, status=args.status)
+                return {"status": "success", "commitments": items, "count": len(items)}
+            elif args.action in ("complete", "cancel", "update"):
+                if not args.commitment_id:
+                    return {"status": "error", "message": "commitment_id is required to update status."}
+                st = "completed" if args.action == "complete" else ("cancelled" if args.action == "cancel" else (args.status or "completed"))
+                ok = update_commitment_status(args.commitment_id, uid, status=st)
+                return {
+                    "status": "success" if ok else "error",
+                    "commitment_id": args.commitment_id,
+                    "new_status": st,
+                    "message": f"Commitment #{args.commitment_id} marked as {st}."
+                }
+            else:
+                return {"status": "error", "message": f"Unknown action: '{args.action}'"}
+
 
         else:
             return {"status": "error", "message": f"Unknown tool: '{tool_name}'"}
@@ -2670,7 +2816,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 CORE_TOOL_NAMES = {
     "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "check_availability", "save_note_or_fact", "search_memory",
-    "save_contact", "get_contact", "manage_smart_list", "get_measurements"
+    "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}
