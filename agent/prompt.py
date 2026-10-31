@@ -61,6 +61,103 @@ Language Mandate: {LANGUAGE_MANDATE}
 
 _USER_META_CACHE: dict = {}
 
+_UNIFIED_PROMPT_CACHE: Dict[int, Dict[str, Any]] = {}
+
+def get_unified_prompt_context(chat_id: int) -> Dict[str, Any]:
+    now_ts = time.time()
+    cid_can = db.canonical_chat_id(chat_id)
+    cached = _UNIFIED_PROMPT_CACHE.get(cid_can)
+    if cached and (now_ts - cached.get("ts", 0) < 300.0):
+        return cached
+
+    now_ist = datetime.now(IST)
+    today_d = now_ist.date()
+    tomorrow_d = today_d + timedelta(days=1)
+
+    user_name = "User"
+    google_str = "Google: not connected"
+    gh_str = "GitHub: not connected"
+    notion_str = "Notion: not connected"
+    rules_str = "None defined"
+    user_lang = "hinglish"
+    today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
+    tomorrow_sched = {"calendar_events": [], "reminders": [], "commitments": []}
+    lists_str = "None created yet."
+
+    try:
+        with db.engine.connect() as conn:
+            u_row = conn.execute(
+                db.text("""
+                    SELECT u.id, u.first_name, u.username, u.language,
+                           gt.email as google_email, gt.refresh_token_enc
+                    FROM users u
+                    LEFT JOIN google_tokens gt ON gt.user_id = u.id
+                    WHERE u.telegram_chat_id = :cid
+                """),
+                {"cid": cid_can}
+            ).first()
+
+            if u_row:
+                uid = u_row[0]
+                user_name = u_row[1] or (f"@{u_row[2]}" if u_row[2] else "User")
+                if u_row[3]:
+                    user_lang = str(u_row[3]).strip().lower()
+                has_google_oauth = bool(u_row[4] and u_row[5])
+                
+                l_row = conn.execute(db.text("SELECT email FROM email_links WHERE user_id = :uid AND verified = true"), {"uid": uid}).first()
+                has_linked = bool(l_row and l_row[0])
+                if has_google_oauth and has_linked:
+                    google_str = f"Google: connected & email linked ({u_row[4]})"
+                elif has_google_oauth:
+                    google_str = f"Google: connected ({u_row[4]})"
+                elif has_linked:
+                    google_str = "Google: email linked, OAuth not connected"
+
+                r_rows = conn.execute(db.text("SELECT rule_text FROM user_rules WHERE user_id = :uid AND is_active = true"), {"uid": uid}).fetchall()
+                if r_rows:
+                    rules_str = "; ".join([r[0] for r in r_rows])
+
+                i_rows = conn.execute(db.text("SELECT service, is_active FROM user_integrations WHERE user_id = :uid"), {"uid": uid}).fetchall()
+                for ir in i_rows:
+                    svc = ir[0].lower()
+                    if ir[1]:
+                        if svc == "github":
+                            gh_str = "GitHub: connected"
+                        elif svc == "notion":
+                            notion_str = "Notion: connected"
+
+                rem_rows = conn.execute(
+                    db.text("SELECT title, due_time, due_date FROM memory_items WHERE user_id = :uid AND due_date IN (:td, :tm)"),
+                    {"uid": uid, "td": today_d, "tm": tomorrow_d}
+                ).fetchall()
+                for rr in rem_rows:
+                    item = {"title": rr[0], "due_time": rr[1]}
+                    if rr[2] == today_d:
+                        today_sched["reminders"].append(item)
+                    elif rr[2] == tomorrow_d:
+                        tomorrow_sched["reminders"].append(item)
+
+                sl_rows = conn.execute(db.text("SELECT name FROM smart_lists WHERE user_id = :uid"), {"uid": uid}).fetchall()
+                if sl_rows:
+                    lists_str = "• " + ", ".join([s[0] for s in sl_rows])
+
+    except Exception as exc:
+        print("Unified prompt cache error:", repr(exc))
+
+    connected_integrations_str = f"{google_str} | {gh_str} | {notion_str}"
+    bundle = {
+        "ts": now_ts,
+        "user_name": user_name,
+        "user_lang": user_lang,
+        "integrations_str": connected_integrations_str,
+        "rules_str": rules_str,
+        "today_sched": today_sched,
+        "tomorrow_sched": tomorrow_sched,
+        "lists_str": lists_str
+    }
+    _UNIFIED_PROMPT_CACHE[cid_can] = bundle
+    return bundle
+
 async def build_runtime_system_prompt(
     chat_id: int,
     user_text: str,
@@ -74,11 +171,14 @@ async def build_runtime_system_prompt(
         return custom_system
 
     chat_id = db.canonical_chat_id(chat_id)
+    u_ctx = get_unified_prompt_context(chat_id)
 
     now_ist = datetime.now(IST)
+    today_d = now_ist.date()
+    tomorrow_d = today_d + timedelta(days=1)
     weekday = now_ist.strftime("%A")
     now_ist_str = now_ist.strftime("%I:%M %p, %d %B %Y")
-    user_lang = db.get_user_language(chat_id) if hasattr(db, "get_user_language") else None
+    user_lang = u_ctx.get("user_lang") or "hinglish"
     LANGUAGE_NAMES = {
         "english": "English",
         "hinglish": "Roman Hinglish (Hindi/English mix in Latin alphabet A-Z)",
@@ -150,151 +250,12 @@ async def build_runtime_system_prompt(
             "Match the language of the user's message. If the user writes in English, reply in English. If Roman Hinglish, reply in Roman Hinglish. If German, reply in German.\n"
             "CRITICAL: In ANY language, you HAVE live access to {MEMORY_BLOCK} and {SCHEDULE_BLOCK}. NEVER claim you lack access to personal readings or data."
         )
-    global _USER_META_CACHE
-
-    cached_meta = _USER_META_CACHE.get(chat_id)
-    now_ts = time.time()
-    if cached_meta and (now_ts - cached_meta["ts"] < 600.0):
-        user_name = cached_meta["user_name"]
-        connected_integrations_str = cached_meta["integrations_str"]
-        rules_str = cached_meta["rules_str"]
-    else:
-        user_name = "User"
-        google_str = "Google: not connected"
-        gh_str = "GitHub: not connected"
-        notion_str = "Notion: not connected"
-        rules_str = "None defined"
-        try:
-            with db.engine.connect() as conn:
-                u_row = conn.execute(
-                    text("""
-                        SELECT u.id, u.first_name, u.username,
-                               gt.email as google_email, gt.refresh_token_enc
-                        FROM users u
-                        LEFT JOIN google_tokens gt ON gt.user_id = u.id
-                        WHERE u.telegram_chat_id = :cid
-                    """),
-                    {"cid": chat_id}
-                ).first()
-
-                if u_row:
-                    uid = u_row[0]
-                    user_name = u_row[1] or (f"@{u_row[2]}" if u_row[2] else "User")
-                    has_google_oauth = bool(u_row[3] and u_row[4])
-                    has_linked_email = False
-                    try:
-                        l_row = conn.execute(text("SELECT email FROM email_links WHERE user_id = :uid AND verified = true"), {"uid": uid}).first()
-                        if l_row and l_row[0]:
-                            has_linked_email = True
-                    except Exception:
-                        pass
-
-                    if has_google_oauth and has_linked_email:
-                        google_str = f"Google: connected & email linked ({u_row[3]})"
-                    elif has_google_oauth:
-                        google_str = f"Google: connected ({u_row[3]})"
-                    elif has_linked_email:
-                        google_str = "Google: email linked, OAuth not connected"
-                    else:
-                        google_str = "Google: not connected"
-
-                    # Integrations
-                    summary = db.get_user_integrations_summary(chat_id)
-                    if summary.get("github", {}).get("connected"):
-                        gh_info = db.get_user_integration(chat_id, "github")
-                        gh_u = None
-                        if isinstance(gh_info, dict):
-                            try:
-                                gh_u = json.loads(gh_info.get("config_data") or "{}").get("username")
-                            except Exception:
-                                pass
-                        gh_str = f"GitHub: connected (@{gh_u})" if gh_u else "GitHub: connected"
-                    if summary.get("notion", {}).get("connected"):
-                        notion_str = "Notion: connected"
-
-                    # Rules
-                    try:
-                        r_rows = conn.execute(
-                            text("SELECT rule_text FROM user_rules WHERE user_id = :uid AND is_active = true"),
-                            {"uid": uid}
-                        ).fetchall()
-                        if r_rows:
-                            rules_str = "; ".join([r[0] for r in r_rows])
-                    except Exception:
-                        pass
-        except Exception as exc:
-            print("Prompt user meta fetch error:", repr(exc))
-
-        connected_integrations_str = f"{google_str} | {gh_str} | {notion_str}"
-        _USER_META_CACHE[chat_id] = {
-            "ts": now_ts,
-            "user_name": user_name,
-            "integrations_str": connected_integrations_str,
-            "rules_str": rules_str
-        }
-
-    # 2. Today's and Tomorrow's Unified Schedule (Non-blocking high-speed injection)
-    today_d = now_ist.date()
-    tomorrow_d = today_d + timedelta(days=1)
-
-    if not hasattr(build_runtime_system_prompt, "_sched_cache"):
-        build_runtime_system_prompt._sched_cache = {}
-    _sched_cache = build_runtime_system_prompt._sched_cache
-
-    sched_cache_key = (chat_id, str(today_d))
-    cached_sched = _sched_cache.get(sched_cache_key)
-    if cached_sched and (now_ts - cached_sched.get("ts", 0) < 300.0):
-        today_sched = cached_sched["today"]
-        tomorrow_sched = cached_sched["tomorrow"]
-        lists_str = cached_sched["lists_str"]
-    else:
-        today_sched = {"calendar_events": [], "reminders": [], "commitments": []}
-        try:
-            from db import items_for_date, canonical_chat_id
-            cid_can = canonical_chat_id(chat_id)
-            today_sched["reminders"] = items_for_date(cid_can, today_d) or []
-        except Exception:
-            pass
-
-        try:
-            from main import _UNIFIED_SCHED_CACHE
-            main_c = _UNIFIED_SCHED_CACHE.get((cid_can, str(today_d)))
-            if main_c and "data" in main_c:
-                today_sched["calendar_events"] = main_c["data"].get("calendar_events", [])
-                today_sched["commitments"] = main_c["data"].get("commitments", [])
-        except Exception:
-            pass
-
-        tomorrow_sched = {"calendar_events": [], "reminders": [], "commitments": []}
-        try:
-            from db import items_for_date, canonical_chat_id
-            cid_can = canonical_chat_id(chat_id)
-            db_tm_rems = items_for_date(cid_can, tomorrow_d)
-            if db_tm_rems:
-                tomorrow_sched["reminders"] = db_tm_rems
-        except Exception:
-            pass
-
-        lists_str = "None created yet."
-        try:
-            from db import get_smart_lists, canonical_chat_id
-            cid_can = canonical_chat_id(chat_id)
-            u_lists = get_smart_lists(cid_can)
-            if u_lists:
-                formatted_lists = []
-                for l in u_lists:
-                    items_summary = ", ".join([it["title"] for it in l.get("items", [])[:8]])
-                    formatted_lists.append(f"• {l['name']} ({len(l.get('items', []))} items: {items_summary or 'empty'})")
-                lists_str = "\n".join(formatted_lists)
-        except Exception:
-            lists_str = "None created yet."
-
-        _sched_cache[sched_cache_key] = {
-            "ts": now_ts,
-            "today": today_sched,
-            "tomorrow": tomorrow_sched,
-            "lists_str": lists_str
-        }
+    user_name = u_ctx["user_name"]
+    connected_integrations_str = u_ctx["integrations_str"]
+    rules_str = u_ctx["rules_str"]
+    today_sched = u_ctx["today_sched"]
+    tomorrow_sched = u_ctx["tomorrow_sched"]
+    lists_str = u_ctx["lists_str"]
 
 
     # 3. Pending Actions

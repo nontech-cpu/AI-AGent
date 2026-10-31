@@ -37,7 +37,8 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "are", "for", "the", "you", "all", "not", "can", "how", "let", "may", "was", "were",
         "about", "some", "any", "tell", "show", "give", "want", "need", "your", "yours", "their", "there", "here", "this", "that", "these", "those",
         "merse", "mujhse", "tumse", "isse", "usse", "baat", "english", "hinglish", "hindi", "german", "deutsch", "french", "spanish", "language", "bhasha",
-        "detail", "detial", "explain", "exlain", "ml", "dl", "ai", "machine", "learning", "deep", "neural", "network", "code", "coding", "meaning", "define", "definition", "samjhao", "samjha", "smjhao", "smjha"
+        "detail", "detial", "explain", "exlain", "ml", "dl", "ai", "machine", "learning", "deep", "neural", "network", "code", "coding", "meaning", "define", "definition", "samjhao", "samjha", "smjhao", "smjha",
+        "hi", "hii", "hiii", "good", "morning", "evening", "night", "afternoon", "bye", "ok", "okay", "test", "ping"
     }
     candidates = [w for w in tokens if w.lower() not in stopwords][:4]
     return candidates
@@ -71,6 +72,16 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     matched_entities = []
     seen_entity_ids = set()
     low = user_text.lower().strip()
+
+    # Fast-path for greetings & simple acknowledgments (0ms - zero DB queries)
+    if low in ("hi", "hello", "hey", "hlo", "hii", "hiii", "namaste", "namaskar", "salam", "ping", "test", "ok", "okay", "bye") or (len(low.split()) == 1 and low in ("hi", "hello", "hey", "hlo", "hii")):
+        return {
+            "formatted_block": "",
+            "matched_entities": [],
+            "measurements": [],
+            "relevant_memories": [],
+            "facts": []
+        }
 
     # 1. Look for entity matches in text via clean candidate tokens (supports Devanagari & short names)
     candidates = extract_potential_entity_tokens(user_text)
