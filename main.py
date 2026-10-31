@@ -2211,8 +2211,14 @@ async def handle_active(chat_id, text):
             await say(chat_id, res["reply"])
             return
         except Exception as exc:
-            logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}")
-            fallback_msg = "Haan bhai, sun raha hoon! Ek second network lag aaya tha, batao kya schedule ya check karna hai?"
+            import traceback
+            tb_str = traceback.format_exc()
+            logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}\n{tb_str}")
+            clean_l = (text or "").strip().lower()
+            if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
+                fallback_msg = "Hey Neerav! Kaise ho? Batao aaj kya schedule ya check karna hai?"
+            else:
+                fallback_msg = "Haan bhai! Ek second server update ho raha tha. Batao aap kya check karna chahte the?"
             await say(chat_id, fallback_msg)
             return
 
@@ -4992,6 +4998,17 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/test_turn")
+async def debug_test_turn(text: str = "hi"):
+    from agent.loop import run_agent_turn
+    import traceback
+    try:
+        res = await run_agent_turn(1758056012, text)
+        return {"status": "ok", "reply": res.get("reply")}
+    except Exception as e:
+        return {"status": "error", "error": repr(e), "traceback": traceback.format_exc()}
 
 
 @app.post("/web/chat")
