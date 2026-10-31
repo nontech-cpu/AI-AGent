@@ -5006,7 +5006,7 @@ async def debug_test_turn(request: Request):
         from agent.loop import run_agent_turn
         q = request.query_params.get("q") or request.query_params.get("text") or "hi"
         res = await run_agent_turn(1758056012, q)
-        return {"status": "ok", "reply": res.get("reply")}
+        return res
     except BaseException as e:
         return {"status": "error", "error": repr(e), "traceback": traceback.format_exc()}
 
