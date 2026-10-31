@@ -290,8 +290,7 @@ async def say_raw(chat_id, text):
 
 
 async def say(chat_id, text):
-    """User ki language me (agar English nahi hai) bhejta hai."""
-    text = await localize(text, reply_lang.get())
+    """Sends message directly in natural LLM language without middleman translation."""
     from utilities import convert_tables_to_cards
     text = convert_tables_to_cards(text)
     record_chat_turn(chat_id, "assistant", text)
@@ -2204,16 +2203,18 @@ def _get_chat_lock(cid: int) -> asyncio.Lock:
 
 
 async def handle_active(chat_id, text):
-    # Feature Flag: AGENT_CORE=v2 (Native Tool-Calling Agent Loop)
-    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
-        async with _get_chat_lock(chat_id):
-            try:
-                from agent.loop import run_agent_turn
-                res = await run_agent_turn(chat_id, text)
-                await say(chat_id, res["reply"])
-                return
-            except Exception as exc:
-                print("AGENT_CORE v2 fallback to v1 on error:", repr(exc))
+    # Feature Flag: AGENT_CORE=v2 (Pure Native Tool-Calling Agent Loop)
+    async with _get_chat_lock(chat_id):
+        try:
+            from agent.loop import run_agent_turn
+            res = await run_agent_turn(chat_id, text)
+            await say(chat_id, res["reply"])
+            return
+        except Exception as exc:
+            logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}")
+            fallback_msg = "Haan bhai, sun raha hoon! Ek second network lag aaya tha, batao kya schedule ya check karna hai?"
+            await say(chat_id, fallback_msg)
+            return
 
     # Fast local response for greetings & acknowledgments in legacy v1 mode
     if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
