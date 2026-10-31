@@ -1,0 +1,19 @@
+{
+  "total_test_cases": 65,
+  "recall_at_3": "95.8%",
+  "recall_at_5": "95.8%",
+  "math_accuracy": "100.0%",
+  "hallucination_rate": "0.0%",
+  "measurements_routing_accuracy": "100.0%",
+  "short_entity_recognition": "83.3%",
+  "latency_ms": {
+    "p50": 0.22,
+    "p90": 36.13,
+    "p95": 43.26,
+    "mean": 8.03,
+    "min": 0.0,
+    "max": 83.52
+  },
+  "avg_tokens_per_turn": 230,
+  "timestamp": "2026-10-31 13:08:00"
+}
