@@ -120,7 +120,9 @@ def _init_sqlite_if_needed():
 
 
 def _get_embedding_model():
-    """Lazy load FastEmbed embedding model (384-dimension multilingual MiniLM-L12-v2)."""
+    """Lazy load FastEmbed embedding model. Disabled by default in cloud/container environments to prevent Render 512MB RAM OOM crash."""
+    if os.getenv("DISABLE_LOCAL_EMBEDDINGS", "1").lower() in ("1", "true", "yes"):
+        return None
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
         try:
