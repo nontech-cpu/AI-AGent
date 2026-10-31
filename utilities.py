@@ -13,7 +13,7 @@ import html
 import operator
 import httpx
 from urllib.parse import unquote
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 WEATHER_CODES = {
     0: "Clear sky (Dhoop / Saaf mausam)",

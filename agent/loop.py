@@ -382,18 +382,30 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             "content": f"[Earlier Conversation Background Summary]:\n{running_summary}"
         })
 
-    # Append up to last 8 turns, truncated to 300 chars per turn (total capped at ~1200 tokens)
+    # Append up to last 8 turns, sanitized for strict role alternation and duplicate merging
+    sanitized_history = []
     total_hist_chars = 0
     for turn in recent_turns:
+        r = turn.get("role", "user")
         t_text = (turn.get("text") or "").strip()
+        if not t_text or "Bataiye, main aapki kya madad karun" in t_text:
+            continue
         if len(t_text) > 300:
             t_text = t_text[:297] + "..."
         total_hist_chars += len(t_text)
         if total_hist_chars > 4800:
             break
-        messages.append({"role": turn["role"], "content": t_text})
+        if sanitized_history and sanitized_history[-1]["role"] == r:
+            sanitized_history[-1]["content"] += f"\n{t_text}"
+        else:
+            sanitized_history.append({"role": r, "content": t_text})
 
-    messages.append({"role": "user", "content": user_text})
+    if sanitized_history and sanitized_history[-1]["role"] == "user":
+        sanitized_history[-1]["content"] += f"\n{user_text}"
+    else:
+        sanitized_history.append({"role": "user", "content": user_text})
+
+    messages.extend(sanitized_history)
 
     tool_calls_executed = []
     tool_results_list = []
@@ -423,36 +435,37 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 payload["tool_choice"] = "auto"
 
             print("Check 2 (calling Groq):", time.time() - start_ts)
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json=payload
-            )
-            print("Check 3 (Groq responded):", time.time() - start_ts)
+            resp = None
+            candidate_models = [current_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+            # Deduplicate while preserving order
+            seen_m = set()
+            ordered_candidates = [m for m in candidate_models if not (m in seen_m or seen_m.add(m))]
 
-
-
-            # Intelligent Fallback for 429 Rate Limits / Transient Errors
-            if resp.status_code == 429 or resp.status_code != 200:
-                print(f"Agent Loop error {resp.status_code} on {current_model}. Falling back to openai/gpt-oss-20b...")
-                current_model = "openai/gpt-oss-20b"
-                payload["model"] = current_model
-                await asyncio.sleep(0.5)
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}"},
-                    json=payload
-                )
-                if resp.status_code != 200:
-                    print(f"Fallback retry status: {resp.status_code}")
-                    await asyncio.sleep(1.5)
+            for m_candidate in ordered_candidates:
+                payload["model"] = m_candidate
+                try:
                     resp = await client.post(
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {groq_key}"},
                         json=payload
                     )
-                    if resp.status_code != 200:
+                    if resp.status_code == 200:
+                        current_model = m_candidate
                         break
+                    else:
+                        print(f"Groq {m_candidate} status {resp.status_code}: {resp.text[:100]}")
+                        if resp.status_code == 429:
+                            await asyncio.sleep(0.3)
+                            continue
+                except Exception as req_err:
+                    print(f"Groq {m_candidate} request error:", repr(req_err))
+                    continue
+
+            print("Check 3 (Groq responded):", time.time() - start_ts)
+
+            if not resp or resp.status_code != 200:
+                print("All Groq candidate models failed or exhausted rate limit.")
+                break
 
             resp_data = resp.json()
             choice = resp_data["choices"][0]
@@ -751,34 +764,48 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         default_fb_msg = "Hello! How can I assist you today? Would you like to check your schedule or set a reminder?"
     else:
         fb_sys = "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish."
-        default_fb_msg = "Bataiye, main aapki kya madad karun? Schedule ya kisi update ke baare me bataiye!"
+        default_fb_msg = "Arre bhai, connection thoda slow chal raha tha. Aapne kya poocha tha, ek baar phir bataoge?"
 
     if not final_reply:
         try:
             rec_lang = active_user_lang or "user language"
             recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the conversation history and memory above in {rec_lang}. Do not mention tools, internal codes, or schedules unless explicitly asked."
             rec_messages = [{"role": "system", "content": recovery_system}]
+            rec_hist = []
             for turn in recent_turns:
                 t_text = (turn.get("text") or "").strip()
+                if not t_text or "Bataiye, main aapki kya madad karun" in t_text:
+                    continue
                 if len(t_text) > 300:
                     t_text = t_text[:297] + "..."
-                rec_messages.append({"role": turn.get("role", "user"), "content": t_text})
-            rec_messages.append({"role": "user", "content": user_text})
+                r = turn.get("role", "user")
+                if rec_hist and rec_hist[-1]["role"] == r:
+                    rec_hist[-1]["content"] += f"\n{t_text}"
+                else:
+                    rec_hist.append({"role": r, "content": t_text})
+            if rec_hist and rec_hist[-1]["role"] == "user":
+                rec_hist[-1]["content"] += f"\n{user_text}"
+            else:
+                rec_hist.append({"role": "user", "content": user_text})
+            rec_messages.extend(rec_hist)
 
             async with httpx.AsyncClient(timeout=15.0) as fb_client:
-                fb_resp = await fb_client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}"},
-                    json={
-                        "model": current_model,
-                        "temperature": 0.4,
-                        "messages": rec_messages,
-                        "max_tokens": 800,
-                    }
-                )
-                if fb_resp.status_code == 200:
-                    fb_data = fb_resp.json()
-                    final_reply = fb_data["choices"][0]["message"].get("content", "").strip()
+                for fb_m in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]:
+                    fb_resp = await fb_client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json={
+                            "model": fb_m,
+                            "temperature": 0.4,
+                            "messages": rec_messages,
+                            "max_tokens": 800,
+                        }
+                    )
+                    if fb_resp.status_code == 200:
+                        fb_data = fb_resp.json()
+                        final_reply = fb_data["choices"][0]["message"].get("content", "").strip()
+                        if final_reply:
+                            break
         except Exception as fb_err:
             print("Conversational recovery error:", repr(fb_err))
 

@@ -4997,7 +4997,36 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.0.7"}
+    return {"status": "pong", "version": "v2.0.9"}
+
+@app.get("/debug/groq_ping")
+async def debug_groq_ping():
+    import httpx, os
+    groq_key = os.getenv("GROQ_API_KEY")
+    masked_key = (groq_key[:6] + "..." + groq_key[-4:]) if groq_key else None
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {groq_key}"},
+            json={
+                "model": "openai/gpt-oss-20b",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 10
+            }
+        )
+        tpm = r.headers.get("x-ratelimit-limit-tokens")
+        rpm = r.headers.get("x-ratelimit-limit-requests")
+        rem_tok = r.headers.get("x-ratelimit-remaining-tokens")
+        reset_tok = r.headers.get("x-ratelimit-reset-tokens")
+        return {
+            "status_code": r.status_code,
+            "masked_key": masked_key,
+            "body": r.text,
+            "tpm": tpm,
+            "rpm": rpm,
+            "rem_tokens": rem_tok,
+            "reset_tokens": reset_tok
+        }
 
 @app.get("/debug/test_turn")
 async def debug_test_turn(request: Request):

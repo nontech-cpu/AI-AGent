@@ -1117,6 +1117,9 @@ def log_chat_message(chat_id, role, message):
     if not message or not str(message).strip():
         return
     clean_msg = str(message).strip()
+    # Never poison chat history with emergency fallback error messages
+    if 'Bataiye, main aapki kya madad karun' in clean_msg:
+        return
     for k in list(_CHAT_HISTORY_CACHE.keys()):
         if k[0] == chat_id:
             _CHAT_HISTORY_CACHE.pop(k, None)
@@ -1167,7 +1170,9 @@ def get_recent_chat_history(chat_id, limit=15):
         # Return chronological order (oldest to newest) with duplicates removed
         cleaned = []
         for r in reversed(rows):
-            role, msg = r[0], r[1]
+            role, msg = r[0], (r[1] or '').strip()
+            if not msg or 'Bataiye, main aapki kya madad karun' in msg:
+                continue
             if cleaned and cleaned[-1]["role"] == role and cleaned[-1]["text"] == msg:
                 continue
             cleaned.append({"role": role, "text": msg})
