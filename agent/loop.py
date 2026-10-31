@@ -123,21 +123,44 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
 
 def detect_explicit_language_switch(text: str) -> Optional[str]:
     t = text.strip().lower()
-    if any(w in t for w in ("german", "deutsch")):
+
+    # 0. Contrastive negation: 'X nahi Y' or 'not X, Y' (e.g. 'english nhi hinglish bola')
+    contrast_match = re.search(
+        r'\b(english|hindi|hinglish|german|deutsch|spanish|french)\s+(?:nahi|nhi|na|not|mat|chhod\s+ke|ke\s+alawa)\s+(?:balki\s+|par\s+|sirf\s+)?(english|hindi|hinglish|german|deutsch|spanish|french)\b',
+        t
+    )
+    if contrast_match:
+        rejected, selected = contrast_match.groups()
+        if selected in ('hindi', 'hinglish'):
+            return 'hinglish'
+        if selected in ('german', 'deutsch'):
+            return 'german'
+        return selected
+
+    def is_negated(lang_name: str) -> bool:
+        return bool(re.search(rf'\b{lang_name}\s+(?:nahi|nhi|na|not|mat)\b', t)) or bool(re.search(rf'\b(?:mat|dont|never)\s+{lang_name}\b', t))
+
+    # 1. German
+    if any(w in t for w in ("german", "deutsch")) and not is_negated("german") and not is_negated("deutsch"):
         return "german"
-    has_eng = any(w in t for w in ("english", "englsih", "englsh", "angrezi")) or bool(re.search(r"\beng\b", t))
-    if has_eng:
-        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "only", "pls", "please", "me", "mein", "switch", "continue", "language", "shuru", "use")
-        if len(t.split()) <= 3 or any(w in t for w in intent_words):
-            return "english"
+
+    # 2. Hinglish / Hindi
     has_hin = any(w in t for w in ("hindi", "hinglish", "hindlish"))
-    if has_hin:
-        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "me", "mein", "switch", "continue", "language", "shuru", "merse", "humse", "use")
-        if len(t.split()) <= 3 or any(w in t for w in intent_words):
+    if has_hin and not is_negated("hindi") and not is_negated("hinglish"):
+        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "bola", "me", "mein", "switch", "continue", "language", "shuru", "merse", "humse", "use", "only", "pls", "please")
+        if len(t.split()) <= 6 or any(w in t for w in intent_words):
             return "hinglish"
-    if any(w in t for w in ("spanish", "espanol", "español")):
+
+    # 3. English (only if not negated e.g. "english nhi" MUST NOT trigger English)
+    has_eng = any(w in t for w in ("english", "englsih", "englsh", "angrezi")) or bool(re.search(r"\beng\b", t))
+    if has_eng and not is_negated("english") and not is_negated("angrezi"):
+        intent_words = ("talk", "speak", "kro", "karo", "baat", "bolo", "bol", "bola", "only", "pls", "please", "me", "mein", "switch", "continue", "language", "shuru", "use")
+        if len(t.split()) <= 4 or any(w in t for w in intent_words):
+            return "english"
+
+    if any(w in t for w in ("spanish", "espanol", "español")) and not is_negated("spanish"):
         return "spanish"
-    if any(w in t for w in ("french", "francais", "français")):
+    if any(w in t for w in ("french", "francais", "français")) and not is_negated("french"):
         return "french"
     return None
 

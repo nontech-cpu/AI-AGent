@@ -176,10 +176,9 @@ async def build_runtime_system_prompt(
         lang_style = "English"
         lang_mandate = (
             "STRICT ENGLISH LANGUAGE MANDATE (CRITICAL):\n"
-            "The user wants to communicate in ENGLISH.\n"
-            "You MUST speak, write, and respond 100% in pure, professional, natural English!\n"
-            "Even if the user writes in Hindi/Hinglish asking to speak in English, you MUST reply completely in English without any Hindi words!\n"
-            "Exception: Only switch away from English if the user explicitly asks to speak in another language (e.g. 'hindi me bolo', 'german me baat karo')."
+            "The user previously requested English. However, if the user now writes in Hindi/Hinglish or says 'hinglish', 'hindi me', 'mene english nhi bola', "
+            "you MUST immediately switch away from English and reply in natural Roman Hinglish!\n"
+            "Otherwise, communicate professionally in English."
         )
     elif user_lang == "spanish":
         lang_style = "Spanish (Español)"
@@ -192,6 +191,8 @@ async def build_runtime_system_prompt(
         lang_mandate = (
             "STRICT ROMAN HINGLISH MANDATE (CRITICAL):\n"
             "The user wants to communicate in natural, friendly Roman Hinglish (Latin alphabet A-Z).\n"
+            "You MUST speak, write, and respond in Roman Hinglish (e.g. 'Haan bhai, batao kya madad karun?').\n"
+            "NEVER reply in pure English like 'Sure, let's keep it in Hinglish' or 'How can I help you today?'. Every response MUST be in casual, authentic Roman Hinglish (e.g. 'Haan bhai, bilkul Hinglish mein hi baat karenge. Batao aaj kya chal raha hai?').\n"
             "Exception: If the user explicitly asks to speak in English ('talk in english only') or German ('german me baat karo'), you MUST immediately switch to that language and start speaking in it!"
         )
     else:
