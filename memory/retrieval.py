@@ -16,8 +16,8 @@ from memory.store import (
 
 
 def extract_potential_entity_tokens(text: str) -> List[str]:
-    """Extracts candidate names or keywords from user prompt (ignoring common stopwords)."""
-    words = re.findall(r'[a-zA-Z]{3,}', text.lower())
+    """Extracts candidate names or keywords from user prompt (supporting Devanagari, English, and short names >= 2 chars)."""
+    tokens = re.findall(r'[\u0900-\u097Fa-zA-Z0-9_\-\']{2,}', text)
     stopwords = {
         "hai", "bhy", "bhai", "mera", "meri", "mere", "mujhe", "kya", "tha", "thi",
         "the", "ko", "koo", "ka", "ki", "ke", "aur", "and", "karo", "bhejna", "kar",
@@ -37,7 +37,7 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "are", "for", "the", "you", "all", "not", "can", "how", "let", "may", "was", "were",
         "about", "some", "any", "tell", "show", "give", "want", "need", "your", "yours", "their", "there", "here", "this", "that", "these", "those"
     }
-    candidates = [w for w in words if w not in stopwords][:3]
+    candidates = [w for w in tokens if w.lower() not in stopwords][:4]
     return candidates
 
 
@@ -65,48 +65,35 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             "active_commitments": list
         }
     """
-    # Fast bypass for pure greetings / casual check-ins to save latency
-    low = user_text.lower().strip()
-    if re.match(r"^(hi|hello|hey|namaste|hlo|aur\s+(?:bhy|bhai)|kaisa\s+h|kesa\s+h|kaise\s+ho|kaisi\s+ho|kya\s+hal|kya\s+haal|kya\s+chal\s+raha|kya\s+chal\s+rha|sab\s+badhiya|good\s+morning|good\s+night|gm|gn)[\s?!.,]*$", low):
-        return {
-            "formatted_block": "",
-            "matched_entities": [],
-            "relevant_memories": [],
-            "facts": []
-        }
-
     user_id = resolve_user_id(chat_id)
     matched_entities = []
     seen_entity_ids = set()
+    low = user_text.lower().strip()
 
-
-    # 1. Look for entity matches in text via clean candidate tokens (No brittle regex gates)
+    # 1. Look for entity matches in text via clean candidate tokens (supports Devanagari & short names)
     candidates = extract_potential_entity_tokens(user_text)
     for cand in candidates:
         ent = find_entity(user_id, cand, threshold=0.28)
         if ent and ent["id"] not in seen_entity_ids:
             seen_entity_ids.add(ent["id"])
-            # Pull active commitments for this entity
             ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
             ent["commitments"] = ent_commitments
             matched_entities.append(ent)
 
-    # 2. Hybrid semantic RAG memory search (semantic vector + keyword search without brittle keyword blocks)
+    # 2. Hybrid RAG retrieval on EVERY turn: vector + tsvector full-text + trigram merged via RRF (k=60)
     relevant_mems = []
-    if len(user_text.strip().split()) >= 2:
-        try:
-            raw_mems = search_memories_hybrid(user_id, user_text, limit=6)
-            # Filter out reminders (reminders belong in reminders table) and archived rows
-            for rm in raw_mems:
-                if rm.get("status") == "archived":
-                    continue
-                if rm.get("memory_type") == "reminder":
-                    continue
-                relevant_mems.append(rm)
-                if len(relevant_mems) >= 4:
-                    break
-        except Exception:
-            relevant_mems = []
+    try:
+        raw_mems = search_memories_hybrid(user_id, user_text, limit=6, min_score=0.015)
+        for rm in raw_mems:
+            if rm.get("status") == "archived":
+                continue
+            if rm.get("memory_type") == "reminder":
+                continue
+            relevant_mems.append(rm)
+            if len(relevant_mems) >= 4:
+                break
+    except Exception:
+        relevant_mems = []
 
     # 2.5 Structured Measurements lookup if query touches health/measurements
     measurements = []
@@ -175,6 +162,9 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     lines.append("</memory>")
 
     formatted = "\n".join(lines) if (matched_entities or measurements or relevant_mems or facts) else ""
+    # Cap memory block at ~600 tokens (~2400 characters) to prevent context pollution
+    if len(formatted) > 2400:
+        formatted = formatted[:2390] + "\n...</memory>"
 
     res = {
         "formatted_block": formatted,

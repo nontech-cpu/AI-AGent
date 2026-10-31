@@ -6,7 +6,7 @@ Write actions implement the Two-Phase Confirmation Gate (return needs_confirmati
 import os
 import re
 import json
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 from datetime import datetime, date, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, ValidationError
@@ -2665,3 +2665,68 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
         return {"status": "error", "type": "ValidationError", "details": val_err.errors()}
     except Exception as exc:
         return {"status": "error", "type": type(exc).__name__, "message": str(exc)}
+
+
+CORE_TOOL_NAMES = {
+    "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
+    "check_availability", "save_note_or_fact", "search_memory",
+    "save_contact", "get_contact", "manage_smart_list", "get_measurements"
+}
+
+_DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+def route_tools(user_text: str) -> List[Dict[str, Any]]:
+    """
+    Selects relevant tools for the user turn without hardcoded regex/keyword gating:
+    - Always includes CORE_TOOL_NAMES.
+    - Computes dense multilingual embedding similarity between user_text and domain tool descriptions.
+    - Selects top 3-4 domain tools (or any with similarity >= 0.22).
+    - If unsure or embedding fails, safely falls back to all tools.
+    """
+    from memory.store import embed_text
+    domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
+
+    # Pre-embed domain tool descriptions if not cached
+    for dt in domain_tools:
+        fn_name = dt["function"]["name"]
+        if fn_name not in _DOMAIN_TOOL_EMBED_CACHE:
+            desc = dt["function"].get("description", "")
+            emb = embed_text(f"{fn_name}: {desc}", is_query=False)
+            if emb:
+                _DOMAIN_TOOL_EMBED_CACHE[fn_name] = emb
+
+    user_emb = embed_text(user_text, is_query=True)
+    if not user_emb or not _DOMAIN_TOOL_EMBED_CACHE:
+        return TOOL_DEFINITIONS
+
+    # Score domain tools by semantic similarity
+    scored_domain = []
+    for dt in domain_tools:
+        fn_name = dt["function"]["name"]
+        t_emb = _DOMAIN_TOOL_EMBED_CACHE.get(fn_name)
+        if t_emb:
+            sim = _cosine_similarity(user_emb, t_emb)
+            scored_domain.append((sim, dt))
+
+    scored_domain.sort(key=lambda x: x[0], reverse=True)
+
+    # Pick top domain tools with sim >= 0.22 (up to 4)
+    selected_domain_tools = [
+        dt for sim, dt in scored_domain[:4]
+        if sim >= 0.22
+    ]
+
+    # If top tool has reasonable similarity, include it
+    if not selected_domain_tools and scored_domain and scored_domain[0][0] >= 0.18:
+        selected_domain_tools = [scored_domain[0][1]]
+
+    core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
+    return core_tools + selected_domain_tools

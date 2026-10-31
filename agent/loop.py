@@ -8,6 +8,7 @@ import re
 import json
 import time
 import asyncio
+import logging
 import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -15,6 +16,7 @@ from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger("peculiar_agent_loop")
 
 from timing import IST
 import db
@@ -309,81 +311,24 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     final_reply = ""
     total_tokens = 0
 
-    # 5. Dynamic Context-Aware Lean Tool Suite (Zero token waste on unused domains)
-    # Core assistant tools are ALWAYS enabled to guarantee semantic understanding and zero hallucination on typos
-    active_tool_names = {
-        "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
-        "check_availability", "save_note_or_fact", "search_memory",
-        "save_contact", "get_contact", "manage_smart_list", "get_measurements"
-    }
+    # 5. Semantic Context-Aware Tool Suite (Embedding similarity between message and tool descriptions, no hardcoded regex gates)
+    from agent.tools import route_tools
+    effective_tools = route_tools(user_text)
 
-    has_reminder_intent = any(w in low_prompt for w in ("remind", "reminder", "yaad", "schedule", "kal", "aaj", "baje", "task", "subah", "shaam", "sham", "dopahar", "raat", "roj", "daily", "har din", "dawai", "delete", "hata do", "cancel"))
-    has_health_intent = any(w in low_prompt for w in ("sugar", "glucose", "reading", "readings", "bp", "pressure", "weight", "fasting", "post-meal", "test", "health", "mg/dl"))
-    has_meeting_intent = any(w in low_prompt for w in ("meet", "meeting", "calendar", "availability", "free slot", "slot", "call"))
-    has_list_intent = any(w in low_prompt for w in ("list", "todo", "groceries", "shopping", "checklist", "pack", "bag", "items"))
-    has_weather_intent = any(w in low_prompt for w in ("weather", "mausam", "rain", "barish", "temp", "temperature", "forecast"))
-    has_places_intent = any(w in low_prompt for w in ("cafe", "coffee", "restaurant", "food", "khana", "nearby", "aas paas", "spots", "shop", "hotel"))
-    has_search_intent = any(w in low_prompt for w in ("search", "google", "web", "find", "check online", "dhundo"))
-    has_memory_intent = any(w in low_prompt for w in ("yaad rakh", "remember", "save note", "note", "kahan", "kab", "kisko", "kaun", "purani", "pichli", "stayed", "ruka"))
-    has_contact_intent = any(w in low_prompt for w in ("contact", "phone", "number", "email id", "save contact", "dost ka phone"))
-    has_correction_intent = any(w in low_prompt for w in ("galat", "jhoot", "wrong", "galti", "correct", "sahi nahi", "kuch bhi"))
-
-    if has_reminder_intent:
-        active_tool_names.update({"create_reminder", "delete_reminder", "list_reminders", "get_schedule"})
-    if has_meeting_intent:
-        active_tool_names.update({"create_meeting", "get_schedule", "check_availability", "get_meet_link"})
-    if has_list_intent:
-        active_tool_names.update({"manage_smart_list", "create_packing_list"})
-    if has_weather_intent:
-        active_tool_names.add("get_weather")
-    if has_places_intent:
-        active_tool_names.add("find_nearby_places")
-    if has_search_intent:
-        active_tool_names.add("search_web")
-    if has_memory_intent:
-        active_tool_names.update({"save_note_or_fact", "search_memory"})
-    if has_contact_intent:
-        active_tool_names.update({"save_contact", "get_contact", "list_contacts"})
-    if has_correction_intent:
-        active_tool_names.add("learn_user_correction")
-    if has_health_intent:
-        active_tool_names.add("get_measurements")
-
-    # Domain integrations
-    if any(w in low_prompt for w in ("movie", "cinema", "theatre", "show", "hall", "ticket", "bookmyshow")):
-        active_tool_names.add("get_movie_showtimes")
-    if any(w in low_prompt for w in ("git", "github", "repo", "issue", "commit", "branch", "pull")):
-        active_tool_names.update({"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"})
-    if any(w in low_prompt for w in ("notion", "workspace", "page")):
-        active_tool_names.update({"create_notion_page", "update_notion_page", "list_notion_pages"})
-    if any(w in low_prompt for w in ("email", "mail", "gmail", "inbox")):
-        active_tool_names.update({"send_email", "search_user_emails"})
-    if any(w in low_prompt for w in ("pdf", "excel", "sheet", "csv", "drive", "file", "export")):
-        active_tool_names.update({"generate_pdf", "generate_excel", "upload_to_drive"})
-    if any(w in low_prompt for w in ("gold", "crypto", "bitcoin", "dollar", "inr", "calc", "convert", "rate", "price", "%")):
-        active_tool_names.update({"get_market_price", "convert_currency", "calculate"})
-    if any(w in low_prompt for w in ("deep research", "research", "compare", "plan trip", "detailed analysis", "poora plan", "guide")):
-        active_tool_names.add("deep_research")
-
-    effective_tools = [
-        t for t in TOOL_DEFINITIONS
-        if t["function"]["name"] in active_tool_names
-    ]
-
-    MAX_TOOL_ITERATIONS = 4
+    MAX_TOOL_ITERATIONS = 6
     current_model = model
+    executed_tool_signatures = set()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             payload = {
                 "model": current_model,
-                "temperature": 0.5,
+                "temperature": 0.2 if effective_tools else 0.5,
                 "messages": messages,
                 "max_tokens": 1024,
             }
-            # Only send tools schema on iteration 0 to allow tool selection.
-            # Iteration 1+ is summarizing executed tool results, so omitting tools saves ~3,500 tokens!
-            if effective_tools and iteration == 0:
+            # Send tools schema on EVERY iteration to support multi-step chaining
+            if effective_tools:
                 payload["tools"] = effective_tools
                 payload["tool_choice"] = "auto"
 
@@ -441,19 +386,42 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             messages.append(choice_msg)
 
             # Execute every tool call emitted
+            abort_iteration = False
             for tc in tool_calls:
-                call_id = tc.get("id") or f"call_{int(time.time())}"
+                call_id = tc.get("id") or f"call_{int(time.time())}_{iteration}"
                 fn_name = tc["function"]["name"]
                 raw_args = tc["function"].get("arguments", "{}")
                 tool_calls_executed.append(fn_name)
+
+                # Loop Guard: detect repeated identical tool call + args
+                call_sig = (fn_name, raw_args.strip() if isinstance(raw_args, str) else json.dumps(raw_args, sort_keys=True))
+                if call_sig in executed_tool_signatures:
+                    logger.warning(f"Loop guard tripped: {fn_name} called repeatedly with {raw_args}. Aborting loop.")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps({"status": "error", "message": f"Loop detected: Tool '{fn_name}' was already called with identical arguments."})
+                    })
+                    abort_iteration = True
+                    break
+                executed_tool_signatures.add(call_sig)
 
                 try:
                     args_dict = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                 except Exception:
                     args_dict = {}
 
-                # Execute tool
-                tool_result = await execute_tool(chat_id, fn_name, args_dict)
+                # Execute tool with per-tool timeout (15s) and catch-all error handling
+                try:
+                    tool_result = await asyncio.wait_for(
+                        execute_tool(chat_id, fn_name, args_dict),
+                        timeout=15.0
+                    )
+                except asyncio.TimeoutError:
+                    tool_result = {"status": "error", "message": f"Tool '{fn_name}' timed out after 15s"}
+                except Exception as tool_exc:
+                    tool_result = {"status": "error", "message": f"Tool '{fn_name}' error: {str(tool_exc)}"}
+
                 tool_results_list.append(tool_result)
 
                 # Pillar 1 Optimization: Single-turn direct response (Saves ~3,500 tokens on redundant 2nd LLM call!)
@@ -782,6 +750,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
 
     latency_ms = int((time.time() - start_ts) * 1000)
+
+    # Per-Turn Structured Logging (Phase 1 Requirement 8)
+    retrieved_summary = [
+        {"id": m.get("id"), "score": round(float(m.get("score", 0.0)), 4)}
+        for m in (mem_ctx.get("relevant_memories") or [])
+    ]
+    logger.info(
+        f"[PeculiarAI Turn] chat_id={chat_id} latency_ms={latency_ms} tokens={total_tokens} "
+        f"tools={tool_calls_executed} retrieved={retrieved_summary}"
+    )
 
     # Record turn
     await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)

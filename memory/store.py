@@ -90,25 +90,26 @@ def _init_sqlite_if_needed():
 
 
 def _get_embedding_model():
-    """Lazy load FastEmbed embedding model (384-dimension BAAI/bge-small-en-v1.5)."""
+    """Lazy load FastEmbed embedding model (384-dimension multilingual MiniLM-L12-v2)."""
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
         try:
             from fastembed import TextEmbedding
-            _EMBED_MODEL = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+            _EMBED_MODEL = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
         except Exception as exc:
             logger.warning(f"FastEmbed load error (falling back to trigram search): {exc}")
             _EMBED_MODEL = False
     return _EMBED_MODEL if _EMBED_MODEL is not False else None
 
 
-def embed_text(content: str) -> Optional[List[float]]:
+def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
     """Generates 384-dimensional dense vector embedding or returns None on error."""
     model = _get_embedding_model()
     if not model or not content or not content.strip():
         return None
     try:
-        embeddings = list(model.embed([content.strip()]))
+        prefix = "query: " if is_query else "passage: "
+        embeddings = list(model.embed([f"{prefix}{content.strip()}"]))
         if embeddings:
             return embeddings[0].tolist()
     except Exception as exc:
@@ -628,11 +629,13 @@ def search_memories_hybrid(
     query: str,
     limit: int = 5,
     memory_type: Optional[str] = None,
-    entity_id: Optional[int] = None
+    entity_id: Optional[int] = None,
+    min_score: float = 0.015
 ) -> List[Dict[str, Any]]:
     """
-    Executes hybrid search. On PostgreSQL: combines dense vector cosine distance + pg_trgm.
-    On SQLite: ranks by content similarity using SequenceMatcher.
+    Executes hybrid search via Reciprocal Rank Fusion (RRF, k=60):
+    dense vector cosine ops + full-text search (tsvector) + trigram similarity (pg_trgm) + recency boost.
+    On SQLite: ranks by content similarity using SequenceMatcher + recency boost.
     """
     _init_sqlite_if_needed()
     q_clean = query.strip()
@@ -642,19 +645,60 @@ def search_memories_hybrid(
     is_pg = db.engine.dialect.name == "postgresql"
 
     if is_pg:
-        q_emb = embed_text(q_clean)
+        q_emb = embed_text(q_clean, is_query=True)
         with db.engine.connect() as conn:
             if q_emb:
                 sql = """
+                    WITH vector_ranked AS (
+                        SELECT m.id,
+                               ROW_NUMBER() OVER (ORDER BY m.embedding <=> CAST(:q_emb AS vector) ASC) as v_rank
+                        FROM memories m
+                        WHERE m.user_id = :uid AND m.status = 'active'
+                          AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
+                          AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
+                        LIMIT 25
+                    ),
+                    fts_ranked AS (
+                        SELECT m.id,
+                               ROW_NUMBER() OVER (ORDER BY ts_rank_cd(m.tsv, plainto_tsquery('english', :query)) DESC) as f_rank
+                        FROM memories m
+                        WHERE m.user_id = :uid AND m.status = 'active'
+                          AND m.tsv @@ plainto_tsquery('english', :query)
+                          AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
+                          AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
+                        LIMIT 25
+                    ),
+                    trgm_ranked AS (
+                        SELECT m.id,
+                               ROW_NUMBER() OVER (ORDER BY similarity(m.content, :query) DESC) as t_rank
+                        FROM memories m
+                        WHERE m.user_id = :uid AND m.status = 'active'
+                          AND similarity(m.content, :query) > 0.08
+                          AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
+                          AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
+                        LIMIT 25
+                    ),
+                    candidates AS (
+                        SELECT id FROM vector_ranked
+                        UNION
+                        SELECT id FROM fts_ranked
+                        UNION
+                        SELECT id FROM trgm_ranked
+                    )
                     SELECT m.id, m.memory_type, m.content, m.structured, m.status,
                            m.created_at, e.name AS entity_name,
-                           (0.6 * (1.0 - (m.embedding <=> CAST(:q_emb AS vector))) + 0.4 * similarity(m.content, :query)) AS score
-                    FROM memories m
+                           (
+                               COALESCE(1.0 / (60.0 + vr.v_rank), 0.0) +
+                               COALESCE(1.0 / (60.0 + fr.f_rank), 0.0) +
+                               COALESCE(1.0 / (60.0 + tr.t_rank), 0.0) +
+                               (0.015 / (1.0 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400.0))
+                           ) AS score
+                    FROM candidates c
+                    JOIN memories m ON m.id = c.id
                     LEFT JOIN entities e ON e.id = m.subject_entity_id
-                    WHERE m.user_id = :uid
-                      AND m.status = 'active'
-                      AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
-                      AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
+                    LEFT JOIN vector_ranked vr ON vr.id = c.id
+                    LEFT JOIN fts_ranked fr ON fr.id = c.id
+                    LEFT JOIN trgm_ranked tr ON tr.id = c.id
                     ORDER BY score DESC
                     LIMIT :lim
                 """
@@ -670,11 +714,12 @@ def search_memories_hybrid(
                 sql = """
                     SELECT m.id, m.memory_type, m.content, m.structured, m.status,
                            m.created_at, e.name AS entity_name,
-                           similarity(m.content, :query) AS score
+                           (similarity(m.content, :query) + (0.015 / (1.0 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400.0))) AS score
                     FROM memories m
                     LEFT JOIN entities e ON e.id = m.subject_entity_id
                     WHERE m.user_id = :uid
                       AND m.status = 'active'
+                      AND similarity(m.content, :query) > 0.08
                       AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
                       AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
                     ORDER BY score DESC
@@ -701,6 +746,7 @@ def search_memories_hybrid(
                     "score": float(r[7]) if r[7] is not None else 0.0
                 }
                 for r in rows
+                if (float(r[7]) if r[7] is not None else 0.0) >= min_score
             ]
     else:
         # SQLite dialect fallback (for tests)
@@ -736,6 +782,7 @@ def search_memories_hybrid(
                     "entity_name": r[6],
                     "score": score
                 })
+            scored = [s for s in scored if s["score"] >= min_score]
             scored.sort(key=lambda x: x["score"], reverse=True)
             return scored[:limit]
 
