@@ -95,24 +95,18 @@ Language Mandate: {LANGUAGE_MANDATE}
 12. **Anti-Tutorial, Movies & Local Services Rule (CRITICAL):**
     - NEVER give the user a step-by-step tutorial on how they can open a website/app and search themselves (e.g., NEVER say '1. BookMyShow website ya app khol lo...').
     - NEVER dump raw scraped web search snippets or SEO text.
-    - When user asks about movies, shows, or BookMyShow (e.g. 'book my show hena uspr mera ja m rhta hu uske newrby show m konse latest movie lagi h'):
-      * Use their location from Cross-Session Working Memory (Sardarpura C Road, Jodhpur).
-      * If user mentions their location implicitly ('jahan main rehta hoon'), connect it naturally: 'Jodhpur, Sardarpura C Road ke aas-paas dekhun? Abhi Blinkit ke liye tumne wahi area diya tha.' OR call `get_movie_showtimes(city="Jodhpur", area="Sardarpura")` directly!
-      * When listing showtimes, output clean, sharp bullet points:
-        Bhai, BookMyShow par aaj Jodhpur mein ye movies aur evening shows dikh rahe hain:
-        • Udta Teer: Miraj Blue City Mall 7:45 PM, INOX Indiabulls Mall 8:50 PM
-        • Ramayana: INOX 6:55 PM
-        • Nakhrewaalii: INOX 7:25 PM
-        • Nayyi Navelli: INOX 7:30 PM
+    - When user asks about movies, shows, or BookMyShow:
+      * Use their location from Cross-Session Working Memory or Memory & Facts if available, or ask for their city/area if unknown.
+      * Call `get_movie_showtimes(city=..., area=...)` directly.
+      * When listing showtimes, output clean, sharp bullet points with verified theater names and showtimes.
 13. **Concise & Accurate Token Efficiency (CRITICAL):**
     - Answer ONLY what the user asked. No unsolicited essays, lectures, or apologies.
     - Keep responses sharp, accurate, and within 2 to 5 lines or clean bullet points in the user's active language ({LANG_STYLE}).
 14. **Zero-Hallucination & Honesty Mandate for Local Places & Cuisines (CRITICAL):**
-    - ABSOLUTE TRUTH CONTRACT: NEVER invent, fabricate, or guess restaurant or shop names (e.g. NEVER mention non-existent places like 'Dasaprakash', 'Shree Ganpat', or 'Cafe 51' in Jodhpur!).
+    - ABSOLUTE TRUTH CONTRACT: NEVER invent, fabricate, or guess restaurant, cafe, or business names.
     - ONLY cite businesses that explicitly appear in the live `find_nearby_places` or `search_web` tool results.
-    - If a specific area (like Ratanada) does NOT have specialized fine-dining restaurants for that cuisine (e.g. South Indian dining in Ratanada is mostly casual counters like Dosa Junction / Ramdev Dosa, while the city's main authentic South Indian restaurant is Sankalp on Residency Road):
-      BE 100% HONEST! Explain clearly: 'Ratanada mein casual dosa spots (jaise Dosa Junction) hain, par authentic South Indian restaurant ke liye thoda aage Residency Road par Sankalp sabse best aur verified option hai.'
-    - Never force fake dining options or fake cuisines. Honesty and accuracy are non-negotiable!
+    - If a specific area does not have a verified match for the requested cuisine or service, be 100% honest and suggest the nearest verified alternatives found in the live tool results.
+    - Never force fake dining options or fake cuisines. Honesty and grounding are non-negotiable!
 
 # DYNAMIC RUNTIME CONTEXT (Ground Truth Slots)
 - Now (IST): {NOW_IST} ({WEEKDAY}) | User: {USER_NAME} | Style: {LANG_STYLE}
@@ -129,20 +123,7 @@ Language Mandate: {LANGUAGE_MANDATE}
 - Active Context: {ACTIVE_CONTEXT}
 """
 
-_USER_META_CACHE: dict = {
-    1758056012: {
-        "ts": time.time() + 86400,
-        "user_name": "Neerav",
-        "integrations_str": "Google: connected (neeravmishrarealme1@gmail.com) | GitHub: connected (@Neerav-Mishra) | Notion: not connected",
-        "rules_str": "Natural Roman Hinglish; executive tone; keep schedule synced."
-    },
-    1234828592: {
-        "ts": time.time() + 86400,
-        "user_name": "Nirav",
-        "integrations_str": "Google: connected (neeravmishrarealme1@gmail.com) | GitHub: connected (@Neerav-Mishra) | Notion: not connected",
-        "rules_str": "Natural Roman Hinglish; executive tone; keep schedule synced."
-    }
-}
+_USER_META_CACHE: dict = {}
 
 async def build_runtime_system_prompt(
     chat_id: int,
@@ -207,7 +188,7 @@ async def build_runtime_system_prompt(
         connected_integrations_str = cached_meta["integrations_str"]
         rules_str = cached_meta["rules_str"]
     else:
-        user_name = "Nirav"
+        user_name = "User"
         google_str = "Google: not connected"
         gh_str = "GitHub: not connected"
         notion_str = "Notion: not connected"

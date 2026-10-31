@@ -1897,7 +1897,7 @@ async def create_user_reminder(
             f"📅 Due: {due_d}{time_str}\n"
             f"✅ Synced to your Telegram assistant."
         )
-        for notify_cid in set([target_chat_id, 1234828592, 1758056012]):
+        for notify_cid in [target_chat_id]:
             asyncio.create_task(tg("sendMessage", {"chat_id": notify_cid, "text": tg_text}))
     except Exception as exc:
         print("[api_v1] Telegram reminder notify error:", exc)
@@ -1968,7 +1968,7 @@ async def delete_user_reminder(
             conn.execute(
                 text(
                     "DELETE FROM memory_items WHERE id = :id "
-                    "AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, :target, 1234828592, 1758056012))"
+                    "AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, :target))"
                 ),
                 {"id": reminder_id, "c": chat_id, "target": target_chat}
             )

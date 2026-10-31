@@ -1570,7 +1570,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                             db.text(
                                 "DELETE FROM reminders WHERE item_id IN ("
                                 "  SELECT id FROM memory_items "
-                                "  WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                "  WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid) "
                                 "  AND LOWER(title) = LOWER(:t) AND due_date > :max_d"
                                 ")"
                             ),
@@ -1579,7 +1579,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         conn.execute(
                             db.text(
                                 "DELETE FROM memory_items "
-                                "WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                "WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid) "
                                 "AND LOWER(title) = LOWER(:t) AND due_date > :max_d"
                             ),
                             {"cid": chat_id, "t": args.title, "max_d": d_val + timedelta(days=1)}
@@ -1735,12 +1735,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             with engine.begin() as conn:
                 if rem_id:
                     matched_rows = conn.execute(
-                        text("SELECT id, title FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
+                        text("SELECT id, title FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
                         {"id": rem_id, "c": can_cid}
                     ).fetchall()
                 elif clean_kw:
                     matched_rows = conn.execute(
-                        text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
+                        text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
                         {"pat": f"%{clean_kw}%", "c": can_cid}
                     ).fetchall()
                     # Fallback token match if exact substring not found
@@ -1748,7 +1748,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         tokens = [t for t in clean_kw.split() if len(t) >= 3]
                         for tk in tokens:
                             rows = conn.execute(
-                                text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:c, 1758056012, 1234828592))"),
+                                text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
                                 {"pat": f"%{tk}%", "c": can_cid}
                             ).fetchall()
                             if rows:

@@ -21,6 +21,18 @@ logger = logging.getLogger("peculiar_heartbeat")
 _DISPATCHED_PRE_ALERTS = set()
 _EVENING_WRAPUP_SENT = set()
 
+def get_active_target_chat_ids() -> list:
+    """Dynamically fetches all registered Telegram chat IDs so all users receive briefings & reminders."""
+    try:
+        with db.engine.connect() as conn:
+            rows = conn.execute(db.text("SELECT DISTINCT telegram_chat_id FROM users WHERE telegram_chat_id > 0")).fetchall()
+            ids = [int(r[0]) for r in rows if r[0]]
+            if ids:
+                return ids
+    except Exception:
+        pass
+    return [1758056012]
+
 TARGET_CHAT_IDS = [1234828592, 1758056012]
 
 async def send_proactive_telegram(chat_id: int, message: str) -> bool:
@@ -76,7 +88,7 @@ async def check_15min_upcoming_alerts(now_ist: datetime):
     now_time = now_ist.time()
     current_minutes = now_time.hour * 60 + now_time.minute
 
-    for cid in TARGET_CHAT_IDS:
+    for cid in get_active_target_chat_ids():
         cid_can = db.canonical_chat_id(cid)
         items = db.items_for_date(cid_can, today) or []
         for it in items:
@@ -107,7 +119,7 @@ async def check_evening_wrapup(now_ist: datetime):
     today_str = str(now_ist.date())
     # Target window: 21:30 - 21:35 IST
     if now_ist.hour == 21 and 30 <= now_ist.minute <= 35:
-        for cid in TARGET_CHAT_IDS:
+        for cid in get_active_target_chat_ids():
             key = f"{today_str}_{cid}_evening"
             if key in _EVENING_WRAPUP_SENT:
                 continue
@@ -145,7 +157,7 @@ async def roll_daily_recurring_reminders(now_ist: datetime):
     today = now_ist.date()
     tomorrow = today + timedelta(days=1)
 
-    for cid in TARGET_CHAT_IDS:
+    for cid in get_active_target_chat_ids():
         try:
             cid_can = db.canonical_chat_id(cid)
             rules = db.get_user_rules(cid_can) or []
@@ -184,7 +196,7 @@ async def roll_daily_recurring_reminders(now_ist: datetime):
                                 conn.execute(
                                     db.text(
                                         "DELETE FROM reminders WHERE item_id IN ("
-                                        "  SELECT id FROM memory_items WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                        "  SELECT id FROM memory_items WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid) "
                                         "  AND LOWER(title) = LOWER(:t) AND due_date > :tom"
                                         ")"
                                     ),
@@ -192,7 +204,7 @@ async def roll_daily_recurring_reminders(now_ist: datetime):
                                 )
                                 conn.execute(
                                     db.text(
-                                        "DELETE FROM memory_items WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id IN (:cid, 1758056012, 1234828592)) "
+                                        "DELETE FROM memory_items WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid) "
                                         "AND LOWER(title) = LOWER(:t) AND due_date > :tom"
                                     ),
                                     {"cid": cid_can, "t": rem_title, "tom": tomorrow}

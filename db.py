@@ -351,7 +351,7 @@ def get_upcoming_reminders(chat_id, now):
                 "FROM reminders r "
                 "JOIN memory_items m ON m.id = r.item_id "
                 "JOIN users u ON u.id = m.user_id "
-                "WHERE u.telegram_chat_id IN (:c, 1758056012, 1234828592) "
+                "WHERE u.telegram_chat_id = :c "
                 "AND (r.sent IS NOT TRUE) "
                 "AND r.remind_at > :now "
                 "ORDER BY r.remind_at LIMIT 30"
