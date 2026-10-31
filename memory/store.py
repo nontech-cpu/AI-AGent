@@ -301,6 +301,24 @@ def save_entity(
     if p_alias:
         add_entity_alias(entity_id, p_alias)
 
+    # Register relational aliases if applicable (e.g. friend -> dost, frnd, yaar)
+    RELATION_SYNONYMS = {
+        "friend": ["dost", "frnd", "yaar", "mitra"],
+        "dost": ["friend", "frnd", "yaar", "mitra"],
+        "father": ["papa", "dad", "pitaji"],
+        "papa": ["father", "dad", "pitaji"],
+        "mother": ["mummy", "mom", "maa", "mataji"],
+        "mummy": ["mother", "mom", "maa", "mataji"],
+        "brother": ["bhai", "bro"],
+        "bhai": ["brother", "bro"],
+        "sister": ["behen", "didi"],
+        "sister": ["behen", "didi"]
+    }
+    cn_low = clean_name.lower()
+    if cn_low in RELATION_SYNONYMS:
+        for syn in RELATION_SYNONYMS[cn_low]:
+            add_entity_alias(entity_id, syn)
+
     parts = clean_name.split()
     if len(parts) > 1 and len(parts[0]) >= 3:
         add_entity_alias(entity_id, parts[0])
@@ -380,22 +398,38 @@ def find_entity(user_id: int, query: str, threshold: float = 0.22) -> Optional[D
     if not all_records:
         return None
 
-    # 1. Exact match on name, primary_alias, or alias_clean
-    for r in all_records:
-        name_l = (r[1] or "").lower()
-        p_alias_l = (r[3] or "").lower()
-        alias_l = (r[5] or "").lower()
-        if q_clean in (name_l, p_alias_l, alias_l):
-            raw_attrs = r[4]
-            attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
-            return {
-                "id": r[0],
-                "name": r[1],
-                "entity_type": r[2],
-                "primary_alias": r[3],
-                "attributes": attrs,
-                "match_similarity": 1.0
-            }
+    RELATION_SYNONYMS = {
+        "dost": ["friend", "frnd", "yaar", "mitra"],
+        "frnd": ["friend", "dost", "yaar"],
+        "friend": ["dost", "frnd", "yaar", "mitra"],
+        "papa": ["father", "dad", "pitaji"],
+        "father": ["papa", "dad", "pitaji"],
+        "mummy": ["mother", "mom", "maa", "mataji"],
+        "mother": ["mummy", "mom", "maa", "mataji"],
+        "bhai": ["brother", "bro"],
+        "brother": ["bhai", "bro"],
+        "sister": ["behen", "didi"],
+        "sister": ["behen", "didi"]
+    }
+    candidate_queries = [q_clean] + RELATION_SYNONYMS.get(q_clean, [])
+
+    # 1. Exact match on name, primary_alias, or alias_clean (including relation synonyms)
+    for q_cand in candidate_queries:
+        for r in all_records:
+            name_l = (r[1] or "").lower()
+            p_alias_l = (r[3] or "").lower()
+            alias_l = (r[5] or "").lower()
+            if q_cand in (name_l, p_alias_l, alias_l):
+                raw_attrs = r[4]
+                attrs = json.loads(raw_attrs) if isinstance(raw_attrs, str) else (raw_attrs or {})
+                return {
+                    "id": r[0],
+                    "name": r[1],
+                    "entity_type": r[2],
+                    "primary_alias": r[3],
+                    "attributes": attrs,
+                    "match_similarity": 1.0
+                }
 
     # 2. Fuzzy / Difflib match on all alias strings
     alias_dict = {}
