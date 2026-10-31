@@ -4,6 +4,7 @@ PostgreSQL-backed CRUD operations for Entities, Aliases, and Layered Memories.
 Supports Hybrid Vector (pgvector) + Trigram (pg_trgm) retrieval with fastembed embeddings.
 Includes transparent fallback and SQLite-compatibility for test suite isolation.
 """
+import os
 import json
 import logging
 import difflib

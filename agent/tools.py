@@ -2844,9 +2844,24 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
             if emb:
                 _DOMAIN_TOOL_EMBED_CACHE[fn_name] = emb
 
+    core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
     user_emb = embed_text(user_text, is_query=True)
     if not user_emb or not _DOMAIN_TOOL_EMBED_CACHE:
-        return TOOL_DEFINITIONS
+        low = user_text.lower()
+        extra_domain = []
+        for dt in domain_tools:
+            fname = dt["function"]["name"].lower()
+            if any(k in low for k in ("github", "repo", "git")) and "github" in fname:
+                extra_domain.append(dt)
+            elif any(k in low for k in ("notion", "page")) and "notion" in fname:
+                extra_domain.append(dt)
+            elif any(k in low for k in ("meet", "meeting", "calendar", "google")) and any(x in fname for x in ("meeting", "google", "event")):
+                extra_domain.append(dt)
+            elif any(k in low for k in ("email", "mail", "gmail")) and any(x in fname for x in ("mail", "gmail")):
+                extra_domain.append(dt)
+            elif any(k in low for k in ("file", "csv", "excel", "pdf", "sheet", "upload")) and any(x in fname for x in ("file", "drive")):
+                extra_domain.append(dt)
+        return core_tools + extra_domain[:4]
 
     # Score domain tools by semantic similarity
     scored_domain = []
