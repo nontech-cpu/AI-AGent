@@ -8,6 +8,7 @@ import json
 import logging
 import difflib
 import time
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy import text
@@ -56,9 +57,20 @@ def _init_sqlite_if_needed():
                     status TEXT DEFAULT 'active',
                     source_type TEXT DEFAULT 'chat',
                     embedding TEXT,
+                    superseded_by INTEGER,
+                    valid_from TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    valid_to TIMESTAMP,
+                    importance INTEGER DEFAULT 3,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS conversation_summaries (
+                    user_id INTEGER PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.execute(text("""
@@ -428,10 +440,14 @@ def save_memory_item(
     subject_entity_id: Optional[int] = None,
     structured: Optional[Dict[str, Any]] = None,
     status: str = "active",
-    source_type: str = "chat"
+    source_type: str = "chat",
+    superseded_by: Optional[int] = None,
+    valid_from: Optional[Any] = None,
+    valid_to: Optional[Any] = None,
+    importance: int = 3
 ) -> int:
     """
-    Stores a memory item with an automatic 384-dim dense embedding.
+    Stores a memory item with an automatic 384-dim dense embedding and versioning metadata.
     """
     _init_sqlite_if_needed()
     clean_content = content.strip()
@@ -446,10 +462,12 @@ def save_memory_item(
                     text("""
                         INSERT INTO memories (
                             user_id, memory_type, subject_entity_id, content,
-                            structured, status, source_type, embedding
+                            structured, status, source_type, embedding,
+                            superseded_by, valid_from, valid_to, importance
                         ) VALUES (
                             :uid, :mtype, :eid, :content,
-                            CAST(:struct AS jsonb), :status, :source, CAST(:emb AS vector)
+                            CAST(:struct AS jsonb), :status, :source, CAST(:emb AS vector),
+                            :sup_by, COALESCE(:vfrom, CURRENT_TIMESTAMP), :vto, :imp
                         ) RETURNING id
                     """),
                     {
@@ -460,7 +478,11 @@ def save_memory_item(
                         "struct": struct_json,
                         "status": status,
                         "source": source_type,
-                        "emb": str(emb)
+                        "emb": str(emb),
+                        "sup_by": superseded_by,
+                        "vfrom": valid_from,
+                        "vto": valid_to,
+                        "imp": importance
                     }
                 )
             else:
@@ -468,10 +490,12 @@ def save_memory_item(
                     text("""
                         INSERT INTO memories (
                             user_id, memory_type, subject_entity_id, content,
-                            structured, status, source_type
+                            structured, status, source_type,
+                            superseded_by, valid_from, valid_to, importance
                         ) VALUES (
                             :uid, :mtype, :eid, :content,
-                            CAST(:struct AS jsonb), :status, :source
+                            CAST(:struct AS jsonb), :status, :source,
+                            :sup_by, COALESCE(:vfrom, CURRENT_TIMESTAMP), :vto, :imp
                         ) RETURNING id
                     """),
                     {
@@ -481,7 +505,11 @@ def save_memory_item(
                         "content": clean_content,
                         "struct": struct_json,
                         "status": status,
-                        "source": source_type
+                        "source": source_type,
+                        "sup_by": superseded_by,
+                        "vfrom": valid_from,
+                        "vto": valid_to,
+                        "imp": importance
                     }
                 )
             mem_id = res.fetchone()[0]
@@ -490,10 +518,12 @@ def save_memory_item(
                 text("""
                     INSERT INTO memories (
                         user_id, memory_type, subject_entity_id, content,
-                        structured, status, source_type, embedding
+                        structured, status, source_type, embedding,
+                        superseded_by, valid_from, valid_to, importance
                     ) VALUES (
                         :uid, :mtype, :eid, :content,
-                        :struct, :status, :source, :emb
+                        :struct, :status, :source, :emb,
+                        :sup_by, COALESCE(:vfrom, CURRENT_TIMESTAMP), :vto, :imp
                     )
                 """),
                 {
@@ -504,7 +534,11 @@ def save_memory_item(
                     "struct": struct_json,
                     "status": status,
                     "source": source_type,
-                    "emb": json.dumps(emb) if emb else None
+                    "emb": json.dumps(emb) if emb else None,
+                    "sup_by": superseded_by,
+                    "vfrom": valid_from,
+                    "vto": valid_to,
+                    "imp": importance
                 }
             )
             res = conn.execute(text("SELECT last_insert_rowid()"))
@@ -653,7 +687,7 @@ def search_memories_hybrid(
                         SELECT m.id,
                                ROW_NUMBER() OVER (ORDER BY m.embedding <=> CAST(:q_emb AS vector) ASC) as v_rank
                         FROM memories m
-                        WHERE m.user_id = :uid AND m.status = 'active'
+                        WHERE m.user_id = :uid AND m.status = 'active' AND m.valid_to IS NULL AND m.valid_to IS NULL
                           AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
                           AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
                         LIMIT 25
@@ -662,7 +696,7 @@ def search_memories_hybrid(
                         SELECT m.id,
                                ROW_NUMBER() OVER (ORDER BY ts_rank_cd(m.tsv, plainto_tsquery('english', :query)) DESC) as f_rank
                         FROM memories m
-                        WHERE m.user_id = :uid AND m.status = 'active'
+                        WHERE m.user_id = :uid AND m.status = 'active' AND m.valid_to IS NULL AND m.valid_to IS NULL
                           AND m.tsv @@ plainto_tsquery('english', :query)
                           AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
                           AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
@@ -672,7 +706,7 @@ def search_memories_hybrid(
                         SELECT m.id,
                                ROW_NUMBER() OVER (ORDER BY similarity(m.content, :query) DESC) as t_rank
                         FROM memories m
-                        WHERE m.user_id = :uid AND m.status = 'active'
+                        WHERE m.user_id = :uid AND m.status = 'active' AND m.valid_to IS NULL AND m.valid_to IS NULL
                           AND similarity(m.content, :query) > 0.08
                           AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
                           AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
@@ -719,6 +753,7 @@ def search_memories_hybrid(
                     LEFT JOIN entities e ON e.id = m.subject_entity_id
                     WHERE m.user_id = :uid
                       AND m.status = 'active'
+                      AND m.valid_to IS NULL
                       AND similarity(m.content, :query) > 0.08
                       AND (CAST(:mtype AS text) IS NULL OR m.memory_type = CAST(:mtype AS text))
                       AND (CAST(:eid AS integer) IS NULL OR m.subject_entity_id = CAST(:eid AS integer))
@@ -757,7 +792,7 @@ def search_memories_hybrid(
                            m.created_at, e.name AS entity_name
                     FROM memories m
                     LEFT JOIN entities e ON e.id = m.subject_entity_id
-                    WHERE m.user_id = :uid AND m.status = 'active'
+                    WHERE m.user_id = :uid AND m.status = 'active' AND m.valid_to IS NULL
                 """),
                 {"uid": user_id}
             ).fetchall()
@@ -899,3 +934,180 @@ def get_user_semantic_facts(user_id: int, category: Optional[str] = None) -> Lis
             })
         _FACTS_CACHE[ck] = {"exp": now_ts + 120.0, "data": facts}
         return facts
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Memory Consolidation, Versioning & User Controls
+# ---------------------------------------------------------------------------
+
+def consolidate_and_save_fact(
+    user_id: int,
+    content: str,
+    subject_entity_id: Optional[int] = None,
+    memory_type: str = "semantic_fact",
+    structured: Optional[Dict[str, Any]] = None,
+    importance: int = 3
+) -> Tuple[str, Optional[int]]:
+    """
+    Consolidates new candidate fact against existing memories for the same user and subject:
+    - NOOP: If an identical or highly similar fact (>0.88 similarity / exact content) is already active.
+    - UPDATE: If the new fact supersedes an older fact (similarity > 0.52).
+              Marks old fact valid_to = now, superseded_by = new_id.
+    - ADD: If genuinely new knowledge.
+    Returns (action, memory_id).
+    """
+    _init_sqlite_if_needed()
+    clean_content = content.strip()
+    is_pg = db.engine.dialect.name == "postgresql"
+    emb = embed_text(clean_content, is_query=False)
+
+    # Check for active existing memories for this user & subject
+    with db.engine.connect() as conn:
+        if is_pg and emb:
+            existing_rows = conn.execute(text("""
+                SELECT id, content, (1.0 - (embedding <=> CAST(:emb AS vector))) as sim
+                FROM memories
+                WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
+                  AND (CAST(:eid AS integer) IS NULL OR subject_entity_id = CAST(:eid AS integer))
+                ORDER BY sim DESC
+                LIMIT 5
+            """), {"uid": user_id, "eid": subject_entity_id, "emb": str(emb)}).fetchall()
+        else:
+            rows = conn.execute(text("""
+                SELECT id, content FROM memories
+                WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
+            """), {"uid": user_id}).fetchall()
+            existing_rows = []
+            for r in rows:
+                sim = difflib.SequenceMatcher(None, clean_content.lower(), r[1].lower()).ratio()
+                words_new = set(re.findall(r'\w+', clean_content.lower()))
+                words_old = set(re.findall(r'\w+', r[1].lower()))
+                overlap = len(words_new & words_old) / max(len(words_new | words_old), 1)
+                effective_sim = max(sim, overlap)
+                existing_rows.append((r[0], r[1], effective_sim))
+            existing_rows.sort(key=lambda x: x[2], reverse=True)
+
+    # 1. NOOP: Exact match or similarity >= 0.95
+    if existing_rows:
+        top_id, top_content, top_sim = existing_rows[0]
+        if top_sim >= 0.95 or clean_content.lower() == top_content.lower():
+            return ("NOOP", top_id)
+
+        # 2. UPDATE: If similarity is moderately high (>= 0.45)
+        if top_sim >= 0.45:
+            new_id = save_memory_item(
+                user_id=user_id,
+                content=clean_content,
+                memory_type=memory_type,
+                subject_entity_id=subject_entity_id,
+                structured=structured,
+                importance=importance
+            )
+            with db.engine.begin() as w_conn:
+                w_conn.execute(text("""
+                    UPDATE memories
+                    SET valid_to = CURRENT_TIMESTAMP, superseded_by = :nid, status = 'superseded'
+                    WHERE id = :oid
+                """), {"nid": new_id, "oid": top_id})
+            return ("UPDATE", new_id)
+
+    # 3. ADD: Genuinely new fact
+    new_id = save_memory_item(
+        user_id=user_id,
+        content=clean_content,
+        memory_type=memory_type,
+        subject_entity_id=subject_entity_id,
+        structured=structured,
+        importance=importance
+    )
+    return ("ADD", new_id)
+
+
+def get_active_memories(user_id: int) -> List[Dict[str, Any]]:
+    """Lists all active memories (valid_to IS NULL) grouped by subject with IDs."""
+    _init_sqlite_if_needed()
+    with db.engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT m.id, m.content, m.memory_type, m.importance, m.created_at, e.name AS subject_name
+            FROM memories m
+            LEFT JOIN entities e ON e.id = m.subject_entity_id
+            WHERE m.user_id = :uid AND m.status = 'active' AND m.valid_to IS NULL
+            ORDER BY m.subject_entity_id NULLS FIRST, m.importance DESC, m.created_at DESC
+        """), {"uid": user_id}).fetchall()
+        return [
+            {
+                "id": r[0],
+                "content": r[1],
+                "memory_type": r[2],
+                "importance": r[3] if len(r) > 3 and r[3] is not None else 3,
+                "created_at": str(r[4])[:10],
+                "subject": r[5] or "User"
+            }
+            for r in rows
+        ]
+
+
+def forget_memory(user_id: int, id_or_keyword: str) -> bool:
+    """Soft-deletes active memories matching ID or keyword (sets valid_to = CURRENT_TIMESTAMP and status = 'archived')."""
+    _init_sqlite_if_needed()
+    with db.engine.begin() as conn:
+        clean = id_or_keyword.strip()
+        if clean.isdigit():
+            res = conn.execute(text("""
+                UPDATE memories
+                SET valid_to = CURRENT_TIMESTAMP, status = 'archived'
+                WHERE user_id = :uid AND id = :mid AND valid_to IS NULL
+            """), {"uid": user_id, "mid": int(clean)})
+            return res.rowcount > 0
+        else:
+            res = conn.execute(text("""
+                UPDATE memories
+                SET valid_to = CURRENT_TIMESTAMP, status = 'archived'
+                WHERE user_id = :uid AND valid_to IS NULL AND LOWER(content) LIKE :kw
+            """), {"uid": user_id, "kw": f"%{clean.lower()}%"})
+            return res.rowcount > 0
+
+
+def get_core_profile(user_id: int) -> str:
+    """Loads ~300 tokens of always-true core user profile directly (NO retrieval needed)."""
+    _init_sqlite_if_needed()
+    with db.engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT content FROM memories
+            WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
+              AND (importance >= 4 OR memory_type IN ('preference', 'profile'))
+            ORDER BY importance DESC, created_at DESC
+            LIMIT 6
+        """), {"uid": user_id}).fetchall()
+        facts = [r[0] for r in rows]
+        if not facts:
+            return ""
+        return "\n".join([f"• {f}" for f in facts])
+
+
+def get_conversation_summary(user_id: int) -> Optional[str]:
+    """Retrieves cached running summary of earlier conversation turns."""
+    _init_sqlite_if_needed()
+    with db.engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT summary FROM conversation_summaries WHERE user_id = :uid
+        """), {"uid": user_id}).fetchone()
+        return row[0] if row else None
+
+
+def save_conversation_summary(user_id: int, summary: str):
+    """Saves or updates running conversation summary."""
+    _init_sqlite_if_needed()
+    is_pg = db.engine.dialect.name == "postgresql"
+    with db.engine.begin() as conn:
+        if is_pg:
+            conn.execute(text("""
+                INSERT INTO conversation_summaries (user_id, summary, updated_at)
+                VALUES (:uid, :summary, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET summary = :summary, updated_at = CURRENT_TIMESTAMP
+            """), {"uid": user_id, "summary": summary.strip()})
+        else:
+            conn.execute(text("""
+                INSERT OR REPLACE INTO conversation_summaries (user_id, summary, updated_at)
+                VALUES (:uid, :summary, CURRENT_TIMESTAMP)
+            """), {"uid": user_id, "summary": summary.strip()})

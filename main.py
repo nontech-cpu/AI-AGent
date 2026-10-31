@@ -2665,6 +2665,43 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         await say(chat_id, HELP_TEXT)
         return
 
+    # User Memory Controls (Phase 2)
+    if cmd_token in {"/memories", "/memory", "memories"}:
+        from memory.store import resolve_user_id, get_active_memories
+        uid = resolve_user_id(chat_id)
+        mems = get_active_memories(uid)
+        if not mems:
+            await say(chat_id, "Mere paas abhi aapki koi active memory saved nahi hai.")
+            return
+        grouped = {}
+        for m in mems:
+            sub = m["subject"]
+            grouped.setdefault(sub, []).append(m)
+        lines = ["🧠 **Aapki Saved Memories:**\n"]
+        for sub, items in grouped.items():
+            lines.append(f"**[{sub}]**")
+            for item in items:
+                lines.append(f"• `[ID {item['id']}]` {item['content']} (saved {item['created_at']})")
+            lines.append("")
+        lines.append("Kisi memory ko delete karne ke liye: `/forget <ID>` ya `/forget <keyword>`")
+        await say(chat_id, "\n".join(lines).strip())
+        return
+
+    if cmd_token == "/forget" or clean_lower.startswith("/forget "):
+        from memory.store import resolve_user_id, forget_memory
+        uid = resolve_user_id(chat_id)
+        parts = clean.split(maxsplit=1)
+        if len(parts) < 2:
+            await say(chat_id, "Kaunsi memory delete karni hai? Type: `/forget <ID>` ya `/forget <keyword>`")
+            return
+        target = parts[1].strip()
+        success = forget_memory(uid, target)
+        if success:
+            await say(chat_id, f"✅ Memory '{target}' successfully delete kar di gayi hai (archived).")
+        else:
+            await say(chat_id, f"⚠️ '{target}' se matching koi active memory nahi mili.")
+        return
+
     # Master Privacy Wipe State Handling
     if state == "confirm_master_wipe":
         yn = yes_no(clean)

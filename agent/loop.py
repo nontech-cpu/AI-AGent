@@ -295,12 +295,55 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
+    # 4.5. Phase 2: Last 8 Turns Conversation History + Running Summary
+    from memory.store import get_conversation_summary, save_conversation_summary, resolve_user_id
+    uid = resolve_user_id(chat_id)
+
+    all_turns = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 24)
+    running_summary = get_conversation_summary(uid)
+
+    if len(all_turns) > 8:
+        older_turns = all_turns[:-8]
+        recent_turns = all_turns[-8:]
+        if not running_summary and len(older_turns) >= 2:
+            try:
+                summary_prompt = "Summarize the following earlier conversation turns between user and assistant into a concise 2-3 sentence background context:\n" + "\n".join([f"{t['role']}: {t['text'][:200]}" for t in older_turns])
+                async with httpx.AsyncClient(timeout=10.0) as sm_client:
+                    sm_res = await sm_client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}"},
+                        json={
+                            "model": "openai/gpt-oss-20b",
+                            "messages": [{"role": "user", "content": summary_prompt}],
+                            "max_tokens": 150,
+                            "temperature": 0.2
+                        }
+                    )
+                    if sm_res.status_code == 200:
+                        running_summary = sm_res.json()["choices"][0]["message"]["content"].strip()
+                        save_conversation_summary(uid, running_summary)
+            except Exception as sm_exc:
+                logger.warning(f"Error computing conversation summary: {sm_exc}")
+    else:
+        recent_turns = all_turns
+
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    recent_history = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 3)
-    for turn in recent_history:
-        t_text = turn.get("text") or ""
-        if len(t_text) > 350:
-            t_text = t_text[:350] + "..."
+
+    if running_summary:
+        messages.append({
+            "role": "system",
+            "content": f"[Earlier Conversation Background Summary]:\n{running_summary}"
+        })
+
+    # Append up to last 8 turns, truncated to 300 chars per turn (total capped at ~1200 tokens)
+    total_hist_chars = 0
+    for turn in recent_turns:
+        t_text = (turn.get("text") or "").strip()
+        if len(t_text) > 300:
+            t_text = t_text[:297] + "..."
+        total_hist_chars += len(t_text)
+        if total_hist_chars > 4800:
+            break
         messages.append({"role": turn["role"], "content": t_text})
 
     messages.append({"role": "user", "content": user_text})
@@ -724,7 +767,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             tool_results=tool_results_list,
             memory_context=mem_ctx,
             user_query=user_text,
-            recent_history=recent_history
+            recent_history=recent_turns
         )
         if not is_grounded:
             print(f"Grounding Verifier intercepted unsupported claims: {violations}")

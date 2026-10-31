@@ -104,6 +104,14 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         except Exception:
             measurements = []
 
+    # 2.8 Core User Profile (~300 tokens always-on profile, no retrieval needed)
+    core_profile = ""
+    try:
+        from memory.store import get_core_profile
+        core_profile = get_core_profile(user_id)
+    except Exception:
+        core_profile = ""
+
     # 3. User facts & preferences (always provide top 3 relevant facts for context grounding)
     facts = []
     try:
@@ -113,6 +121,11 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
 
     # Format into context string
     lines = ["<memory>"]
+
+    if core_profile:
+        lines.append("[Core User Profile & Hard Constraints]:")
+        lines.append(core_profile)
+        lines.append("")
 
     if matched_entities:
         lines.append("[Identified Contacts & Entities]:")

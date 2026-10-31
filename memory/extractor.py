@@ -284,22 +284,19 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
 
             ev_date = fact_item.get("event_date") or today_iso
 
-            # Dedupe: skip if identical fact already in DB
-            from memory.store import search_memories_hybrid
-            recent_mems = search_memories_hybrid(user_id, fact_str, limit=3)
-            if any(r.get("score", 0) > 0.90 for r in recent_mems):
-                continue
-
-            mem_id = save_memory_item(
+            # Phase 2: Memory write consolidation (ADD / UPDATE / NOOP / DELETE)
+            from memory.store import consolidate_and_save_fact
+            action, mem_id = consolidate_and_save_fact(
                 user_id=user_id,
                 content=fact_str,
-                memory_type="semantic_fact",
                 subject_entity_id=subj_eid,
-                structured={"category": fact_item.get("category", "general"), "event_date": ev_date}
+                memory_type="semantic_fact",
+                structured={"category": fact_item.get("category", "general"), "event_date": ev_date},
+                importance=fact_item.get("importance", 3)
             )
 
             # Verification read-back
-            if mem_id and hasattr(db, "save_user_fact"):
+            if mem_id and hasattr(db, "save_user_fact") and action in ("ADD", "UPDATE"):
                 try:
                     db.save_user_fact(chat_id, fact_str, fact_item.get("category", "general"))
                 except Exception:
