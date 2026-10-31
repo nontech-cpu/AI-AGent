@@ -124,3 +124,4 @@ def test_user_memory_controls_and_forget():
     # Hybrid search must also exclude the forgotten memory
     search_res = search_memories_hybrid(TEST_USER_ID, "favorite dessert cheesecake", limit=5)
     assert not any(r["id"] == mem_id for r in search_res)
+

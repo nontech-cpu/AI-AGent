@@ -36,3 +36,4 @@ def test_phase4_golden_benchmark_thresholds():
 
     # Tokens per turn capping
     assert report["avg_tokens_per_turn"] <= 600, f"Token budget exceeded: {report['avg_tokens_per_turn']}"
+
