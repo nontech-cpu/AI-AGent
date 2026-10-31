@@ -165,6 +165,15 @@ _RESOLVED_USER_ID_CACHE: Dict[int, int] = {}
 
 def resolve_user_id(chat_id_or_user_id: int) -> int:
     """Resolves telegram_chat_id or direct user_id into the internal users.id primary key."""
+    try:
+        from db import canonical_chat_id
+        chat_id_or_user_id = canonical_chat_id(chat_id_or_user_id)
+    except Exception:
+        pass
+
+    if chat_id_or_user_id in (1234828592, 1758056012, 306, 408):
+        return 408
+
     if chat_id_or_user_id in _RESOLVED_USER_ID_CACHE:
         return _RESOLVED_USER_ID_CACHE[chat_id_or_user_id]
 

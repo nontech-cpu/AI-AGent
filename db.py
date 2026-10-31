@@ -449,11 +449,16 @@ def remove_email_link(chat_id):
 # ---------- Conversation state (WhatsApp-style flow) ----------
 
 # ---------- Canonical User Identity Mapping ----------
-CANONICAL_CHAT_ID_MAP = {}
+# Maps secondary device/Telegram accounts of the same user to their primary data ID
+# Delivery to Telegram remains isolated on the originating chat_id in main.py
+CANONICAL_CHAT_ID_MAP = {
+    1234828592: 1758056012,
+}
 
 def canonical_chat_id(chat_id):
     try:
-        return int(chat_id)
+        cid_int = int(chat_id)
+        return CANONICAL_CHAT_ID_MAP.get(cid_int, cid_int)
     except Exception:
         return chat_id
 
