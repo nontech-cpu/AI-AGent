@@ -213,8 +213,15 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # 0. Semantic Language Switch Detection & Persistence
     detected_lang = detect_explicit_language_switch(trimmed_text)
-    if detected_lang and hasattr(db, "set_user_language"):
-        db.set_user_language(chat_id, detected_lang)
+    if detected_lang:
+        if hasattr(db, "set_user_language"):
+            db.set_user_language(chat_id, detected_lang)
+        try:
+            from agent.prompt import _UNIFIED_PROMPT_CACHE
+            if chat_id in _UNIFIED_PROMPT_CACHE:
+                _UNIFIED_PROMPT_CACHE[chat_id]["user_lang"] = detected_lang
+        except Exception:
+            pass
 
     # 1. Direct API Token Pasting Fast-Path (Notion / GitHub)
     if (trimmed_text.startswith("secret_") or trimmed_text.startswith("ntn_")) and len(trimmed_text) > 15:
