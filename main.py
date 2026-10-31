@@ -2609,13 +2609,8 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if not clean:
         return
     record_chat_turn(chat_id, "user", clean)
-    # Background: extract and learn user life facts, habits, and plans
-    try:
-        task_f = asyncio.create_task(extract_and_save_user_facts(chat_id, clean))
-        BG_TASKS.add(task_f)
-        task_f.add_done_callback(BG_TASKS.discard)
-    except Exception as exc:
-        print("fact extraction trigger error:", repr(exc))
+    # Background fact extraction disabled to conserve 100% of Groq rate limits for conversational turns
+    pass
 
     st = get_state(chat_id)
     if st is None:

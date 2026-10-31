@@ -208,6 +208,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
+    if "120b" in model:
+        model = "openai/gpt-oss-20b"
     trimmed_text = user_text.strip()
     low_prompt = trimmed_text.lower()
 
@@ -367,27 +369,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if len(all_turns) > 8:
         older_turns = all_turns[:-8]
         recent_turns = all_turns[-8:]
-        if not running_summary and len(older_turns) >= 2:
-            async def _bg_summarize():
-                try:
-                    summary_prompt = "Summarize the following earlier conversation turns between user and assistant into a concise 2-3 sentence background context:\n" + "\n".join([f"{t['role']}: {t['text'][:200]}" for t in older_turns])
-                    async with httpx.AsyncClient(timeout=10.0) as sm_client:
-                        sm_res = await sm_client.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {groq_key}"},
-                            json={
-                                "model": "openai/gpt-oss-20b",
-                                "messages": [{"role": "user", "content": summary_prompt}],
-                                "max_tokens": 150,
-                                "temperature": 0.2
-                            }
-                        )
-                        if sm_res.status_code == 200:
-                            s = sm_res.json()["choices"][0]["message"]["content"].strip()
-                            save_conversation_summary(uid, s)
-                except Exception as sm_exc:
-                    logger.warning(f"Error computing conversation summary in bg: {sm_exc}")
-            asyncio.create_task(_bg_summarize())
+        # Background summarization disabled to save Groq RPM quota
+        pass
     else:
         recent_turns = all_turns
 
@@ -880,7 +863,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         try:
             await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
             await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
-            schedule_extraction_task(chat_id, user_text, final_reply)
+            # schedule_extraction_task disabled to prevent 429 rate limit errors on Groq
             from connectors.trace import log_turn_trace
             is_suspect = (not is_grounded) or (not is_fake_ok)
             suspect_reason = "; ".join(violations) if violations else None
