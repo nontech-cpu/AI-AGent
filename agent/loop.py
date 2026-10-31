@@ -313,14 +313,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # 4. Context assembly: Ground Truth System Prompt & Chat History
     from memory.retrieval import assemble_memory_context
-    mem_ctx = assemble_memory_context(chat_id, user_text)
+    mem_ctx = await asyncio.to_thread(assemble_memory_context, chat_id, user_text)
 
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
 
     # 4.5. Phase 2: Last 8 Turns Conversation History + Running Summary
     from memory.store import get_conversation_summary, save_conversation_summary, resolve_user_id
-    uid = resolve_user_id(chat_id)
+    uid = await asyncio.to_thread(resolve_user_id, chat_id)
 
     all_turns = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 24)
     running_summary = get_conversation_summary(uid)

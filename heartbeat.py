@@ -83,35 +83,47 @@ async def broadcast_alert(message: str, specific_chat_id: Optional[int] = None):
 
 
 async def check_15min_upcoming_alerts(now_ist: datetime):
-    """Detects any reminder due within the next 15 minutes and sends a proactive ping."""
+    """Detects any reminder due within the next 15 minutes and sends a proactive ping using a single fast query."""
     today = now_ist.date()
     now_time = now_ist.time()
     current_minutes = now_time.hour * 60 + now_time.minute
 
-    for cid in get_active_target_chat_ids():
-        cid_can = db.canonical_chat_id(cid)
-        items = db.items_for_date(cid_can, today) or []
-        for it in items:
-            rem_id = it.get("id") if isinstance(it, dict) else (it[0] if len(it) > 0 else None)
-            title = it.get("title") if isinstance(it, dict) else (it[1] if len(it) > 1 else "Reminder")
-            due_time = it.get("due_time") if isinstance(it, dict) else (it[3] if len(it) > 3 else None)
+    def _fetch_upcoming():
+        alerts = []
+        try:
+            with db.engine.connect() as conn:
+                rows = conn.execute(
+                    db.text("""
+                        SELECT m.id, m.title, m.due_time, u.telegram_chat_id
+                        FROM memory_items m
+                        JOIN users u ON u.id = m.user_id
+                        WHERE m.due_date = :today AND m.due_time IS NOT NULL AND u.telegram_chat_id > 0
+                    """),
+                    {"today": today}
+                ).fetchall()
+                for r in rows:
+                    rem_id, title, due_time, cid = r[0], r[1], r[2], r[3]
+                    if not due_time:
+                        continue
+                    try:
+                        due_mins = due_time.hour * 60 + due_time.minute
+                        diff = due_mins - current_minutes
+                        if 0 <= diff <= 15:
+                            alerts.append((rem_id, title, due_time, cid, diff))
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.error(f"_fetch_upcoming error: {repr(exc)}")
+        return alerts
 
-            if not due_time:
-                continue
-
-            try:
-                due_mins = due_time.hour * 60 + due_time.minute
-                diff = due_mins - current_minutes
-                # Trigger when 5 to 15 minutes remaining
-                if 0 <= diff <= 15:
-                    alert_key = f"{today}_{rem_id}_15min"
-                    if alert_key not in _DISPATCHED_PRE_ALERTS:
-                        _DISPATCHED_PRE_ALERTS.add(alert_key)
-                        clock_str = due_time.strftime("%I:%M %p")
-                        msg = f"🔔 **Proactive Reminder (in {diff} mins):**\nBhai, aapka **{title}** scheduled hai at **{clock_str}**!"
-                        await broadcast_alert(msg, specific_chat_id=cid)
-            except Exception as e:
-                pass
+    upcoming = await asyncio.to_thread(_fetch_upcoming)
+    for rem_id, title, due_time, cid, diff in upcoming:
+        alert_key = f"{today}_{rem_id}_15min"
+        if alert_key not in _DISPATCHED_PRE_ALERTS:
+            _DISPATCHED_PRE_ALERTS.add(alert_key)
+            clock_str = due_time.strftime("%I:%M %p")
+            msg = f"🔔 **Proactive Reminder (in {diff} mins):**\nBhai, aapka **{title}** scheduled hai at **{clock_str}**!"
+            await broadcast_alert(msg, specific_chat_id=cid)
 
 
 async def check_evening_wrapup(now_ist: datetime):
@@ -148,49 +160,55 @@ async def check_evening_wrapup(now_ist: datetime):
             await broadcast_alert(msg, specific_chat_id=cid)
 
 
+_LAST_RECURRING_ROLL_DATE = None
+
 async def roll_daily_recurring_reminders(now_ist: datetime):
     """
     Dynamically advances daily recurring reminders day-by-day.
-    Reads active daily recurring rules from user_rules and ensures exactly ONE upcoming
-    instance exists (for tomorrow) without spamming the future calendar or DB.
+    Runs at most once per calendar day to avoid locking DB connections in a continuous 60-second loop.
     """
+    global _LAST_RECURRING_ROLL_DATE
     today = now_ist.date()
-    tomorrow = today + timedelta(days=1)
+    if _LAST_RECURRING_ROLL_DATE == today:
+        return
+    _LAST_RECURRING_ROLL_DATE = today
 
-    for cid in get_active_target_chat_ids():
-        try:
-            cid_can = db.canonical_chat_id(cid)
-            rules = db.get_user_rules(cid_can) or []
-            for r in rules:
-                rule_str = r.get("rule", "") if isinstance(r, dict) else str(r)
-                if "daily recurring reminder:" in rule_str.lower():
-                    m = re.search(r"daily recurring reminder:\s*(.+?)\s+at\s+(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)", rule_str, re.IGNORECASE)
-                    if not m:
-                        continue
-                    rem_title = m.group(1).strip()
-                    rem_time_str = m.group(2).strip()
+    def _do_roll_sync():
+        tomorrow = today + timedelta(days=1)
+        for cid in get_active_target_chat_ids():
+            try:
+                cid_can = db.canonical_chat_id(cid)
+                rules = db.get_user_rules(cid_can) or []
+                for r in rules:
+                    rule_str = r.get("rule", "") if isinstance(r, dict) else str(r)
+                    if "daily recurring reminder:" in rule_str.lower():
+                        m = re.search(r"daily recurring reminder:\s*(.+?)\s+at\s+(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)", rule_str, re.IGNORECASE)
+                        if not m:
+                            continue
+                        rem_title = m.group(1).strip()
+                        rem_time_str = m.group(2).strip()
 
-                    rem_time = None
-                    for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%H:%M:%S"):
-                        try:
-                            rem_time = datetime.strptime(rem_time_str, fmt).time()
-                            break
-                        except Exception:
-                            pass
-                    if not rem_time:
-                        continue
+                        rem_time = None
+                        for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%H:%M:%S"):
+                            try:
+                                rem_time = datetime.strptime(rem_time_str, fmt).time()
+                                break
+                            except Exception:
+                                pass
+                        if not rem_time:
+                            continue
 
-                    # Check if tomorrow already has this reminder
-                    tomorrow_items = db.items_for_date(cid_can, tomorrow) or []
-                    has_tomorrow = False
-                    for it in tomorrow_items:
-                        t_str = it.get("title") if isinstance(it, dict) else (it[1] if len(it) > 1 else "")
-                        if rem_title.lower() in (t_str or "").lower():
-                            has_tomorrow = True
-                            break
+                        tomorrow_items = db.items_for_date(cid_can, tomorrow) or []
+                        has_tomorrow = False
+                        for it in tomorrow_items:
+                            it_title = it.get("title", "") if isinstance(it, dict) else (it[1] if len(it) > 1 else "")
+                            if it_title.strip().lower() == rem_title.lower():
+                                has_tomorrow = True
+                                break
 
-                    if not has_tomorrow:
-                        # Clean up any potential stale future entries first beyond tomorrow
+                        if has_tomorrow:
+                            continue
+
                         try:
                             with db.engine.begin() as conn:
                                 conn.execute(
@@ -229,14 +247,11 @@ async def roll_daily_recurring_reminders(now_ist: datetime):
                         except Exception as pe:
                             logger.error(f"Build plan error during recurring roll: {pe}")
 
-                        try:
-                            from api_v1 import _invalidate_all_app_caches
-                            _invalidate_all_app_caches()
-                        except Exception:
-                            pass
                         logger.info(f"Dynamically rolled recurring reminder '{rem_title}' for {tomorrow} for user {cid_can}")
-        except Exception as ex:
-            logger.error(f"Error rolling daily recurring reminders for {cid}: {ex}")
+            except Exception as ex:
+                logger.error(f"Error rolling daily recurring reminders for {cid}: {ex}")
+
+    await asyncio.to_thread(_do_roll_sync)
 
 
 async def heartbeat_loop():

@@ -19,7 +19,14 @@ if raw_db_url.startswith("sqlite"):
         poolclass=StaticPool,
     )
 else:
-    engine = create_engine(raw_db_url, pool_pre_ping=True)
+    engine = create_engine(
+        raw_db_url,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=20,
+        pool_recycle=300,
+        pool_pre_ping=True
+    )
 
 
 def give_consent(chat_id):
@@ -96,8 +103,15 @@ def get_categories(chat_id):
     return list(row[0]) if row and row[0] else []
 
 
+_USER_LANG_CACHE: dict = {}
+
 def get_user_language(chat_id):
     chat_id = canonical_chat_id(chat_id)
+    cached = _USER_LANG_CACHE.get(chat_id)
+    import time as _t
+    now_ts = _t.time()
+    if cached and (now_ts - cached.get("ts", 0) < 180.0):
+        return cached.get("lang")
     try:
         with engine.connect() as conn:
             row = conn.execute(
@@ -105,7 +119,9 @@ def get_user_language(chat_id):
                 {"c": chat_id},
             ).first()
             if row and row[0]:
-                return str(row[0]).strip().lower()
+                lang = str(row[0]).strip().lower()
+                _USER_LANG_CACHE[chat_id] = {"ts": now_ts, "lang": lang}
+                return lang
     except Exception as exc:
         print("get_user_language error:", exc)
     return None
@@ -114,6 +130,8 @@ def get_user_language(chat_id):
 def set_user_language(chat_id, lang: str):
     chat_id = canonical_chat_id(chat_id)
     clean_lang = str(lang).strip().lower()
+    import time as _t
+    _USER_LANG_CACHE[chat_id] = {"ts": _t.time(), "lang": clean_lang}
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -908,20 +926,34 @@ def find_or_create_smart_list(chat_id, name, category="general"):
 
 # ---------- Phase 2: Behavioral Rules ----------
 
+_USER_RULES_CACHE: dict = {}
+
 def get_user_rules(chat_id):
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT r.id, r.rule_text, r.is_active, r.created_at "
-                "FROM user_rules r JOIN users u ON u.id = r.user_id "
-                "WHERE u.telegram_chat_id = :c ORDER BY r.id ASC"
-            ),
-            {"c": chat_id},
-        ).fetchall()
-    return [
-        {"id": r[0], "rule": r[1], "active": bool(r[2]), "created_at": r[3].isoformat() if hasattr(r[3], "isoformat") else str(r[3])}
-        for r in rows
-    ]
+    chat_id = canonical_chat_id(chat_id)
+    cached = _USER_RULES_CACHE.get(chat_id)
+    import time as _t
+    now_ts = _t.time()
+    if cached and (now_ts - cached.get("ts", 0) < 120.0):
+        return cached.get("rules", [])
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT r.id, r.rule_text, r.is_active, r.created_at "
+                    "FROM user_rules r JOIN users u ON u.id = r.user_id "
+                    "WHERE u.telegram_chat_id = :c ORDER BY r.id ASC"
+                ),
+                {"c": chat_id},
+            ).fetchall()
+        res = [
+            {"id": r[0], "rule": r[1], "active": bool(r[2]), "created_at": r[3].isoformat() if hasattr(r[3], "isoformat") else str(r[3])}
+            for r in rows
+        ]
+        _USER_RULES_CACHE[chat_id] = {"ts": now_ts, "rules": res}
+        return res
+    except Exception as exc:
+        logger.error(f"get_user_rules error: {exc}")
+        return []
 
 
 save_user_rule = None  # set below

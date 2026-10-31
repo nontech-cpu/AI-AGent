@@ -132,16 +132,27 @@ def _get_embedding_model():
     return _EMBED_MODEL if _EMBED_MODEL is not False else None
 
 
+_EMBED_QUERY_CACHE: dict = {}
+
 def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
     """Generates 384-dimensional dense vector embedding or returns None on error."""
+    if not content or not content.strip():
+        return None
+    cache_key = (content.strip().lower(), is_query)
+    if cache_key in _EMBED_QUERY_CACHE:
+        return _EMBED_QUERY_CACHE[cache_key]
     model = _get_embedding_model()
-    if not model or not content or not content.strip():
+    if not model:
         return None
     try:
         prefix = "query: " if is_query else "passage: "
         embeddings = list(model.embed([f"{prefix}{content.strip()}"]))
         if embeddings:
-            return embeddings[0].tolist()
+            vec = embeddings[0].tolist()
+            if len(_EMBED_QUERY_CACHE) > 500:
+                _EMBED_QUERY_CACHE.clear()
+            _EMBED_QUERY_CACHE[cache_key] = vec
+            return vec
     except Exception as exc:
         logger.warning(f"embed_text error: {exc}")
     return None

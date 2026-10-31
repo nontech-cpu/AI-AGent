@@ -324,18 +324,6 @@ async def build_runtime_system_prompt(
             "tomorrow": tomorrow_sched,
             "lists_str": lists_str
         }
-    try:
-        from db import get_smart_lists, canonical_chat_id
-        cid_can = canonical_chat_id(chat_id)
-        u_lists = get_smart_lists(cid_can)
-        if u_lists:
-            formatted_lists = []
-            for l in u_lists:
-                items_summary = ", ".join([it["title"] for it in l.get("items", [])[:8]])
-                formatted_lists.append(f"• {l['name']} ({len(l.get('items', []))} items: {items_summary or 'empty'})")
-            lists_str = "\n".join(formatted_lists)
-    except Exception:
-        lists_str = "None created yet."
 
 
     # 3. Pending Actions
@@ -360,22 +348,23 @@ async def build_runtime_system_prompt(
         except Exception:
             memory_block = ""
 
-    # Contextual Memory RAG: Search specifically for facts & past history matching user query!
-    try:
-        matched_rag_facts = db.search_relevant_user_facts(chat_id, user_text, limit=4)
-        if matched_rag_facts:
-            rag_lines = [f"• {f}" for f in matched_rag_facts]
-            rag_str = "Contextually Retrieved Past Facts & Memory (RAG):\n" + "\n".join(rag_lines)
-            memory_block = f"{memory_block}\n{rag_str}".strip() if memory_block else rag_str
-        else:
-            top_facts = db.get_user_facts(chat_id, limit=2)
-            if top_facts:
-                facts_lines = [f"• {f.get('fact')}" for f in top_facts if f.get('fact')]
-                if facts_lines:
-                    facts_str = "User Profile:\n" + "\n".join(facts_lines)
-                    memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
-    except Exception:
-        pass
+    # Contextual Memory RAG: Search specifically for facts only if not already provided via mem_ctx
+    if not mem_ctx:
+        try:
+            matched_rag_facts = db.search_relevant_user_facts(chat_id, user_text, limit=4)
+            if matched_rag_facts:
+                rag_lines = [f"• {f}" for f in matched_rag_facts]
+                rag_str = "Contextually Retrieved Past Facts & Memory (RAG):\n" + "\n".join(rag_lines)
+                memory_block = f"{memory_block}\n{rag_str}".strip() if memory_block else rag_str
+            else:
+                top_facts = db.get_user_facts(chat_id, limit=2)
+                if top_facts:
+                    facts_lines = [f"• {f.get('fact')}" for f in top_facts if f.get('fact')]
+                    if facts_lines:
+                        facts_str = "User Profile:\n" + "\n".join(facts_lines)
+                        memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
+        except Exception:
+            pass
 
     if not memory_block:
         memory_block = "User lives in Jodhpur, Rajasthan (Sardarpura area)."
