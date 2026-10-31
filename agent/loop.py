@@ -766,7 +766,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not final_reply:
         try:
             # Fallback must ALWAYS preserve the ground truth system prompt and memory block!
-            recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the memory and context above in {active_user_lang or "user language"}. Zero medical disclaimers or refusals."
+            rec_lang = active_user_lang or "user language"
+            recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the memory and context above in {rec_lang}. Zero medical disclaimers or refusals."
             async with httpx.AsyncClient(timeout=10.0) as fb_client:
                 fb_resp = await fb_client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
