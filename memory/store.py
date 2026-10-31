@@ -670,7 +670,8 @@ def get_measurements(
                 "unit": r[3],
                 "measured_at": str(r[4]),
                 "context": r[5],
-                "subject": r[6] or "user"
+                "subject": r[6] or "User",
+                "subject_name": r[6] or "User"
             }
             for r in rows
         ]

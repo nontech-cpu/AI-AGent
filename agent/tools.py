@@ -1677,35 +1677,30 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 except Exception:
                     pass
 
-                # Cross-sync to Google Calendar if connected and date is set
+                # Cross-sync to Google Calendar ONLY if current chat_id is legitimately connected
+                sync_note = " (Telegram notification active 🔔)"
                 try:
-                    from api_v1 import _resolve_calendar_chat_id
-                    cal_chat = _resolve_calendar_chat_id(chat_id)
                     from main import get_valid_google_connection_by_chat_id
-                    is_conn, _ = await get_valid_google_connection_by_chat_id(cal_chat)
+                    is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
                     if is_conn and d_val:
-                        import asyncio
                         from google_services import create_meeting
                         start_time_part = t_val or dtime(9, 0)
                         start_dt = datetime.combine(d_val, start_time_part)
-                        asyncio.create_task(create_meeting(
-                            chat_id=cal_chat,
+                        meet_res = await create_meeting(
+                            chat_id=chat_id,
                             title=f"🔔 {args.title}",
                             start_iso=start_dt.isoformat(),
                             duration_minutes=30
-                        ))
-                except Exception:
-                    pass
-
-                try:
-                    from api_v1 import _invalidate_all_app_caches
-                    _invalidate_all_app_caches()
-                except Exception:
-                    pass
-
-                time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
-                date_str = d_val.strftime("%d %b") if d_val else "specified date"
-                sync_note = " (Google Calendar synced ✅)" if is_conn else " (Telegram notification active 🔔)"
+                        )
+                        if meet_res and meet_res.get("status") == "success":
+                            sync_note = " (Google Calendar synced ✅)"
+                        else:
+                            sync_note = " (Telegram reminder set ✅)"
+                    elif not is_conn:
+                        sync_note = " (Telegram reminder set ✅. Google Calendar connected nahi hai - calendar sync ke liye /connect bhejein)"
+                except Exception as g_err:
+                    print("Google Calendar sync attempt error:", g_err)
+                    sync_note = " (Telegram reminder set ✅)"
                 res = {
                     "status": "success",
                     "title": args.title,

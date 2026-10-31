@@ -147,7 +147,7 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     if measurements:
         lines.append("[Structured Measurements & Health Readings]:")
         for meas in measurements:
-            sub = meas.get("subject_name") or "User"
+            sub = meas.get("subject") or meas.get("subject_name") or "User"
             metric = meas.get("metric", "reading")
             val = meas.get("value")
             unit = meas.get("unit", "")

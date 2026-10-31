@@ -1980,23 +1980,7 @@ async def delete_user_reminder(
 # ---------- Calendar Section Endpoints ----------
 
 def _resolve_calendar_chat_id(chat_id: int) -> int:
-    """If chat_id does not have Google connected, fall back to the primary connected user."""
-    try:
-        from db import engine, text
-        with engine.connect() as conn:
-            has_token = conn.execute(
-                text("SELECT 1 FROM google_tokens g JOIN users u ON u.id = g.user_id WHERE u.telegram_chat_id = :c"),
-                {"c": chat_id}
-            ).first()
-            if has_token:
-                return chat_id
-            primary = conn.execute(
-                text("SELECT u.telegram_chat_id FROM users u JOIN google_tokens g ON u.id = g.user_id ORDER BY g.user_id ASC LIMIT 1")
-            ).first()
-            if primary and primary[0]:
-                return int(primary[0])
-    except Exception:
-        pass
+    """Strictly returns the user's own chat_id. Never leaks or falls back to another user's Google account."""
     return chat_id
 
 
