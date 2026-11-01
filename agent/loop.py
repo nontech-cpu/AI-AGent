@@ -382,10 +382,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             "content": f"[Earlier Conversation Background Summary]:\n{running_summary}"
         })
 
-    # Append up to last 8 turns, sanitized for strict role alternation and duplicate merging
+    # Build clean previous conversation history
+    prior_turns = list(recent_turns)
+    if prior_turns and prior_turns[-1].get("role") == "user" and (prior_turns[-1].get("text") or "").strip() == user_text.strip():
+        prior_turns.pop()
+    while prior_turns and prior_turns[-1].get("role") == "user":
+        prior_turns.pop()
+
     sanitized_history = []
     total_hist_chars = 0
-    for turn in recent_turns:
+    for turn in prior_turns:
         r = turn.get("role", "user")
         t_text = (turn.get("text") or "").strip()
         if not t_text or "Bataiye, main aapki kya madad karun" in t_text:
@@ -400,12 +406,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         else:
             sanitized_history.append({"role": r, "content": t_text})
 
-    if sanitized_history and sanitized_history[-1]["role"] == "user":
-        sanitized_history[-1]["content"] += f"\n{user_text}"
-    else:
-        sanitized_history.append({"role": "user", "content": user_text})
-
     messages.extend(sanitized_history)
+    messages.append({"role": "user", "content": user_text})
 
     tool_calls_executed = []
     tool_results_list = []
@@ -425,7 +427,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         for iteration in range(MAX_TOOL_ITERATIONS):
             payload = {
                 "model": current_model,
-                "temperature": 0.2 if effective_tools else 0.5,
+                "temperature": 0.2 if effective_tools else 0.7,
                 "messages": messages,
                 "max_tokens": 1024,
             }
@@ -816,7 +818,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             print("Conversational recovery error:", repr(fb_err))
 
     if not final_reply:
-        if tool_results_list:
+        u_clean_lower = (user_text or "").strip().lower()
+        if any(w in u_clean_lower for w in ("aur bhy", "aur bhai", "aur btao", "kya haal", "kaise ho", "kaisa hai", "sup", "hi", "hello", "hey", "hlo")):
+            final_reply = "Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch naya?"
+        elif tool_results_list:
             last_res = tool_results_list[-1]
             final_reply = last_res.get("message") or default_fb_msg
         else:
@@ -872,7 +877,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
 
     # Guardrail: Repeat Suppression
-    final_reply = check_repeat_guard(chat_id, final_reply)
+    final_reply = check_repeat_guard(chat_id, final_reply, user_text)
 
     # Clean Structure: Convert ASCII pipe tables into mobile-friendly cards
     from utilities import convert_tables_to_cards
@@ -891,12 +896,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         f"tools={tool_calls_executed} retrieved={retrieved_summary}"
     )
 
-    # Non-blocking background persistence & tracing (do NOT delay response delivery to user)
+    # Immediately persist conversation turn so subsequent turns have perfect history
+    try:
+        await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
+        await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
+    except Exception as db_persist_err:
+        logger.warning(f"DB persist error: {db_persist_err}")
+
+    # Non-blocking background tracing (do NOT delay response delivery to user)
     async def _post_turn_persist():
         try:
-            await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
-            await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
-            # schedule_extraction_task disabled to prevent 429 rate limit errors on Groq
             from connectors.trace import log_turn_trace
             is_suspect = (not is_grounded) or (not is_fake_ok)
             suspect_reason = "; ".join(violations) if violations else None

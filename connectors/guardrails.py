@@ -85,9 +85,47 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
 
     return True, None
 
-def check_repeat_guard(chat_id: int, candidate_reply: str) -> str:
+def check_repeat_guard(chat_id: int, candidate_reply: str, user_text: str = "") -> str:
     """
-    Returns candidate_reply cleanly without appending robotic filler suffixes.
+    Prevents the assistant from sending duplicate or near-identical responses consecutively.
+    If the candidate reply repeats the last assistant turn, intercepts and produces
+    a natural, context-aware variant without repeating past text.
     """
+    if not candidate_reply or not str(candidate_reply).strip():
+        return candidate_reply
+
+    try:
+        import db
+        recent = db.get_recent_chat_history(chat_id, limit=4)
+        last_assistant_msg = ""
+        for r in reversed(recent):
+            if r.get("role") == "assistant":
+                last_assistant_msg = (r.get("text") or "").strip()
+                break
+
+        c_clean = candidate_reply.strip()
+        u_clean = (user_text or "").strip().lower()
+
+        # Check for repetition: exact match or substantial prefix match
+        is_repeat = False
+        if last_assistant_msg:
+            if c_clean == last_assistant_msg:
+                is_repeat = True
+            elif len(c_clean) > 40 and len(last_assistant_msg) > 40 and c_clean[:50] == last_assistant_msg[:50]:
+                is_repeat = True
+
+        if is_repeat:
+            is_casual = any(w in u_clean for w in (
+                "aur bhy", "aur bhai", "aur btao", "kya haal", "kaise ho", "kaisa hai",
+                "sup", "wassup", "hi", "hello", "hey", "hlo", "namaste", "suno"
+            ))
+            if is_casual:
+                return "Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch plan hai aaj ka ya koi specific kaam?"
+            else:
+                return "Bataiye bhai, isme aur koi specific detail dekhni hai ya koi naya topic explore karein?"
+    except Exception as e:
+        print("check_repeat_guard exception:", repr(e))
+
     return candidate_reply
+
 
