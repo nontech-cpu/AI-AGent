@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+import smtplib
+from email.message import EmailMessage
 
 import difflib
 from db import (give_consent, has_consent, set_persona, get_persona,
@@ -123,20 +125,59 @@ def _init_web_verify_db():
 
 PENDING_WIPE_CODES: dict[int, dict[str, Any]] = {}
 
+def _sync_send_system_email(to_email: str, subject: str, body: str) -> bool:
+    """Sends an outbound transactional/security email via SMTP using BOT_EMAIL credentials."""
+    bot_email = os.getenv("BOT_EMAIL")
+    app_pw = os.getenv("BOT_EMAIL_APP_PASSWORD")
+    if not bot_email or not app_pw:
+        logging.warning("send_system_email: Missing BOT_EMAIL or BOT_EMAIL_APP_PASSWORD")
+        return False
+    try:
+        msg = EmailMessage()
+        msg["From"] = f"PeculiarAI Security <{bot_email}>"
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.set_content(body)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=12) as server:
+            server.login(bot_email, app_pw)
+            server.send_message(msg)
+        logging.info(f"send_system_email: Successfully sent email to {to_email}")
+        return True
+    except Exception as e:
+        logging.error(f"send_system_email: Failed sending email to {to_email}: {e}")
+        return False
+
+async def send_system_email(to_email: str, subject: str, body: str) -> bool:
+    return await asyncio.to_thread(_sync_send_system_email, to_email, subject, body)
+
+
 
 def is_master_wipe_request(text: str) -> bool:
     clean = text.strip().lower()
-    # Normalize common abbreviations and typos
-    norm = re.sub(r'\b(dlete|delet|dlet|dlte|dlt|del)\b', 'delete', clean)
-    norm = re.sub(r'\b(meory|memry|mmoery|memor)\b', 'memory', norm)
+    # Broad regex substitutions for common typos and abbreviations
+    norm = re.sub(r'\b(delte|dlete|delet|dlet|dlte|dlt|del|dleted|deleted)\b', 'delete', clean)
+    norm = re.sub(r'\b(memeory|memroy|meory|memry|mmoery|memor|memorey|memries)\b', 'memory', norm)
     norm = re.sub(r'\b(seaved|seve|savd)\b', 'saved', norm)
+    norm = re.sub(r'\b(sb|sarre|saari|sari|puri|poori)\b', 'sab', norm)
+
+    # Negative exclusions: if it specifically mentions single items like reminder, meeting, contact, task
+    if re.search(r'\b(reminder|meeting|call|event|task|contact|alarm|timer)\s+\w+', norm) and not re.search(r'\b(all|sab|everything)\b', norm):
+        return False
+
+    has_del = bool(re.search(r'\b(delete|wipe|clear|erase|remove|forget|destroy|flush|mita|saaf|khatam|hata)\b', norm, re.I))
+    has_mem = bool(re.search(r'\b(memor(y|ies)|data|history|records|facts|everything|yaad|yaadein)\b', norm, re.I))
+    has_all = bool(re.search(r'\b(sab|all|everything|saara|puri|complete|permanent)\b', norm, re.I))
+
+    # If user says 'sb memory delete krni h apni' or 'delete all memory'
+    if has_del and has_mem and (has_all or 'apni' in norm or 'store' in norm or 'saved' in norm):
+        return True
 
     # Patterns matching user intent to delete all memory or wipe data
     patterns = [
         r'\b(delete|wipe|clear|erase|remove|forget|destroy|flush)\b.*\b(memor(y|ies)|data|history|records|facts|everything)\b',
         r'\b(memor(y|ies)|data|history|records|facts|everything)\b.*\b(delete|wipe|clear|erase|remove|forget|destroy|flush|mita|saaf|khatam|hata)\b',
-        r'\b(saari|sab\s*kuch|puri|sarre|sari|meri|mera)\b.*\b(memory|yaad|yaadein|data|history)\b.*\b(delete|wipe|mita|saaf|khatam|hata)\b',
-        r'\b(delete|wipe|mita|saaf|khatam|hata)\b.*\b(saari|sab\s*kuch|puri|sarre|sari|meri|mera)\b.*\b(memory|yaad|yaadein|data|history)\b',
+        r'\b(sab|puri|meri|mera)\b.*\b(memory|yaad|yaadein|data|history)\b.*\b(delete|wipe|mita|saaf|khatam|hata)\b',
+        r'\b(delete|wipe|mita|saaf|khatam|hata)\b.*\b(sab|puri|meri|mera)\b.*\b(memory|yaad|yaadein|data|history)\b',
         r'\b(sab\s*kuch|saara\s*kuch)\b.*\b(delete|wipe|mita|saaf|khatam|hata)\b',
         r'\b(delete|wipe|mita|saaf|khatam|hata)\b.*\b(sab\s*kuch|saara\s*kuch)\b',
         r'\b(delete|wipe|clear|erase)\s*(all\s*)?(saved\s*)?(about\s*me\s*)?(everything|data|memories|memory)\b',
@@ -2735,17 +2776,34 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 except Exception:
                     pass
 
+            email_sent = False
             if connected_email:
+                email_body = (
+                    f"Hello,\n\n"
+                    f"A permanent data wipe was requested for your PeculiarAI account.\n\n"
+                    f"Your 6-Digit Verification Code is: {code}\n\n"
+                    f"This code will expire in 5 minutes.\n"
+                    f"Enter this code in your chat to confirm permanent deletion of all memories, chat history, and reminders.\n\n"
+                    f"If you did NOT request this, please reply 'cancel' in chat or ignore this email.\n\n"
+                    f"— PeculiarAI Security Team"
+                )
+                email_sent = await send_system_email(
+                    to_email=connected_email,
+                    subject=f"🔐 Security OTP for Permanent Data Wipe: {code}",
+                    body=email_body
+                )
+
                 PENDING_WIPE_CODES[chat_id] = {
                     "code": code,
                     "expires_at": expires_at,
                     "email": connected_email
                 }
                 set_state(chat_id, "awaiting_wipe_email_verification", {"code": code, "expires_at": expires_at, "email": connected_email})
+                email_msg = f"Maine aapke registered email (**{connected_email}**) par 6-digit verification code bhej diya hai! 📧\n\n" if email_sent else f"Aapka connected email **{connected_email}** hai.\n\n"
                 await say(
                     chat_id,
                     f"🔐 **Security Verification Required (Valid for 5 mins)**\n\n"
-                    f"Aapki privacy aur security ke liye, maine ek verification code generate kiya hai:\n\n"
+                    f"{email_msg}"
                     f"🔑 **Verification Code: `{code}`**\n\n"
                     f"Aap ise 2 tareeqon me se kisi ek se verify kar sakte hain:\n"
                     f"1️⃣ **Yahan Chat Me**: Seedha ye code `{code}` yahan chat me reply karein.\n"
@@ -4997,7 +5055,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.1.4"}
+    return {"status": "pong", "version": "v2.1.5"}
 
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():

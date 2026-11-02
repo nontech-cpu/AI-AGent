@@ -2874,7 +2874,8 @@ CORE_TOOL_NAMES = {
     "check_availability", "save_note_or_fact", "search_memory",
     "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
     "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
-    "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather"
+    "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
+    "request_master_privacy_wipe"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}
@@ -2898,7 +2899,7 @@ def is_action_or_tool_intent(user_text: str) -> bool:
         'weather', 'github', 'repo', 'notion', 'email', 'gmail', 'inbox', 'pdf', 'excel',
         'remind', 'reminder', 'meeting', 'calendar', 'schedule', 'contact', 'packing list',
         'delete', 'cancel', 'hatao', 'hata do', 'save', 'store', 'likh lo', 'glucose', 'sugar',
-        'blood', 'reading', 'smart list', 'checklist'
+        'blood', 'reading', 'smart list', 'checklist', 'wipe', 'memory', 'dlt'
     )
     if any(sk in low for sk in service_keywords):
         return True
