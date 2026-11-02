@@ -394,13 +394,17 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
         msg_text, trigger_kind = await build_morning_briefing_message(
             chat_id, user_info, now_ist.date(), early_event=active_early, unified_sched=unified_sched
         )
-        sent_ok = await send_telegram_message(chat_id, msg_text)
-        if sent_ok:
+        target_ids = db.get_all_linked_chat_ids(chat_id)
+        for tid in target_ids:
             try:
-                db.log_chat_message(chat_id, "assistant", msg_text)
+                await send_telegram_message(tid, msg_text)
             except Exception:
                 pass
-            return True
+        try:
+            db.log_chat_message(db.canonical_chat_id(chat_id), "assistant", msg_text)
+        except Exception:
+            pass
+        return True
 
     return False
 
@@ -413,9 +417,14 @@ async def morning_briefing_job():
     now_ist = datetime.now(IST)
     users = db.get_all_active_telegram_users()
     tasks = []
+    seen_canonical = set()
     for u in users:
         cid = u.get("chat_id")
         if cid and not str(cid).startswith("998877"):
+            canon_cid = db.canonical_chat_id(cid)
+            if canon_cid in seen_canonical:
+                continue
+            seen_canonical.add(canon_cid)
             tasks.append(process_user_morning_briefing(cid, u, now_ist))
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)

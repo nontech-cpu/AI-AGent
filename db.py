@@ -456,8 +456,6 @@ def remove_email_link(chat_id):
 CANONICAL_CHAT_ID_MAP = {
     1234828592: 1758056012,
     7940177745: 1758056012,
-    7284786622: 1758056012,
-    7623114780: 1758056012,
 }
 
 def canonical_chat_id(chat_id):
@@ -1866,6 +1864,7 @@ def is_morning_briefing_sent(chat_id: int, briefing_date: str) -> bool:
     """Returns True if morning briefing for briefing_date (YYYY-MM-DD) was already dispatched."""
     if not chat_id or not briefing_date:
         return True
+    chat_id = canonical_chat_id(chat_id)
     _init_morning_briefing_table()
     try:
         with engine.connect() as conn:
@@ -1883,6 +1882,7 @@ def record_morning_briefing_sent(chat_id: int, briefing_date: str, trigger_kind:
     """Marks morning briefing as sent for the date."""
     if not chat_id or not briefing_date:
         return
+    chat_id = canonical_chat_id(chat_id)
     _init_morning_briefing_table()
     try:
         is_pg = engine.dialect.name == "postgresql"

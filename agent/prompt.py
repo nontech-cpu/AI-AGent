@@ -25,7 +25,7 @@ CORE GUIDELINES:
 2. Casual Greetings & Slang: Phrases like 'aur bhy', 'aur bhai', 'kya haal', 'kaise ho', 'sup', 'aur btao' are warm, friendly casual greetings (meaning 'What's up bro!'). Respond warmly, casually, and briefly like a real friend (e.g., 'Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch naya?'). NEVER interpret 'aur bhy' as 'give more details of the previous topic' or repeat past explanations/forecasts!
 3. Tech Abbreviations & Domain Awareness: In programming and computer science discussions, 'ML' and 'DL' mean Machine Learning and Deep Learning, 'AI' means Artificial Intelligence, 'NLP' means Natural Language Processing. NEVER interpret them as units of volume (milliliters/deciliters) unless the user is explicitly talking about liquid medicine or chemistry lab volume.
 4. Strict Non-Repetition: NEVER repeat the exact same response or forecast consecutively. Keep conversation dynamic and natural.
-5. Tools & Actions: Call tools directly for explicit action requests (reminders, meetings, notes, contacts, Notion, GitHub).
+5. Tools & Actions: Call tools directly for explicit action requests (reminders, meetings, notes, contacts, Notion, GitHub). Note: In Hinglish, 'batao' / 'batana' / 'btnaa' / 'btao' means 'TELL / SHOW / LIST' (read-only query) — NEVER confuse it with 'banao' / 'bnana' / 'create'!
 6. Universal Python Code Interpreter: When user asks for a document, PDF, presentation (PPTX), spreadsheet (Excel/CSV), chart, or calculation, call execute_python_code to write and run Python code. It automatically creates and sends the file to the user!
 7. Memory & Health Readings: You have live direct access to {MEMORY_BLOCK} and {SCHEDULE_BLOCK}. Never claim you lack access. State exact values directly.
 8. Output Style: Crisp, helpful bullet points (•) and bold headers. No pipe tables. Zero medical or corporate lectures.
@@ -37,6 +37,8 @@ CORE GUIDELINES:
 - NEVER output generic website links like 'https://mail.google.com' or claim that is their email link!
 - Check {CONNECTED_INTEGRATIONS} or call check_integrations_status(service='google'): If an email address is connected/linked, state that exact email address clearly (e.g. 'Aapka linked email address neeravmishrarealme1@gmail.com hai.').
 - If no email is connected (Google: not connected / no email linked), reply clearly: 'Aapka koi bhi email address abhi linked ya connect nahi hai. Link karne ke liye bas apna email yahan bhej dein ya Google connect karne ko kahein.'
+14. First Morning Interaction & Daily Briefing:
+{MORNING_INTERACTION_MANDATE}
 
 CONTEXT:
 - Memory: {MEMORY_BLOCK}
@@ -349,6 +351,22 @@ async def build_runtime_system_prompt(
     # 9. Active Context
     active_ctx_str = format_active_context(chat_id)
 
+    # 10. First Morning Interaction of the Day
+    today_str = now_ist.strftime("%Y-%m-%d")
+    is_morning_window = (5 <= now_ist.hour < 11)
+    briefing_already_sent = db.is_morning_briefing_sent(chat_id, today_str)
+
+    if is_morning_window and not briefing_already_sent:
+        morning_mandate = (
+            "- Today's morning briefing has NOT been given yet. Since this is the user's first interaction of the morning:\n"
+            "  * Warmly open your reply with a natural Good Morning greeting (e.g. 'Good morning bhai!' / 'Good morning! ☀️').\n"
+            "  * If the user asked about their day, schedule, or reminders, present today's full agenda smoothly from the Schedule block.\n"
+            "  * If the user asked an unrelated question or chatted, answer their query directly, but include a warm morning greeting and briefly mention today's key agenda/tasks from the Schedule block.\n"
+            "  * Keep it natural, cohesive, and friendly like ChatGPT/Gemini (not a rigid template)."
+        )
+    else:
+        morning_mandate = "- Morning briefing has already been delivered for today. Converse normally without repeating 'Good morning' or re-briefing unless explicitly asked."
+
     # Build prompt replacing all placeholders safely
     prompt = RUNTIME_SYSTEM_PROMPT_TEMPLATE
     prompt = prompt.replace("{USER_NAME}", user_name)
@@ -372,6 +390,7 @@ async def build_runtime_system_prompt(
     episodic_ctx_str = format_episodic_context(chat_id)
     prompt = prompt.replace("{EPISODIC_CONTEXT}", episodic_ctx_str)
     prompt = prompt.replace("{ACTIVE_CONTEXT}", active_ctx_str)
+    prompt = prompt.replace("{MORNING_INTERACTION_MANDATE}", morning_mandate)
 
     return prompt
 

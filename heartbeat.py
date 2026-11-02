@@ -18,7 +18,6 @@ from utilities import get_weather
 logger = logging.getLogger("peculiar_heartbeat")
 
 # In-memory tracking of dispatched alerts to avoid repeats within the same day
-_DISPATCHED_PRE_ALERTS = set()
 _EVENING_WRAPUP_SENT = set()
 
 def get_active_target_chat_ids() -> list:
@@ -80,50 +79,6 @@ async def broadcast_alert(message: str, specific_chat_id: Optional[int] = None):
             db.log_chat_message(cid, "assistant", message)
         except Exception as exc:
             logger.error(f"Broadcast error for {cid}: {repr(exc)}")
-
-
-async def check_15min_upcoming_alerts(now_ist: datetime):
-    """Detects any reminder due within the next 15 minutes and sends a proactive ping using a single fast query."""
-    today = now_ist.date()
-    now_time = now_ist.time()
-    current_minutes = now_time.hour * 60 + now_time.minute
-
-    def _fetch_upcoming():
-        alerts = []
-        try:
-            with db.engine.connect() as conn:
-                rows = conn.execute(
-                    db.text("""
-                        SELECT m.id, m.title, m.due_time, u.telegram_chat_id
-                        FROM memory_items m
-                        JOIN users u ON u.id = m.user_id
-                        WHERE m.due_date = :today AND m.due_time IS NOT NULL AND u.telegram_chat_id > 0
-                    """),
-                    {"today": today}
-                ).fetchall()
-                for r in rows:
-                    rem_id, title, due_time, cid = r[0], r[1], r[2], r[3]
-                    if not due_time:
-                        continue
-                    try:
-                        due_mins = due_time.hour * 60 + due_time.minute
-                        diff = due_mins - current_minutes
-                        if 0 <= diff <= 15:
-                            alerts.append((rem_id, title, due_time, cid, diff))
-                    except Exception:
-                        pass
-        except Exception as exc:
-            logger.error(f"_fetch_upcoming error: {repr(exc)}")
-        return alerts
-
-    upcoming = await asyncio.to_thread(_fetch_upcoming)
-    for rem_id, title, due_time, cid, diff in upcoming:
-        alert_key = f"{today}_{rem_id}_15min"
-        if alert_key not in _DISPATCHED_PRE_ALERTS:
-            _DISPATCHED_PRE_ALERTS.add(alert_key)
-            clock_str = due_time.strftime("%I:%M %p")
-            msg = f"🔔 **Proactive Reminder (in {diff} mins):**\nBhai, aapka **{title}** scheduled hai at **{clock_str}**!"
-            await broadcast_alert(msg, specific_chat_id=cid)
 
 
 async def check_evening_wrapup(now_ist: datetime):
@@ -261,7 +216,6 @@ async def heartbeat_loop():
     while True:
         try:
             now_ist = datetime.now(IST)
-            await check_15min_upcoming_alerts(now_ist)
             await check_evening_wrapup(now_ist)
             await roll_daily_recurring_reminders(now_ist)
         except Exception as exc:

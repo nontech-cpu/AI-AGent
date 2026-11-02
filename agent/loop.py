@@ -939,6 +939,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     except Exception as db_persist_err:
         logger.warning(f"DB persist error: {db_persist_err}")
 
+    # Mark morning briefing as sent if this is an early morning interaction
+    try:
+        from timing import IST
+        now_ist = datetime.now(IST)
+        today_str = now_ist.strftime("%Y-%m-%d")
+        if 5 <= now_ist.hour < 11 and not db.is_morning_briefing_sent(chat_id, today_str):
+            db.record_morning_briefing_sent(chat_id, today_str, trigger_kind="early_user_interaction")
+    except Exception as emb_err:
+        logger.warning(f"Early morning briefing record error: {emb_err}")
+
     # Non-blocking background tracing (do NOT delay response delivery to user)
     async def _post_turn_persist():
         try:

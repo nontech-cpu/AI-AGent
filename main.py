@@ -3698,17 +3698,16 @@ async def run_reminders():
         msg_text = reminder_text(label, category, title, amount, due_time)
         
         # Deliver to user chat_id and linked canonical/desktop Telegram accounts
-        target_ids = {chat_id}
-        from db import CANONICAL_CHAT_ID_MAP
-        if chat_id in CANONICAL_CHAT_ID_MAP:
-            target_ids.add(CANONICAL_CHAT_ID_MAP[chat_id])
-        for orig, canon in CANONICAL_CHAT_ID_MAP.items():
-            if canon == chat_id:
-                target_ids.add(orig)
-                
+        from db import canonical_chat_id, get_all_linked_chat_ids
+        target_ids = get_all_linked_chat_ids(chat_id)
+        canon_cid = canonical_chat_id(chat_id)
+        
+        # Log turn once in chat history for canonical identity
+        record_chat_turn(canon_cid, "assistant", msg_text)
+
         for cid in target_ids:
             try:
-                await say(cid, msg_text)
+                await send_telegram_text(cid, msg_text)
             except Exception as e:
                 print(f"Error sending reminder {rid} to {cid}:", e)
                 
@@ -5064,7 +5063,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.1.8"}
+    return {"status": "pong", "version": "v2.1.9"}
 
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():
