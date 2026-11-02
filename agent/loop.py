@@ -529,11 +529,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
                 tool_results_list.append(tool_result)
 
-                # Pillar 1 Optimization: Single-turn direct response (Saves ~3,500 tokens on redundant 2nd LLM call!)
-                if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list", "find_nearby_places"):
-                    if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
-                        final_reply = tool_result["message"]
-                        break
+                # Single-turn direct response optimization:
+                # Only for simple, single-action commands. If user combined multiple actions (and, aur, bhi, pehle), let the agent chain tools naturally!
+                has_multi_intents = any(kw in user_text.lower() for kw in (" and ", " aur ", " b ", " bhi ", " fir ", " then ", " pehle ", " sath ", " with "))
+                if not has_multi_intents and len(tool_calls) == 1 and len(tool_results_list) == 1:
+                    if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list", "find_nearby_places"):
+                        if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
+                            final_reply = tool_result["message"]
+                            break
 
                 # Track active conversation context for seamless multi-turn references ("pehla wala", "usko", etc.)
                 try:
@@ -822,8 +825,18 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         if any(w in u_clean_lower for w in ("aur bhy", "aur bhai", "aur btao", "kya haal", "kaise ho", "kaisa hai", "sup", "hi", "hello", "hey", "hlo")):
             final_reply = "Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch naya?"
         elif tool_results_list:
-            last_res = tool_results_list[-1]
-            final_reply = last_res.get("message") or default_fb_msg
+            valid_msgs = [
+                tr.get("message") for tr in tool_results_list
+                if isinstance(tr, dict) and tr.get("message") and tr.get("status") in ("success", "conflict_detected", "needs_permission")
+            ]
+            if len(valid_msgs) > 1:
+                joined_bullet_msgs = "\n\n".join(f"• {m}" for m in valid_msgs)
+                final_reply = f"Done! Aapke sabhi requests execute ho gaye:\n\n{joined_bullet_msgs}"
+            elif valid_msgs:
+                final_reply = valid_msgs[0]
+            else:
+                last_res = tool_results_list[-1]
+                final_reply = last_res.get("message") or default_fb_msg
         else:
             final_reply = default_fb_msg
 

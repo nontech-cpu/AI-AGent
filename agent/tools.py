@@ -1580,7 +1580,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "title": args.title,
                     "due_date": args.due_date,
                     "due_time": args.due_time,
-                    "message": f"Time Conflict: {args.due_time} par already {', '.join(conflicts)} scheduled hai! Reminder create NAHI kiya gaya hai. User ko politely inform karo ki is samay par already yeh task scheduled hai aur pucho ki kya kisi aur time par shift karein ya fir bhi isi time par dono ka reminder lagana hai."
+                    "message": f"Time Conflict: {args.due_time} par already '{', '.join(conflicts)}' scheduled hai. Kya aap iska time aage-peeche karna chahenge ya isi time par dono ka reminder lagana hai?"
                 }
 
             is_daily = (getattr(args, "recurrence", "none") or "").lower() in ("daily", "roj", "every_day", "everyday")
@@ -2651,12 +2651,31 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
         elif tool_name == "search_user_emails":
             args = SearchUserEmailsArgs(**arguments)
             from main import get_valid_google_connection_by_chat_id
-            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
+            from google_auth import build_auth_url
+            auth_url = build_auth_url(int(chat_id), source="tg")
+
             if not is_conn:
                 return {
-                    "status": "error",
+                    "status": "not_connected",
                     "connected": False,
-                    "message": "Aapka Google account abhi connected nahi hai. Connect karne ke liye 'connect google' bole."
+                    "auth_url": auth_url,
+                    "message": f"Aapka Google account abhi connected nahi hai. Connect karne ke liye is link par tap karein:\n\n👉 {auth_url}"
+                }
+
+            # Check if this chat is known to lack Gmail read scope
+            if int(chat_id) in getattr(google_services, "_CHAT_GMAIL_INSUFFICIENT_SCOPES", set()):
+                return {
+                    "status": "needs_permission",
+                    "connected": True,
+                    "email": g_email,
+                    "auth_url": auth_url,
+                    "message": (
+                        f"Aapka Google account pehle se connected hai ({g_email}), lekin **Gmail Read permission** missing hai.\n\n"
+                        f"Naye emails, tickets aur booking confirmations auto-check karne ke liye is link par tap karke allow karein:\n\n"
+                        f"👉 {auth_url}\n\n"
+                        f"Allow karte hi main aapke tickets aur incoming emails automatically read karne lagunga!"
+                    )
                 }
 
             user_q = (args.query or "").strip()
@@ -2664,6 +2683,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query=gmail_query)
             if not messages and gmail_query != "in:inbox":
                 messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query="in:inbox")
+
+            if int(chat_id) in getattr(google_services, "_CHAT_GMAIL_INSUFFICIENT_SCOPES", set()):
+                return {
+                    "status": "needs_permission",
+                    "connected": True,
+                    "email": g_email,
+                    "auth_url": auth_url,
+                    "message": (
+                        f"Aapka Google account connected hai ({g_email}), lekin **Gmail Read permission** missing hai.\n\n"
+                        f"Naye emails aur tickets automatically check karne ke liye is link par tap karke allow karein:\n\n"
+                        f"👉 {auth_url}\n\n"
+                        f"Allow karte hi main aapke tickets aur incoming emails automatically read karne lagunga!"
+                    )
+                }
 
             results = []
             from email_intelligence import analyze_incoming_email
@@ -2838,7 +2871,9 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 CORE_TOOL_NAMES = {
     "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "check_availability", "save_note_or_fact", "search_memory",
-    "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment"
+    "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
+    "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
+    "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}
@@ -2901,7 +2936,17 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
     core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
     user_emb = embed_text(user_text, is_query=True)
     if not user_emb or not _DOMAIN_TOOL_EMBED_CACHE:
-        return core_tools
+        extra_tools = []
+        low = user_text.lower()
+        for dt in domain_tools:
+            fname = dt["function"]["name"]
+            if fname in ("get_movie_showtimes",) and any(w in low for w in ("movie", "cinema", "showtime", "theatre")):
+                extra_tools.append(dt)
+            elif fname in ("create_packing_list",) and any(w in low for w in ("packing", "luggage", "travel list")):
+                extra_tools.append(dt)
+            elif fname in ("find_nearby_places",) and any(w in low for w in ("nearby", "near me", "restaurant", "hospital", "atm")):
+                extra_tools.append(dt)
+        return core_tools + extra_tools
 
     # Score domain tools by semantic similarity
     scored_domain = []
