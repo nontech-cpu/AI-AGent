@@ -10,3 +10,4 @@ node_modules/
 .DS_Store
 test_card*.jpg
 scratch/
+static/uploads/

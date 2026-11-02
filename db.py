@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
@@ -2039,6 +2040,514 @@ def get_all_active_telegram_users() -> list[dict]:
     except Exception as exc:
         print("get_all_active_telegram_users error:", repr(exc))
         return []
+
+
+# ===========================================================================
+# Frontier Memorae Engine: Structured Memory Bubbles & pgvector Cosine Search
+# ===========================================================================
+
+_FRONTIER_SQLITE_INIT = False
+
+def _init_frontier_sqlite_if_needed():
+    global _FRONTIER_SQLITE_INIT
+    if _FRONTIER_SQLITE_INIT:
+        return
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS memory_bubbles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    color_hex TEXT DEFAULT '#6366F1',
+                    icon_name TEXT DEFAULT 'Folder',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, slug)
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    memory_type TEXT DEFAULT 'episodic',
+                    title TEXT,
+                    content TEXT NOT NULL,
+                    url TEXT,
+                    image_url TEXT,
+                    ocr_extracted_text TEXT,
+                    ai_summary TEXT,
+                    bubble_slug TEXT DEFAULT 'everything',
+                    tags TEXT DEFAULT '[]',
+                    status TEXT DEFAULT 'active',
+                    embedding TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            for col, col_type in [
+                ("title", "TEXT"),
+                ("url", "TEXT"),
+                ("image_url", "TEXT"),
+                ("ocr_extracted_text", "TEXT"),
+                ("ai_summary", "TEXT"),
+                ("bubble_slug", "TEXT DEFAULT 'everything'"),
+                ("tags", "TEXT DEFAULT '[]'"),
+            ]:
+                try:
+                    conn.execute(text(f"ALTER TABLE memories ADD COLUMN {col} {col_type}"))
+                except Exception:
+                    pass
+
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS user_mcp_servers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    server_name TEXT NOT NULL,
+                    server_url TEXT NOT NULL,
+                    auth_token TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    tools_cache TEXT DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, server_name)
+                )
+            """))
+    _FRONTIER_SQLITE_INIT = True
+
+
+def get_internal_user_id(chat_id) -> int:
+    """Resolves chat_id to users.id primary key. Never returns None."""
+    chat_id = canonical_chat_id(chat_id)
+    try:
+        ensure_user(chat_id)
+    except Exception:
+        pass
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT id FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id}
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+            row2 = conn.execute(
+                text("SELECT id FROM users WHERE id = :uid"),
+                {"uid": chat_id}
+            ).fetchone()
+            if row2 and row2[0]:
+                return row2[0]
+    except Exception:
+        pass
+    return chat_id
+
+
+def get_memory_bubbles(chat_id) -> list[dict]:
+    """Retrieves all memory bubbles (folders) for the user."""
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+    is_postgres = "postgresql" in engine.url.drivername
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT slug, name, color_hex, icon_name, created_at
+                FROM memory_bubbles
+                WHERE user_id = :uid
+                ORDER BY id ASC
+            """), {"uid": uid}).fetchall()
+            
+            if not rows:
+                # Seed default bubbles on the fly
+                defaults = [
+                    ('everything', 'Everything', '#6366F1', 'Inbox'),
+                    ('work', 'Work & Projects', '#3B82F6', 'Briefcase'),
+                    ('travel', 'Travel & Transit', '#EC4899', 'Plane'),
+                    ('health', 'Health & Fitness', '#10B981', 'Heart'),
+                    ('finance', 'Finance & Bills', '#F59E0B', 'CreditCard')
+                ]
+                with engine.begin() as wconn:
+                    for s, n, c, i in defaults:
+                        if is_postgres:
+                            wconn.execute(text("""
+                                INSERT INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
+                                VALUES (:u, :s, :n, :c, :i)
+                                ON CONFLICT (user_id, slug) DO NOTHING
+                            """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
+                        else:
+                            wconn.execute(text("""
+                                INSERT OR IGNORE INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
+                                VALUES (:u, :s, :n, :c, :i)
+                            """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
+                return [{"slug": s, "name": n, "color_hex": c, "icon_name": i} for s, n, c, i in defaults]
+
+            return [
+                {
+                    "slug": r[0],
+                    "name": r[1],
+                    "color_hex": r[2],
+                    "icon_name": r[3],
+                    "created_at": str(r[4])
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        logger.error(f"get_memory_bubbles error: {exc}")
+        return []
+
+
+def create_memory_bubble(chat_id, slug: str, name: str, color_hex: str = "#6366F1", icon_name: str = "Folder") -> bool:
+    """Creates a new structured memory bubble (folder)."""
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+    slug_clean = slug.strip().lower()
+    is_postgres = "postgresql" in engine.url.drivername
+    try:
+        with engine.begin() as conn:
+            if is_postgres:
+                conn.execute(text("""
+                    INSERT INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
+                    VALUES (:u, :s, :n, :c, :i)
+                    ON CONFLICT (user_id, slug) DO UPDATE
+                    SET name = :n, color_hex = :c, icon_name = :i
+                """), {"u": uid, "s": slug_clean, "n": name.strip(), "c": color_hex, "i": icon_name})
+            else:
+                conn.execute(text("""
+                    INSERT INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
+                    VALUES (:u, :s, :n, :c, :i)
+                    ON CONFLICT (user_id, slug) DO UPDATE
+                    SET name = :n, color_hex = :c, icon_name = :i
+                """), {"u": uid, "s": slug_clean, "n": name.strip(), "c": color_hex, "i": icon_name})
+        return True
+    except Exception as exc:
+        logger.error(f"create_memory_bubble error: {exc}")
+        return False
+
+
+def save_bubble_memory(
+    chat_id,
+    content: str,
+    title: Optional[str] = None,
+    bubble_slug: str = "everything",
+    image_url: Optional[str] = None,
+    url: Optional[str] = None,
+    ocr_extracted_text: Optional[str] = None,
+    ai_summary: Optional[str] = None,
+    tags: Optional[list] = None,
+    memory_type: str = "episodic",
+    embedding: Optional[list] = None
+) -> Optional[int]:
+    """
+    Saves a memory item into pgvector with bubble categorization and automatic embedding.
+    """
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+
+    clean_content = (content or "").strip()
+    if not clean_content and not ocr_extracted_text:
+        return None
+
+    # Text to vectorize includes title, content, and OCR text
+    text_to_embed = " ".join(filter(None, [title, clean_content, ocr_extracted_text]))
+    if not embedding and text_to_embed:
+        try:
+            from services.embeddings import embed_text as gen_emb
+            embedding = gen_emb(text_to_embed)
+        except Exception as exc:
+            logger.warning(f"Embedding generation fallback in save_bubble_memory: {exc}")
+            embedding = None
+
+    tags_json = json.dumps(tags or [])
+    is_postgres = "postgresql" in engine.url.drivername
+
+    try:
+        with engine.begin() as conn:
+            if is_postgres and embedding:
+                stmt = text("""
+                    INSERT INTO memories (
+                        user_id, memory_type, content, title, url, image_url,
+                        ocr_extracted_text, ai_summary, bubble_slug, tags, embedding, status
+                    ) VALUES (
+                        :uid, :mtype, :content, :title, :url, :image_url,
+                        :ocr, :summary, :bubble, CAST(:tags AS jsonb), CAST(:emb AS vector), 'active'
+                    ) RETURNING id
+                """)
+                res = conn.execute(stmt, {
+                    "uid": uid,
+                    "mtype": memory_type,
+                    "content": clean_content,
+                    "title": title or (clean_content[:60] if clean_content else "Asset Note"),
+                    "url": url,
+                    "image_url": image_url,
+                    "ocr": ocr_extracted_text,
+                    "summary": ai_summary,
+                    "bubble": bubble_slug.lower(),
+                    "tags": tags_json,
+                    "emb": str(embedding)
+                }).fetchone()
+                return res[0] if res else None
+            else:
+                stmt = text("""
+                    INSERT INTO memories (
+                        user_id, memory_type, content, title, url, image_url,
+                        ocr_extracted_text, ai_summary, bubble_slug, tags, status
+                    ) VALUES (
+                        :uid, :mtype, :content, :title, :url, :image_url,
+                        :ocr, :summary, :bubble, :tags, 'active'
+                    )
+                """)
+                res = conn.execute(stmt, {
+                    "uid": uid,
+                    "mtype": memory_type,
+                    "content": clean_content,
+                    "title": title or (clean_content[:60] if clean_content else "Asset Note"),
+                    "url": url,
+                    "image_url": image_url,
+                    "ocr": ocr_extracted_text,
+                    "summary": ai_summary,
+                    "bubble": bubble_slug.lower(),
+                    "tags": tags_json
+                })
+                return res.lastrowid or 1
+    except Exception as exc:
+        logger.error(f"save_bubble_memory error: {exc}")
+        return None
+
+
+def search_bubble_memories_cosine(
+    chat_id,
+    query_text: str,
+    bubble_slug: Optional[str] = None,
+    limit: int = 5,
+    min_similarity: float = 0.30
+) -> list[dict]:
+    """
+    Executes true pgvector cosine similarity search: 1 - (embedding <=> :q_emb).
+    Returns ranked memories with similarity scores.
+    """
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+
+    clean_query = query_text.strip()
+    if not clean_query:
+        return []
+
+    is_postgres = "postgresql" in engine.url.drivername
+    if not is_postgres:
+        # Fallback to smart text matching for SQLite
+        all_mems = get_bubble_memories(chat_id, bubble_slug=bubble_slug, limit=limit * 2)
+        q_low = clean_query.lower()
+        matched = []
+        for m in all_mems:
+            combined = f"{m.get('title') or ''} {m.get('content') or ''} {m.get('ocr_extracted_text') or ''}".lower()
+            q_words = [w for w in q_low.split() if len(w) > 2]
+            matches = sum(1 for w in q_words if w in combined)
+            sim = 0.5 + (0.5 * matches / max(len(q_words), 1)) if matches > 0 else 0.45
+            m["similarity"] = round(sim, 2)
+            matched.append(m)
+        return sorted(matched, key=lambda x: x["similarity"], reverse=True)[:limit]
+
+    try:
+        from services.embeddings import embed_query
+        q_emb = embed_query(clean_query)
+        if not q_emb:
+            return []
+
+        bubble_filter = ""
+        params = {
+            "uid": uid,
+            "q_emb": str(q_emb),
+            "lim": limit,
+            "min_sim": min_similarity
+        }
+
+        if bubble_slug and bubble_slug.lower() != "everything":
+            bubble_filter = "AND m.bubble_slug = :bubble"
+            params["bubble"] = bubble_slug.lower()
+
+        sql = f"""
+            SELECT 
+                m.id,
+                m.title,
+                m.content,
+                m.bubble_slug,
+                m.image_url,
+                m.ocr_extracted_text,
+                m.ai_summary,
+                m.created_at,
+                (1.0 - (m.embedding <=> CAST(:q_emb AS vector))) AS similarity
+            FROM memories m
+            WHERE m.user_id = :uid
+              AND m.status = 'active'
+              AND m.embedding IS NOT NULL
+              {bubble_filter}
+            ORDER BY m.embedding <=> CAST(:q_emb AS vector) ASC
+            LIMIT :lim
+        """
+
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+            results = []
+            for r in rows:
+                sim = float(r[8]) if r[8] is not None else 0.0
+                if sim >= min_similarity:
+                    results.append({
+                        "id": r[0],
+                        "title": r[1],
+                        "content": r[2],
+                        "bubble_slug": r[3],
+                        "image_url": r[4],
+                        "ocr_extracted_text": r[5],
+                        "ai_summary": r[6],
+                        "created_at": str(r[7]),
+                        "similarity": round(sim, 4)
+                    })
+            return results
+    except Exception as exc:
+        logger.error(f"search_bubble_memories_cosine error: {exc}")
+        return []
+
+
+def get_bubble_memories(chat_id, bubble_slug: Optional[str] = None, limit: int = 20) -> list[dict]:
+    """Retrieves recent memories within a specific bubble or across all bubbles."""
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+    try:
+        params = {"uid": uid, "lim": limit}
+        where_clause = "WHERE user_id = :uid AND status = 'active'"
+        if bubble_slug and bubble_slug.lower() != "everything":
+            where_clause += " AND bubble_slug = :bubble"
+            params["bubble"] = bubble_slug.lower()
+
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT id, title, content, bubble_slug, image_url, ocr_extracted_text, ai_summary, created_at
+                FROM memories
+                {where_clause}
+                ORDER BY id DESC
+                LIMIT :lim
+            """), params).fetchall()
+
+            return [
+                {
+                    "id": r[0],
+                    "title": r[1],
+                    "content": r[2],
+                    "bubble_slug": r[3],
+                    "image_url": r[4],
+                    "ocr_extracted_text": r[5],
+                    "ai_summary": r[6],
+                    "created_at": str(r[7])
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        logger.error(f"get_bubble_memories error: {exc}")
+        return []
+
+
+# ===========================================================================
+# Frontier Memorae Engine: Model Context Protocol (MCP) Server Registry
+# ===========================================================================
+
+def get_user_mcp_servers(chat_id) -> list[dict]:
+    """Retrieves all registered active MCP servers for a user."""
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+    is_postgres = "postgresql" in engine.url.drivername
+    active_cond = "is_active = true" if is_postgres else "is_active = 1"
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT id, server_name, server_url, is_active, tools_cache, created_at
+                FROM user_mcp_servers
+                WHERE user_id = :uid AND {active_cond}
+                ORDER BY id ASC
+            """), {"uid": uid}).fetchall()
+
+            servers = []
+            for r in rows:
+                tools = r[4]
+                if isinstance(tools, str):
+                    try:
+                        tools = json.loads(tools)
+                    except Exception:
+                        tools = []
+                servers.append({
+                    "id": r[0],
+                    "server_name": r[1],
+                    "server_url": r[2],
+                    "is_active": bool(r[3]),
+                    "tools": tools or [],
+                    "created_at": str(r[5])
+                })
+            return servers
+    except Exception as exc:
+        logger.error(f"get_user_mcp_servers error: {exc}")
+        return []
+
+
+def save_user_mcp_server(
+    chat_id,
+    server_name: str,
+    server_url: str,
+    auth_token: Optional[str] = None,
+    tools_cache: Optional[list] = None
+) -> bool:
+    """Registers or updates an MCP server for the user."""
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+    is_postgres = "postgresql" in engine.url.drivername
+    tools_json = json.dumps(tools_cache or [])
+    try:
+        with engine.begin() as conn:
+            if is_postgres:
+                conn.execute(text("""
+                    INSERT INTO user_mcp_servers (user_id, server_name, server_url, auth_token, tools_cache, is_active)
+                    VALUES (:uid, :sname, :surl, :token, CAST(:tcache AS jsonb), true)
+                    ON CONFLICT (user_id, server_name) DO UPDATE
+                    SET server_url = :surl, auth_token = :token, tools_cache = CAST(:tcache AS jsonb), is_active = true, updated_at = now()
+                """), {
+                    "uid": uid,
+                    "sname": server_name.strip(),
+                    "surl": server_url.strip(),
+                    "token": auth_token,
+                    "tcache": tools_json
+                })
+            else:
+                conn.execute(text("""
+                    INSERT INTO user_mcp_servers (user_id, server_name, server_url, auth_token, tools_cache, is_active)
+                    VALUES (:uid, :sname, :surl, :token, :tcache, 1)
+                    ON CONFLICT(user_id, server_name) DO UPDATE
+                    SET server_url = :surl, auth_token = :token, tools_cache = :tcache, is_active = 1, updated_at = CURRENT_TIMESTAMP
+                """), {
+                    "uid": uid,
+                    "sname": server_name.strip(),
+                    "surl": server_url.strip(),
+                    "token": auth_token,
+                    "tcache": tools_json
+                })
+        return True
+    except Exception as exc:
+        logger.error(f"save_user_mcp_server error: {exc}")
+        return False
+
+
+def delete_user_mcp_server(chat_id, server_name: str) -> bool:
+    """Removes or deactivates an MCP server."""
+    _init_frontier_sqlite_if_needed()
+    uid = get_internal_user_id(chat_id)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                DELETE FROM user_mcp_servers
+                WHERE user_id = :uid AND lower(server_name) = lower(:sname)
+            """), {"uid": uid, "sname": server_name.strip()})
+        return True
+    except Exception as exc:
+        logger.error(f"delete_user_mcp_server error: {exc}")
+        return False
+
+
 
 
 

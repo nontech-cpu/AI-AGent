@@ -9,6 +9,7 @@ from connectors.gmail import GmailConnector
 from connectors.calendar import CalendarConnector
 from connectors.drive import DriveConnector
 from connectors.notion import NotionConnector
+from connectors.mcp import MCPConnector
 
 _REGISTRY: Dict[str, Connector] = {}
 
@@ -58,3 +59,5 @@ register_connector(GmailConnector())
 register_connector(CalendarConnector())
 register_connector(DriveConnector())
 register_connector(NotionConnector())
+register_connector(MCPConnector())
+

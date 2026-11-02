@@ -64,7 +64,8 @@ async def test_smart_reschedule_and_deduplication():
     res2 = await execute_tool(chat_id, "create_reminder", {
         "title": "Meeting with Devender",
         "due_date": today.isoformat(),
-        "due_time": "18:00"
+        "due_time": "18:00",
+        "force": True
     })
     assert res2["status"] == "success"
     assert res2["has_conflict"] is True

@@ -352,3 +352,4 @@ def format_continuous_timeline_prompt_block(chat_id: int, now_ist: Optional[date
         lines.append(f"• {icon} {time_str}: {s.title} {status_tag}")
 
     return "\n".join(lines)
+

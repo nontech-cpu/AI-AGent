@@ -114,6 +114,26 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                 relevant_mems.append(rm)
                 if len(relevant_mems) >= 4:
                     break
+
+            # Also query pgvector memory bubbles (travel, health, finance, work)
+            try:
+                bubble_mems = db.search_bubble_memories_cosine(chat_id, user_text, limit=3, min_similarity=0.45)
+                seen_ids = {m.get("id") for m in relevant_mems}
+                for bm in bubble_mems:
+                    if bm.get("id") not in seen_ids:
+                        relevant_mems.append({
+                            "id": bm["id"],
+                            "memory_type": bm.get("bubble_slug", "note"),
+                            "title": bm.get("title"),
+                            "content": bm.get("content"),
+                            "bubble_slug": bm.get("bubble_slug"),
+                            "ocr_extracted_text": bm.get("ocr_extracted_text"),
+                            "created_at": bm.get("created_at")
+                        })
+                        if len(relevant_mems) >= 6:
+                            break
+            except Exception:
+                pass
         except Exception:
             relevant_mems = []
 
@@ -195,8 +215,13 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             structured = m.get("structured") or {}
             event_d = structured.get("event_date") or (str(m.get("created_at"))[:10] if m.get("created_at") else None)
             subj = structured.get("subject") or m.get("entity_name") or "User"
-            tag = f"{event_d}, {subj}" if event_d else f"{m['memory_type']}"
-            lines.append(f"• [{tag}] {m['content']}")
+            bubble_name = m.get("bubble_slug")
+            b_tag = f"[{bubble_name.upper()}] " if bubble_name and bubble_name != "everything" else ""
+            tag = f"{b_tag}{event_d}, {subj}" if event_d else f"{b_tag}{m.get('memory_type', 'note')}"
+            title_prefix = f"({m['title']}) " if m.get("title") else ""
+            lines.append(f"• [{tag}] {title_prefix}{m['content']}")
+            if m.get("ocr_extracted_text") and len(m.get("ocr_extracted_text", "")) > 10:
+                lines.append(f"  [Document/OCR Detail]: {m['ocr_extracted_text'][:200]}")
         lines.append("")
 
     if facts:

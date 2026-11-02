@@ -3957,10 +3957,17 @@ app.add_middleware(
 from api_v1 import router as api_v1_router
 app.include_router(api_v1_router)
 
+from services.frontier_router import router as frontier_router
+app.include_router(frontier_router)
+
 from fastapi.staticfiles import StaticFiles
 _assets_path = os.path.join(os.path.dirname(__file__), "assets")
 if os.path.exists(_assets_path):
     app.mount("/assets", StaticFiles(directory=_assets_path), name="assets")
+
+_static_path = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(_static_path, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_path), name="static")
 
 
 @app.middleware("http")
@@ -5068,7 +5075,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.2.0"}
+    return {"status": "pong", "version": "v2.3.0"}
 
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():

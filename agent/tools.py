@@ -1586,6 +1586,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                             "has_conflict": True,
                             "conflict_type": collision.get("conflict_type", "transit"),
                             "conflicting_event": collision.get("blocking_event"),
+                            "conflicts": [collision.get("blocking_event")] if collision.get("blocking_event") else [],
                             "title": args.title,
                             "due_date": args.due_date,
                             "due_time": args.due_time,
