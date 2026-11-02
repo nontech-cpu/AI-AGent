@@ -1585,6 +1585,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             is_daily = (getattr(args, "recurrence", "none") or "").lower() in ("daily", "roj", "every_day", "everyday")
             time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
+            date_str = d_val.strftime("%d %b %Y") if d_val else (args.due_date or "specified date")
 
             if is_daily:
                 rule_text = f"Daily recurring reminder: {args.title} at {time_str}"
