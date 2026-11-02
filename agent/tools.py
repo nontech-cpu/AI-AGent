@@ -730,11 +730,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "check_integrations_status",
-            "description": "Check whether user third-party integrations (GitHub, Notion, Google Calendar/Meet/Gmail/Drive) are connected.",
+            "description": "Check whether user third-party integrations (GitHub, Notion, Google Calendar/Meet/Gmail/Drive) or email accounts are connected/linked, and retrieve which email address is linked to the user account.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service": {"type": ["string", "null"], "description": "Optional service name filter e.g. 'github', 'notion', 'google'."}
+                    "service": {"type": ["string", "null"], "description": "Optional service name filter e.g. 'github', 'notion', 'google', 'email'."}
                 }
             }
         }
@@ -2075,11 +2075,27 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         google_email = g_email if isinstance(g_email, str) else g_email.get("google_email")
                 except Exception:
                     pass
-                if google_conn:
-                    e_display = f" ({google_email})" if google_email else ""
-                    msg = f"✅ Aapka Google account connected hai{e_display}! (Calendar, Meet, Gmail, Drive active)"
+
+                # Also check verified email_links if Google OAuth is not directly active
+                if not google_conn or not google_email:
+                    try:
+                        with db.engine.connect() as conn:
+                            el_row = conn.execute(
+                                db.text("SELECT email FROM email_links WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) AND verified = true"),
+                                {"cid": db.canonical_chat_id(chat_id)}
+                            ).first()
+                            if el_row and el_row[0]:
+                                google_email = el_row[0]
+                                google_conn = True
+                    except Exception:
+                        pass
+
+                if google_conn and google_email:
+                    msg = f"Aapka connected/linked email address: **{google_email}**"
+                elif google_conn:
+                    msg = "✅ Aapka Google account connected hai! (Calendar, Meet, Gmail, Drive active)"
                 else:
-                    msg = "❌ Aapka Google account abhi connect nahi hai. 'connect google' likhkar official link se authorize karein."
+                    msg = "Aapka koi bhi email address ya Google account abhi linked ya connect nahi hai. Email link karne ke liye bas apna email yahan bhej dein ya 'connect google' bol dein."
                 return {
                     "status": "success",
                     "service": "google",

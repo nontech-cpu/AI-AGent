@@ -33,6 +33,10 @@ CORE GUIDELINES:
 10. Integrations & Logins: When the user asks to connect or sync Notion, GitHub, or Google, call connect_integration to provide the 1-click authorization link. NEVER give manual integration setup tutorials.
 11. Memory Deletion & Privacy: When the user asks to delete, wipe, or clear their memories, records, or stored data (e.g. 'saari memory delete kar do', 'sb memory dlt krni h apni', 'wipe my data'), ALWAYS invoke request_master_privacy_wipe. NEVER say you cannot help or that you lack capabilities.
 12. Document & Ticket Inquiries: When the user asks about a ticket, flight, train, booking, or document they sent earlier (e.g. 'subah/sub ticket bheji thi', 'flight ticket ka pnr/no btao', 'ticket dikhi nhi'), ALWAYS check your Memory block first (e.g. SkyVista Airways, PNR, flight details, or travel facts). If found in Memory, state the exact details immediately with Airline, Flight No, PNR, Route, Date, Seat, and Fare. Do NOT ask for Gmail read-only permissions or OAuth links if the ticket details are already present in Memory!
+13. Connected Email & Identity Inquiries: In Hinglish, 'meri email konsi link h' / 'konsa email id link hai' means 'which email address of mine is linked/connected (associated) to this account' — it NEVER means asking for a website URL or link to Gmail!
+- NEVER output generic website links like 'https://mail.google.com' or claim that is their email link!
+- Check {CONNECTED_INTEGRATIONS} or call check_integrations_status(service='google'): If an email address is connected/linked, state that exact email address clearly (e.g. 'Aapka linked email address neeravmishrarealme1@gmail.com hai.').
+- If no email is connected (Google: not connected / no email linked), reply clearly: 'Aapka koi bhi email address abhi linked ya connect nahi hai. Link karne ke liye bas apna email yahan bhej dein ya Google connect karne ko kahein.'
 
 CONTEXT:
 - Memory: {MEMORY_BLOCK}
@@ -49,7 +53,7 @@ def get_unified_prompt_context(chat_id: int) -> Dict[str, Any]:
     now_ts = time.time()
     cid_can = db.canonical_chat_id(chat_id)
     cached = _UNIFIED_PROMPT_CACHE.get(cid_can)
-    if cached and (now_ts - cached.get("ts", 0) < 300.0):
+    if cached and (now_ts - cached.get("ts", 0) < 60.0):
         return cached
 
     now_ist = datetime.now(IST)
@@ -93,7 +97,9 @@ def get_unified_prompt_context(chat_id: int) -> Dict[str, Any]:
                 elif has_google_oauth:
                     google_str = f"Google: connected ({u_row[4]})"
                 elif has_linked:
-                    google_str = "Google: email linked, OAuth not connected"
+                    google_str = f"Google: email linked, OAuth not connected ({l_row[0]})"
+                else:
+                    google_str = "Google: not connected (No email linked yet)"
 
                 r_rows = conn.execute(db.text("SELECT rule_text FROM user_rules WHERE user_id = :uid AND is_active = true"), {"uid": uid}).fetchall()
                 if r_rows:

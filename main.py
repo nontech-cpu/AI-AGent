@@ -5064,7 +5064,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.1.7"}
+    return {"status": "pong", "version": "v2.1.8"}
 
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():

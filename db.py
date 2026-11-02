@@ -1422,27 +1422,6 @@ def search_relevant_user_facts(chat_id, query_text: str, limit: int = 4) -> list
                             matched_facts.append(f_str)
                     if len(matched_facts) >= limit:
                         break
-
-            # 3. Search in historical chat_logs (user statements from previous sessions)
-            if len(matched_facts) < limit:
-                for tok in search_tokens:
-                    pat = f"%{tok}%"
-                    rows = conn.execute(
-                        text(
-                            "SELECT message FROM chat_logs "
-                            "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                            "AND role = 'user' AND LOWER(message) LIKE :pat "
-                            "AND LENGTH(message) < 250 ORDER BY id DESC LIMIT 2"
-                        ),
-                        {"cid": chat_id, "pat": pat}
-                    ).fetchall()
-                    for r in rows:
-                        f_str = r[0].strip()
-                        if f_str and f_str.lower() not in seen and f_str.lower() != query_text.lower():
-                            seen.add(f_str.lower())
-                            matched_facts.append(f"Past note: \"{f_str}\"")
-                    if len(matched_facts) >= limit:
-                        break
     except Exception as exc:
         print("search_relevant_user_facts error:", repr(exc))
 
