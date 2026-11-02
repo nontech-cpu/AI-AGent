@@ -1421,11 +1421,13 @@ async def connected_user_gmail_monitor_loop():
                             except Exception as f_err:
                                 print(f"Error saving user fact from email for {chat_id}:", f_err)
 
-                        try:
-                            reply_lang.set(get_language(chat_id))
-                            await say_raw(chat_id, alert_text)
-                        except Exception as send_err:
-                            print(f"Failed to send email alert to {chat_id}:", send_err)
+                        from db import get_all_linked_chat_ids
+                        for target_cid in get_all_linked_chat_ids(chat_id):
+                            try:
+                                reply_lang.set(get_language(target_cid))
+                                await say_raw(target_cid, alert_text)
+                            except Exception as send_err:
+                                print(f"Failed to send email alert to {target_cid}:", send_err)
                     else:
                         cat = (analysis or {}).get("category", "promotional")
                         await asyncio.to_thread(
@@ -1451,6 +1453,9 @@ _GOOGLE_CONN_CACHE: dict = {}
 async def get_valid_google_connection_by_chat_id(chat_id: int) -> tuple[bool, str | None]:
     """Check if the user has a valid, unrevoked Google connection. Returns (is_connected, email)."""
     import time as _pytime
+    from db import canonical_chat_id
+    orig_chat_id = chat_id
+    chat_id = canonical_chat_id(chat_id)
     now_ts = _pytime.time()
     cached = _GOOGLE_CONN_CACHE.get(chat_id)
     if cached and (now_ts - cached["ts"] < 180.0):
@@ -4537,6 +4542,9 @@ async def google_callback(request: Request):
 
     try:
         chat_id = verify_state(state)
+        from db import canonical_chat_id, get_all_linked_chat_ids
+        orig_chat_id = chat_id
+        chat_id = canonical_chat_id(chat_id)
         ensure_user(chat_id)
         if is_web and not has_consent(chat_id):
             give_consent(chat_id)
@@ -4611,26 +4619,27 @@ async def google_callback(request: Request):
 
         # Notify user on Telegram if initiated from TG
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        if tg_token and not is_web and chat_id:
-            try:
-                async with httpx.AsyncClient(timeout=6.0) as client:
-                    await client.post(
-                        f"https://api.telegram.org/bot{tg_token}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": (
-                                f"✅ **Google account successfully connect ho gaya!** 🌐\n\n"
-                                f"📧 **Connected Email**: `{email}`\n"
-                                f"📅 Google Calendar & Meet: Active\n"
-                                f"📁 Google Drive: Active\n"
-                                f"✉️ Gmail & Autonomous Intelligence: Active\n\n"
-                                f"Ab aap mujhe bol sakte hain jaise: *'meri meetings check karo'*, *'kal 4 bje meeting schedule kar do'*, ya *'Drive par file save kar do'*."
-                            ),
-                            "parse_mode": "Markdown"
-                        }
-                    )
-            except Exception as e:
-                print("Failed to send Telegram Google notification:", repr(e))
+        if tg_token and not is_web and orig_chat_id:
+            for target_cid in get_all_linked_chat_ids(orig_chat_id):
+                try:
+                    async with httpx.AsyncClient(timeout=6.0) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                            json={
+                                "chat_id": target_cid,
+                                "text": (
+                                    f"✅ **Google account successfully connect ho gaya!** 🌐\n\n"
+                                    f"📧 **Connected Email**: `{email}`\n"
+                                    f"📅 Google Calendar & Meet: Active\n"
+                                    f"📁 Google Drive: Active\n"
+                                    f"✉️ Gmail & Autonomous Intelligence: Active\n\n"
+                                    f"Ab aap mujhe bol sakte hain jaise: *'meri meetings check karo'*, *'kal 4 bje meeting schedule kar do'*, ya *'Drive par file save kar do'*."
+                                ),
+                                "parse_mode": "Markdown"
+                            }
+                        )
+                except Exception as e:
+                    print(f"Failed to send Telegram Google notification to {target_cid}:", repr(e))
 
         # Invalidate prompt cache so immediate next messages know Google is connected
         try:
@@ -5055,7 +5064,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.1.5"}
+    return {"status": "pong", "version": "v2.1.7"}
 
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():

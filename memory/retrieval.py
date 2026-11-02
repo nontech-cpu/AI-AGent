@@ -140,6 +140,18 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     except Exception:
         facts = []
 
+    # Include active bookings/travel facts if query relates to travel, tickets, documents, or morning context
+    try:
+        lower_q = (user_text or "").lower()
+        if any(w in lower_q for w in ("ticket", "flight", "train", "pnr", "booking", "plane", "travel", "sub", "subah", "bheja", "bhji", "document", "documents")):
+            top_user_facts = db.get_user_facts(chat_id, limit=5)
+            for uf in top_user_facts:
+                f_text = uf.get("fact", "")
+                if any(w in f_text.lower() for w in ("booking", "ticket", "flight", "pnr", "train", "airways")):
+                    facts.append({"id": uf.get("id"), "fact": f_text, "category": uf.get("category", "booking")})
+    except Exception:
+        pass
+
     # Format into context string
     lines = ["<memory>"]
 

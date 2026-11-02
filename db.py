@@ -30,6 +30,7 @@ else:
 
 
 def give_consent(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     now_expr = "NOW()" if engine.dialect.name == "postgresql" else "CURRENT_TIMESTAMP"
     with engine.begin() as conn:
         conn.execute(
@@ -54,6 +55,7 @@ def give_consent(chat_id):
 
 
 def has_consent(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     try:
         with engine.connect() as conn:
             row = conn.execute(
@@ -453,6 +455,9 @@ def remove_email_link(chat_id):
 # Delivery to Telegram remains isolated on the originating chat_id in main.py
 CANONICAL_CHAT_ID_MAP = {
     1234828592: 1758056012,
+    7940177745: 1758056012,
+    7284786622: 1758056012,
+    7623114780: 1758056012,
 }
 
 def canonical_chat_id(chat_id):
@@ -461,6 +466,20 @@ def canonical_chat_id(chat_id):
         return CANONICAL_CHAT_ID_MAP.get(cid_int, cid_int)
     except Exception:
         return chat_id
+
+
+def get_all_linked_chat_ids(chat_id: int) -> set[int]:
+    """Returns all Telegram chat IDs associated with this user identity for broadcast notifications."""
+    try:
+        cid_int = int(chat_id)
+    except Exception:
+        return {chat_id}
+    canon = canonical_chat_id(cid_int)
+    targets = {cid_int, canon}
+    for orig, c in CANONICAL_CHAT_ID_MAP.items():
+        if c == canon:
+            targets.add(orig)
+    return targets
 
 
 def ensure_user(chat_id):
@@ -479,6 +498,7 @@ def ensure_user(chat_id):
 
 
 def get_state(chat_id):
+    chat_id = canonical_chat_id(chat_id)
     # None = user hi nahi hai. Warna (state, state_data)
     with engine.connect() as conn:
         row = conn.execute(
@@ -497,6 +517,7 @@ def get_state(chat_id):
 
 
 def set_state(chat_id, state, data=None):
+    chat_id = canonical_chat_id(chat_id)
     serialized_data = data
     if isinstance(data, (dict, list)):
         serialized_data = json.dumps(data)

@@ -709,11 +709,34 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             if isinstance(last_res, dict) and "emails" in last_res:
                 emails = last_res.get("emails", [])
                 if emails:
-                    lines = [f"📧 **Aapke inbox me {len(emails)} emails mili hain:**"]
-                    for em in emails[:3]:
+                    lines = [f"📧 **Aapke inbox me {len(emails)} emails mili hain:**\n"]
+                    for em in emails[:5]:
                         subj = em.get("subject", "No Subject")
-                        sender = em.get("from", "")
-                        lines.append(f"• **{subj}** (From: {sender})")
+                        sender = em.get("sender") or em.get("from") or "Unknown"
+                        details = em.get("details") or {}
+                        pnr = details.get("pnr")
+                        route = details.get("route")
+                        dt = details.get("datetime_str")
+                        carrier = details.get("carrier")
+                        
+                        ticket_info = []
+                        if carrier:
+                            ticket_info.append(f"Carrier: {carrier}")
+                        if pnr:
+                            ticket_info.append(f"PNR: {pnr}")
+                        if route:
+                            ticket_info.append(f"Route: {route}")
+                        if dt:
+                            ticket_info.append(f"Date: {dt}")
+                            
+                        if ticket_info:
+                            lines.append(f"• **{subj}** (From: {sender})\n  👉 {' | '.join(ticket_info)}")
+                        else:
+                            snippet = (em.get("body_snippet") or "")[:120].replace("\n", " ").strip()
+                            if snippet:
+                                lines.append(f"• **{subj}** (From: {sender})\n  _{snippet}_")
+                            else:
+                                lines.append(f"• **{subj}** (From: {sender})")
                     final_reply = "\n".join(lines)
                 else:
                     final_reply = "Aapke connected inbox me koi email nahi mili."

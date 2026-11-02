@@ -32,6 +32,7 @@ CORE GUIDELINES:
 9. Multi-Action Requests: When the user asks for multiple tasks in one message (e.g. create a list AND set a reminder), execute all tools and confirm all completed actions clearly in your reply.
 10. Integrations & Logins: When the user asks to connect or sync Notion, GitHub, or Google, call connect_integration to provide the 1-click authorization link. NEVER give manual integration setup tutorials.
 11. Memory Deletion & Privacy: When the user asks to delete, wipe, or clear their memories, records, or stored data (e.g. 'saari memory delete kar do', 'sb memory dlt krni h apni', 'wipe my data'), ALWAYS invoke request_master_privacy_wipe. NEVER say you cannot help or that you lack capabilities.
+12. Document & Ticket Inquiries: When the user asks about a ticket, flight, train, booking, or document they sent earlier (e.g. 'subah/sub ticket bheji thi', 'flight ticket ka pnr/no btao', 'ticket dikhi nhi'), ALWAYS check your Memory block first (e.g. SkyVista Airways, PNR, flight details, or travel facts). If found in Memory, state the exact details immediately with Airline, Flight No, PNR, Route, Date, Seat, and Fare. Do NOT ask for Gmail read-only permissions or OAuth links if the ticket details are already present in Memory!
 
 CONTEXT:
 - Memory: {MEMORY_BLOCK}
@@ -260,23 +261,22 @@ async def build_runtime_system_prompt(
         except Exception:
             memory_block = ""
 
-    # Contextual Memory RAG: Search specifically for facts only if not already provided via mem_ctx
-    if not mem_ctx:
-        try:
-            matched_rag_facts = db.search_relevant_user_facts(chat_id, user_text, limit=4)
-            if matched_rag_facts:
-                rag_lines = [f"• {f}" for f in matched_rag_facts]
-                rag_str = "Contextually Retrieved Past Facts & Memory (RAG):\n" + "\n".join(rag_lines)
-                memory_block = f"{memory_block}\n{rag_str}".strip() if memory_block else rag_str
-            else:
-                top_facts = db.get_user_facts(chat_id, limit=2)
-                if top_facts:
-                    facts_lines = [f"• {f.get('fact')}" for f in top_facts if f.get('fact')]
-                    if facts_lines:
-                        facts_str = "User Profile:\n" + "\n".join(facts_lines)
-                        memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
-        except Exception:
-            pass
+    # Contextual Memory RAG: Search specifically for facts matching query and active bookings
+    try:
+        matched_rag_facts = db.search_relevant_user_facts(chat_id, user_text, limit=4)
+        if matched_rag_facts:
+            rag_lines = [f"• {f}" for f in matched_rag_facts]
+            rag_str = "[Contextually Retrieved Past Facts & Active Bookings]:\n" + "\n".join(rag_lines)
+            memory_block = f"{memory_block}\n\n{rag_str}".strip() if memory_block else rag_str
+        elif not mem_ctx:
+            top_facts = db.get_user_facts(chat_id, limit=2)
+            if top_facts:
+                facts_lines = [f"• {f.get('fact')}" for f in top_facts if f.get('fact')]
+                if facts_lines:
+                    facts_str = "User Profile:\n" + "\n".join(facts_lines)
+                    memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
+    except Exception:
+        pass
 
     if not memory_block:
         memory_block = "User lives in Jodhpur, Rajasthan (Sardarpura area)."
