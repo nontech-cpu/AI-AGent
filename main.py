@@ -1399,6 +1399,11 @@ async def connected_user_gmail_monitor_loop():
                             seats_str = raw.get("seats") or ""
                             pax_str = raw.get("passengers") or ""
                             fact_text = f"Booking/Ticket: {carrier_str} | PNR: {pnr_str} | Route: {route_str} | Date: {dt_str} | Seats: {seats_str} | Passengers: {pax_str}"
+                            try:
+                                from state.active_context import set_active_ticket
+                                set_active_ticket(chat_id, raw)
+                            except Exception as sat_err:
+                                print(f"Error setting active ticket in main: {sat_err}")
                         elif cat == "interview":
                             comp_str = raw.get("company") or ""
                             role_str = raw.get("role_or_title") or ""
@@ -5063,7 +5068,7 @@ def health():
 
 @app.get("/debug/ping")
 def debug_ping():
-    return {"status": "pong", "version": "v2.1.9"}
+    return {"status": "pong", "version": "v2.2.0"}
 
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():

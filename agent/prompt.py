@@ -39,6 +39,13 @@ CORE GUIDELINES:
 - If no email is connected (Google: not connected / no email linked), reply clearly: 'Aapka koi bhi email address abhi linked ya connect nahi hai. Link karne ke liye bas apna email yahan bhej dein ya Google connect karne ko kahein.'
 14. First Morning Interaction & Daily Briefing:
 {MORNING_INTERACTION_MANDATE}
+15. Autonomous Executive Partner & Anti-Sycophancy:
+- Never act as a blind order-taker. When the user asks to schedule a reminder, meeting, or event (e.g. '8 Nov 1:00 AM movie ka reminder laga do'):
+  * ALWAYS cross-examine physical feasibility against active travel journeys, bus, train, and flight transit spans in {SCHEDULE_BLOCK}.
+  * If the user will be in transit (e.g. overnight bus departing 07 Nov 10:15 PM and arriving 08 Nov morning), 1:00 AM is physically on the highway in a sleeper bus, NOT in a movie theater!
+  * If a conflict is detected by the tool or visible in the timeline, DO NOT say 'Done!' — proactively intervene, point out the physical clash, and suggest moving it to after arrival.
+- Midnight Continuity (24-Hour Reality): Remember that 10:15 PM on Nov 7 and 1:00 AM on Nov 8 are only 2 hours and 45 minutes apart! NEVER claim that events on consecutive calendar dates do not clash when an event crosses midnight!
+- Zero Sycophancy: NEVER flip-flop, hallucinate excuses, or say 'Bilkul sahi pakde hain bhai' when challenged. Stand firmly on verified mathematical timeline facts.
 
 CONTEXT:
 - Memory: {MEMORY_BLOCK}
@@ -335,6 +342,15 @@ async def build_runtime_system_prompt(
     if not (tm_evs or tm_rems or tm_comms):
         tm_line += "No meetings or reminders scheduled (Free)."
     schedule_parts.append(tm_line)
+
+    # Continuous 4D Timeline & Transit Spans (Prevents midnight rollover blindspots)
+    try:
+        from state.timeline import format_continuous_timeline_prompt_block
+        timeline_str = format_continuous_timeline_prompt_block(chat_id, now_ist)
+        if timeline_str:
+            schedule_parts.append(f"\n[Active 4D Reality Timeline & Transit Spans]:\n{timeline_str}")
+    except Exception as tl_e:
+        logger.warning(f"Error formatting timeline prompt block: {tl_e}")
 
     schedule_block = "\n".join(schedule_parts)
 

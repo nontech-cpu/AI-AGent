@@ -6,10 +6,13 @@ Write actions implement the Two-Phase Confirmation Gate (return needs_confirmati
 import os
 import re
 import json
+import logging
 from typing import Any, Optional, List, Dict
 from datetime import datetime, date, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger("peculiar_tools")
 
 import db
 from timing import IST
@@ -1571,6 +1574,27 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             except Exception:
                 pass
 
+            # 4D Continuous Timeline & Travel Transit Collision Check (World Model)
+            if t_val and not getattr(args, "force", False):
+                try:
+                    cand_start_dt = datetime.combine(d_val, t_val, tzinfo=IST)
+                    from state.timeline import check_timeline_collision
+                    collision = check_timeline_collision(chat_id, args.title, cand_start_dt)
+                    if collision and collision.get("has_conflict"):
+                        return {
+                            "status": "conflict_detected",
+                            "has_conflict": True,
+                            "conflict_type": collision.get("conflict_type", "transit"),
+                            "conflicting_event": collision.get("blocking_event"),
+                            "title": args.title,
+                            "due_date": args.due_date,
+                            "due_time": args.due_time,
+                            "message": collision.get("explanation"),
+                            "suggested_action": f"Task ko {collision.get('suggested_free_time')} shift karein, ya agar fir bhi isi waqt schedule karna hai toh confirm karein."
+                        }
+                except Exception as tl_err:
+                    logger.warning(f"Timeline collision check error: {tl_err}")
+
             # Check if there is an unforced direct time clash
             if conflicts and not getattr(args, "force", False) and not matched_existing_ids:
                 return {
@@ -1750,7 +1774,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             kw = str(arguments.get("title", "")).strip().lower()
             rem_id = arguments.get("reminder_id")
             from db import canonical_chat_id, engine, text, items_for_date
-            from timing import IST
             can_cid = canonical_chat_id(chat_id)
 
             # Robust keyword cleaning: remove asterisks, times (- 05:30 PM), filler words
