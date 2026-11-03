@@ -293,6 +293,17 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             meet_url = result.get("meet_url") or result.get("hangoutLink", "")
             calendar_link = result.get("htmlLink", "")
 
+            try:
+                from memory.store import record_action_event
+                record_action_event(
+                    chat_id,
+                    action_type="create_meeting",
+                    summary=f"Scheduled Google Calendar meeting '{title}' for {clock_str} ({duration_minutes} mins)",
+                    details={"title": title, "start": start_iso, "duration": duration_minutes, "meet_url": meet_url}
+                )
+            except Exception:
+                pass
+
             msg = f"✅ **Meeting successfully scheduled!**\n\n📌 **Title:** {title}\n🕒 **Time:** {clock_str} (India Time)\n⏱️ **Duration:** {duration_minutes} mins"
             if meet_url:
                 msg += f"\n📹 **Google Meet:** {meet_url}"
@@ -315,6 +326,17 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
                 body=body
             )
             reply = f"✅ **Email sent successfully!**\n\n📤 **To:** {to}\n📝 **Subject:** {subject}"
+            try:
+                from memory.store import record_action_event
+                record_action_event(
+                    chat_id,
+                    action_type="send_email",
+                    summary=f"Sent email to {to} with Subject: '{subject}'",
+                    details={"to": to, "subject": subject, "body_preview": (body or "")[:200]},
+                    subject_name=to
+                )
+            except Exception:
+                pass
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
             return True, reply

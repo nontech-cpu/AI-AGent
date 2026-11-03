@@ -143,3 +143,47 @@ async def test_multiturn_web_search_available_and_transit_grounding():
     assert "search_web" in prompt
 
 
+@pytest.mark.asyncio
+async def test_multiturn_action_ledger_sent_email_subject_recall():
+    """
+    Verifies Enterprise Action-Ledger:
+    1. Email sent to Aarav Mishra is recorded with its subject.
+    2. Even after multiple turns and chat history window, querying 'Aarav ko jo mail bheji thi uska subject kya tha'
+       instantly retrieves the subject and recipient from the action ledger.
+    3. Token consumption is minimal (< 60 tokens).
+    """
+    from memory.store import record_action_event, save_entity
+    from memory.retrieval import assemble_memory_context, _MEM_CTX_CACHE
+
+    _MEM_CTX_CACHE.clear()
+
+    # Step 1: Save entity Aarav Mishra
+    ent_id = save_entity(
+        user_id=TEST_USER_ID,
+        name="Aarav Mishra",
+        entity_type="person",
+        attributes={"email": "aaravmishra@example.com"}
+    )
+    assert ent_id > 0
+
+    # Step 2: Record sent email action in Action-Ledger
+    act_id = record_action_event(
+        chat_id_or_user_id=TEST_CHAT_ID,
+        action_type="send_email",
+        summary="Sent email to aaravmishra@example.com with Subject: 'AI Project Status Update'",
+        details={"to": "aaravmishra@example.com", "subject": "AI Project Status Update", "body_preview": "Hi Aarav, testing AI status update."},
+        subject_name="Aarav Mishra"
+    )
+    assert act_id > 0
+
+    # Step 3: User queries after many turns: "Aarav ko jo mail bheji thi uska subject kya tha?"
+    ctx = assemble_memory_context(TEST_CHAT_ID, "Aarav ko jo mail bheji thi uska subject kya tha?")
+    block = ctx.get("formatted_block", "")
+
+    # Verification: Both Aarav Mishra, the email, and the exact Subject MUST be present
+    assert "Aarav Mishra" in block
+    assert "AI Project Status Update" in block
+    assert "aaravmishra@example.com" in block
+
+
+

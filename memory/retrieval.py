@@ -93,6 +93,11 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             seen_entity_ids.add(ent["id"])
             ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
             ent["commitments"] = ent_commitments
+            try:
+                from memory.store import get_recent_actions_for_user
+                ent["recent_actions"] = get_recent_actions_for_user(user_id, entity_id=ent["id"], limit=3)
+            except Exception:
+                ent["recent_actions"] = []
             matched_entities.append(ent)
 
     # 1.5 Contextual Anaphora & Pronoun Entity Resolution ('un dono', 'unko', 'in dono', 'dono contacts', 'call', 'purpose', 'reason')
@@ -105,6 +110,11 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                     seen_entity_ids.add(ent["id"])
                     ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
                     ent["commitments"] = ent_commitments
+                    try:
+                        from memory.store import get_recent_actions_for_user
+                        ent["recent_actions"] = get_recent_actions_for_user(user_id, entity_id=ent["id"], limit=3)
+                    except Exception:
+                        ent["recent_actions"] = []
                     matched_entities.append(ent)
         except Exception:
             pass
@@ -117,7 +127,7 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         "kya thi", "mera", "meri", "mere", "my", "mine", "maine", "usne", "profile",
         "habit", "kl ke", "kal ke", "aaj ke", "pichla", "previous", "history", "blood",
         "fasting", "pp", "test", "check", "contact", "contacts", "call", "baat", "commitment",
-        "kaam", "purpose", "reason", "unko", "un dono"
+        "kaam", "purpose", "reason", "unko", "un dono", "mail", "email", "sent", "bheja", "bheji", "subject"
     )
     should_search_hybrid = any(kw in low for kw in _MEM_INTENT_KWS) or len(user_text.split()) > 10
     if should_search_hybrid:
@@ -217,7 +227,23 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             if e.get("commitments"):
                 for c in e["commitments"]:
                     lines.append(f"  Pending Promise/Commitment: \"{c['commitment']}\"")
+            if e.get("recent_actions"):
+                for a in e["recent_actions"]:
+                    lines.append(f"  Recent Action / Sent Mail: {a['summary']} ({str(a['created_at'])[:16]})")
         lines.append("")
+
+    # Global Recent Actions Lookup (When user asks about sent emails or past actions without naming entity)
+    if any(w in low for w in ("mail", "email", "sent", "bheja", "bheji", "send", "subject", "kya bheja")):
+        try:
+            from memory.store import get_recent_actions_for_user
+            global_acts = get_recent_actions_for_user(user_id, limit=3)
+            if global_acts:
+                lines.append("[Recent Action Ledger (Emails & Tasks Executed by Bot)]:")
+                for ga in global_acts:
+                    lines.append(f"• {ga['summary']} (Date: {str(ga['created_at'])[:16]})")
+                lines.append("")
+        except Exception:
+            pass
 
     if measurements:
         lines.append("[Structured Measurements & Health Readings]:")

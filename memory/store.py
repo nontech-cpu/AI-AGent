@@ -1152,6 +1152,85 @@ def forget_memory(user_id: int, id_or_keyword: str) -> bool:
             return res.rowcount > 0
 
 
+def record_action_event(
+    chat_id_or_user_id: int,
+    action_type: str,
+    summary: str,
+    details: Optional[Dict[str, Any]] = None,
+    subject_name: Optional[str] = None
+) -> int:
+    """
+    Enterprise Action-Ledger:
+    Permanently records an action performed by the bot (e.g. sent email, meeting scheduled, file generated)
+    into the cognitive memory ledger linked to the recipient/entity.
+    Zero token bloat: Compact, structured, and indexed for instantaneous retrieval.
+    """
+    _init_sqlite_if_needed()
+    user_id = resolve_user_id(chat_id_or_user_id)
+    entity_id = None
+    if subject_name:
+        try:
+            ent = find_entity(user_id, subject_name)
+            if ent:
+                entity_id = ent.get("id")
+        except Exception:
+            pass
+
+    return save_memory_item(
+        user_id=user_id,
+        content=summary,
+        memory_type="action_event",
+        subject_entity_id=entity_id,
+        structured={"action": action_type, **(details or {})},
+        importance=4,
+        source_type="action_ledger"
+    )
+
+
+def get_recent_actions_for_user(
+    chat_id_or_user_id: int,
+    entity_id: Optional[int] = None,
+    action_type: Optional[str] = None,
+    limit: int = 4
+) -> List[Dict[str, Any]]:
+    """Retrieves most recent actions from the action ledger for this user or specific entity."""
+    _init_sqlite_if_needed()
+    user_id = resolve_user_id(chat_id_or_user_id)
+    with db.engine.connect() as conn:
+        query = """
+            SELECT m.id, m.content, m.structured, m.created_at, e.name as subject_name
+            FROM memories m
+            LEFT JOIN entities e ON m.subject_entity_id = e.id
+            WHERE m.user_id = :uid AND m.memory_type = 'action_event' AND m.status = 'active'
+        """
+        params = {"uid": user_id, "lim": limit}
+        if entity_id:
+            query += " AND m.subject_entity_id = :eid"
+            params["eid"] = entity_id
+        if action_type:
+            query += " AND m.structured LIKE :atype"
+            params["atype"] = f"%{action_type}%"
+        query += " ORDER BY m.created_at DESC LIMIT :lim"
+
+        rows = conn.execute(text(query), params).fetchall()
+        results = []
+        for r in rows:
+            struct_data = {}
+            if r[2]:
+                try:
+                    struct_data = json.loads(r[2]) if isinstance(r[2], str) else dict(r[2])
+                except Exception:
+                    pass
+            results.append({
+                "id": r[0],
+                "summary": r[1],
+                "details": struct_data,
+                "created_at": str(r[3]),
+                "subject_name": r[4]
+            })
+        return results
+
+
 def get_core_profile(user_id: int) -> str:
     """Loads ~300 tokens of always-true core user profile directly (NO retrieval needed)."""
     now_ts = time.time()

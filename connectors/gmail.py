@@ -100,6 +100,17 @@ class GmailConnector(Connector):
             try:
                 import google_services
                 msg_id = await google_services.send_email(user_or_chat_id, to, subject, body)
+                try:
+                    from memory.store import record_action_event
+                    record_action_event(
+                        user_or_chat_id,
+                        action_type="send_email",
+                        summary=f"Sent email to {to} with Subject: '{subject}'",
+                        details={"to": to, "subject": subject, "body_preview": (body or "")[:200]},
+                        subject_name=to
+                    )
+                except Exception:
+                    pass
                 return ToolResult(
                     ok=True,
                     data={"status": "success", "message_id": msg_id, "to": to, "subject": subject},
