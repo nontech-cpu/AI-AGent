@@ -3142,7 +3142,8 @@ CORE_TOOL_NAMES = {
     "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
     "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
     "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",
-    "manage_relationship", "manage_subscription", "get_memory_health_radar", "set_user_timezone"
+    "manage_relationship", "manage_subscription", "get_memory_health_radar", "set_user_timezone",
+    "search_web"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}

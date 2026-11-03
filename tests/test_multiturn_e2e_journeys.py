@@ -107,3 +107,39 @@ async def test_multiturn_meeting_duration_guard():
         res = await run_agent_turn(TEST_CHAT_ID, "meeting 30 min ki hai 4 bje")
         # Ensure delete_reminder was NOT invoked
         assert "delete_reminder" not in res.get("tool_calls_executed", [])
+
+
+@pytest.mark.asyncio
+async def test_multiturn_web_search_available_and_transit_grounding():
+    """
+    Verifies that:
+    1. search_web is registered in CORE_TOOL_NAMES.
+    2. route_tools includes search_web for transit and external factual queries.
+    3. execute_tool('search_web', query='jodhpur to udaipur direct train') succeeds.
+    4. build_runtime_system_prompt contains the anti-hallucination mandate for transit & web search.
+    """
+    from agent.tools import CORE_TOOL_NAMES, route_tools
+    from agent.prompt import build_runtime_system_prompt
+
+    assert "search_web" in CORE_TOOL_NAMES
+
+    tools = route_tools("direct train jodhpur se udaipur he kya?")
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "search_web" in tool_names
+
+    # Test tool execution
+    with patch("utilities.search_web", return_value={"status": "success", "results": "• Jodhpur to Udaipur: No direct passenger train available. Connecting options via Marwar Junction."}):
+        res = await execute_tool(
+            chat_id=TEST_CHAT_ID,
+            tool_name="search_web",
+            arguments={"query": "jodhpur to udaipur direct train"}
+        )
+        assert res.get("status") == "success"
+        assert "Jodhpur to Udaipur" in str(res)
+
+    # Test prompt contains Rule 17 anti-hallucination mandate
+    prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "direct train jodhpur se udaipur he kya?")
+    assert "Real-Time External Facts, Transit & Web Search" in prompt
+    assert "search_web" in prompt
+
+
