@@ -208,7 +208,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "status": "running",
             "timestamp": datetime.now(IST).isoformat()
         })
-        agent_task = asyncio.create_task(run_agent_turn(chat_id, req.message))
+        agent_task = asyncio.create_task(run_agent_turn(chat_id, req.message, channel="web"))
         while not agent_task.done():
             await asyncio.sleep(1.0)
             if not agent_task.done():

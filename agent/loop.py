@@ -195,7 +195,7 @@ def detect_explicit_language_switch(text: str) -> Optional[str]:
 
     return None
 
-async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None) -> Dict[str, Any]:
+async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None, channel: str = "telegram") -> Dict[str, Any]:
     """
     Executes a single user turn through the Pure ChatGPT-Grade Native Tool-Calling Loop.
     Zero brittle regexes. All routing is performed natively by the LLM via semantic understanding.
@@ -234,8 +234,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"✅ **Notion Workspace successfully connect ho gaya!** 📝\nWorkspace: **{ws_name}**\n\nAb aap mujhe summaries ya meeting notes Notion mein save karne ko bol sakte hain!"
         else:
             reply_msg = f"⚠️ Notion token validation failed: {ws_name}. Kripya check karein ki token sahi hai."
-        db.log_chat_message(chat_id, "user", user_text)
-        db.log_chat_message(chat_id, "assistant", reply_msg)
+        db.log_chat_message(chat_id, "user", user_text, channel=channel)
+        db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
         return {
             "reply": reply_msg,
             "tool_calls_executed": ["connect_integration"],
@@ -255,8 +255,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"✅ **GitHub successfully connect ho gaya!** 🐙\nAccount: **@{gh_user}**\n\nAapke repositories aur code access ab live hain."
         else:
             reply_msg = f"⚠️ GitHub token validation failed: {gh_user}."
-        db.log_chat_message(chat_id, "user", user_text)
-        db.log_chat_message(chat_id, "assistant", reply_msg)
+        db.log_chat_message(chat_id, "user", user_text, channel=channel)
+        db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
         return {
             "reply": reply_msg,
             "tool_calls_executed": ["connect_integration"],
@@ -282,8 +282,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         intent, extra = classify_confirmation_intent(user_text, active_pending)
         if intent == "confirm":
             success, reply_msg = await execute_pending_action(chat_id, active_pending)
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", reply_msg)
+            db.log_chat_message(chat_id, "user", user_text, channel=channel)
+            db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
             return {
                 "reply": reply_msg,
                 "tool_calls_executed": [],
@@ -297,8 +297,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         elif intent == "cancel":
             cancel_pending_action(chat_id)
             reply_msg = "Action cancel kar diya gaya hai. Kuch bhi schedule ya send nahi kiya gaya."
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", reply_msg)
+            db.log_chat_message(chat_id, "user", user_text, channel=channel)
+            db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
             return {
                 "reply": reply_msg,
                 "tool_calls_executed": [],
@@ -325,8 +325,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 f"Duration: {payload.get('duration_minutes', 30)} minutes\n\n"
                 f"Reply yes to create or no to cancel."
             )
-            db.log_chat_message(chat_id, "user", user_text)
-            db.log_chat_message(chat_id, "assistant", reply_msg)
+            db.log_chat_message(chat_id, "user", user_text, channel=channel)
+            db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
             return {
                 "reply": reply_msg,
                 "tool_calls_executed": [],
@@ -363,7 +363,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     from memory.store import get_conversation_summary, save_conversation_summary, resolve_user_id
     uid = await asyncio.to_thread(resolve_user_id, chat_id)
 
-    all_turns = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 24)
+    all_turns = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 24, channel)
     running_summary = get_conversation_summary(uid)
 
     if len(all_turns) > 8:
@@ -934,8 +934,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Immediately persist conversation turn so subsequent turns have perfect history
     try:
-        await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text)
-        await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply)
+        await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text, channel)
+        await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply, channel)
     except Exception as db_persist_err:
         logger.warning(f"DB persist error: {db_persist_err}")
 

@@ -1164,12 +1164,13 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
 
 _CHAT_HISTORY_CACHE: dict = {}
 
-def log_chat_message(chat_id, role, message):
+def log_chat_message(chat_id, role, message, channel="telegram"):
     chat_id = canonical_chat_id(chat_id)
-    """Saves a conversation turn permanently in PostgreSQL, preventing immediate duplicates."""
+    """Saves a conversation turn permanently in PostgreSQL, preventing immediate duplicates and tagged by channel."""
     if not message or not str(message).strip():
         return
     clean_msg = str(message).strip()
+    chan = (channel or "telegram").strip().lower()
     # Never poison chat history with emergency fallback error messages
     if 'Bataiye, main aapki kya madad karun' in clean_msg:
         return
@@ -1178,48 +1179,82 @@ def log_chat_message(chat_id, role, message):
             _CHAT_HISTORY_CACHE.pop(k, None)
     try:
         with engine.begin() as conn:
-            # Check last logged message for this user to avoid consecutive duplicates
+            # Check last logged message for this user & channel to avoid consecutive duplicates
             last = conn.execute(
                 text(
                     "SELECT role, message FROM chat_logs "
                     "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "  AND (channel = :chan OR (channel IS NULL AND :chan = 'telegram')) "
                     "ORDER BY id DESC LIMIT 1"
                 ),
-                {"cid": chat_id}
+                {"cid": chat_id, "chan": chan}
             ).first()
             if last and last[0] == role and last[1] == clean_msg:
                 return  # Skip duplicate insert
 
             conn.execute(
                 text(
-                    "INSERT INTO chat_logs (user_id, role, message) "
-                    "SELECT id, :role, :msg FROM users WHERE telegram_chat_id = :cid"
+                    "INSERT INTO chat_logs (user_id, role, message, channel) "
+                    "SELECT id, :role, :msg, :chan FROM users WHERE telegram_chat_id = :cid"
                 ),
-                {"cid": chat_id, "role": role, "msg": clean_msg}
+                {"cid": chat_id, "role": role, "msg": clean_msg, "chan": chan}
             )
     except Exception as exc:
         print("log_chat_message error:", repr(exc))
 
 
-def get_recent_chat_history(chat_id, limit=15):
+def get_recent_chat_history(chat_id, limit=15, channel=None):
     chat_id = canonical_chat_id(chat_id)
-    """Retrieves the recent conversation history in chronological order without sequential duplicates."""
+    """Retrieves the recent conversation history in chronological order without sequential duplicates, scoped to channel."""
     import time as _pytime
     now_ts = _pytime.time()
-    ck = (chat_id, limit)
+    chan = (channel or "").strip().lower() if channel else None
+    ck = (chat_id, limit, chan)
     cached = _CHAT_HISTORY_CACHE.get(ck)
     if cached and (now_ts < cached["exp"]):
         return cached["data"]
     try:
         with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT role, message, created_at FROM chat_logs "
-                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                    "ORDER BY id DESC LIMIT :lim"
-                ),
-                {"cid": chat_id, "lim": limit * 2}
-            ).fetchall()
+            if chan in ("app", "web"):
+                # Strictly isolate app/web conversations so private Telegram/WhatsApp chats never appear on the shared app screen
+                rows = conn.execute(
+                    text(
+                        "SELECT role, message, created_at FROM chat_logs "
+                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                        "  AND channel IN ('app', 'web') "
+                        "ORDER BY id DESC LIMIT :lim"
+                    ),
+                    {"cid": chat_id, "lim": limit * 2}
+                ).fetchall()
+            elif chan == "telegram":
+                rows = conn.execute(
+                    text(
+                        "SELECT role, message, created_at FROM chat_logs "
+                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                        "  AND (channel = 'telegram' OR channel IS NULL) "
+                        "ORDER BY id DESC LIMIT :lim"
+                    ),
+                    {"cid": chat_id, "lim": limit * 2}
+                ).fetchall()
+            elif chan == "whatsapp":
+                rows = conn.execute(
+                    text(
+                        "SELECT role, message, created_at FROM chat_logs "
+                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                        "  AND channel = 'whatsapp' "
+                        "ORDER BY id DESC LIMIT :lim"
+                    ),
+                    {"cid": chat_id, "lim": limit * 2}
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    text(
+                        "SELECT role, message, created_at FROM chat_logs "
+                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                        "ORDER BY id DESC LIMIT :lim"
+                    ),
+                    {"cid": chat_id, "lim": limit * 2}
+                ).fetchall()
         # Return chronological order (oldest to newest) with duplicates removed
         cleaned = []
         for r in reversed(rows):

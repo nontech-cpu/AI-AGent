@@ -2396,7 +2396,7 @@ async def handle_active(chat_id, text):
     async with _get_chat_lock(chat_id):
         try:
             from agent.loop import run_agent_turn
-            res = await run_agent_turn(chat_id, text)
+            res = await run_agent_turn(chat_id, text, channel="telegram")
             await say(chat_id, res["reply"])
             return
         except Exception as exc:

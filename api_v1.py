@@ -463,7 +463,7 @@ async def _execute_user_action(chat_id: int, text_content: str, history: List[Di
     # Intent C: Full Agent Core (Weather, Web search, Notion, GitHub, Hinglish Persona)
     try:
         from agent.loop import run_agent_turn
-        agent_res = await run_agent_turn(chat_id, clean)
+        agent_res = await run_agent_turn(chat_id, clean, channel="app")
         return {
             "reply": agent_res["reply"],
             "intent": "chat",
@@ -529,7 +529,7 @@ async def chat_message(
 
     try:
         from agent.loop import run_agent_turn
-        agent_res = await run_agent_turn(chat_id, body.message)
+        agent_res = await run_agent_turn(chat_id, body.message, channel="app")
         return ChatResponse(
             reply=agent_res["reply"],
             intent="chat",
@@ -545,7 +545,8 @@ async def chat_message(
 @router.get("/chat/history", summary="Get synchronized conversation history")
 async def get_chat_history_endpoint(
     chat_id: int = Depends(get_current_chat_id),
-    limit: int = 30
+    limit: int = 30,
+    channel: str = Query("app", description="Filter conversation history by channel ('app', 'web', 'telegram', 'whatsapp')")
 ):
     """
     Returns the real-time persistent chat history for the user from PostgreSQL.
@@ -553,7 +554,7 @@ async def get_chat_history_endpoint(
     """
     import db
     db.ensure_user(chat_id)
-    history = db.get_recent_chat_history(chat_id, limit=limit)
+    history = db.get_recent_chat_history(chat_id, limit=limit, channel=channel)
 
     return {
         "chat_id": chat_id,
@@ -596,7 +597,7 @@ async def chat_voice(
 
     try:
         from agent.loop import run_agent_turn
-        agent_res = await run_agent_turn(chat_id, transcript)
+        agent_res = await run_agent_turn(chat_id, transcript, channel="app")
         return {
             "transcript": transcript,
             "language": lang,

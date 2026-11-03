@@ -117,3 +117,4 @@ def list_active_followups(user_id_or_chat_id: int) -> List[Dict[str, Any]]:
     except Exception as exc:
         logger.error(f"list_active_followups error: {exc}")
         return []
+
