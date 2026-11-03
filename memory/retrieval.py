@@ -95,6 +95,20 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             ent["commitments"] = ent_commitments
             matched_entities.append(ent)
 
+    # 1.5 Contextual Anaphora & Pronoun Entity Resolution ('un dono', 'unko', 'in dono', 'dono contacts', 'call', 'purpose', 'reason')
+    if not matched_entities and any(w in low for w in ("un dono", "unko", "in dono", "inko", "dono", "contact", "contacts", "person", "call", "baat", "phone", "number", "commitment", "purpose", "reason", "kaam")):
+        try:
+            from memory.store import list_entities
+            recent_ents = list_entities(user_id, entity_type="person")
+            for ent in recent_ents[:4]:
+                if ent["id"] not in seen_entity_ids:
+                    seen_entity_ids.add(ent["id"])
+                    ent_commitments = get_commitments_for_user(user_id, entity_id=ent["id"])
+                    ent["commitments"] = ent_commitments
+                    matched_entities.append(ent)
+        except Exception:
+            pass
+
     # 2. Hybrid RAG retrieval: vector + tsvector full-text + trigram merged via RRF (k=60)
     relevant_mems = []
     _MEM_INTENT_KWS = (
@@ -102,7 +116,8 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         "doctor", "report", "saved", "note", "yaad", "remember", "record", "kya tha",
         "kya thi", "mera", "meri", "mere", "my", "mine", "maine", "usne", "profile",
         "habit", "kl ke", "kal ke", "aaj ke", "pichla", "previous", "history", "blood",
-        "fasting", "pp", "test", "check"
+        "fasting", "pp", "test", "check", "contact", "contacts", "call", "baat", "commitment",
+        "kaam", "purpose", "reason", "unko", "un dono"
     )
     should_search_hybrid = any(kw in low for kw in _MEM_INTENT_KWS) or len(user_text.split()) > 10
     if should_search_hybrid:
@@ -111,7 +126,7 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             for rm in raw_mems:
                 if rm.get("status") == "archived":
                     continue
-                if rm.get("memory_type") == "reminder":
+                if rm.get("memory_type") in ("reminder", "alarm", "task") or "remind" in (rm.get("content") or "").lower():
                     continue
                 relevant_mems.append(rm)
                 if len(relevant_mems) >= 4:
@@ -122,6 +137,9 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                 bubble_mems = db.search_bubble_memories_cosine(chat_id, user_text, limit=3, min_similarity=0.45)
                 seen_ids = {m.get("id") for m in relevant_mems}
                 for bm in bubble_mems:
+                    bm_content = (bm.get("content") or "").lower()
+                    if "remind" in bm_content or bm.get("bubble_slug") == "reminder":
+                        continue
                     if bm.get("id") not in seen_ids:
                         relevant_mems.append({
                             "id": bm["id"],
@@ -194,6 +212,8 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                 lines.append(f"  Email: {attrs.get('email')}")
             if attrs.get("phone"):
                 lines.append(f"  Phone: {attrs.get('phone')}")
+            if attrs.get("context_notes"):
+                lines.append(f"  Context / Purpose / Reason: {attrs.get('context_notes')}")
             if e.get("commitments"):
                 for c in e["commitments"]:
                     lines.append(f"  Pending Promise/Commitment: \"{c['commitment']}\"")
@@ -246,5 +266,5 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         "relevant_memories": relevant_mems,
         "facts": facts
     }
-    _MEM_CTX_CACHE[ck] = {"exp": now_ts + 90.0, "data": res}
+    _MEM_CTX_CACHE[ck] = {"exp": now_ts + 15.0, "data": res}
     return res

@@ -50,7 +50,8 @@ Output valid JSON ONLY with this schema:
       "company": null or "Company Name",
       "role_title": null or "Role Title",
       "email": null or "email@example.com",
-      "phone": null or "phone number"
+      "phone": null or "phone number",
+      "notes": null or "Purpose, project, task, deliverable, or context for this contact (e.g. 'contact for designing', 'report on Tuesday')"
     }
   ],
   "commitments": [
@@ -145,10 +146,10 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
         # Debounce slightly to prioritize foreground user turns over background extraction
         await asyncio.sleep(1.5)
 
-        model = "openai/gpt-oss-20b"
+        candidate_models = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
         data_json = None
 
-        for attempt in range(3):
+        for model in candidate_models:
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.post(
@@ -168,14 +169,14 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                         data_json = resp.json()["choices"][0]["message"]["content"]
                         break
                     else:
-                        logger.warning(f"Memory extraction Groq error attempt {attempt+1}: {resp.status_code} {resp.text[:100]}")
-                        await asyncio.sleep(2.0 * (attempt + 1))
+                        logger.warning(f"Memory extraction Groq error on {model}: {resp.status_code} {resp.text[:100]}")
+                        await asyncio.sleep(1.0)
             except Exception as net_err:
-                logger.warning(f"Memory extraction network error attempt {attempt+1}: {repr(net_err)}")
-                await asyncio.sleep(2.0 * (attempt + 1))
+                logger.warning(f"Memory extraction network error on {model}: {repr(net_err)}")
+                await asyncio.sleep(1.0)
 
         if not data_json:
-            _log_failed_extraction(user_id, user_text, "Groq extraction failed after 3 attempts")
+            _log_failed_extraction(user_id, user_text, "Groq extraction failed on all candidate models")
             return
 
         try:
@@ -194,6 +195,8 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
             for k in ["company", "role_title", "email", "phone"]:
                 if ent.get(k):
                     attrs[k] = ent[k]
+            if ent.get("notes"):
+                attrs["context_notes"] = ent["notes"]
             eid = save_entity(
                 user_id=user_id,
                 name=name,
@@ -201,6 +204,19 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                 attributes=attrs
             )
             entity_id_map[name.lower()] = eid
+
+            try:
+                db.save_contact_memory(
+                    chat_id=chat_id,
+                    name=name,
+                    phone=ent.get("phone") or "",
+                    email=ent.get("email") or "",
+                    role_title=ent.get("role_title") or "",
+                    company=ent.get("company") or "",
+                    context_notes=ent.get("notes") or "Saved via Cognitive Extractor"
+                )
+            except Exception:
+                pass
 
         # 2. Persist Commitments
         for comm in parsed.get("commitments", []):

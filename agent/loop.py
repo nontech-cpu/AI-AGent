@@ -998,6 +998,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         except Exception as post_err:
             logger.warning(f"Post-turn persist error: {post_err}")
 
+        # Enterprise Continuous Cognitive Memory Extraction (Mem0 / Continuous Ingestion)
+        try:
+            from memory.extractor import schedule_extraction_task
+            schedule_extraction_task(chat_id, user_text, final_reply)
+        except Exception as ext_err:
+            logger.warning(f"Continuous extraction schedule error: {ext_err}")
+
     asyncio.create_task(_post_turn_persist())
 
     return {

@@ -339,7 +339,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "save_contact",
-            "description": "Saves or updates a person or contact in the user's persistent address book and cognitive memory with phone number, email, role, and aliases.",
+            "description": "Saves or updates a person or contact in the user's persistent address book and cognitive memory with phone number, email, role, and aliases. CRITICAL: When user states any purpose, project, reason for contacting, or deliverable (e.g. 'contact Aditya for designing', 'Ashwin for report on Tuesday'), ALWAYS pass that reason/purpose into the 'notes' or 'role' argument so it is permanently remembered in memory.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -348,7 +348,7 @@ TOOL_DEFINITIONS = [
                     "email": {"type": ["string", "null"], "description": "Email address."},
                     "role": {"type": ["string", "null"], "description": "Role, title, or company."},
                     "aliases": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Nicknames or alternate spellings."},
-                    "notes": {"type": ["string", "null"], "description": "Additional notes."}
+                    "notes": {"type": ["string", "null"], "description": "CRITICAL: Any context, purpose, project, reason for contacting, or commitments mentioned by the user (e.g. 'contact for designing', 'report on Tuesday'). NEVER omit or leave null if user provided context!"}
                 },
                 "required": ["name"]
             }
@@ -1382,6 +1382,18 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 )
                 for al in alias_list:
                     add_entity_alias(ent_id, al)
+
+                if args.notes and ent_id:
+                    try:
+                        from memory.store import save_memory_item
+                        save_memory_item(
+                            user_id=uid,
+                            content=f"Contact purpose for {args.name}: {args.notes}",
+                            memory_type="commitment",
+                            subject_entity_id=ent_id
+                        )
+                    except Exception as comm_err:
+                        print("Contact commitment save err:", comm_err)
             except Exception as exc:
                 print("Cognitive save_contact fallback:", exc)
 
@@ -1404,6 +1416,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "phone": args.phone,
                 "email": args.email,
                 "role": args.role,
+                "notes": args.notes,
                 "message": f"Contact '{args.name}' successfully saved in persistent address book and memory."
             }
 
@@ -3125,7 +3138,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 CORE_TOOL_NAMES = {
     "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "check_availability", "save_note_or_fact", "search_memory",
-    "save_contact", "get_contact", "list_contacts", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
+    "save_contact", "get_contact", "list_contacts", "get_commitments", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
     "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
     "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
     "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",

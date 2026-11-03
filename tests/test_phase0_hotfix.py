@@ -11,18 +11,23 @@ from memory.store import (
 )
 from agent.tools import execute_tool
 
-TEST_USER_ID = 887766
+from memory.store import resolve_user_id, _RESOLVED_USER_ID_CACHE
 TEST_CHAT_ID = 887766
+TEST_USER_ID = 887766
 
 @pytest.fixture(autouse=True)
 def setup_test_user():
     import db
     from sqlalchemy import text
+    from dotenv import load_dotenv
+    load_dotenv()
+    _RESOLVED_USER_ID_CACHE.clear()
     with db.engine.begin() as conn:
         if db.engine.dialect.name == "postgresql":
-            conn.execute(text("INSERT INTO users (id, telegram_chat_id) VALUES (:uid, :cid) ON CONFLICT (id) DO NOTHING"), {"uid": TEST_USER_ID, "cid": TEST_CHAT_ID})
+            conn.execute(text("INSERT INTO users (id, telegram_chat_id) VALUES (:uid, :cid) ON CONFLICT (telegram_chat_id) DO UPDATE SET id = :uid"), {"uid": TEST_USER_ID, "cid": TEST_CHAT_ID})
         else:
-            conn.execute(text("INSERT OR IGNORE INTO users (id, telegram_chat_id) VALUES (:uid, :cid)"), {"uid": TEST_USER_ID, "cid": TEST_CHAT_ID})
+            conn.execute(text("INSERT OR REPLACE INTO users (id, telegram_chat_id) VALUES (:uid, :cid)"), {"uid": TEST_USER_ID, "cid": TEST_CHAT_ID})
+    _RESOLVED_USER_ID_CACHE[TEST_CHAT_ID] = TEST_USER_ID
 
 def test_negative_fact_and_assistant_reply_filter():
     # 1. Negative absence statements must be dropped
