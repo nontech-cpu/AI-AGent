@@ -20,7 +20,7 @@ def get_embedding_model():
         return _EMBED_MODEL if _EMBED_MODEL is not False else None
 
     # Check if local embeddings are forcefully disabled
-    if os.getenv("DISABLE_LOCAL_EMBEDDINGS", "0").lower() in ("1", "true", "yes"):
+    if os.getenv("DISABLE_LOCAL_EMBEDDINGS", "1").lower() in ("1", "true", "yes"):
         logger.info("Local embeddings disabled by env var DISABLE_LOCAL_EMBEDDINGS")
         _EMBED_MODEL = False
         return None

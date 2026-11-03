@@ -1771,18 +1771,19 @@ def _google_callback_page(title, message, success=False, redirect_url=None):
 
 
 # ---------- Google actions: explicit confirmation required ----------
-def format_event_time_ist(dt_str: str | None) -> str:
-    """Format Google Calendar / ISO dateTime string into user-friendly IST string."""
+def format_event_time_ist(dt_str: str | None, user_tz=None) -> str:
+    """Format Google Calendar / ISO dateTime string into user-friendly string."""
     if not dt_str:
         return ""
     try:
         clean_str = dt_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(clean_str)
+        target_tz = user_tz or IST
         if dt.tzinfo is None:
-            dt_ist = dt.replace(tzinfo=IST)
+            dt_local = dt.replace(tzinfo=target_tz)
         else:
-            dt_ist = dt.astimezone(IST)
-        return dt_ist.strftime("%d %b, %I:%M %p").replace(" 0", " ")
+            dt_local = dt.astimezone(target_tz)
+        return dt_local.strftime("%d %b, %I:%M %p").replace(" 0", " ")
     except Exception:
         return dt_str[:16]
 
@@ -2457,7 +2458,7 @@ async def handle_active(chat_id, text):
                 prefix = f"Hey {u_name}!" if u_name else "Hey!"
                 fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
             else:
-                fallback_msg = "Haan ji! Ek second server update ho raha tha. Batao aap kya check karna chahte the?"
+                fallback_msg = "Haanji, network mein thoda fluctuation ho gaya tha. Ek baar dobara bataenge?"
             await say(chat_id, fallback_msg)
             return
 
@@ -2545,13 +2546,20 @@ async def handle_active(chat_id, text):
     if is_link_query:
         is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
         if is_conn:
-            now_iso = datetime.now(IST).isoformat()
+            from google_services import get_user_calendar_timezone
+            user_tz_str = await get_user_calendar_timezone(chat_id)
+            try:
+                from zoneinfo import ZoneInfo
+                u_tz = ZoneInfo(user_tz_str)
+            except Exception:
+                u_tz = IST
+            now_iso = datetime.now(u_tz).isoformat()
             try:
                 events = await google_list_calendar_events(chat_id, time_min_iso=now_iso, max_results=5)
                 meet_events = [ev for ev in events if ev.get('meet_url')]
                 if meet_events:
                     ev = meet_events[0]
-                    start_fmt = format_event_time_ist(ev.get('start', {}).get('dateTime') or '')
+                    start_fmt = format_event_time_ist(ev.get('start', {}).get('dateTime') or '', user_tz=u_tz)
                     msg = f"Aapki upcoming meeting '{ev.get('summary', 'Meeting')}' ({start_fmt}) ka Google Meet link yeh raha:\n🔗 {ev['meet_url']}"
                     await say(chat_id, msg)
                     return

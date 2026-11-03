@@ -20,6 +20,14 @@ import google_services
 import integrations
 from file_generator import build_contacts_excel, build_styled_pdf
 
+async def _resolve_user_timezone(chat_id: int):
+    """Dynamically resolves the user's primary calendar timezone or defaults gracefully to IST."""
+    try:
+        user_tz_str = await google_services.get_user_calendar_timezone(chat_id)
+        return ZoneInfo(user_tz_str), user_tz_str
+    except Exception:
+        return IST, "Asia/Kolkata"
+
 # -------------------------------------------------------------
 # 1. Pydantic Tool Argument Schemas
 # -------------------------------------------------------------
@@ -83,6 +91,7 @@ class CreateReminderArgs(BaseModel):
     title: str = Field(..., description="Title of the reminder or task.")
     due_date: str = Field(..., description="Due date in YYYY-MM-DD format.")
     due_time: Optional[str] = Field(None, description="Due time in HH:MM format (24h) if specified.")
+    duration_minutes: Optional[int] = Field(None, description="Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60).")
     category: Optional[str] = Field("appointments", description="Category of reminder.")
     recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily' (for roj, daily, har din, jbtk m na khu), 'weekly', or 'none'.")
     force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict.")
@@ -104,7 +113,7 @@ class CheckAvailabilityArgs(BaseModel):
 
 class CreateMeetingArgs(BaseModel):
     title: Optional[str] = Field("Meeting", description="Title of the meeting.")
-    start_iso: str = Field(..., description="Meeting start datetime in ISO format with +05:30 timezone.")
+    start_iso: str = Field(..., description="Meeting start datetime in ISO format (e.g. YYYY-MM-DDTHH:MM:SS with user's timezone offset or local time).")
     duration_minutes: Optional[int] = Field(30, description="Duration in minutes.")
     attendees: Optional[List[str]] = Field([], description="List of attendee email addresses.")
 
@@ -480,6 +489,7 @@ TOOL_DEFINITIONS = [
                     "title": {"type": "string", "description": "Task or reminder title."},
                     "due_date": {"type": "string", "description": "Date in YYYY-MM-DD format."},
                     "due_time": {"type": ["string", "null"], "description": "Time in HH:MM 24h format."},
+                    "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60)."},
                     "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
                     "recurrence": {"type": ["string", "null"], "description": "Recurrence pattern: 'daily' for every day (roj, daily, har din, jbtk m na khu), 'weekly' for every week, or 'none' for single occurrence."},
                     "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict exists."}
@@ -493,7 +503,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "delete_reminder",
-            "description": "Delete, remove, or cancel a saved reminder, meeting, or task by title keyword or ID.",
+            "description": "Delete, remove, or cancel a saved reminder, meeting, or task by title keyword or ID. Use ONLY when the user explicitly requests cancellation or deletion (e.g. 'delete', 'cancel', 'remove', 'hata do'). NEVER call this when user is stating or correcting a duration or detail (e.g. 'meeting 30 min ki hai') — duration statements are parameters for create_meeting or update_meeting, NOT deletions.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -555,7 +565,7 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Meeting title (default: 'Meeting')."},
-                    "start_iso": {"type": "string", "description": "Start datetime in ISO format with +05:30 offset."},
+                    "start_iso": {"type": "string", "description": "Start datetime in ISO format (e.g. YYYY-MM-DDTHH:MM:SS with user's timezone offset or local time)."},
                     "duration_minutes": {"type": "integer", "description": "Duration in minutes (default 30)."},
                     "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee email addresses."}
                 },
@@ -1637,14 +1647,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             # Also check Google Calendar for true interval overlap conflicts
             try:
+                u_tz, _ = await _resolve_user_timezone(chat_id)
                 from main import get_unified_schedule
                 sched = await get_unified_schedule(chat_id, d_val)
                 for ev in sched.get("calendar_events", []):
                     raw_start = ev.get("start", {}).get("dateTime")
                     if raw_start and t_val:
-                        ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(IST)
+                        ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
                         ev_raw_end = ev.get("end", {}).get("dateTime")
-                        ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(IST) if ev_raw_end else (ev_dt + timedelta(minutes=45))
+                        ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
                         rem_start = t_val.hour * 60 + t_val.minute
                         rem_end = rem_start + 30
                         ev_start = ev_dt.hour * 60 + ev_dt.minute
@@ -1657,7 +1668,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             # 4D Continuous Timeline & Travel Transit Collision Check (World Model)
             if t_val and not getattr(args, "force", False):
                 try:
-                    cand_start_dt = datetime.combine(d_val, t_val, tzinfo=IST)
+                    u_tz, _ = await _resolve_user_timezone(chat_id)
+                    cand_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
                     from state.timeline import check_timeline_collision
                     collision = check_timeline_collision(chat_id, args.title, cand_start_dt)
                     if collision and collision.get("has_conflict"):
@@ -1816,14 +1828,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     from main import get_valid_google_connection_by_chat_id
                     is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
                     if is_conn and d_val:
-                        from google_services import create_meeting
+                        u_tz, user_tz_str = await _resolve_user_timezone(chat_id)
                         start_time_part = t_val or dtime(9, 0)
-                        start_dt = datetime.combine(d_val, start_time_part)
+                        start_dt = datetime.combine(d_val, start_time_part, tzinfo=u_tz)
+                        dur_mins = getattr(args, "duration_minutes", None) or 30
                         meet_res = await create_meeting(
                             chat_id=chat_id,
                             title=f"🔔 {args.title}",
                             start_iso=start_dt.isoformat(),
-                            duration_minutes=30
+                            duration_minutes=dur_mins
                         )
                         if meet_res and meet_res.get("status") == "success":
                             sync_note = " (Google Calendar synced ✅)"
@@ -2028,16 +2041,17 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             dur = args.duration_minutes or (180 if "movie" in (args.activity_type or "").lower() else 60)
             activity_end_mins = activity_start_mins + dur
 
+            u_tz, _ = await _resolve_user_timezone(chat_id)
             conflicts = []
             for ev in sched.get("calendar_events", []):
                 raw_dt = ev.get("start", {}).get("dateTime")
                 if raw_dt:
                     try:
-                        ev_dt = datetime.fromisoformat(raw_dt.replace("Z", "+00:00")).astimezone(IST)
+                        ev_dt = datetime.fromisoformat(raw_dt.replace("Z", "+00:00")).astimezone(u_tz)
                         ev_start_mins = ev_dt.hour * 60 + ev_dt.minute
                         ev_end_mins = ev_start_mins + 30
                         if (activity_start_mins < ev_end_mins) and (activity_end_mins > ev_start_mins):
-                            conflicts.append(f"Meeting '{ev.get('summary', 'Meeting')}' at {format_event_clock_ist(raw_dt)}")
+                            conflicts.append(f"Meeting '{ev.get('summary', 'Meeting')}' at {ev_dt.strftime('%I:%M %p').lstrip('0')}")
                     except Exception:
                         pass
 
@@ -2075,7 +2089,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
             if not is_conn:
                 return {"status": "error", "message": "Google account is not connected."}
-            events = await google_services.list_calendar_events(chat_id, time_min_iso=datetime.now(IST).isoformat(), max_results=5)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            events = await google_services.list_calendar_events(chat_id, time_min_iso=datetime.now(u_tz).isoformat(), max_results=5)
             meet_evs = [ev for ev in events if ev.get("meet_url")]
             if meet_evs:
                 ev = meet_evs[0]

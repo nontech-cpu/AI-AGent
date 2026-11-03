@@ -38,9 +38,11 @@ def extract_potential_entity_tokens(text: str) -> List[str]:
         "about", "some", "any", "tell", "show", "give", "want", "need", "your", "yours", "their", "there", "here", "this", "that", "these", "those",
         "merse", "mujhse", "tumse", "isse", "usse", "baat", "english", "hinglish", "hindi", "german", "deutsch", "french", "spanish", "language", "bhasha",
         "detail", "detial", "explain", "exlain", "ml", "dl", "ai", "machine", "learning", "deep", "neural", "network", "code", "coding", "meaning", "define", "definition", "samjhao", "samjha", "smjhao", "smjha",
-        "hi", "hii", "hiii", "good", "morning", "evening", "night", "afternoon", "bye", "ok", "okay", "test", "ping"
+        "hi", "hii", "hiii", "good", "morning", "evening", "night", "afternoon", "bye", "ok", "okay", "test", "ping",
+        "pr", "par", "mene", "maine", "kh", "kaha", "th", "tha", "thi", "the", "phir", "fir", "ghnte", "ghante", "kyu", "kyun", "lgya", "lagaya", "lgaya", "na", "ne", "se", "me", "mein", "pe",
+        "min", "minute", "minutes", "sec", "second", "seconds", "hr", "hrs", "hour", "hours", "ek", "do", "teen", "chaar", "paanch", "chhe", "saat", "aath", "nau", "das"
     }
-    candidates = [w for w in tokens if w.lower() not in stopwords][:4]
+    candidates = [w for w in tokens if w.lower() not in stopwords and not w.isdigit()][:4]
     return candidates
 
 

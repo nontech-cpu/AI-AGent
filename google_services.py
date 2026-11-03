@@ -97,18 +97,58 @@ async def upload_text_file(chat_id, filename, content, folder_id=None):
         raise RuntimeError(f'Google Drive returned {response.status_code}: {response.text[:400]}')
     return response.json()
 
+_USER_TZ_CACHE: dict = {}
+
+async def get_user_calendar_timezone(chat_id: int) -> str:
+    """
+    Dynamically fetches the user's primary Google Calendar timezone (e.g. America/New_York, Europe/London, Asia/Kolkata).
+    Never hardcoded. Falls back to user profile timezone or Asia/Kolkata if not connected.
+    """
+    import time as _pytime
+    now_ts = _pytime.time()
+    cached = _USER_TZ_CACHE.get(chat_id)
+    if cached and (now_ts < cached["exp"]):
+        return cached["tz"]
+    try:
+        access, _ = await access_token_for_chat(chat_id)
+        if access:
+            # Query user's primary calendar metadata from Google Calendar API
+            res = await _request('GET', f'{GOOGLE}/calendar/v3/calendars/primary', access)
+            tz = res.get('timeZone')
+            if tz:
+                _USER_TZ_CACHE[chat_id] = {"tz": tz, "exp": now_ts + 86400}
+                return tz
+    except Exception as exc:
+        print("get_user_calendar_timezone error:", exc)
+    return "Asia/Kolkata"
+
 async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=None):
     access, _ = await access_token_for_chat(chat_id)
+    user_tz_str = await get_user_calendar_timezone(chat_id)
+    try:
+        from zoneinfo import ZoneInfo
+        user_tz = ZoneInfo(user_tz_str)
+    except Exception:
+        from timing import IST
+        user_tz = IST
+        user_tz_str = "Asia/Kolkata"
+
     try:
         start = datetime.fromisoformat(start_iso)
     except Exception:
         from dateutil import parser as dt_parser
         start = dt_parser.parse(start_iso)
+
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=user_tz)
+    else:
+        start = start.astimezone(user_tz)
+
     end = start + timedelta(minutes=int(duration_minutes))
     event = {
         'summary': title,
-        'start': {'dateTime': start.isoformat(), 'timeZone': 'Asia/Kolkata'},
-        'end': {'dateTime': end.isoformat(), 'timeZone': 'Asia/Kolkata'},
+        'start': {'dateTime': start.isoformat(), 'timeZone': user_tz_str},
+        'end': {'dateTime': end.isoformat(), 'timeZone': user_tz_str},
         'conferenceData': {'createRequest': {'requestId': __import__('secrets').token_urlsafe(12),
                                              'conferenceSolutionKey': {'type': 'hangoutsMeet'}}},
     }
@@ -188,8 +228,14 @@ async def find_calendar_event(chat_id, title_query=None, target_date=None, targe
     Search authenticated user's calendar for an event matching title and/or date.
     Returns (matched_events, is_ambiguous).
     """
-    from datetime import date as d_date
-    now = datetime.now()
+    user_tz_str = await get_user_calendar_timezone(chat_id)
+    try:
+        from zoneinfo import ZoneInfo
+        u_tz = ZoneInfo(user_tz_str)
+    except Exception:
+        from timing import IST
+        u_tz = IST
+    now = datetime.now(u_tz)
     if target_date:
         if isinstance(target_date, str):
             target_date = d_date.fromisoformat(target_date)
@@ -267,7 +313,7 @@ async def find_calendar_event(chat_id, title_query=None, target_date=None, targe
                     try:
                         clean_iso = start_str.replace("Z", "+00:00")
                         ev_dt = datetime.fromisoformat(clean_iso)
-                        ev_local = ev_dt.astimezone(IST) if ev_dt.tzinfo else ev_dt
+                        ev_local = ev_dt.astimezone(u_tz) if ev_dt.tzinfo else ev_dt
                         if ev_local.hour in candidate_hours and abs(ev_local.minute - target_min) <= 30:
                             time_matches.append(ev)
                     except Exception:
@@ -306,8 +352,9 @@ async def update_meeting(chat_id, event_id, new_start_iso=None, duration_minutes
             else:
                 dur = 30
         end_dt = start_dt + timedelta(minutes=dur)
-        patch_body['start'] = {'dateTime': start_dt.isoformat(), 'timeZone': 'Asia/Kolkata'}
-        patch_body['end'] = {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Kolkata'}
+        user_tz_str = await get_user_calendar_timezone(chat_id)
+        patch_body['start'] = {'dateTime': start_dt.isoformat(), 'timeZone': user_tz_str}
+        patch_body['end'] = {'dateTime': end_dt.isoformat(), 'timeZone': user_tz_str}
 
     if attendees is not None:
         patch_body['attendees'] = [{'email': e} for e in attendees]

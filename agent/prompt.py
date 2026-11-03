@@ -8,16 +8,19 @@ import json
 import re
 import asyncio
 import time
+import logging
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, Optional
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 from timing import IST
 import db
 from state.active_context import format_active_context, update_active_context, format_episodic_context
 
 RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s smart personal AI companion.
-Current Time: {NOW_IST} ({WEEKDAY}) IST | User: {USER_NAME} | Style: {LANG_STYLE}
+Current Time: {NOW_TIME} ({WEEKDAY}) [{USER_TIMEZONE}] | User: {USER_NAME} | Style: {LANG_STYLE}
 {LANGUAGE_MANDATE}
 
 CORE GUIDELINES:
@@ -26,6 +29,8 @@ CORE GUIDELINES:
 3. Tech Abbreviations & Domain Awareness: In programming and computer science discussions, 'ML' and 'DL' mean Machine Learning and Deep Learning, 'AI' means Artificial Intelligence, 'NLP' means Natural Language Processing. NEVER interpret them as units of volume (milliliters/deciliters) unless the user is explicitly talking about liquid medicine or chemistry lab volume.
 4. Strict Non-Repetition: NEVER repeat the exact same response or forecast consecutively. Keep conversation dynamic and natural.
 5. Tools & Actions: Call tools directly for explicit action requests (reminders, meetings, notes, contacts, Notion, GitHub). Note: In Hinglish, 'batao' / 'batana' / 'btnaa' / 'btao' means 'TELL / SHOW / LIST' (read-only query) — NEVER confuse it with 'banao' / 'bnana' / 'create'!
+- When user asks to put an event on Google Calendar ('calendar me laga do', 'calendar par add kar do'), call create_meeting using the user's active timezone ({USER_TIMEZONE}).
+- CRITICAL DURATION VS DELETION GUARD: When user states or specifies a duration (e.g. 'meeting 30 min ki hai', 'meeting 1 hour ki hai', 'duration 45 min hai'), this is a meeting duration parameter for create_meeting or update_meeting. NEVER call delete_reminder or delete_meeting when user states duration! Deletion is strictly reserved for explicit cancellation requests ('delete reminder', 'cancel meeting', 'hata do').
 6. Universal Python Code Interpreter: When user asks for a document, PDF, presentation (PPTX), spreadsheet (Excel/CSV), chart, or calculation, call execute_python_code to write and run Python code. It automatically creates and sends the file to the user!
 7. Memory & Health Readings: You have live direct access to {MEMORY_BLOCK} and {SCHEDULE_BLOCK}. Never claim you lack access. State exact values directly.
 8. Output Style: Crisp, helpful bullet points (•) and bold headers. No pipe tables. Zero medical or corporate lectures.
@@ -170,11 +175,20 @@ async def build_runtime_system_prompt(
     chat_id = db.canonical_chat_id(chat_id)
     u_ctx = get_unified_prompt_context(chat_id)
 
-    now_ist = datetime.now(IST)
-    today_d = now_ist.date()
+    try:
+        from google_services import get_user_calendar_timezone
+        user_tz_str = await get_user_calendar_timezone(chat_id)
+        from zoneinfo import ZoneInfo
+        u_tz = ZoneInfo(user_tz_str)
+    except Exception:
+        u_tz = IST
+        user_tz_str = "Asia/Kolkata"
+
+    now_user = datetime.now(u_tz)
+    today_d = now_user.date()
     tomorrow_d = today_d + timedelta(days=1)
-    weekday = now_ist.strftime("%A")
-    now_ist_str = now_ist.strftime("%I:%M %p, %d %B %Y")
+    weekday = now_user.strftime("%A")
+    now_user_str = now_user.strftime("%I:%M %p, %d %B %Y")
     user_lang = u_ctx.get("user_lang") or "hinglish"
     LANGUAGE_NAMES = {
         "english": "English",
@@ -355,7 +369,7 @@ async def build_runtime_system_prompt(
     # Continuous 4D Timeline & Transit Spans (Prevents midnight rollover blindspots)
     try:
         from state.timeline import format_continuous_timeline_prompt_block
-        timeline_str = format_continuous_timeline_prompt_block(chat_id, now_ist)
+        timeline_str = format_continuous_timeline_prompt_block(chat_id, now_user)
         if timeline_str:
             schedule_parts.append(f"\n[Active 4D Reality Timeline & Transit Spans]:\n{timeline_str}")
     except Exception as tl_e:
@@ -377,8 +391,9 @@ async def build_runtime_system_prompt(
     active_ctx_str = format_active_context(chat_id)
 
     # 10. First Morning Interaction of the Day
-    today_str = now_ist.strftime("%Y-%m-%d")
-    is_morning_window = (5 <= now_ist.hour < 11)
+    now_ist = now_user
+    today_str = now_user.strftime("%Y-%m-%d")
+    is_morning_window = (5 <= now_user.hour < 11)
     briefing_already_sent = db.is_morning_briefing_sent(chat_id, today_str)
 
     if is_morning_window and not briefing_already_sent:
@@ -395,7 +410,9 @@ async def build_runtime_system_prompt(
     # Build prompt replacing all placeholders safely
     prompt = RUNTIME_SYSTEM_PROMPT_TEMPLATE
     prompt = prompt.replace("{USER_NAME}", user_name)
-    prompt = prompt.replace("{NOW_IST}", now_ist_str)
+    prompt = prompt.replace("{NOW_TIME}", now_user_str)
+    prompt = prompt.replace("{NOW_IST}", now_user_str)
+    prompt = prompt.replace("{USER_TIMEZONE}", user_tz_str)
     prompt = prompt.replace("{WEEKDAY}", weekday)
     prompt = prompt.replace("{LANG_STYLE}", lang_style)
     prompt = prompt.replace("{LANGUAGE_MANDATE}", lang_mandate)

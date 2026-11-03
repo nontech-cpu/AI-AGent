@@ -71,7 +71,7 @@ class CalendarConnector(Connector):
                 parameters={
                     "type": "object",
                     "properties": {
-                        "start_iso": {"type": "string", "description": "Start ISO datetime with +05:30 timezone"},
+                        "start_iso": {"type": "string", "description": "Start ISO datetime in ISO 8601 format"},
                         "duration_minutes": {"type": "integer", "description": "Duration in minutes"}
                     },
                     "required": ["start_iso"]
@@ -85,7 +85,7 @@ class CalendarConnector(Connector):
                     "type": "object",
                     "properties": {
                         "title": {"type": "string", "description": "Meeting title"},
-                        "start_iso": {"type": "string", "description": "Start time in ISO 8601 format with +05:30 timezone"},
+                        "start_iso": {"type": "string", "description": "Start time in ISO 8601 format with timezone offset"},
                         "duration_minutes": {"type": "integer", "description": "Duration in minutes (default 30)"},
                         "attendees": {"type": "array", "items": {"type": "string"}, "description": "List of attendee emails"}
                     },
