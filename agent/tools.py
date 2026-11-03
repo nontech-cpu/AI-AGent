@@ -925,21 +925,21 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "find_nearby_places",
-            "description": "Discover real, verified local places, top cafes, coffee shops, restaurants, and amenities in a specific neighborhood or city. Zero hallucination.",
+            "description": "Discover real, verified local places, shopping malls, markets, cafes, coffee shops, restaurants, and amenities in a specific city or neighborhood. Zero hallucination.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "category": {
                         "type": "string",
-                        "description": "Category e.g. 'coffee shop', 'cafe', 'restaurant'."
+                        "description": "Category e.g. 'mall', 'shopping mall', 'market', 'coffee shop', 'cafe', 'restaurant'."
                     },
                     "area": {
                         "type": "string",
-                        "description": "Area or neighbourhood e.g. 'Sardarpura', 'Ratanada'."
+                        "description": "Area or neighbourhood e.g. 'Sardarpura', 'Ratanada', or null for city-wide."
                     },
                     "city": {
                         "type": "string",
-                        "description": "City name, defaults to Jodhpur."
+                        "description": "City name e.g. 'Jodhpur', 'Jaipur'."
                     }
                 },
                 "required": ["category"]
@@ -3143,7 +3143,7 @@ CORE_TOOL_NAMES = {
     "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
     "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",
     "manage_relationship", "manage_subscription", "get_memory_health_radar", "set_user_timezone",
-    "search_web"
+    "search_web", "find_nearby_places"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}

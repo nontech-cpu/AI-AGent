@@ -394,7 +394,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     for turn in prior_turns:
         r = turn.get("role", "user")
         t_text = (turn.get("text") or "").strip()
-        if not t_text or "Bataiye, main aapki kya madad karun" in t_text:
+        if not t_text or "Bataiye, main aapki kya madad karun" in t_text or "connection thoda slow" in t_text or "peak traffic" in t_text:
             continue
         if len(t_text) > 300:
             t_text = t_text[:297] + "..."
@@ -460,7 +460,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         else:
                             print(f"Groq {m_candidate} status {resp.status_code}: {resp.text[:100]}")
                             if resp.status_code == 429:
-                                # Rapid failover to next model tier without stalling user turn
+                                # Rapid token-bucket recovery sleep before next attempt
+                                await asyncio.sleep(1.5)
                                 continue
                     except Exception as req_err:
                         print(f"Groq {m_candidate} request error:", repr(req_err))
@@ -825,17 +826,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         default_fb_msg = "Hello! How can I assist you today? Would you like to check your schedule or set a reminder?"
     else:
         fb_sys = "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish."
-        default_fb_msg = "Arre bhai, connection thoda slow chal raha tha. Aapne kya poocha tha, ek baar phir bataoge?"
+        default_fb_msg = "Bhai, AI server par momentary peak traffic aa gaya hai. Kripya 2-3 second ruk kar ek baar dobara message bhein."
 
     if not final_reply:
         try:
             rec_lang = active_user_lang or "user language"
-            recovery_system = f"{system_content}\n\nCRITICAL INSTRUCTION: Answer the user directly based on the conversation history and memory above in {rec_lang}. Do not mention tools, internal codes, or schedules unless explicitly asked."
+            # Ultra-compact recovery prompt: < 100 tokens (prevents 429 TPM exhaustion during rapid multi-turn)
+            recovery_system = (
+                f"You are PeculiarAI personal assistant. Answer the user's question directly, accurately, "
+                f"warmly, and concisely in {rec_lang}. Understand short follow-ups (e.g. 'jaipur me?') in the context of previous conversation."
+            )
             rec_messages = [{"role": "system", "content": recovery_system}]
             rec_hist = []
-            for turn in recent_turns:
+            for turn in recent_turns[-6:]:
                 t_text = (turn.get("text") or "").strip()
-                if not t_text or "Bataiye, main aapki kya madad karun" in t_text:
+                if not t_text or "Bataiye, main aapki kya madad karun" in t_text or "connection thoda slow" in t_text or "peak traffic" in t_text:
                     continue
                 if len(t_text) > 300:
                     t_text = t_text[:297] + "..."
@@ -867,6 +872,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         final_reply = fb_data["choices"][0]["message"].get("content", "").strip()
                         if final_reply:
                             break
+                    elif fb_resp.status_code == 429:
+                        await asyncio.sleep(1.0)
         except Exception as fb_err:
             print("Conversational recovery error:", repr(fb_err))
 

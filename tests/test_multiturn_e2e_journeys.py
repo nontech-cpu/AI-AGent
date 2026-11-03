@@ -139,8 +139,9 @@ async def test_multiturn_web_search_available_and_transit_grounding():
 
     # Test prompt contains Rule 17 anti-hallucination mandate
     prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "direct train jodhpur se udaipur he kya?")
-    assert "Real-Time External Facts, Transit & Web Search" in prompt
+    assert "Real-Time External Facts, Transit" in prompt
     assert "search_web" in prompt
+    assert "find_nearby_places" in prompt
 
 
 @pytest.mark.asyncio
