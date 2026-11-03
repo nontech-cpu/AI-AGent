@@ -394,12 +394,10 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
         msg_text, trigger_kind = await build_morning_briefing_message(
             chat_id, user_info, now_ist.date(), early_event=active_early, unified_sched=unified_sched
         )
-        target_ids = db.get_all_linked_chat_ids(chat_id)
-        for tid in target_ids:
-            try:
-                await send_telegram_message(tid, msg_text)
-            except Exception:
-                pass
+        try:
+            await send_telegram_message(chat_id, msg_text)
+        except Exception:
+            pass
         try:
             db.log_chat_message(db.canonical_chat_id(chat_id), "assistant", msg_text)
         except Exception:

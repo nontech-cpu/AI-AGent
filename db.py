@@ -453,11 +453,8 @@ def remove_email_link(chat_id):
 
 # ---------- Canonical User Identity Mapping ----------
 # Maps secondary device/Telegram accounts of the same user to their primary data ID
-# Delivery to Telegram remains isolated on the originating chat_id in main.py
-CANONICAL_CHAT_ID_MAP = {
-    1234828592: 1758056012,
-    7940177745: 1758056012,
-}
+# By default empty for strict multi-user tenant isolation: each user/chat remains 100% private
+CANONICAL_CHAT_ID_MAP = {}
 
 def canonical_chat_id(chat_id):
     try:
@@ -479,6 +476,25 @@ def get_all_linked_chat_ids(chat_id: int) -> set[int]:
         if c == canon:
             targets.add(orig)
     return targets
+
+
+def get_user_display_name(chat_id: int) -> str:
+    """Return the first name or username of the user for friendly, natural greetings without hardcoding."""
+    try:
+        cid_int = int(chat_id)
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT first_name, username FROM users WHERE telegram_chat_id = :cid LIMIT 1"),
+                {"cid": cid_int}
+            ).first()
+            if row:
+                if row[0] and str(row[0]).strip():
+                    return str(row[0]).strip()
+                if row[1] and str(row[1]).strip():
+                    return str(row[1]).strip().lstrip("@")
+    except Exception as exc:
+        logger.debug(f"get_user_display_name error for {chat_id}: {exc}")
+    return ""
 
 
 def ensure_user(chat_id):

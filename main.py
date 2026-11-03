@@ -1426,13 +1426,11 @@ async def connected_user_gmail_monitor_loop():
                             except Exception as f_err:
                                 print(f"Error saving user fact from email for {chat_id}:", f_err)
 
-                        from db import get_all_linked_chat_ids
-                        for target_cid in get_all_linked_chat_ids(chat_id):
-                            try:
-                                reply_lang.set(get_language(target_cid))
-                                await say_raw(target_cid, alert_text)
-                            except Exception as send_err:
-                                print(f"Failed to send email alert to {target_cid}:", send_err)
+                        try:
+                            reply_lang.set(get_language(chat_id))
+                            await say_raw(chat_id, alert_text)
+                        except Exception as send_err:
+                            print(f"Failed to send email alert to {chat_id}:", send_err)
                     else:
                         cat = (analysis or {}).get("category", "promotional")
                         await asyncio.to_thread(
@@ -2267,9 +2265,12 @@ async def handle_active(chat_id, text):
             logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}\n{tb_str}")
             clean_l = (text or "").strip().lower()
             if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
-                fallback_msg = "Hey Neerav! Kaise ho? Batao aaj kya schedule ya check karna hai?"
+                from db import get_user_display_name
+                u_name = get_user_display_name(chat_id)
+                prefix = f"Hey {u_name}!" if u_name else "Hey!"
+                fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
             else:
-                fallback_msg = "Haan bhai! Ek second server update ho raha tha. Batao aap kya check karna chahte the?"
+                fallback_msg = "Haan ji! Ek second server update ho raha tha. Batao aap kya check karna chahte the?"
             await say(chat_id, fallback_msg)
             return
 
@@ -4631,26 +4632,25 @@ async def google_callback(request: Request):
         # Notify user on Telegram if initiated from TG
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if tg_token and not is_web and orig_chat_id:
-            for target_cid in get_all_linked_chat_ids(orig_chat_id):
-                try:
-                    async with httpx.AsyncClient(timeout=6.0) as client:
-                        await client.post(
-                            f"https://api.telegram.org/bot{tg_token}/sendMessage",
-                            json={
-                                "chat_id": target_cid,
-                                "text": (
-                                    f"✅ **Google account successfully connect ho gaya!** 🌐\n\n"
-                                    f"📧 **Connected Email**: `{email}`\n"
-                                    f"📅 Google Calendar & Meet: Active\n"
-                                    f"📁 Google Drive: Active\n"
-                                    f"✉️ Gmail & Autonomous Intelligence: Active\n\n"
-                                    f"Ab aap mujhe bol sakte hain jaise: *'meri meetings check karo'*, *'kal 4 bje meeting schedule kar do'*, ya *'Drive par file save kar do'*."
-                                ),
-                                "parse_mode": "Markdown"
-                            }
-                        )
-                except Exception as e:
-                    print(f"Failed to send Telegram Google notification to {target_cid}:", repr(e))
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                        json={
+                            "chat_id": orig_chat_id,
+                            "text": (
+                                f"✅ **Google account successfully connect ho gaya!** 🌐\n\n"
+                                f"📧 **Connected Email**: `{email}`\n"
+                                f"📅 Google Calendar & Meet: Active\n"
+                                f"📁 Google Drive: Active\n"
+                                f"✉️ Gmail & Autonomous Intelligence: Active\n\n"
+                                f"Ab aap mujhe bol sakte hain jaise: *'meri meetings check karo'*, *'kal 4 bje meeting schedule kar do'*, ya *'Drive par file save kar do'*."
+                            ),
+                            "parse_mode": "Markdown"
+                        }
+                    )
+            except Exception as e:
+                print(f"Failed to send Telegram Google notification to {orig_chat_id}:", repr(e))
 
         # Invalidate prompt cache so immediate next messages know Google is connected
         try:

@@ -100,16 +100,20 @@ async def check_evening_wrapup(now_ist: datetime):
                     if not item.get("checked"):
                         pending_items.append(f"{item.get('title')} ({l.get('name')})")
 
+            name = db.get_user_display_name(cid)
+            greeting_name = f" {name}" if name else ""
+
             if pending_items:
                 preview = ", ".join(pending_items[:3])
+                user_salutation = f"{name}, a" if name else "A"
                 msg = (
                     f"🌙 **Evening Wrap-up & Status Check:**\n"
-                    f"Bhai, aaj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**.\n"
+                    f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**.\n"
                     f"Kya inhe complete mark karna hai ya kal ke liye carry forward karoon?"
                 )
             else:
                 msg = (
-                    f"🌙 **Good Evening Neerav bhai!**\n"
+                    f"🌙 **Good Evening{greeting_name}!**\n"
                     f"Aaj ke saare major tasks aur schedule complete hain. Kal ke din ki planning karni ho toh batana, aaram se rest karo! 😊"
                 )
             await broadcast_alert(msg, specific_chat_id=cid)
