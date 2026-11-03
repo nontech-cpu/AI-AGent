@@ -851,7 +851,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             rec_messages.extend(rec_hist)
 
             async with httpx.AsyncClient(timeout=15.0) as fb_client:
-                for fb_m in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]:
+                for fb_m in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
                     fb_resp = await fb_client.post(
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {groq_key}"},
