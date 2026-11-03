@@ -50,7 +50,7 @@ async def test_groq_429_rate_limit_failover():
         assert res["reply"] == "Haan bhai, bilkul ready hu!"
         # Verify it attempted multiple models
         assert len(call_attempts) >= 2
-        assert "llama-3.3-70b-versatile" in call_attempts or "llama-3.1-8b-instant" in call_attempts
+        assert "openai/gpt-oss-120b" in call_attempts or "qwen/qwen3.8-27b" in call_attempts or "llama-3.3-70b-versatile" in call_attempts
 
 @pytest.mark.asyncio
 async def test_user_level_timezone_persistence():

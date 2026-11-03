@@ -1417,9 +1417,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     for e in ents:
                         comms = get_commitments_for_user(uid, entity_id=e["id"])
                         comm_str = "; ".join([c["commitment"] for c in comms])
+                        attrs = e.get("attributes") or {}
                         res_contacts.append({
                             "name": e["name"],
-                            "company": e.get("attributes", {}).get("company", ""),
+                            "phone": attrs.get("phone", ""),
+                            "email": attrs.get("email", ""),
+                            "role": attrs.get("role_title") or attrs.get("role", ""),
+                            "company": attrs.get("company", ""),
+                            "notes": attrs.get("context_notes", ""),
                             "commitments": comm_str
                         })
                     return {"count": len(res_contacts), "contacts": res_contacts}
@@ -1432,7 +1437,11 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "contacts": [
                     {
                         "name": c["name"],
+                        "phone": c.get("phone", ""),
+                        "email": c.get("email", ""),
+                        "role": c.get("role_title") or c.get("role", ""),
                         "company": c.get("company", ""),
+                        "notes": c.get("context_notes", ""),
                         "commitments": c.get("commitments", "")
                     }
                     for c in contacts
@@ -3116,7 +3125,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 CORE_TOOL_NAMES = {
     "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "check_availability", "save_note_or_fact", "search_memory",
-    "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
+    "save_contact", "get_contact", "list_contacts", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
     "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
     "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
     "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",

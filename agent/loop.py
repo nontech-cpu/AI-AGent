@@ -440,7 +440,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             resp = None
             backup_key = os.getenv("GROQ_API_KEY_BACKUP")
             available_keys = [groq_key] + ([backup_key] if backup_key and backup_key != groq_key else [])
-            candidate_models = [current_model, "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+            candidate_models = [current_model, "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
             # Deduplicate while preserving order
             seen_m = set()
             ordered_candidates = [m for m in candidate_models if not (m in seen_m or seen_m.add(m))]
@@ -786,6 +786,28 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 final_reply = f"Packing list '{last_res.get('trip_title')}' create kar di gayi hai!"
             elif isinstance(last_res, dict) and last_res.get("question"):
                 final_reply = last_res["question"]
+            elif isinstance(last_res, dict) and "contacts" in last_res:
+                cnts = last_res.get("contacts", [])
+                if cnts:
+                    lines = ["📋 **Aapke Saved Contacts:**\n"]
+                    for c in cnts:
+                        c_name = c.get("name", "Contact")
+                        details = []
+                        if c.get("phone"):
+                            details.append(f"📞 Phone: **{c['phone']}**")
+                        if c.get("email"):
+                            details.append(f"✉️ Email: {c['email']}")
+                        if c.get("role"):
+                            details.append(f"💼 Role: {c['role']}")
+                        if c.get("commitments"):
+                            details.append(f"📌 Note: {c['commitments']}")
+                        elif c.get("notes"):
+                            details.append(f"📌 Note: {c['notes']}")
+                        det_str = " | ".join(details) if details else "Saved"
+                        lines.append(f"• **{c_name}** ({det_str})")
+                    final_reply = "\n".join(lines)
+                else:
+                    final_reply = "Aapke address book ya memory me koi contact save nahi mila."
 
     # If tools executed successfully, prioritize their formatted outcome over empty string
     if not final_reply and tool_results_list:
