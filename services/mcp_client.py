@@ -92,3 +92,4 @@ async def discover_and_cache_mcp_tools(chat_id: int, server_name: str, server_ur
         tools_cache=tools
     )
     return tools
+

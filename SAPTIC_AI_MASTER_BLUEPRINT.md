@@ -177,4 +177,34 @@ Saptic AI is accessible across multiple touchpoints:
 | `/api/assistant/tts` | `POST` | Synthesize lifelike speech via ElevenLabs audio engine |
 | `/api/assistant/briefing/audio` | `GET` | Stream personalized morning executive audio briefing |
 | `/api/connectors/mcp` | `GET / POST` | Dynamic Model Context Protocol tool discovery & registration |
+| `/api/assistant/health-radar` | `GET` | Live 0-100 Cognitive Clarity & Memory Health score |
+| `/api/relationships` | `GET / POST` | People CRM: Kinship graph & birthday resolver |
+| `/api/subscriptions` | `GET / POST` | Subscription watchdog & recurring billing tracker |
+| `/api/subscriptions/expiring` | `GET` | Free-trial & auto-renewal alert monitor (within N days) |
+| `/api/bubbles/share` | `POST` | Generate secure bubble collaboration invite code |
+| `/api/bubbles/join` | `POST` | Join shared bubble with multi-tenant isolation |
+| `/api/bubbles/shared` | `GET` | List all shared collaborative bubbles |
 | `/web/verification/*` | `POST` | Secure OTP authentication via phone and Telegram link |
+
+---
+
+## 8. Smart Cognitive Pillars (v2.4.0)
+
+1. **Relationship Knowledge Graph (People CRM)**:
+   - Maps user kinship and social entities (Papa, Mummy, Bhai, Manager, Team Lead) with birthday tracking and notes.
+   - Automatically resolves conversational references (e.g., "Papa ka call aaya tha" $\rightarrow$ Ashok Kumar Sharma).
+   - Injects 1-line compact kinship context into runtime prompts with zero memory overhead (~10 tokens).
+2. **Subscription & Free-Trial Expiry Watchdog**:
+   - Automatically classifies SaaS, OTT, and service subscription emails (Netflix, Spotify, ChatGPT, Cursor, Prime).
+   - Extracts billing cycles, renewal dates, free trial deadlines, and cancellation URLs.
+   - Proactively alerts users 3 days prior to auto-debit so unwanted subscriptions can be cancelled in time.
+3. **Memory Health Score & Cognitive Decay Radar**:
+   - Real-time 0-100 clarity metric assessing pending commitments, lingering tasks, overdue deadlines, and bubble organization.
+   - Accessible via `/radar`, `/health`, or natural chat prompts ("mera score kya hai").
+   - Actionable 3-step recommendation roadmap to achieve 100/100 mental clarity.
+4. **Shared Memory Bubbles (Collaborative Memory)**:
+   - Secure team and family collaboration on specific bubble domains (e.g. `work_project`, `home_renovation`).
+   - Generates unambiguous invite codes (`SAPTIC-<id>-<hex>`) for one-click joining via `/join_bubble`.
+   - Strict multi-tenant isolation: collaborators can never access private emails, personal memories, or unshared bubbles.
+
+

@@ -293,6 +293,15 @@ async def build_runtime_system_prompt(
     except Exception:
         pass
 
+    # Contextual People CRM / Relationship Knowledge Graph
+    try:
+        from services.relationship_service import format_relationships_context
+        rel_str = format_relationships_context(chat_id)
+        if rel_str:
+            memory_block = f"{memory_block}\n\n[Mapped People & Kinship CRM]:\n{rel_str}".strip() if memory_block else f"[Mapped People & Kinship CRM]:\n{rel_str}"
+    except Exception:
+        pass
+
     if not memory_block:
         memory_block = "User lives in Jodhpur, Rajasthan (Sardarpura area)."
 

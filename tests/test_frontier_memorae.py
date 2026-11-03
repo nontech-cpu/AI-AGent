@@ -172,3 +172,4 @@ def test_react_step_streaming_endpoint():
     # Check for delta or done
     types = [item.get("type") for item in lines]
     assert "delta" in types or "done" in types
+

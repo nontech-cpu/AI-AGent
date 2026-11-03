@@ -62,6 +62,30 @@ class RegisterMCPRequest(BaseModel):
     server_url: str
     auth_token: Optional[str] = None
 
+class UpsertRelationshipRequest(BaseModel):
+    name: str
+    relationship: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    birthday: Optional[str] = None
+    notes: Optional[str] = None
+
+class UpsertSubscriptionRequest(BaseModel):
+    service_name: str
+    amount: Optional[float] = None
+    billing_cycle: Optional[str] = "monthly"
+    next_renewal_date: Optional[str] = None
+    is_trial: Optional[bool] = False
+    trial_expiry_date: Optional[str] = None
+    cancel_url: Optional[str] = None
+
+class ShareBubbleRequest(BaseModel):
+    bubble_slug: str
+    permission: Optional[str] = "read_write"
+
+class JoinBubbleRequest(BaseModel):
+    invite_code: str
+
 
 def resolve_chat_id(request: Request, body_chat_id: Optional[int] = None) -> int:
     """Extracts chat_id from query, header, or body, falling back to default user."""
@@ -405,3 +429,129 @@ async def get_me(request: Request):
         "version": "2.3.0-frontier",
         "status": "ready"
     }
+
+
+# ---------------------------------------------------------------------------
+# 7. Memory Health Score & Cognitive Decay Radar
+# ---------------------------------------------------------------------------
+
+@router.get("/assistant/health-radar")
+async def get_health_radar(request: Request, chat_id: Optional[int] = Query(None)):
+    """Calculates live 0-100 cognitive clarity score and overdue commitment radar."""
+    from services.health_radar import compute_memory_health_score
+    cid = resolve_chat_id(request, chat_id)
+    score_data = compute_memory_health_score(cid)
+    return {"status": "success", "chat_id": cid, "radar": score_data}
+
+
+# ---------------------------------------------------------------------------
+# 8. People CRM & Relationship Knowledge Graph
+# ---------------------------------------------------------------------------
+
+@router.get("/relationships")
+async def list_user_relationships(request: Request, chat_id: Optional[int] = Query(None)):
+    """Retrieves all mapped family, friends, and team members for the user."""
+    from services.relationship_service import get_user_relationships
+    cid = resolve_chat_id(request, chat_id)
+    rels = get_user_relationships(cid)
+    return {"status": "success", "chat_id": cid, "count": len(rels), "relationships": rels}
+
+
+@router.post("/relationships")
+async def upsert_user_relationship(req: UpsertRelationshipRequest, request: Request, chat_id: Optional[int] = Query(None)):
+    """Maps or updates an entity kinship/relationship (e.g. Papa, Manager)."""
+    from services.relationship_service import add_or_update_relationship
+    cid = resolve_chat_id(request, chat_id)
+    res = add_or_update_relationship(
+        user_id_or_chat_id=cid,
+        name=req.name,
+        relationship=req.relationship,
+        phone=req.phone,
+        email=req.email,
+        birthday=req.birthday,
+        notes=req.notes
+    )
+    return res
+
+
+# ---------------------------------------------------------------------------
+# 9. Subscription & Free-Trial Watchdog
+# ---------------------------------------------------------------------------
+
+@router.get("/subscriptions")
+async def list_user_subscriptions(request: Request, chat_id: Optional[int] = Query(None)):
+    """Lists all tracked recurring subscriptions and active free trials."""
+    from services.subscription_service import get_user_subscriptions
+    cid = resolve_chat_id(request, chat_id)
+    subs = get_user_subscriptions(cid)
+    return {"status": "success", "chat_id": cid, "count": len(subs), "subscriptions": subs}
+
+
+@router.get("/subscriptions/expiring")
+async def get_expiring_subs(request: Request, days: int = Query(3, ge=1, le=30), chat_id: Optional[int] = Query(None)):
+    """Checks subscriptions and free-trials expiring within the specified days window."""
+    from services.subscription_service import check_expiring_subscriptions
+    cid = resolve_chat_id(request, chat_id)
+    expiring = check_expiring_subscriptions(cid, days_ahead=days)
+    return {"status": "success", "chat_id": cid, "expiring_count": len(expiring), "alerts": expiring}
+
+
+@router.post("/subscriptions")
+async def upsert_user_subscription(req: UpsertSubscriptionRequest, request: Request, chat_id: Optional[int] = Query(None)):
+    """Tracks or updates a subscription or free trial."""
+    from services.subscription_service import upsert_subscription
+    cid = resolve_chat_id(request, chat_id)
+    res = upsert_subscription(
+        user_id_or_chat_id=cid,
+        service_name=req.service_name,
+        amount=req.amount,
+        billing_cycle=req.billing_cycle or "monthly",
+        next_renewal_date=req.next_renewal_date,
+        is_trial=req.is_trial or False,
+        trial_expiry_date=req.trial_expiry_date,
+        cancel_url=req.cancel_url
+    )
+    return res
+
+
+# ---------------------------------------------------------------------------
+# 10. Shared Memory Bubbles
+# ---------------------------------------------------------------------------
+
+@router.post("/bubbles/share")
+async def share_bubble_endpoint(req: ShareBubbleRequest, request: Request, chat_id: Optional[int] = Query(None)):
+    """Creates a secure share invite code for a specific bubble."""
+    from services.shared_bubble_service import create_bubble_share_invite
+    cid = resolve_chat_id(request, chat_id)
+    invite_code = create_bubble_share_invite(
+        owner_chat_id=cid,
+        bubble_slug=req.bubble_slug,
+        permission=req.permission or "read_write"
+    )
+    return {
+        "status": "success",
+        "bubble_slug": req.bubble_slug.lower(),
+        "permission": req.permission or "read_write",
+        "invite_code": invite_code,
+        "instructions": f"Share this code with your team or collaborator: {invite_code}"
+    }
+
+
+@router.post("/bubbles/join")
+async def join_bubble_endpoint(req: JoinBubbleRequest, request: Request, chat_id: Optional[int] = Query(None)):
+    """Joins a shared memory bubble using an invite code."""
+    from services.shared_bubble_service import join_shared_bubble
+    cid = resolve_chat_id(request, chat_id)
+    res = join_shared_bubble(invitee_chat_id=cid, invite_code=req.invite_code)
+    if res.get("status") != "success":
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to join bubble."))
+    return res
+
+
+@router.get("/bubbles/shared")
+async def list_shared_bubbles(request: Request, chat_id: Optional[int] = Query(None)):
+    """Lists all shared bubbles accessible to the user."""
+    from services.shared_bubble_service import get_shared_bubbles_for_user
+    cid = resolve_chat_id(request, chat_id)
+    shared = get_shared_bubbles_for_user(cid)
+    return {"status": "success", "chat_id": cid, "count": len(shared), "shared_bubbles": shared}

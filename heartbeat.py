@@ -213,6 +213,61 @@ async def roll_daily_recurring_reminders(now_ist: datetime):
     await asyncio.to_thread(_do_roll_sync)
 
 
+_SUB_WATCHDOG_SENT = set()
+_BDAY_WATCHDOG_SENT = set()
+
+async def check_subscription_watchdog_daily(now_ist: datetime):
+    """Daily check for free-trials and subscriptions expiring in the next 3 days."""
+    today_str = str(now_ist.date())
+    if now_ist.hour == 10 and 0 <= now_ist.minute <= 10:
+        from services.subscription_service import check_expiring_subscriptions
+        for cid in get_active_target_chat_ids():
+            key = f"{today_str}_{cid}_sub"
+            if key in _SUB_WATCHDOG_SENT:
+                continue
+            _SUB_WATCHDOG_SENT.add(key)
+            try:
+                expiring = await asyncio.to_thread(check_expiring_subscriptions, cid, 3)
+                if expiring:
+                    lines = ["⚠️ **Subscription & Free-Trial Watchdog Alert:**\n"]
+                    for it in expiring:
+                        if it.get("kind") == "trial_expiring":
+                            lines.append(f"• ⏳ **{it['service']}** free trial {it['days_remaining']} din me expire ho raha hai ({it['date']})!")
+                            if it.get("cancel_url"):
+                                lines.append(f"  👉 Cancel Link: {it['cancel_url']}")
+                        else:
+                            amt = f"₹{it['amount']}" if it.get('amount') else ""
+                            lines.append(f"• 💳 **{it['service']}** auto-renew hone wala hai {it['days_remaining']} din me ({it['date']}) {amt}!")
+                            if it.get("cancel_url"):
+                                lines.append(f"  👉 Manage: {it['cancel_url']}")
+                    lines.append("\nAgar renew nahi karna hai toh samay par cancel kar lein taaki auto-debit na ho.")
+                    await broadcast_alert("\n".join(lines), specific_chat_id=cid)
+            except Exception as e:
+                logger.error(f"Subscription watchdog error for {cid}: {e}")
+
+async def check_birthday_watchdog_daily(now_ist: datetime):
+    """Daily check for upcoming birthdays in the user's relationship graph."""
+    today_str = str(now_ist.date())
+    if now_ist.hour == 9 and 0 <= now_ist.minute <= 10:
+        from services.relationship_service import get_upcoming_birthdays
+        for cid in get_active_target_chat_ids():
+            key = f"{today_str}_{cid}_bday"
+            if key in _BDAY_WATCHDOG_SENT:
+                continue
+            _BDAY_WATCHDOG_SENT.add(key)
+            try:
+                bdays = await asyncio.to_thread(get_upcoming_birthdays, cid, 2)
+                if bdays:
+                    lines = ["🎂 **Upcoming Birthday Watchdog Alert:**\n"]
+                    for b in bdays:
+                        when_str = "aaj hai! 🎉" if b['days_remaining'] == 0 else (f"kal ({b['date'].strftime('%d %b')}) hai!" if b['days_remaining'] == 1 else f"{b['days_remaining']} din me ({b['date'].strftime('%d %b')}) hai!")
+                        lines.append(f"• **{b['name']}** ({b['relationship']}) ka birthday {when_str}")
+                    lines.append("\nKya aapko koi reminder lagana hai ya wish prepare karni hai?")
+                    await broadcast_alert("\n".join(lines), specific_chat_id=cid)
+            except Exception as e:
+                logger.error(f"Birthday watchdog error for {cid}: {e}")
+
+
 async def heartbeat_loop():
     """Continuous background monitoring daemon running inside FastAPI lifespan."""
     logger.info("Starting Proactive Heartbeat Daemon...")
@@ -221,6 +276,8 @@ async def heartbeat_loop():
         try:
             now_ist = datetime.now(IST)
             await check_evening_wrapup(now_ist)
+            await check_subscription_watchdog_daily(now_ist)
+            await check_birthday_watchdog_daily(now_ist)
             await roll_daily_recurring_reminders(now_ist)
         except Exception as exc:
             logger.error(f"Heartbeat loop iteration error: {repr(exc)}")

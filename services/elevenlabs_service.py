@@ -141,3 +141,4 @@ async def generate_morning_audio_briefing(chat_id: int) -> Tuple[Optional[bytes]
     audio_bytes = await synthesize_speech(clean_speech)
 
     return audio_bytes, text_briefing
+

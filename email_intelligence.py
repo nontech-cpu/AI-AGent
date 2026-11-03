@@ -223,7 +223,51 @@ def _heuristic_analyze(sender: str, subject: str, body: str) -> Dict[str, Any]:
             "details": {"document_title": doc_name, "subject": subject},
         }
 
-    # 6. Check if purely promotional
+    # 6. Subscription / Free Trial Watchdog
+    sub_signals = any(
+        w in combined_lower
+        for w in (
+            "free trial", "trial ending", "trial ends", "trial period", "subscription will renew",
+            "subscription renewed", "auto-renewal", "membership renewal", "recurring charge",
+            "subscription confirmation", "membership confirmed", "your subscription", "upcoming charge",
+            "upcoming invoice", "next billing date"
+        )
+    )
+    if sub_signals:
+        service = "Subscription Service"
+        for candidate in ("Netflix", "Spotify", "Amazon Prime", "Prime Video", "ChatGPT", "OpenAI", "Claude", "Anthropic", "Cursor", "Midjourney", "GitHub", "Canva", "Figma", "YouTube Premium", "iCloud", "Google One", "Adobe", "Notion", "Hotstar", "JioCinema", "SonyLIV", "Zee5", "Audible", "LinkedIn Premium"):
+            if candidate.casefold() in combined_lower:
+                service = candidate
+                break
+        if service == "Subscription Service" and "@" in sender:
+            dom = sender.split("@")[-1].split(".")[0].capitalize()
+            if dom not in ("Gmail", "Yahoo", "Outlook", "Hotmail", "Icloud", "Mail", "Email"):
+                service = dom
+
+        is_trial = any(w in combined_lower for w in ("trial", "free trial", "trial period", "trial ends"))
+        amt_m = AMOUNT_REGEX.search(combined)
+        amount_str = f"₹{amt_m.group(1)}" if amt_m else None
+        due_m = DUE_DATE_REGEX.search(combined)
+        renewal_date_str = due_m.group(1).strip() if due_m else "Check email for date"
+
+        # Look for cancel / manage URL
+        cancel_m = re.search(r'https?://[^\s<>"]+(?:cancel|manage|subscription|billing|account)[^\s<>"]*', combined, re.I)
+        cancel_url = cancel_m.group(0) if cancel_m else None
+
+        return {
+            "is_important": True,
+            "category": "subscription_watchdog",
+            "service_name": service,
+            "amount": amount_str,
+            "billing_cycle": "monthly" if "month" in combined_lower else ("annual" if "year" in combined_lower or "annual" in combined_lower else "recurring"),
+            "renewal_date": renewal_date_str,
+            "is_trial": is_trial,
+            "trial_expiry_date": renewal_date_str if is_trial else None,
+            "cancel_url": cancel_url,
+            "details": {"service": service, "amount": amount_str, "is_trial": is_trial, "renewal_date": renewal_date_str, "cancel_url": cancel_url},
+        }
+
+    # 7. Check if purely promotional
     if PROMOTIONAL_REGEX.search(combined):
         return {
             "is_important": False,
@@ -361,6 +405,27 @@ def _format_alert(data: Dict[str, Any]) -> Optional[str]:
             f"📋 Status: {summary}\n"
         )
 
+    elif category == "subscription_watchdog":
+        service = data.get("service_name") or data.get("biller") or "Subscription"
+        raw_amt = data.get("amount")
+        amount = _format_amount(raw_amt) if raw_amt else ""
+        date_str = _format_human_date(data.get("renewal_date") or data.get("due_date") or data.get("trial_expiry_date"))
+        is_trial = data.get("is_trial", False)
+        cancel_url = data.get("cancel_url")
+
+        headline = "⏳ Free Trial Expiry Alert!" if is_trial else "💳 Subscription Renewal Watchdog!"
+        lines = [
+            f"{headline}\n",
+            f"📱 Service: {service}",
+        ]
+        if amount:
+            lines.append(f"💰 Amount: {amount}")
+        lines.append(f"📅 {'Trial Ends' if is_trial else 'Renewal Date'}: {date_str}")
+        if cancel_url:
+            lines.append(f"🔗 Manage / Cancel: {cancel_url}")
+        lines.append(f"\n💡 Agar aapko yeh continue nahi karna, toh time se pehle cancel kar lein taaki paise debit na hon.")
+        return "\n".join(lines)
+
     return None
 
 
@@ -385,7 +450,7 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
     combined_sample = f"{sender} {subject} {body[:500]}".casefold()
     has_critical_token = any(
         k in combined_sample
-        for k in ("interview", "meet.google.com", "zoom.us", "teams.microsoft.com", "pnr", "booking confirmed", "due date", "statement", "out for delivery", "attached document", "ticket.pdf")
+        for k in ("interview", "meet.google.com", "zoom.us", "teams.microsoft.com", "pnr", "booking confirmed", "due date", "statement", "out for delivery", "attached document", "ticket.pdf", "trial", "subscription", "recurring", "renewal")
     )
     if not has_critical_token and any(p in combined_sample for p in ("unsubscribe", "flash sale", "newsletter", "50% off", "promo code")):
         return {
@@ -409,12 +474,13 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
                 "- 'ticket_booking': Flight, train (IRCTC / Indian Railways), bus, movie, or hotel booking confirmation with PNR, booking ID, train/flight number, route, travel date, passengers, seats, fare.\n"
                 "- 'document_received': Any important attached file or document (PDF, agreement, resume, certificate, invoice, medical report, admission letter) that the user should know about.\n"
                 "- 'bill_payment': Credit card statement, electricity bill, mobile recharge/utility bill with total amount due and due date.\n"
+                "- 'subscription_watchdog': Free trial ending, subscription renewal notice, auto-renewal charge, SaaS/OTT recurring billing (Netflix, Spotify, AWS, Cursor, ChatGPT, Prime, etc.) with service name, amount, renewal/expiry date, is_trial flag, cancel link.\n"
                 "- 'delivery_urgent': Order out for delivery today with a delivery OTP/PIN or urgent delivery status.\n"
                 "- 'promotional': Sales, marketing, discounts, newsletters, social media digests (LinkedIn, Twitter), spam. Set is_important=false.\n\n"
                 "Return JSON ONLY in this schema:\n"
                 "{\n"
                 '  "is_important": boolean,\n'
-                '  "category": "interview" | "ticket_booking" | "document_received" | "bill_payment" | "delivery_urgent" | "promotional",\n'
+                '  "category": "interview" | "ticket_booking" | "document_received" | "bill_payment" | "subscription_watchdog" | "delivery_urgent" | "promotional",\n'
                 '  "company": string or null,\n'
                 '  "role_or_title": string or null,\n'
                 '  "datetime_str": string or null,\n'
@@ -430,6 +496,10 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
                 '  "document_type": string or null,\n'
                 '  "biller": string or null,\n'
                 '  "due_date": string or null,\n'
+                '  "service_name": string or null,\n'
+                '  "is_trial": boolean or null,\n'
+                '  "renewal_date": string or null,\n'
+                '  "cancel_url": string or null,\n'
                 '  "service": string or null,\n'
                 '  "otp": string or null,\n'
                 '  "summary": string or null\n'
@@ -453,7 +523,7 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
 
                 is_imp = bool(llm_result.get("is_important"))
                 cat = str(llm_result.get("category") or "").lower()
-                if cat in ("ticket_booking", "interview", "bill_payment", "document_received", "delivery_urgent"):
+                if cat in ("ticket_booking", "interview", "bill_payment", "document_received", "delivery_urgent", "subscription_watchdog"):
                     is_imp = True
                 elif cat == "promotional":
                     is_imp = False

@@ -319,6 +319,28 @@ async def build_morning_briefing_message(
         for c in comms:
             lines.append(f"• **{c['name']}:** {c['commitment']}")
 
+    # 4. Birthday & Subscription Radar
+    try:
+        from services.relationship_service import get_upcoming_birthdays
+        from services.subscription_service import check_expiring_subscriptions
+
+        upcoming_bdays = get_upcoming_birthdays(chat_id, days_ahead=2)
+        if upcoming_bdays:
+            lines.append("\n🎂 **Upcoming Birthdays:**")
+            for b in upcoming_bdays:
+                when_str = "Aaj" if b['days_remaining'] == 0 else ("Kal" if b['days_remaining'] == 1 else f"In {b['days_remaining']} days")
+                lines.append(f"• **{b['name']}** ({b['relationship']}) — {when_str}!")
+
+        expiring_subs = check_expiring_subscriptions(chat_id, days_ahead=3)
+        if expiring_subs:
+            lines.append("\n⏳ **Subscription & Free-Trial Watchdog:**")
+            for s in expiring_subs:
+                tag = "Free Trial Expiry" if s.get("kind") == "trial_expiring" else "Renewal"
+                amt = f" (₹{s['amount']})" if s.get('amount') and s['amount'] != 'N/A' else ""
+                lines.append(f"• **{s['service']}** {tag} in {s['days_remaining']}d ({s['date']}){amt}")
+    except Exception as radar_err:
+        print("[morning_briefing.radar] error:", repr(radar_err))
+
     lines.append("\nHave a wonderful, productive day ahead! Kuch bhi add ya note karna ho toh bata dena. 👍")
 
     return "\n".join(lines), trigger_kind

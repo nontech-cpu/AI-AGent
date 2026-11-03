@@ -233,7 +233,10 @@ HELP_TEXT = (
     "• Send a photo of a bill, receipt, or invite 🖼️\n"
     "• Send a PDF or document to read & summarize 📄\n"
     "• What's on my plate today? (or tomorrow, this week)\n"
-    "• Show everything you remember\n"
+    "• /radar — Check your Memory Clarity & Cognitive Health score\n"
+    "• /relationships — View mapped family, friends & manager graph\n"
+    "• /subscriptions — View tracked subscriptions & expiring free-trials\n"
+    "• /share_bubble <slug> & /join_bubble <code> — Collaborate on memory bubbles\n"
     "• Connect Google (Gmail, Calendar, Drive)\n"
     "• Link my email\n"
     "• Or send a voice note in your own language 🎙️"
@@ -1088,6 +1091,42 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
             cat = item.get("category") or "general"
             if f_text and len(f_text) > 3:
                 save_user_fact(chat_id, f_text, cat)
+
+        # Auto-extract People CRM / Relationships & Birthdays
+        try:
+            from services.relationship_service import upsert_relationship
+            rel_m = re.search(
+                r"(?:mera|mere|my)\s+(papa|father|dad|mom|mummy|mother|bhai|brother|behan|sister|wife|husband|patni|pati|boss|manager|friend|dost)\s+(?:ka\s+naam\s+|h\s+|hai\s+|is\s+|named\s+)?([A-Za-z\s]+?)(?:\s+hai|\s+h|\.|$)",
+                text,
+                re.I
+            )
+            if not rel_m:
+                rel_m2 = re.search(
+                    r"([A-Za-z\s]+?)\s+(?:is\s+my|mera|mere)\s+(papa|father|dad|mom|mummy|mother|bhai|brother|behan|sister|wife|husband|boss|manager)",
+                    text,
+                    re.I
+                )
+                if rel_m2:
+                    r_name = rel_m2.group(1).strip()
+                    r_rel = rel_m2.group(2).strip()
+                    upsert_relationship(chat_id, name=r_name, relationship=r_rel)
+            else:
+                r_rel = rel_m.group(1).strip()
+                r_name = rel_m.group(2).strip()
+                if r_name and len(r_name) > 1 and r_name.lower() not in ("hai", "h", "ka", "ki", "naam"):
+                    upsert_relationship(chat_id, name=r_name, relationship=r_rel)
+
+            bday_m = re.search(
+                r"([A-Za-z\s]+?)(?:'s|\s+ka|\s+ki)\s+birthday\s+(?:is\s+on\s+|h\s+|hai\s+|on\s+)?([0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+|[A-Za-z]+\s+[0-9]{1,2}|[0-9]{4}-[0-9]{2}-[0-9]{2})",
+                text,
+                re.I
+            )
+            if bday_m:
+                target_entity = bday_m.group(1).strip()
+                bday_val = bday_m.group(2).strip()
+                upsert_relationship(chat_id, name=target_entity, relationship="Family/Friend", birthday=bday_val)
+        except Exception as rel_err:
+            pass
     except Exception as exc:
         print("extract_and_save_user_facts error:", repr(exc))
 
@@ -1419,6 +1458,37 @@ async def connected_user_gmail_monitor_loop():
                             amount_str = raw.get("amount") or ""
                             due_str = raw.get("due_date") or ""
                             fact_text = f"Bill Due: {biller_str} | Amount: {amount_str} | Due Date: {due_str}"
+                        elif cat == "subscription_watchdog":
+                            service_str = raw.get("service_name") or raw.get("biller") or "Subscription"
+                            amount_val = raw.get("amount")
+                            ren_date = raw.get("renewal_date") or raw.get("trial_expiry_date")
+                            is_tr = bool(raw.get("is_trial"))
+                            c_url = raw.get("cancel_url")
+                            b_cycle = raw.get("billing_cycle") or "monthly"
+                            fact_text = f"Subscription Tracked: {service_str} | Amount: {amount_val} | Next Date: {ren_date} | Trial: {is_tr}"
+                            try:
+                                from services.subscription_service import upsert_subscription
+                                parsed_amt = None
+                                if amount_val:
+                                    clean_a = re.sub(r"[^\d.]", "", str(amount_val))
+                                    if clean_a:
+                                        try:
+                                            parsed_amt = float(clean_a)
+                                        except Exception:
+                                            pass
+                                await asyncio.to_thread(
+                                    upsert_subscription,
+                                    chat_id,
+                                    service_name=service_str,
+                                    amount=parsed_amt,
+                                    billing_cycle=b_cycle,
+                                    next_renewal_date=ren_date if not is_tr else None,
+                                    is_trial=is_tr,
+                                    trial_expiry_date=ren_date if is_tr else None,
+                                    cancel_url=c_url,
+                                )
+                            except Exception as sub_e:
+                                print(f"Error upserting subscription from email for {chat_id}: {sub_e}")
 
                         if fact_text:
                             try:
@@ -2753,6 +2823,88 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say(chat_id, f"✅ Memory '{target}' successfully delete kar di gayi hai (archived).")
         else:
             await say(chat_id, f"⚠️ '{target}' se matching koi active memory nahi mili.")
+        return
+
+    # 1. Cognitive Health Score & Memory Decay Radar
+    if cmd_token in {"/radar", "/health"} or clean_lower in {"health radar", "cognitive score", "memory health", "mera score", "mera health score", "radar score"}:
+        from services.health_radar import compute_memory_health_score, format_health_radar_telegram_message
+        score_data = compute_memory_health_score(chat_id)
+        radar_msg = format_health_radar_telegram_message(score_data)
+        await say(chat_id, radar_msg)
+        return
+
+    # 2. Shared Memory Bubbles: Invite Generation
+    if cmd_token == "/share_bubble" or clean_lower.startswith("/share_bubble"):
+        parts = clean.split(maxsplit=2)
+        slug = parts[1].strip() if len(parts) > 1 else "everything"
+        perm = parts[2].strip() if len(parts) > 2 else "read_write"
+        from services.shared_bubble_service import create_bubble_share_invite
+        inv_res = create_bubble_share_invite(chat_id, slug, permission=perm)
+        invite_code = inv_res.get("invite_code") if isinstance(inv_res, dict) else inv_res
+        await say(
+            chat_id,
+            f"🤝 **Shared Memory Bubble Invite Created!**\n\n"
+            f"📂 Target Bubble: **{slug}**\n"
+            f"🔐 Permission: `{perm}`\n"
+            f"🎟️ **Invite Code:** `{invite_code}`\n\n"
+            f"Jisko aap bubble share karna chahte hain, unse kahein ki vo ye command bhejein:\n"
+            f"`/join_bubble {invite_code}`\n\n"
+            f"*(Note: Shared user ko sirf is bubble ki memories ka access milega, aapke private emails ya baaki unshared bubbles unhe kabhi nahi dikhenge.)*"
+        )
+        return
+
+    # 3. Shared Memory Bubbles: Join
+    if cmd_token == "/join_bubble" or clean_lower.startswith("/join_bubble"):
+        parts = clean.split(maxsplit=1)
+        if len(parts) < 2:
+            await say(chat_id, "Please provide the invite code. Example: `/join_bubble SAPTIC-WORK-A1B2`")
+            return
+        code = parts[1].strip()
+        from services.shared_bubble_service import join_shared_bubble
+        res = join_shared_bubble(chat_id, code)
+        if res.get("status") == "success":
+            await say(
+                chat_id,
+                f"🎉 **Bubble Successfully Joined!**\n\n"
+                f"📂 Connected to Bubble: **{res.get('bubble_slug')}**\n"
+                f"🔐 Permission: `{res.get('permission')}`\n\n"
+                f"Ab aap is shared bubble ki memories search aur collaborate kar sakte hain!"
+            )
+        else:
+            await say(chat_id, f"⚠️ Join failed: {res.get('error', 'Invalid or expired invite code.')}")
+        return
+
+    # 4. People CRM / Relationship Knowledge Graph
+    if cmd_token in {"/relationships", "/people", "/family"}:
+        from services.relationship_service import list_relationships
+        rels = list_relationships(chat_id)
+        if not rels:
+            await say(chat_id, "Aapne abhi koi relationship map nahi kiya hai. Aap natural language me bol sakte hain jaise: 'Papa ka naam Ashok Kumar Sharma hai' ya 'Mera manager Devendra hai'.")
+            return
+        lines = ["👥 **Aapka People & Relationship Graph:**\n"]
+        for r in rels:
+            bday_str = f" | 🎂 Birthday: {r['birthday']}" if r.get('birthday') else ""
+            phone_str = f" | 📞 {r['phone']}" if r.get('phone') else ""
+            lines.append(f"• **{r['name']}** ({r['relationship']}){bday_str}{phone_str}")
+        await say(chat_id, "\n".join(lines))
+        return
+
+    # 5. Subscription & Free-Trial Watchdog
+    if cmd_token in {"/subscriptions", "/subs", "/trials"}:
+        from services.subscription_service import get_active_subscriptions
+        subs = get_active_subscriptions(chat_id)
+        if not subs:
+            await say(chat_id, "Koi active subscriptions ya free trials tracked nahi hain. Incoming emails se auto-detect honge ya aap mujhe bata sakte hain: 'Mera Netflix subscription 649 monthly hai'.")
+            return
+        lines = ["💳 **Active Subscriptions & Free Trials:**\n"]
+        for s in subs:
+            tag = "⏳ Trial" if s.get('is_trial') else "🔁 Renewal"
+            date_val = s.get('trial_expiry_date') if s.get('is_trial') else s.get('next_renewal_date')
+            amt_str = f" ₹{s['amount']}" if s.get('amount') else ""
+            cycle = f" ({s.get('billing_cycle')})" if s.get('billing_cycle') else ""
+            cancel_str = f" | [Cancel Link]({s['cancel_url']})" if s.get('cancel_url') else ""
+            lines.append(f"• **{s['service_name']}** — {tag}: {date_val}{amt_str}{cycle}{cancel_str}")
+        await say(chat_id, "\n".join(lines))
         return
 
     # Master Privacy Wipe State Handling

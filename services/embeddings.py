@@ -117,3 +117,4 @@ def embed_batch(texts: List[str]) -> List[Optional[List[float]]]:
             logger.error(f"Error in embed_batch: {exc}")
 
     return results
+

@@ -1064,6 +1064,65 @@ TOOL_DEFINITIONS = [
                 "required": ["url"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_relationship",
+            "description": "People CRM & Kinship Graph: Add, update, resolve, or list user relationships, family members, friends, or managers along with birthdays and contact details.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "list", "get"],
+                        "description": "Action to perform: 'add' (save/update), 'list' (view all), or 'get' (lookup person)"
+                    },
+                    "name": {"type": "string", "description": "Full or first name of the person (e.g. 'Ashok Kumar Sharma', 'Devendra')"},
+                    "relationship": {"type": "string", "description": "Kinship or role (e.g. 'Father', 'Mother', 'Manager', 'Brother', 'Friend')"},
+                    "phone": {"type": ["string", "null"], "description": "Phone number if provided"},
+                    "birthday": {"type": ["string", "null"], "description": "Birthday date or string (e.g. '15 August', '1990-08-15')"},
+                    "notes": {"type": ["string", "null"], "description": "Any additional context or notes"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_subscription",
+            "description": "Subscription & Free-Trial Watchdog: Track, query, or check upcoming renewals and trial expirations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "list", "check_expiring"],
+                        "description": "Action: 'add' (track new sub/trial), 'list' (view active), 'check_expiring' (check next N days)"
+                    },
+                    "service_name": {"type": ["string", "null"], "description": "Name of the service (e.g. 'Netflix', 'ChatGPT Plus', 'Cursor', 'Spotify')"},
+                    "amount": {"type": ["number", "null"], "description": "Price/Amount in currency"},
+                    "billing_cycle": {"type": ["string", "null"], "enum": ["monthly", "annual", "quarterly", "recurring"], "description": "Cycle"},
+                    "renewal_date": {"type": ["string", "null"], "description": "Next renewal or trial end date (YYYY-MM-DD or readable)"},
+                    "is_trial": {"type": ["boolean", "null"], "description": "True if this is a free trial"},
+                    "cancel_url": {"type": ["string", "null"], "description": "URL link to cancel or manage"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_memory_health_radar",
+            "description": "Memory Health Score & Cognitive Decay Radar: Computes real-time clarity score (0-100) and highlights overdue commitments.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
@@ -2899,6 +2958,55 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             else:
                 return {"status": "error", "message": f"Unknown action: '{args.action}'"}
 
+        elif tool_name == "manage_relationship":
+            action = arguments.get("action", "list")
+            from services.relationship_service import add_or_update_relationship, get_user_relationships, resolve_relationship_in_text
+            if action == "add":
+                name = arguments.get("name") or "Person"
+                rel = arguments.get("relationship") or "Contact"
+                res = add_or_update_relationship(
+                    user_id_or_chat_id=chat_id,
+                    name=name,
+                    relationship=rel,
+                    phone=arguments.get("phone"),
+                    birthday=arguments.get("birthday"),
+                    notes=arguments.get("notes")
+                )
+                return res
+            elif action == "get":
+                name = arguments.get("name") or ""
+                matches = resolve_relationship_in_text(chat_id, name)
+                return {"status": "success", "matches": matches, "count": len(matches)}
+            else:
+                items = get_user_relationships(chat_id)
+                return {"status": "success", "relationships": items, "count": len(items)}
+
+        elif tool_name == "manage_subscription":
+            action = arguments.get("action", "list")
+            from services.subscription_service import upsert_subscription, get_user_subscriptions, check_expiring_subscriptions
+            if action == "add":
+                res = upsert_subscription(
+                    user_id_or_chat_id=chat_id,
+                    service_name=arguments.get("service_name") or "Subscription",
+                    amount=arguments.get("amount"),
+                    billing_cycle=arguments.get("billing_cycle") or "monthly",
+                    next_renewal_date=arguments.get("renewal_date"),
+                    is_trial=arguments.get("is_trial") or False,
+                    trial_expiry_date=arguments.get("renewal_date") if arguments.get("is_trial") else None,
+                    cancel_url=arguments.get("cancel_url")
+                )
+                return res
+            elif action == "check_expiring":
+                exp = check_expiring_subscriptions(chat_id, days_ahead=7)
+                return {"status": "success", "expiring": exp, "count": len(exp)}
+            else:
+                items = get_user_subscriptions(chat_id)
+                return {"status": "success", "subscriptions": items, "count": len(items)}
+
+        elif tool_name == "get_memory_health_radar":
+            from services.health_radar import compute_memory_health_score
+            score_data = compute_memory_health_score(chat_id)
+            return {"status": "success", "radar": score_data}
 
         else:
             return {"status": "error", "message": f"Unknown tool: '{tool_name}'"}
@@ -2915,7 +3023,8 @@ CORE_TOOL_NAMES = {
     "save_contact", "get_contact", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
     "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
     "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
-    "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link"
+    "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",
+    "manage_relationship", "manage_subscription", "get_memory_health_radar"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}

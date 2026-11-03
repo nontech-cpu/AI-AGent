@@ -193,3 +193,4 @@ async def process_and_ingest_asset(
         "ocr_extracted_text": ocr_text,
         "storage_type": upload_res["storage_type"]
     }
+
