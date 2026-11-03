@@ -87,7 +87,13 @@ async def detect_schedule_clash(
     # 2. Check Google Calendar events
     try:
         import google_services
-        t_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=IST)
+        user_tz_str = await google_services.get_user_calendar_timezone(cid_can)
+        try:
+            from zoneinfo import ZoneInfo
+            u_tz = ZoneInfo(user_tz_str)
+        except Exception:
+            u_tz = IST
+        t_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=u_tz)
         t_end = t_start + timedelta(days=1)
         ev_items = await google_services.list_calendar_events(
             cid_can,
@@ -99,8 +105,8 @@ async def detect_schedule_clash(
             st_iso = ev.get("start", {}).get("dateTime")
             en_iso = ev.get("end", {}).get("dateTime")
             if st_iso:
-                st_dt = datetime.fromisoformat(st_iso.replace("Z", "+00:00")).astimezone(IST)
-                en_dt = datetime.fromisoformat(en_iso.replace("Z", "+00:00")).astimezone(IST) if en_iso else (st_dt + timedelta(minutes=30))
+                st_dt = datetime.fromisoformat(st_iso.replace("Z", "+00:00")).astimezone(u_tz)
+                en_dt = datetime.fromisoformat(en_iso.replace("Z", "+00:00")).astimezone(u_tz) if en_iso else (st_dt + timedelta(minutes=30))
                 ev_start_mins = st_dt.hour * 60 + st_dt.minute
                 ev_end_mins = en_dt.hour * 60 + en_dt.minute
                 ev_title = ev.get("summary") or "Calendar Event"

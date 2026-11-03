@@ -80,3 +80,4 @@ async def test_tool_definitions_zero_hardcoded_offsets():
         for prop_name, prop_val in props.items():
             p_desc = prop_val.get("description", "")
             assert "+05:30" not in p_desc, f"Tool {f.get('name')} prop {prop_name} contains hardcoded +05:30"
+

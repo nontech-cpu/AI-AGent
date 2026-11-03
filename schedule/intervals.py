@@ -101,17 +101,16 @@ class TimeInterval:
         return f"{s_str} – {e_str} IST"
 
 
-def normalize_to_ist(dt_input: Any) -> datetime:
+def normalize_to_ist(dt_input: Any, target_tz=None) -> datetime:
     """
-    Normalizes any datetime string, UTC string, or datetime object into timezone-aware Asia/Kolkata (IST).
-    Examples:
-      '2026-10-22T12:30:00Z' -> 2026-10-22 18:00:00+05:30 (6:00 PM IST)
-      '2026-10-22T18:00:00+05:30' -> 2026-10-22 18:00:00+05:30
+    Normalizes any datetime string, UTC string, or datetime object into timezone-aware datetime.
+    Defaults to IST for local users or adapts dynamically to target_tz for international accounts.
     """
+    tz = target_tz or IST
     if isinstance(dt_input, datetime):
         if dt_input.tzinfo is None:
-            return dt_input.replace(tzinfo=IST)
-        return dt_input.astimezone(IST)
+            return dt_input.replace(tzinfo=tz)
+        return dt_input.astimezone(tz)
 
     clean_str = str(dt_input).strip()
 
@@ -122,11 +121,11 @@ def normalize_to_ist(dt_input: Any) -> datetime:
     try:
         dt = datetime.fromisoformat(clean_str)
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=IST)
-        return dt.astimezone(IST)
+            return dt.replace(tzinfo=tz)
+        return dt.astimezone(tz)
     except Exception:
-        # Fallback to current time IST
-        return datetime.now(IST)
+        # Fallback to current time
+        return datetime.now(tz)
 
 
 def parse_activity_duration(activity_type: Optional[str] = None, text_content: Optional[str] = None) -> int:
