@@ -1170,6 +1170,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             purpose = arguments.get("purpose") or ""
             return await run_python_sandbox(chat_id, code, purpose)
 
+        if tool_name == "validate_ticket_date":
+            from state.active_context import get_active_ticket, parse_ticket_datetime
+            tkt = get_active_ticket(chat_id)
+            dt_str = (arguments.get("datetime_str") or (tkt.get("datetime_str") if tkt else None))
+            tkt_dt = parse_ticket_datetime(dt_str) if dt_str else None
+            now_ist = datetime.now(IST)
+            is_past = (tkt_dt < now_ist) if tkt_dt else False
+            return {
+                "status": "success",
+                "is_past": is_past,
+                "ticket": tkt,
+                "message": "Ticket date is in the past." if is_past else "Ticket date is valid."
+            }
+
         if tool_name == "search_memory":
             args = SearchMemoryArgs(**arguments)
             hybrid_res = []

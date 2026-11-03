@@ -1163,12 +1163,34 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
 # ---------- Persistent Chat Logs & ChatGPT-style Long-Term Memory ----------
 
 _CHAT_HISTORY_CACHE: dict = {}
+_chat_logs_channel_checked = False
+
+
+def _ensure_chat_logs_channel_column():
+    global _chat_logs_channel_checked
+    if _chat_logs_channel_checked:
+        return
+    try:
+        with engine.begin() as conn:
+            is_pg = engine.dialect.name == "postgresql"
+            if is_pg:
+                conn.execute(text("ALTER TABLE chat_logs ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'telegram'"))
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE chat_logs ADD COLUMN channel TEXT DEFAULT 'telegram'"))
+                except Exception:
+                    pass
+        _chat_logs_channel_checked = True
+    except Exception:
+        pass
+
 
 def log_chat_message(chat_id, role, message, channel="telegram"):
     chat_id = canonical_chat_id(chat_id)
     """Saves a conversation turn permanently in PostgreSQL, preventing immediate duplicates and tagged by channel."""
     if not message or not str(message).strip():
         return
+    _ensure_chat_logs_channel_column()
     clean_msg = str(message).strip()
     chan = (channel or "telegram").strip().lower()
     # Never poison chat history with emergency fallback error messages
@@ -1206,6 +1228,7 @@ def log_chat_message(chat_id, role, message, channel="telegram"):
 def get_recent_chat_history(chat_id, limit=15, channel=None):
     chat_id = canonical_chat_id(chat_id)
     """Retrieves the recent conversation history in chronological order without sequential duplicates, scoped to channel."""
+    _ensure_chat_logs_channel_column()
     import time as _pytime
     now_ts = _pytime.time()
     chan = (channel or "").strip().lower() if channel else None
@@ -1881,12 +1904,30 @@ def record_processed_user_email(
         print("record_processed_user_email error:", repr(exc))
 
 
+def has_user_email_baseline(chat_id: int) -> bool:
+    """Check if a user already has at least one recorded email in processed_user_emails."""
+    if not chat_id:
+        return False
+    _init_processed_user_emails_table()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT 1 FROM processed_user_emails WHERE chat_id = :c LIMIT 1"),
+                {"c": chat_id}
+            ).first()
+            return row is not None
+    except Exception as exc:
+        print("has_user_email_baseline error:", repr(exc))
+        return False
+
+
 def get_all_connected_google_users() -> list[dict]:
     """Return all users who have an active Google connection linked to a Telegram chat."""
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT u.id AS user_id, u.telegram_chat_id, gt.email, gt.refresh_token_enc, gt.scopes
+                SELECT u.id AS user_id, u.telegram_chat_id, gt.email, gt.refresh_token_enc, gt.scopes,
+                       gt.created_at, gt.updated_at
                 FROM users u
                 JOIN google_tokens gt ON u.id = gt.user_id
                 WHERE u.telegram_chat_id IS NOT NULL 

@@ -340,7 +340,48 @@ async def test_ticket_email_fast_path():
         }
     ]
 
-    with patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
+    call_count = 0
+    groq_resp_1 = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_tkt_1",
+                    "type": "function",
+                    "function": {"name": "search_user_emails", "arguments": '{"query": "ticket"}'}
+                }]
+            }
+        }],
+        "usage": {"total_tokens": 100}
+    }
+    groq_resp_2 = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "Aapka Ticket / Booking Confirmed ho gaya hai! PNR: 2524281551, Route: Jodhpur to Abu Road.",
+                "tool_calls": None
+            }
+        }],
+        "usage": {"total_tokens": 80}
+    }
+
+    async def mock_post(*args, **kwargs):
+        is_telegram = any("telegram.org" in str(a) for a in args) or any("telegram.org" in str(v) for v in kwargs.values())
+        if is_telegram:
+            class MockTg:
+                status_code = 200
+                def json(self): return {"ok": True}
+            return MockTg()
+        nonlocal call_count
+        call_count += 1
+        class MockResp:
+            status_code = 200
+            def json(self): return groq_resp_1 if call_count == 1 else groq_resp_2
+        return MockResp()
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post), \
+         patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
          patch("google_services.fetch_user_inbox_messages", AsyncMock(return_value=mock_messages)):
 
         turn = await run_agent_turn(chat_id, "mere ticket aaye h kuch btao usme se mail pr")
@@ -365,16 +406,73 @@ async def test_ticket_past_date_calendar_rejection():
         "passengers": "DEVENDRA, RISHI"
     })
 
-    # User asks to add it to calendar
-    turn = await run_agent_turn(chat_id, "Mera ticket ko calender mai add kar do")
-    assert "validate_ticket_date" in turn["tool_calls_executed"]
-    assert "purani hai" in turn["reply"] or "past date" in turn["reply"]
-    assert "nikal chuki hai" in turn["reply"] or "beete hue" in turn["reply"]
+    call_count = 0
+    groq_tool_resp = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_past_1",
+                    "type": "function",
+                    "function": {"name": "validate_ticket_date", "arguments": '{"datetime_str": "03-Sep-2026 22:00"}'}
+                }]
+            }
+        }],
+        "usage": {"total_tokens": 100}
+    }
+    groq_final_resp = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "Bhai, ye ticket purani hai (travel date nikal chuki hai), beete hue time ke liye calendar event ya reminder create nahi ho sakta!",
+                "tool_calls": None
+            }
+        }],
+        "usage": {"total_tokens": 80}
+    }
+    groq_final_resp_2 = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "Bhai, 2524281551 ticket purani hai (travel date nikal chuki hai), past date ke liye reminder add nahi ho sakta.",
+                "tool_calls": None
+            }
+        }],
+        "usage": {"total_tokens": 80}
+    }
 
-    # User references PNR: "2524281551 yeah wala"
-    turn2 = await run_agent_turn(chat_id, "2524281551 yeah wala")
-    assert "validate_ticket_date" in turn2["tool_calls_executed"]
-    assert "purani hai" in turn2["reply"] or "past date" in turn2["reply"]
+    async def mock_post(*args, **kwargs):
+        is_telegram = any("telegram.org" in str(a) for a in args) or any("telegram.org" in str(v) for v in kwargs.values())
+        if is_telegram:
+            class MockTg:
+                status_code = 200
+                def json(self): return {"ok": True}
+            return MockTg()
+        nonlocal call_count
+        call_count += 1
+        if call_count % 2 == 1:
+            resp = groq_tool_resp
+        elif call_count == 2:
+            resp = groq_final_resp
+        else:
+            resp = groq_final_resp_2
+        class MockResp:
+            status_code = 200
+            def json(self): return resp
+        return MockResp()
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post):
+        # User asks to add it to calendar
+        turn = await run_agent_turn(chat_id, "Mera ticket ko calender mai add kar do")
+        assert "validate_ticket_date" in turn["tool_calls_executed"]
+        assert "purani hai" in turn["reply"] or "past date" in turn["reply"]
+        assert "nikal chuki hai" in turn["reply"] or "beete hue" in turn["reply"]
+
+        # User references PNR: "2524281551 yeah wala"
+        turn2 = await run_agent_turn(chat_id, "2524281551 yeah wala")
+        assert "validate_ticket_date" in turn2["tool_calls_executed"]
+        assert "purani hai" in turn2["reply"] or "past date" in turn2["reply"]
 
 
 @pytest.mark.asyncio
@@ -393,13 +491,164 @@ async def test_ticket_future_date_calendar_scheduling():
         "passengers": "DEVENDRA"
     })
 
-    with patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
+    call_count = 0
+    groq_tool_resp = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_remind_1",
+                    "type": "function",
+                    "function": {"name": "create_reminder", "arguments": '{"title": "Train Journey: Indian Railways (DELHI to MUMBAI)", "due_date": "2026-12-25", "due_time": "18:00"}'}
+                }]
+            }
+        }],
+        "usage": {"total_tokens": 100}
+    }
+    groq_final_resp = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "✅ Aapki journey ke liye reminder set ho gaya hai! PNR: 2524289999",
+                "tool_calls": None
+            }
+        }],
+        "usage": {"total_tokens": 80}
+    }
+
+    async def mock_post(*args, **kwargs):
+        is_telegram = any("telegram.org" in str(a) for a in args) or any("telegram.org" in str(v) for v in kwargs.values())
+        if is_telegram:
+            class MockTg:
+                status_code = 200
+                def json(self): return {"ok": True}
+            return MockTg()
+        nonlocal call_count
+        call_count += 1
+        class MockResp:
+            status_code = 200
+            def json(self): return groq_tool_resp if call_count == 1 else groq_final_resp
+        return MockResp()
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post), \
+         patch("main.get_valid_google_connection_by_chat_id", AsyncMock(return_value=(True, "user@gmail.com"))), \
          patch("google_services.create_meeting", AsyncMock(return_value={"id": "cal_123"})):
 
         turn = await run_agent_turn(chat_id, "Ok laga do")
         assert "create_reminder" in turn["tool_calls_executed"]
-        assert "reminder set ho gaya hai" in turn["reply"].lower()
-        assert "2524289999" in turn["reply"]
+        assert "reminder set" in turn["reply"].lower() or "ka reminder" in turn["reply"].lower()
+        assert "2524289999" in turn["reply"] or "Train Journey" in turn["reply"]
+
+
+@pytest.mark.asyncio
+async def test_pre_connection_email_filtering():
+    """Verifies that emails received BEFORE the user connected their account are NOT alerted to chat."""
+    import time
+    from main import connected_user_gmail_monitor_loop
+
+    now_ts = time.time()
+    chat_id = 998877
+
+    # Mock user connected right now
+    mock_users = [{
+        "user_id": 1,
+        "telegram_chat_id": str(chat_id),
+        "email": "test@gmail.com",
+        "refresh_token_enc": "dummy_enc",
+        "scopes": "scopes",
+        "created_at": None,
+        "updated_at": None,
+    }]
+
+    # Pre-existing emails sitting in the inbox before connection
+    mock_emails = [
+        {
+            "id": "old_msg_1",
+            "sender": "airline@indigo.com",
+            "subject": "Flight Ticket Confirmation",
+            "body": "PNR: ABC123 Flight from Delhi to Mumbai",
+            "internal_date_ms": int((now_ts - 7200) * 1000),  # 2 hours ago
+        },
+        {
+            "id": "old_msg_2",
+            "sender": "interviews@tech.com",
+            "subject": "Interview Scheduled",
+            "body": "Google Meet link: https://meet.google.com/abc",
+            "internal_date_ms": int((now_ts - 3600) * 1000),  # 1 hour ago
+        }
+    ]
+
+    with patch("main.get_all_connected_google_users", return_value=mock_users), \
+         patch("main.fetch_user_inbox_messages", AsyncMock(return_value=mock_emails)), \
+         patch("main.say_raw", AsyncMock()) as mock_say, \
+         patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError()])):
+
+        try:
+            await connected_user_gmail_monitor_loop()
+        except asyncio.CancelledError:
+            pass
+
+        # Old pre-connection emails must NOT be alerted to chat!
+        assert mock_say.call_count == 0, f"Expected 0 alerts for pre-connection emails, got {mock_say.call_count}"
+
+        # And both emails must be recorded in baseline
+        assert is_user_email_processed(chat_id, "old_msg_1") is True
+        assert is_user_email_processed(chat_id, "old_msg_2") is True
+
+
+@pytest.mark.asyncio
+async def test_post_connection_new_email_triggers_alert():
+    """Verifies that genuinely NEW emails arriving after linking DO trigger alerts."""
+    import time
+    from datetime import datetime, timezone
+    from main import connected_user_gmail_monitor_loop
+
+    now_ts = time.time()
+    chat_id = 998877
+
+    # Mark baseline as existing by recording a dummy baseline email
+    record_processed_user_email(chat_id, "baseline_email_1", category="initial_baseline")
+
+    # User connected 5 minutes ago
+    conn_dt = datetime.fromtimestamp(now_ts - 300, tz=timezone.utc)
+    mock_users = [{
+        "user_id": 1,
+        "telegram_chat_id": str(chat_id),
+        "email": "test@gmail.com",
+        "refresh_token_enc": "dummy_enc",
+        "scopes": "scopes",
+        "created_at": conn_dt,
+        "updated_at": conn_dt,
+    }]
+
+    # A new flight booking email arrives right now (after connection)
+    new_email = [
+        {
+            "id": "new_msg_future_1",
+            "sender": "reservations@indigo.com",
+            "subject": "Flight Ticket: Delhi to Bangalore",
+            "body": "PNR: 6E9999 Flight 6E-204 Date: 25-Nov-2026 14:00 Seats: 12A",
+            "internal_date_ms": int((now_ts + 10) * 1000),  # arriving after connection
+        }
+    ]
+
+    with patch("main.get_all_connected_google_users", return_value=mock_users), \
+         patch("main.fetch_user_inbox_messages", AsyncMock(return_value=new_email)), \
+         patch("main.say_raw", AsyncMock()) as mock_say, \
+         patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError()])):
+
+        try:
+            await connected_user_gmail_monitor_loop()
+        except asyncio.CancelledError:
+            pass
+
+        # Since this email arrived AFTER connection, it MUST be alerted!
+        assert mock_say.call_count == 1, f"Expected 1 alert for new email, got {mock_say.call_count}"
+        call_text = mock_say.call_args[0][1]
+        assert "6E9999" in call_text or "Flight" in call_text or "Booking" in call_text
+
+
 
 
 

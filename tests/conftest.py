@@ -158,9 +158,14 @@ def init_test_db():
                 user_id INTEGER NOT NULL,
                 role TEXT NOT NULL,
                 message TEXT NOT NULL,
+                channel TEXT DEFAULT 'telegram',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        try:
+            conn.execute(text("ALTER TABLE chat_logs ADD COLUMN channel TEXT DEFAULT 'telegram'"))
+        except Exception:
+            pass
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS board_cards (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,6 +184,38 @@ def init_test_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 rule_text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                relationship TEXT NOT NULL,
+                phone TEXT,
+                email TEXT,
+                birthday TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS turn_traces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id VARCHAR(64) UNIQUE NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message TEXT,
+                detected_connector VARCHAR(64),
+                tools_called TEXT,
+                tool_results TEXT,
+                guard_results TEXT,
+                latency_ms INTEGER DEFAULT 0,
+                tokens INTEGER DEFAULT 0,
+                reply_path VARCHAR(64),
+                is_suspect BOOLEAN DEFAULT 0,
+                suspect_reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))

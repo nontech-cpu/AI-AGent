@@ -37,25 +37,46 @@ def redact_secrets(data: Any) -> Any:
 def init_trace_tables():
     """Initializes turn_traces table if not present."""
     try:
+        is_pg = db.engine.dialect.name == "postgresql"
         with db.engine.begin() as conn:
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS turn_traces (
-                    id SERIAL PRIMARY KEY,
-                    trace_id VARCHAR(64) UNIQUE NOT NULL,
-                    chat_id BIGINT NOT NULL,
-                    message TEXT,
-                    detected_connector VARCHAR(64),
-                    tools_called JSONB,
-                    tool_results JSONB,
-                    guard_results JSONB,
-                    latency_ms INTEGER DEFAULT 0,
-                    tokens INTEGER DEFAULT 0,
-                    reply_path VARCHAR(64),
-                    is_suspect BOOLEAN DEFAULT FALSE,
-                    suspect_reason TEXT,
-                    created_at TIMESTAMPTZ DEFAULT now()
-                )
-            """))
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS turn_traces (
+                        id SERIAL PRIMARY KEY,
+                        trace_id VARCHAR(64) UNIQUE NOT NULL,
+                        chat_id BIGINT NOT NULL,
+                        message TEXT,
+                        detected_connector VARCHAR(64),
+                        tools_called JSONB,
+                        tool_results JSONB,
+                        guard_results JSONB,
+                        latency_ms INTEGER DEFAULT 0,
+                        tokens INTEGER DEFAULT 0,
+                        reply_path VARCHAR(64),
+                        is_suspect BOOLEAN DEFAULT FALSE,
+                        suspect_reason TEXT,
+                        created_at TIMESTAMPTZ DEFAULT now()
+                    )
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS turn_traces (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        trace_id VARCHAR(64) UNIQUE NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        message TEXT,
+                        detected_connector VARCHAR(64),
+                        tools_called TEXT,
+                        tool_results TEXT,
+                        guard_results TEXT,
+                        latency_ms INTEGER DEFAULT 0,
+                        tokens INTEGER DEFAULT 0,
+                        reply_path VARCHAR(64),
+                        is_suspect BOOLEAN DEFAULT 0,
+                        suspect_reason TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
     except Exception as exc:
         print("init_trace_tables warning:", exc)
 

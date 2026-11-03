@@ -32,7 +32,7 @@ from db import (give_consent, has_consent, set_persona, get_persona,
                 log_chat_message, get_recent_chat_history, get_chat_turns_mentioning_keyword, save_user_fact, get_user_facts,
                 save_user_integration, get_user_integration, delete_user_integration, get_user_integrations_summary,
                 wipe_all_user_memories, get_all_connected_google_users,
-                is_user_email_processed, record_processed_user_email)
+                is_user_email_processed, record_processed_user_email, has_user_email_baseline)
 from integrations import (validate_notion_token, create_notion_page,
                           validate_github_token, list_github_issues, list_github_repos)
 from file_generator import build_contacts_excel, build_styled_pdf
@@ -1419,9 +1419,21 @@ async def connected_user_gmail_monitor_loop():
                 except (ValueError, TypeError):
                     continue
 
+                # Determine connection timestamp
+                conn_dt = u.get("created_at") or u.get("updated_at")
+                conn_ts = None
+                if conn_dt:
+                    try:
+                        conn_ts = conn_dt.timestamp() if hasattr(conn_dt, "timestamp") else None
+                    except Exception:
+                        pass
+
                 try:
                     messages = await fetch_user_inbox_messages(chat_id, max_results=10, query="in:inbox")
                 except Exception as fetch_err:
+                    continue
+
+                if not messages:
                     continue
 
                 for msg in messages:
@@ -1437,6 +1449,41 @@ async def connected_user_gmail_monitor_loop():
                     sender = msg.get("sender", "")
                     subject = msg.get("subject", "")
                     body = msg.get("body", "")
+
+                    # Check email arrival time vs account connection time
+                    msg_ts = None
+                    if msg.get("internal_date_ms"):
+                        msg_ts = float(msg["internal_date_ms"]) / 1000.0
+                    elif msg.get("date"):
+                        try:
+                            from email.utils import parsedate_to_datetime
+                            msg_ts = parsedate_to_datetime(msg["date"]).timestamp()
+                        except Exception:
+                            pass
+
+                    # If this email arrived BEFORE the user connected their account, skip silently!
+                    is_pre_connection = False
+                    if conn_ts is not None:
+                        if msg_ts is not None:
+                            is_pre_connection = (msg_ts < (conn_ts - 30.0))
+                        else:
+                            has_baseline = await asyncio.to_thread(has_user_email_baseline, chat_id)
+                            is_pre_connection = (not has_baseline)
+                    elif msg_ts is not None:
+                        import time as _pytime
+                        is_pre_connection = (msg_ts < (_pytime.time() - 120.0))
+
+                    if is_pre_connection:
+                        await asyncio.to_thread(
+                            record_processed_user_email,
+                            chat_id,
+                            email_id,
+                            sender=sender,
+                            subject=subject,
+                            category="pre_connection_email",
+                            is_important=False
+                        )
+                        continue
 
                     try:
                         analysis = await analyze_incoming_email(sender, subject, body)
@@ -4868,6 +4915,26 @@ async def google_callback(request: Request):
         if chat_id:
             from google_services import clear_gmail_insufficient_scope_cache
             clear_gmail_insufficient_scope_cache(chat_id)
+
+            # Proactively baseline existing inbox emails so past emails are NEVER alerted
+            async def _baseline_existing_emails(cid):
+                try:
+                    stubs = await fetch_user_inbox_messages(cid, max_results=20, query="in:inbox")
+                    for s in stubs:
+                        sid = s.get("id")
+                        if sid:
+                            await asyncio.to_thread(
+                                record_processed_user_email,
+                                cid,
+                                sid,
+                                sender=s.get("sender", ""),
+                                subject=s.get("subject", ""),
+                                category="initial_baseline",
+                                is_important=False
+                            )
+                except Exception as b_err:
+                    print(f"[OAuth] Baseline seed notice for {cid}: {b_err}")
+            asyncio.create_task(_baseline_existing_emails(chat_id))
 
         # Record device session on successful Google OAuth
         callback_device_id = state_data.get("device_id")

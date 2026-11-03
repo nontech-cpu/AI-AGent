@@ -133,9 +133,14 @@ def init_test_db():
                 user_id INTEGER NOT NULL,
                 role TEXT NOT NULL,
                 message TEXT NOT NULL,
+                channel TEXT DEFAULT 'telegram',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        try:
+            conn.execute(text("ALTER TABLE chat_logs ADD COLUMN channel TEXT DEFAULT 'telegram'"))
+        except Exception:
+            pass
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS board_cards (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

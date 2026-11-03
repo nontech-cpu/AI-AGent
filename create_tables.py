@@ -88,6 +88,7 @@ with engine.begin() as conn:
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             role TEXT NOT NULL,
             message TEXT NOT NULL,
+            channel TEXT DEFAULT 'telegram',
             created_at TIMESTAMPTZ DEFAULT now()
         )
     """))

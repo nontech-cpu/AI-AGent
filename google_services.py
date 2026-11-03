@@ -483,6 +483,7 @@ async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: s
                 'to': to_str,
                 'snippet': snippet,
                 'body': body[:6000],
+                'internal_date_ms': int(full.get('internalDate') or 0),
             })
         except Exception as exc:
             print(f"fetch_user_inbox_messages get message {m_id} failed:", repr(exc))
