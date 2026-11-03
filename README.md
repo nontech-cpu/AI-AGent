@@ -1,14 +1,17 @@
-# PeculiarAI — Hyper-Intelligent Personal AI Assistant
+# Saptic AI — Autonomous Executive Partner & Cognitive Operating System
 
-> **Production-Grade Personal AI Assistant on Telegram & Web Portal**  
-> Powered by FastAPI, Groq LLM (Llama 3.3 70B Versatile), PostgreSQL (Neon), Google Workspace APIs (Calendar, Meet, Drive, Gmail), Notion, GitHub, and Multimodal Vision.
+> **Production-Grade Personal AI Executive Partner on Telegram & Web Portal**  
+> Powered by FastAPI, Groq LLM (Llama 3.3 70B Versatile), PostgreSQL (Neon with `pgvector`), Cloudflare R2 / S3 Asset Storage, ElevenLabs Audio Engine, Model Context Protocol (MCP), ReAct Step Streaming, and Google Workspace APIs.
+>
+> 📘 **Master Architecture Document**: See [SAPTIC_AI_MASTER_BLUEPRINT.md](SAPTIC_AI_MASTER_BLUEPRINT.md) for full system architecture, 6 Frontier Pillars, and proactive daemon specifications.
 
 ---
 
 ## 📑 Table of Contents
 1. [Project Overview](#project-overview)
-2. [High-Level Architecture](#high-level-architecture)
-3. [Exhaustive File-by-File Documentation (0% to 100%)](#exhaustive-file-by-file-documentation-0-to-100)
+2. [Master Architecture Blueprint (SAPTIC_AI_MASTER_BLUEPRINT.md)](SAPTIC_AI_MASTER_BLUEPRINT.md)
+3. [The 6 Frontier Pillars](#the-6-frontier-pillars)
+4. [Exhaustive File-by-File Documentation (0% to 100%)](#exhaustive-file-by-file-documentation-0-to-100)
    - [Core Application & Orchestration](#1-core-application--orchestration)
    - [Database & Persistent Storage](#2-database--persistent-storage)
    - [Intelligence, NLU & LLM Engine](#3-intelligence-nlu--llm-engine)
@@ -20,15 +23,15 @@
    - [Security & Cryptography](#9-security--cryptography)
    - [Support Utilities & Configuration](#10-support-utilities--configuration)
    - [Automated Test Suite (104 Tests)](#11-automated-test-suite-104-tests)
-4. [Database Schema & Data Models](#database-schema--data-models)
-5. [Key Feature Workflows](#key-feature-workflows)
-6. [Setup, Testing & Deployment](#setup-testing--deployment)
+5. [Database Schema & Data Models](#database-schema--data-models)
+6. [Key Feature Workflows](#key-feature-workflows)
+7. [Setup, Testing & Deployment](#setup-testing--deployment)
 
 ---
 
 ## 🌟 Project Overview
 
-**PeculiarAI** is an autonomous, context-aware AI personal assistant designed to run 24/7 on Telegram and a web dashboard. It acts as an executive chief of staff that:
+**Saptic AI** is an autonomous, context-aware AI executive partner and cognitive operating system designed to run 24/7 on Telegram, Web, and mobile companions. It acts as an executive partner that:
 - **Tracks Life & Schedule:** Aggregates Google Calendar, personal reminders, task board cards, and contact commitments into a unified agenda with intelligent conflict detection.
 - **Remembers Networking & Contacts (Memorae-Grade):** Scans business card images, remembers people, roles, companies, and explicit deliverables/commitments with typo-tolerant fuzzy matching.
 - **Executes Real Actions:** Schedules Google Calendar events with instant Google Meet links, sends emails, uploads files to Google Drive, appends notes to Notion, and queries GitHub repositories.
