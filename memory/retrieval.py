@@ -5,6 +5,7 @@ and formats it into an injection-safe <memory> block for the Agent Loop.
 """
 import re
 from typing import Dict, Any, List, Optional
+from sqlalchemy import text
 import db
 from memory.store import (
     resolve_user_id,
@@ -124,10 +125,11 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     _MEM_INTENT_KWS = (
         "glucose", "sugar", "reading", "bp", "weight", "height", "diet", "medicine",
         "doctor", "report", "saved", "note", "yaad", "remember", "record", "kya tha",
-        "kya thi", "mera", "meri", "mere", "my", "mine", "maine", "usne", "profile",
+        "kya thi", "mera", "meri", "mere", "my", "mine", "maine", "mene", "usne", "profile",
         "habit", "kl ke", "kal ke", "aaj ke", "pichla", "previous", "history", "blood",
         "fasting", "pp", "test", "check", "contact", "contacts", "call", "baat", "commitment",
-        "kaam", "purpose", "reason", "unko", "un dono", "mail", "email", "sent", "bheja", "bheji", "subject"
+        "kaam", "purpose", "reason", "unko", "un dono", "mail", "email", "sent", "bheja", "bheji", "subject",
+        "khaya", "khana", "piya", "food", "lunch", "dinner", "breakfast", "pizza", "gaya", "kiya", "oct", "nov", "dec", "jan"
     )
     should_search_hybrid = any(kw in low for kw in _MEM_INTENT_KWS) or len(user_text.split()) > 10
     if should_search_hybrid:
@@ -166,6 +168,33 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                 pass
         except Exception:
             relevant_mems = []
+
+    # 2.1 Exact Temporal Date Filtered Retrieval (e.g. '10 oct ko kya khaya tha?', '15 nov ko kya hua tha')
+    date_match = re.search(r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)\b', user_text, re.I)
+    if date_match:
+        try:
+            from dateutil import parser as dt_parser
+            target_d = dt_parser.parse(date_match.group(1)).strftime('%Y-%m-%d')
+            with db.engine.connect() as conn:
+                d_rows = conn.execute(text("""
+                    SELECT id, memory_type, content, structured, created_at
+                    FROM memories
+                    WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
+                      AND (content LIKE :d OR CAST(structured AS text) LIKE :d)
+                    ORDER BY created_at DESC LIMIT 4
+                """), {"uid": user_id, "d": f"%{target_d}%"}).fetchall()
+                seen_m_ids = {m.get("id") for m in relevant_mems}
+                for dr in d_rows:
+                    if dr[0] not in seen_m_ids:
+                        relevant_mems.append({
+                            "id": dr[0],
+                            "memory_type": dr[1],
+                            "content": dr[2],
+                            "structured": dr[3] if isinstance(dr[3], dict) else {},
+                            "created_at": str(dr[4])
+                        })
+        except Exception:
+            pass
 
     # 2.5 Structured Measurements lookup: Always include latest measurements for instant recall & short follow-ups (e.g. 'kl ke?')
     measurements = []

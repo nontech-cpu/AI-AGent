@@ -186,4 +186,32 @@ async def test_multiturn_action_ledger_sent_email_subject_recall():
     assert "aaravmishra@example.com" in block
 
 
+@pytest.mark.asyncio
+async def test_multiturn_casual_fact_temporal_date_recall():
+    """
+    Verifies that casual facts stated without explicit 'save' commands on a specific date (e.g. 'mene pizza khaya' on 10 Oct)
+    are accurately retrieved when queried weeks later via temporal date (e.g. 'mene 10 oct ko kya khaya tha?').
+    """
+    from memory.store import save_memory_item
+    from memory.retrieval import assemble_memory_context, _MEM_CTX_CACHE
+
+    _MEM_CTX_CACHE.clear()
+
+    # Step 1: Fact extracted on 10 Oct
+    save_memory_item(
+        user_id=TEST_USER_ID,
+        content="2026-10-10: User ate pizza",
+        memory_type="personal",
+        structured={"category": "personal", "event_date": "2026-10-10"}
+    )
+
+    # Step 2: Query on 1 Nov: "mene 10 oct ko kya khaya tha?"
+    ctx = assemble_memory_context(TEST_CHAT_ID, "mene 10 oct ko kya khaya tha?")
+    block = ctx.get("formatted_block", "")
+
+    assert "2026-10-10" in block
+    assert "pizza" in block.lower()
+
+
+
 
