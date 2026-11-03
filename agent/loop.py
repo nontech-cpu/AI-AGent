@@ -438,30 +438,35 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             print("Check 2 (calling Groq):", time.time() - start_ts)
             resp = None
-            candidate_models = [current_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+            backup_key = os.getenv("GROQ_API_KEY_BACKUP")
+            available_keys = [groq_key] + ([backup_key] if backup_key and backup_key != groq_key else [])
+            candidate_models = [current_model, "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
             # Deduplicate while preserving order
             seen_m = set()
             ordered_candidates = [m for m in candidate_models if not (m in seen_m or seen_m.add(m))]
 
-            for m_candidate in ordered_candidates:
-                payload["model"] = m_candidate
-                try:
-                    resp = await client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json=payload
-                    )
-                    if resp.status_code == 200:
-                        current_model = m_candidate
-                        break
-                    else:
-                        print(f"Groq {m_candidate} status {resp.status_code}: {resp.text[:100]}")
-                        if resp.status_code == 429:
-                            await asyncio.sleep(0.3)
-                            continue
-                except Exception as req_err:
-                    print(f"Groq {m_candidate} request error:", repr(req_err))
-                    continue
+            for active_key in available_keys:
+                for m_candidate in ordered_candidates:
+                    payload["model"] = m_candidate
+                    try:
+                        resp = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {active_key}"},
+                            json=payload
+                        )
+                        if resp.status_code == 200:
+                            current_model = m_candidate
+                            break
+                        else:
+                            print(f"Groq {m_candidate} status {resp.status_code}: {resp.text[:100]}")
+                            if resp.status_code == 429:
+                                # Rapid failover to next model tier without stalling user turn
+                                continue
+                    except Exception as req_err:
+                        print(f"Groq {m_candidate} request error:", repr(req_err))
+                        continue
+                if resp and resp.status_code == 200:
+                    break
 
             print("Check 3 (Groq responded):", time.time() - start_ts)
 

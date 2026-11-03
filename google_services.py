@@ -120,6 +120,17 @@ async def get_user_calendar_timezone(chat_id: int) -> str:
                 return tz
     except Exception as exc:
         print("get_user_calendar_timezone error:", exc)
+
+    # Check database profile timezone if Google is not connected
+    try:
+        import db
+        saved_tz = db.get_user_timezone(chat_id)
+        if saved_tz:
+            _USER_TZ_CACHE[chat_id] = {"tz": saved_tz, "exp": now_ts + 3600}
+            return saved_tz
+    except Exception:
+        pass
+
     return "Asia/Kolkata"
 
 async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=None):

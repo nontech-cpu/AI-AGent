@@ -4088,6 +4088,8 @@ async def lifespan(app):
             for cid in (1758056012, 1234828592):
                 m_ctx = assemble_memory_context(cid, "ping")
                 await build_runtime_system_prompt(cid, "ping", mem_ctx=m_ctx)
+            # Immediate recovery check for any pending or missed reminders during deployment reboot
+            await run_reminders()
         except Exception as w_err:
             logging.getLogger("uvicorn").warning(f"Startup warmup notice: {w_err}")
     asyncio.create_task(_warmup())

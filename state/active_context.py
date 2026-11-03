@@ -116,6 +116,13 @@ def format_active_context(chat_id: int, recent_history: Optional[List[Dict[str, 
         obj_list = ", ".join([f"[{i+1}] {obj}" for i, obj in enumerate(ctx["objects"])])
         parts.append(f"Last Displayed Objects: {obj_list}")
 
+    if ctx.get("last_event"):
+        ev = ctx["last_event"]
+        ev_title = ev.get("title", "Event")
+        ev_time = ev.get("time_str") or ev.get("due_time") or ""
+        ev_date = ev.get("date_str") or ev.get("due_date") or ""
+        parts.append(f"Recent Active Event/Meeting: '{ev_title}' ({ev_time} {ev_date})".strip())
+
     if ctx.get("last_document"):
         doc = ctx["last_document"]
         fname = doc.get("filename", "Uploaded File")
@@ -170,6 +177,34 @@ def set_active_ticket(chat_id: int, ticket_info: Dict[str, Any]):
         topic=f"Ticket PNR {pnr}",
         objects=[f"Provider: {carrier}", f"PNR: {pnr}", f"Route: {route}", f"Travel Date: {dt}"]
     )
+
+
+def set_active_event(chat_id: int, event_info: Dict[str, Any]):
+    """Stores the active meeting/event details so conversational follow-ups work immediately."""
+    ctx = _ACTIVE_CONTEXT_STORE.setdefault(chat_id, {
+        "connector": None,
+        "topic": None,
+        "objects": [],
+        "updated_at": None
+    })
+    ctx["last_event"] = event_info
+    title = event_info.get("title") or "Meeting"
+    time_str = event_info.get("time_str") or event_info.get("due_time") or ""
+    date_str = event_info.get("date_str") or event_info.get("due_date") or ""
+    update_active_context(
+        chat_id,
+        connector="Calendar",
+        topic=f"Event: {title}",
+        objects=[f"Event: {title}", f"Time: {time_str}", f"Date: {date_str}"]
+    )
+
+
+def get_active_event(chat_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieves the last active meeting/event details."""
+    ctx = _ACTIVE_CONTEXT_STORE.get(chat_id)
+    if ctx and ctx.get("last_event"):
+        return ctx["last_event"]
+    return None
 
 
 def clear_active_ticket(chat_id: int):

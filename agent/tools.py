@@ -70,6 +70,9 @@ class RequestMasterPrivacyWipeArgs(BaseModel):
 class DeleteNoteOrFactArgs(BaseModel):
     query: str = Field(..., description="Keywords or topic of the note, fact, booking, or ticket to delete from memory e.g. 'ticket', 'flight', 'hotel'.")
 
+class SetUserTimezoneArgs(BaseModel):
+    timezone: str = Field(..., description="Valid IANA timezone identifier e.g. 'America/New_York', 'Europe/London', 'Asia/Kolkata'.")
+
 class UpdateGitHubFileArgs(BaseModel):
     repo: str = Field(..., description="Repository in 'owner/repo' format or repo name e.g. 'ml-project' or 'username/ml-project'.")
     path: Optional[str] = Field("README.md", description="File path within the repository e.g. 'README.md'.")
@@ -428,6 +431,20 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "confirm": {"type": ["boolean", "null"], "description": "Confirmation flag."}
                 }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_user_timezone",
+            "description": "Configure user's local timezone (e.g. 'America/New_York', 'Europe/London', 'Asia/Kolkata') when user states their city, country, or timezone.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timezone": {"type": "string", "description": "Valid IANA timezone e.g. 'America/New_York', 'Europe/London', 'Asia/Kolkata'."}
+                },
+                "required": ["timezone"]
             }
         }
     },
@@ -1488,6 +1505,16 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 "message": "Chat history has been successfully cleared."
             }
 
+        elif tool_name == "set_user_timezone":
+            args = SetUserTimezoneArgs(**arguments)
+            db.set_user_timezone(chat_id, args.timezone)
+            google_services._USER_TZ_CACHE.pop(chat_id, None)
+            return {
+                "status": "success",
+                "message": f"User timezone successfully updated to {args.timezone}.",
+                "timezone": args.timezone
+            }
+
         elif tool_name == "request_master_privacy_wipe":
             db.set_state(chat_id, "confirm_master_wipe")
             return {
@@ -1857,6 +1884,17 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     "has_conflict": len(conflicts) > 0,
                     "message": f"Done bhai! '{args.title}' ka reminder {date_str} ko {time_str} ke liye set kar diya hai.{sync_note}"
                 }
+                try:
+                    from state.active_context import set_active_event
+                    set_active_event(chat_id, {
+                        "title": args.title,
+                        "due_date": args.due_date,
+                        "due_time": args.due_time,
+                        "duration_minutes": getattr(args, "duration_minutes", 30),
+                        "type": "reminder"
+                    })
+                except Exception:
+                    pass
 
             if conflicts:
                 res["conflict_warning"] = (
@@ -2071,11 +2109,33 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             if not is_conn:
                 return {"status": "error", "message": "Google account is not connected. User must connect Google first."}
 
+            final_title = args.title or "Meeting"
+            if final_title in ("Meeting", "meeting", "call"):
+                try:
+                    from state.active_context import get_active_event
+                    act_ev = get_active_event(chat_id)
+                    if act_ev and act_ev.get("title") and act_ev["title"] not in ("Meeting", "meeting"):
+                        final_title = act_ev["title"]
+                except Exception:
+                    pass
+
             time_conflicts, day_commitments = await detect_meeting_conflicts(chat_id, args.start_iso, args.duration_minutes or 30)
+
+            try:
+                from state.active_context import set_active_event
+                set_active_event(chat_id, {
+                    "title": final_title,
+                    "start_iso": args.start_iso,
+                    "duration_minutes": args.duration_minutes or 30,
+                    "type": "meeting"
+                })
+            except Exception:
+                pass
+
             return {
                 "status": "needs_confirmation",
                 "action": "create_meeting",
-                "title": args.title or "Meeting",
+                "title": final_title,
                 "start_iso": args.start_iso,
                 "duration_minutes": args.duration_minutes or 30,
                 "attendees": args.attendees or [],
@@ -3060,7 +3120,7 @@ CORE_TOOL_NAMES = {
     "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
     "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
     "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",
-    "manage_relationship", "manage_subscription", "get_memory_health_radar"
+    "manage_relationship", "manage_subscription", "get_memory_health_radar", "set_user_timezone"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}

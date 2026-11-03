@@ -124,12 +124,31 @@ class CalendarConnector(Connector):
 
         if tool_name == "create_meeting":
             if not args.get("_confirmed", False):
+                raw_title = args.get("title") or "Meeting"
+                if raw_title in ("Meeting", "meeting", "call"):
+                    try:
+                        from state.active_context import get_active_event
+                        act_ev = get_active_event(user_or_chat_id)
+                        if act_ev and act_ev.get("title") and act_ev["title"] not in ("Meeting", "meeting"):
+                            raw_title = act_ev["title"]
+                    except Exception:
+                        pass
+                try:
+                    from state.active_context import set_active_event
+                    set_active_event(user_or_chat_id, {
+                        "title": raw_title,
+                        "start_iso": args.get("start_iso"),
+                        "duration_minutes": args.get("duration_minutes", 30),
+                        "type": "meeting"
+                    })
+                except Exception:
+                    pass
                 return ToolResult(
                     ok=True,
                     data={
                         "status": "needs_confirmation",
                         "action": "create_meeting",
-                        "title": args.get("title", "Meeting"),
+                        "title": raw_title,
                         "start_iso": args.get("start_iso"),
                         "duration_minutes": args.get("duration_minutes", 30),
                         "attendees": args.get("attendees", [])

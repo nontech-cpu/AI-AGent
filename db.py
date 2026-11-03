@@ -1162,6 +1162,74 @@ def update_contact_commitment(chat_id, contact_name, commitments=None, context_n
 
 # ---------- Persistent Chat Logs & ChatGPT-style Long-Term Memory ----------
 
+_users_timezone_checked = False
+
+def _ensure_users_timezone_column():
+    global _users_timezone_checked
+    if _users_timezone_checked:
+        return
+    try:
+        with engine.begin() as conn:
+            is_pg = engine.dialect.name == "postgresql"
+            if is_pg:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone VARCHAR(64)"))
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN timezone VARCHAR(64)"))
+                except Exception:
+                    pass
+        _users_timezone_checked = True
+    except Exception:
+        pass
+
+
+def set_user_timezone(chat_id: int, timezone_str: str):
+    """Saves user's preferred local timezone directly to database."""
+    chat_id = canonical_chat_id(chat_id)
+    _ensure_users_timezone_column()
+    try:
+        with engine.begin() as conn:
+            is_pg = engine.dialect.name == "postgresql"
+            if is_pg:
+                conn.execute(
+                    text("""
+                        INSERT INTO users (telegram_chat_id, timezone)
+                        VALUES (:c, :tz)
+                        ON CONFLICT (telegram_chat_id)
+                        DO UPDATE SET timezone = :tz
+                    """),
+                    {"tz": timezone_str.strip(), "c": chat_id}
+                )
+            else:
+                conn.execute(
+                    text("INSERT OR IGNORE INTO users (telegram_chat_id) VALUES (:c)"),
+                    {"c": chat_id}
+                )
+                conn.execute(
+                    text("UPDATE users SET timezone = :tz WHERE telegram_chat_id = :c"),
+                    {"tz": timezone_str.strip(), "c": chat_id}
+                )
+    except Exception as exc:
+        logger.warning(f"Error setting user timezone for {chat_id}: {exc}")
+
+
+def get_user_timezone(chat_id: int) -> Optional[str]:
+    """Retrieves user's stored local timezone from database."""
+    chat_id = canonical_chat_id(chat_id)
+    _ensure_users_timezone_column()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT timezone FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id}
+            ).first()
+            if row and row[0]:
+                return str(row[0]).strip()
+    except Exception:
+        pass
+    return None
+
+
 _CHAT_HISTORY_CACHE: dict = {}
 _chat_logs_channel_checked = False
 
