@@ -1612,14 +1612,16 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     try:
                         r_h = row_time.hour if hasattr(row_time, "hour") else int(str(row_time).split(":")[0])
                         r_m = row_time.minute if hasattr(row_time, "minute") else int(str(row_time).split(":")[1])
-                        diff_mins = abs((t_val.hour * 60 + t_val.minute) - (r_h * 60 + r_m))
-                        # Direct time collision (within 15 minutes)
-                        if diff_mins < 15:
+                        rem_start = t_val.hour * 60 + t_val.minute
+                        rem_end = rem_start + 30
+                        ex_start = r_h * 60 + r_m
+                        ex_end = ex_start + 30
+                        if (rem_start < ex_end) and (rem_end > ex_start):
                             conflicts.append(f"'{row_title}' at {r_h:02d}:{r_m:02d}")
                     except Exception:
                         pass
 
-            # Also check Google Calendar for conflicts if connected
+            # Also check Google Calendar for true interval overlap conflicts
             try:
                 from main import get_unified_schedule
                 sched = await get_unified_schedule(chat_id, d_val)
@@ -1627,9 +1629,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     raw_start = ev.get("start", {}).get("dateTime")
                     if raw_start and t_val:
                         ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(IST)
-                        diff_mins = abs((t_val.hour * 60 + t_val.minute) - (ev_dt.hour * 60 + ev_dt.minute))
-                        if diff_mins < 60:
-                            conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' at {ev_dt.strftime('%I:%M %p')}")
+                        ev_raw_end = ev.get("end", {}).get("dateTime")
+                        ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(IST) if ev_raw_end else (ev_dt + timedelta(minutes=45))
+                        rem_start = t_val.hour * 60 + t_val.minute
+                        rem_end = rem_start + 30
+                        ev_start = ev_dt.hour * 60 + ev_dt.minute
+                        ev_end = ev_end_dt.hour * 60 + ev_end_dt.minute
+                        if (rem_start < ev_end) and (rem_end > ev_start):
+                            conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' ({ev_dt.strftime('%I:%M %p')} - {ev_end_dt.strftime('%I:%M %p')})")
             except Exception:
                 pass
 

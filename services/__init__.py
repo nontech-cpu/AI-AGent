@@ -24,3 +24,14 @@ from services.subscription_service import (
 )
 from services.health_radar import compute_memory_health_score, format_health_radar_telegram_message
 from services.shared_bubble_service import create_bubble_share_invite, join_shared_bubble, get_shared_bubbles_for_user
+from services.clash_detector import detect_schedule_clash
+from services.followup_service import (
+    record_followup,
+    get_due_followups,
+    resolve_followup,
+    list_active_followups,
+)
+from services.relationship_service import (
+    record_relationship_interaction,
+    get_dormant_relationships,
+)

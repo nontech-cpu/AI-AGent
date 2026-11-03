@@ -184,6 +184,9 @@ Saptic AI is accessible across multiple touchpoints:
 | `/api/bubbles/share` | `POST` | Generate secure bubble collaboration invite code |
 | `/api/bubbles/join` | `POST` | Join shared bubble with multi-tenant isolation |
 | `/api/bubbles/shared` | `GET` | List all shared collaborative bubbles |
+| `/api/clash-check` | `GET` | Proactive collision detection across Calendar, Reminders & Transit spans |
+| `/api/followups` | `GET / POST` | Pending email follow-up watchdog (due after 3 days) |
+| `/api/followups/{id}/resolve` | `POST` | Mark pending follow-up resolved or answered |
 | `/web/verification/*` | `POST` | Secure OTP authentication via phone and Telegram link |
 
 ---
@@ -206,5 +209,37 @@ Saptic AI is accessible across multiple touchpoints:
    - Secure team and family collaboration on specific bubble domains (e.g. `work_project`, `home_renovation`).
    - Generates unambiguous invite codes (`SAPTIC-<id>-<hex>`) for one-click joining via `/join_bubble`.
    - Strict multi-tenant isolation: collaborators can never access private emails, personal memories, or unshared bubbles.
+
+---
+
+## 9. The 5 Elite Cognitive Pillars (v2.5.0)
+
+Engineered for **0 MB extra RAM overhead** and **0 LLM token consumption** via deterministic PostgreSQL arithmetic and smart temporal heuristics:
+
+1. **Universal Proactive Collision & Clash Shield**:
+   - Mathematically prevents double-booking using interval overlap:
+     $$\text{Conflict} \iff (start_{\text{new}} < end_{\text{existing}}) \land (end_{\text{new}} > start_{\text{existing}})$$
+   - Simultaneously scans Google Calendar events, database `memory_items`, and active 4D transit timeline spans during `create_reminder`, manual scheduling, or automated email ingestion.
+   - Instantly warns the user and suggests alternative unconflicted slots.
+
+2. **Conversational Promise & Implicit Commitment Engine**:
+   - Autonomously detects implicit conversational promises in natural user text (e.g., *"Kal shaam tak client ko slides bhej dunga"*, *"Manager ko Friday tak report deni hai"*).
+   - Extracts commitment title, target date, and priority, saving directly into `commitments` table.
+   - The 9:30 PM Evening Wrap-up autonomously checks progress on pending promises due today or tomorrow.
+
+3. **Follow-Up & Unanswered Email Watchdog (Ghosting Radar)**:
+   - When critical emails, pitch decks, proposals, or questions are sent via `google_send_email`, records entry in `pending_followups`.
+   - The 11:00 AM Daily Watchdog alerts the user if no reply has been received after 3 days.
+   - Features manual tracking (`/followups`), manual resolution (`/resolve_followup <id>`), and API endpoints (`/api/followups`).
+
+4. **Contextual Travel & Packing Radar**:
+   - When a flight, train, or bus booking arrives via Gmail or manual ticket upload, automatically creates a dedicated smart list: `🧳 Packing: <Destination>` (Charger, Power Bank, Tickets/ID, Clothes, Toiletries, Medicine).
+   - Automatically injects destination city weather context into the 8:00 AM Morning Briefing during travel dates.
+
+5. **Relationship Warmth & Catch-up Radar (Dunbar Decay)**:
+   - Tracks `last_interacted_at` timestamp for each relationship entity in `user_relationships`.
+   - Automatically refreshes the timestamp whenever the person is mentioned in daily conversation or voice notes.
+   - The weekend catch-up daemon flags close contacts (Friends, Siblings, Mentors) dormant for > 30 days and suggests a thoughtful reconnection.
+
 
 

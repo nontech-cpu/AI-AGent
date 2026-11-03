@@ -158,8 +158,9 @@ def resolve_relationship_in_text(user_id_or_chat_id: int, query_text: str) -> Li
     for r in all_rels:
         rel_kind = r["relationship"].lower()
         person_name = r["name"].lower()
-        # Direct name match
-        if person_name in text_low:
+        # Direct name match (full name or first name if >= 3 chars)
+        first_name = person_name.split()[0] if person_name else ""
+        if person_name in text_low or (len(first_name) >= 3 and f" {first_name} " in f" {text_low} "):
             matched.append(r)
             continue
         # Direct relationship match
@@ -215,6 +216,52 @@ def get_upcoming_birthdays(user_id_or_chat_id: int, days_ahead: int = 2) -> List
             pass
 
     return upcoming
+
+
+def record_relationship_interaction(user_id_or_chat_id: int, text_sample: str) -> int:
+    """Updates last_interacted_at for any person mentioned in conversational text."""
+    if not text_sample or len(text_sample) < 3:
+        return 0
+    uid = _resolve_uid(user_id_or_chat_id)
+    matches = resolve_relationship_in_text(uid, text_sample)
+    if not matches:
+        return 0
+    matched_ids = [m["id"] for m in matches if m.get("id")]
+    if not matched_ids:
+        return 0
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE user_relationships SET last_interacted_at = CURRENT_TIMESTAMP WHERE id = ANY(:ids) AND user_id = :uid"),
+                {"ids": matched_ids, "uid": uid}
+            )
+            return len(matched_ids)
+    except Exception as exc:
+        logger.error(f"record_relationship_interaction error: {exc}")
+        return 0
+
+
+def get_dormant_relationships(user_id_or_chat_id: int, days_threshold: int = 30) -> List[Dict[str, Any]]:
+    """Returns close contacts not interacted with in the last N days."""
+    uid = _resolve_uid(user_id_or_chat_id)
+    try:
+        with db.engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT id, name, relationship, phone, last_interacted_at,
+                           DATE_PART('day', NOW() - COALESCE(last_interacted_at, created_at)) as days_since
+                    FROM user_relationships
+                    WHERE user_id = :uid
+                      AND COALESCE(last_interacted_at, created_at) < (NOW() - (:d || ' days')::INTERVAL)
+                    ORDER BY COALESCE(last_interacted_at, created_at) ASC
+                    LIMIT 3
+                """),
+                {"uid": uid, "d": days_threshold}
+            ).mappings().all()
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.error(f"get_dormant_relationships error: {exc}")
+        return []
 
 
 # Aliases for flexible developer & bot invocation

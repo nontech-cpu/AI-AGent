@@ -103,20 +103,39 @@ async def check_evening_wrapup(now_ist: datetime):
             name = db.get_user_display_name(cid)
             greeting_name = f" {name}" if name else ""
 
+            # Check pending commitments due today
+            pending_comms = []
+            try:
+                with db.engine.connect() as conn:
+                    rows = conn.execute(
+                        db.text("SELECT title FROM commitments WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) AND status = 'pending' AND (target_date IS NULL OR target_date <= :d)"),
+                        {"cid": cid_can, "d": now_ist.date()}
+                    ).fetchall()
+                    pending_comms = [r[0] for r in rows if r[0]]
+            except Exception:
+                pass
+
+            msg_parts = []
             if pending_items:
                 preview = ", ".join(pending_items[:3])
                 user_salutation = f"{name}, a" if name else "A"
-                msg = (
+                msg_parts.append(
                     f"🌙 **Evening Wrap-up & Status Check:**\n"
-                    f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**.\n"
-                    f"Kya inhe complete mark karna hai ya kal ke liye carry forward karoon?"
+                    f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**."
                 )
             else:
-                msg = (
+                msg_parts.append(
                     f"🌙 **Good Evening{greeting_name}!**\n"
-                    f"Aaj ke saare major tasks aur schedule complete hain. Kal ke din ki planning karni ho toh batana, aaram se rest karo! 😊"
+                    f"Aaj ke saare major tasks aur schedule complete hain."
                 )
-            await broadcast_alert(msg, specific_chat_id=cid)
+
+            if pending_comms:
+                comm_preview = ", ".join(pending_comms[:2])
+                msg_parts.append(f"\n🤝 **Commitment Check:** Aaj ke liye aapne promise/plan kiya tha: **{comm_preview}**.\nKya ye complete ho gaya hai ya kal carry-forward karoon?")
+            else:
+                msg_parts.append("\nKal ke din ki planning karni ho toh batana, aaram se rest karo! 😊")
+
+            await broadcast_alert("\n".join(msg_parts), specific_chat_id=cid)
 
 
 _LAST_RECURRING_ROLL_DATE = None
@@ -215,6 +234,8 @@ async def roll_daily_recurring_reminders(now_ist: datetime):
 
 _SUB_WATCHDOG_SENT = set()
 _BDAY_WATCHDOG_SENT = set()
+_FOLLOWUP_SENT = set()
+_WARMTH_SENT = set()
 
 async def check_subscription_watchdog_daily(now_ist: datetime):
     """Daily check for free-trials and subscriptions expiring in the next 3 days."""
@@ -268,6 +289,50 @@ async def check_birthday_watchdog_daily(now_ist: datetime):
                 logger.error(f"Birthday watchdog error for {cid}: {e}")
 
 
+async def check_pending_followups_daily(now_ist: datetime):
+    """Daily check at 11:00 AM IST for communications waiting for reply past 3 days."""
+    today_str = str(now_ist.date())
+    if now_ist.hour == 11 and 0 <= now_ist.minute <= 10:
+        from services.followup_service import get_due_followups
+        for cid in get_active_target_chat_ids():
+            key = f"{today_str}_{cid}_followup"
+            if key in _FOLLOWUP_SENT:
+                continue
+            _FOLLOWUP_SENT.add(key)
+            try:
+                due = await asyncio.to_thread(get_due_followups, cid)
+                if due:
+                    lines = ["📬 **Follow-up & Ghosting Watchdog Alert:**\n"]
+                    for d in due:
+                        lines.append(f"• **{d['recipient']}** ko '{d['subject']}' bheje 3+ din ho chuke hain, abhi tak reply nahi aaya.")
+                    lines.append("\nKya polite follow-up draft karun ya ise resolve mark karein? (`/resolve_followup <ID>`)")
+                    await broadcast_alert("\n".join(lines), specific_chat_id=cid)
+            except Exception as e:
+                logger.error(f"Followup watchdog error for {cid}: {e}")
+
+
+async def check_relationship_warmth_weekly(now_ist: datetime):
+    """Weekly check on weekends at 11:30 AM IST for contacts not interacted with in 30 days."""
+    if now_ist.weekday() in (5, 6) and now_ist.hour == 11 and 30 <= now_ist.minute <= 40:
+        week_str = f"{now_ist.year}_W{now_ist.isocalendar()[1]}"
+        from services.relationship_service import get_dormant_relationships
+        for cid in get_active_target_chat_ids():
+            key = f"{week_str}_{cid}_warmth"
+            if key in _WARMTH_SENT:
+                continue
+            _WARMTH_SENT.add(key)
+            try:
+                dormant = await asyncio.to_thread(get_dormant_relationships, cid, 30)
+                if dormant:
+                    lines = ["❤️ **Relationship Warmth & Catch-up Radar:**\n"]
+                    for d in dormant:
+                        lines.append(f"• **{d['name']}** ({d['relationship']}) se pichle 30+ din se koi contact nahi hua.")
+                    lines.append("\nWeekend hai! Ek quick 'Hey, how have you been?' message bhej kar catch-up karein? 😊")
+                    await broadcast_alert("\n".join(lines), specific_chat_id=cid)
+            except Exception as e:
+                logger.error(f"Warmth check error for {cid}: {e}")
+
+
 async def heartbeat_loop():
     """Continuous background monitoring daemon running inside FastAPI lifespan."""
     logger.info("Starting Proactive Heartbeat Daemon...")
@@ -278,6 +343,8 @@ async def heartbeat_loop():
             await check_evening_wrapup(now_ist)
             await check_subscription_watchdog_daily(now_ist)
             await check_birthday_watchdog_daily(now_ist)
+            await check_pending_followups_daily(now_ist)
+            await check_relationship_warmth_weekly(now_ist)
             await roll_daily_recurring_reminders(now_ist)
         except Exception as exc:
             logger.error(f"Heartbeat loop iteration error: {repr(exc)}")

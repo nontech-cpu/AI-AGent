@@ -236,6 +236,7 @@ HELP_TEXT = (
     "• /radar — Check your Memory Clarity & Cognitive Health score\n"
     "• /relationships — View mapped family, friends & manager graph\n"
     "• /subscriptions — View tracked subscriptions & expiring free-trials\n"
+    "• /followups — View critical emails & proposals awaiting reply\n"
     "• /share_bubble <slug> & /join_bubble <code> — Collaborate on memory bubbles\n"
     "• Connect Google (Gmail, Calendar, Drive)\n"
     "• Link my email\n"
@@ -1125,7 +1126,36 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
                 target_entity = bday_m.group(1).strip()
                 bday_val = bday_m.group(2).strip()
                 upsert_relationship(chat_id, name=target_entity, relationship="Family/Friend", birthday=bday_val)
+
+            # Record interaction date for warmth radar
+            from services.relationship_service import record_relationship_interaction
+            record_relationship_interaction(chat_id, text)
         except Exception as rel_err:
+            pass
+
+        # Auto-extract Implicit Commitments & Promises ("Bolkar bhool jane ka ilaj")
+        try:
+            t_low = text.lower()
+            commitment_signals = (
+                "bhej dunga", "bhej dungi", "call karunga", "call karungi", "de dunga", "de dungi",
+                "kar dunga", "kar dungi", "send karunga", "share karunga", "submit karunga",
+                "i will send", "i will call", "i'll send", "i'll call", "i will do", "i will submit",
+                "promise to", "by tomorrow", "kal tak", "shaam tak", "subah tak"
+            )
+            if any(w in t_low for w in commitment_signals):
+                from memory.store import resolve_user_id, create_commitment
+                uid = resolve_user_id(chat_id)
+                target_dt = datetime.now(IST).date()
+                if any(w in t_low for w in ("kal", "tomorrow", "next day")):
+                    target_dt = target_dt + timedelta(days=1)
+                elif any(w in t_low for w in ("parso", "day after")):
+                    target_dt = target_dt + timedelta(days=2)
+                
+                clean_title = text.strip()
+                if len(clean_title) > 80:
+                    clean_title = clean_title[:77] + "..."
+                create_commitment(user_id=uid, title=clean_title, target_date=target_dt)
+        except Exception as comm_err:
             pass
     except Exception as exc:
         print("extract_and_save_user_facts error:", repr(exc))
@@ -1443,12 +1473,47 @@ async def connected_user_gmail_monitor_loop():
                                 set_active_ticket(chat_id, raw)
                             except Exception as sat_err:
                                 print(f"Error setting active ticket in main: {sat_err}")
+
+                            # Contextual Travel & Packing Radar
+                            try:
+                                dest = "Trip"
+                                if "➔" in route_str:
+                                    dest = route_str.split("➔")[-1].strip()
+                                elif "->" in route_str:
+                                    dest = route_str.split("->")[-1].strip()
+                                elif "to" in route_str.lower():
+                                    dest = route_str.lower().split("to")[-1].strip().title()
+                                if dest and len(dest) > 1 and dest.lower() != "trip":
+                                    list_name = f"🧳 Packing: {dest}"
+                                    default_items = [
+                                        f"Tickets / Boarding Pass (PNR: {pnr_str})",
+                                        "Govt ID Proof (Aadhaar / Passport / Voter ID)",
+                                        "Phone Charger & Power Bank",
+                                        "Prescription Medicines & First Aid",
+                                        "Wallet, Cash & Cards"
+                                    ]
+                                    db.create_smart_list_with_items(chat_id, list_name, category="travel", items=default_items)
+                                    alert_text += f"\n\n🧳 **Auto-Packing List Ready:** Smart lists mein aapka '{list_name}' checklist add kar diya gaya hai!"
+                            except Exception as pack_e:
+                                print(f"Auto-packing list error: {pack_e}")
+
                         elif cat == "interview":
                             comp_str = raw.get("company") or ""
                             role_str = raw.get("role_or_title") or ""
                             dt_str = raw.get("datetime_str") or ""
                             meet_str = raw.get("meet_link") or ""
                             fact_text = f"Interview/Meeting: {comp_str} | Role: {role_str} | Date: {dt_str} | Link: {meet_str}"
+
+                            # Universal Proactive Collision & Clash Shield
+                            try:
+                                from services.clash_detector import detect_schedule_clash
+                                if dt_str and dt_str != "Check email details":
+                                    today_ist = datetime.now(IST).date()
+                                    clash_res = await detect_schedule_clash(chat_id, today_ist, dt_str, duration_minutes=45, exclude_title=comp_str)
+                                    if clash_res and clash_res.get("has_clash"):
+                                        alert_text += f"\n\n⚠️ **Schedule Conflict Alert:** Is samay aapke schedule mein already '{clash_res['message']}' hai! Ek baar apna calendar zaroor review karein."
+                            except Exception as cl_e:
+                                print(f"Interview clash detection error: {cl_e}")
                         elif cat == "document_received":
                             title_str = raw.get("document_title") or raw.get("role_or_title") or subject
                             summary_str = raw.get("summary") or ""
@@ -1748,7 +1813,12 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
         kind = pending['kind']
         if kind == 'send_email':
             result = await google_send_email(chat_id, pending['to'], pending['subject'], pending['body'])
-            await say(chat_id, f"Email sent successfully to {pending['to']}. (Message ID: {result})")
+            try:
+                from services.followup_service import record_followup
+                record_followup(chat_id, recipient=pending['to'], subject=pending['subject'], days_ahead=3)
+            except Exception:
+                pass
+            await say(chat_id, f"Email sent successfully to {pending['to']}. (Message ID: {result})\n\n💡 Follow-up Watchdog active: Agar 3 din mein reply nahi aata, toh main aapko follow-up remind kara dunga.")
         elif kind == 'upload_file':
             result = await google_upload_text_file(chat_id, pending['filename'], pending['content'], pending.get('folder_id'))
             await say(chat_id, "File uploaded to Google Drive: " + (result.get('webViewLink') or result.get('name', pending['filename'])))
@@ -2905,6 +2975,34 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             cancel_str = f" | [Cancel Link]({s['cancel_url']})" if s.get('cancel_url') else ""
             lines.append(f"• **{s['service_name']}** — {tag}: {date_val}{amt_str}{cycle}{cancel_str}")
         await say(chat_id, "\n".join(lines))
+        return
+
+    # 6. Follow-Up & Unanswered Email Watchdog
+    if cmd_token in {"/followups", "/followup"}:
+        from services.followup_service import list_active_followups
+        items = list_active_followups(chat_id)
+        if not items:
+            await say(chat_id, "Abhi koi active follow-up pending nahi hai! Jab aap kisi ko email bhejenge ya query karenge, bot unhe 3 din tak track karega.")
+            return
+        lines = ["📬 **Active Follow-Up Trackers (Awaiting Reply):**\n"]
+        for it in items:
+            lines.append(f"• `[ID #{it['id']}]` **{it['recipient']}** — '{it['subject']}' (Due: {it['due_date']})")
+        lines.append("\nKisi follow-up ko resolve karne ke liye: `/resolve_followup <ID>`")
+        await say(chat_id, "\n".join(lines))
+        return
+
+    if cmd_token == "/resolve_followup" or clean_lower.startswith("/resolve_followup"):
+        parts = clean.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip().isdigit():
+            await say(chat_id, "Please specify the follow-up ID. Example: `/resolve_followup 1`")
+            return
+        fid = int(parts[1].strip())
+        from services.followup_service import resolve_followup
+        ok = resolve_followup(chat_id, fid)
+        if ok:
+            await say(chat_id, f"✅ Follow-up #{fid} successfully marked as resolved!")
+        else:
+            await say(chat_id, f"⚠️ Follow-up #{fid} nahi mila.")
         return
 
     # Master Privacy Wipe State Handling

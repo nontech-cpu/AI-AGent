@@ -200,6 +200,23 @@ def items_for_date(chat_id, d):
     return rows
 
 
+def items_for_date_range(chat_id, start_d, end_d):
+    chat_id = canonical_chat_id(chat_id)
+    s_val = start_d.isoformat() if hasattr(start_d, "isoformat") and engine.dialect.name == "sqlite" else start_d
+    e_val = end_d.isoformat() if hasattr(end_d, "isoformat") and engine.dialect.name == "sqlite" else end_d
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT m.category, m.title, m.amount, m.due_time, m.due_date, m.id "
+                "FROM memory_items m JOIN users u ON u.id = m.user_id "
+                "WHERE u.telegram_chat_id = :c AND m.due_date >= :s AND m.due_date <= :e "
+                "ORDER BY m.due_date ASC, m.due_time NULLS FIRST, m.id"
+            ),
+            {"c": chat_id, "s": s_val, "e": e_val},
+        ).fetchall()
+    return rows
+
+
 def update_memory_time(chat_id, item_id, new_due_time):
     chat_id = canonical_chat_id(chat_id)
     tm = new_due_time

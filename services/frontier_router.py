@@ -86,6 +86,12 @@ class ShareBubbleRequest(BaseModel):
 class JoinBubbleRequest(BaseModel):
     invite_code: str
 
+class CreateFollowupRequest(BaseModel):
+    recipient: str
+    subject: str
+    notes: Optional[str] = None
+    days_ahead: Optional[int] = 3
+
 
 def resolve_chat_id(request: Request, body_chat_id: Optional[int] = None) -> int:
     """Extracts chat_id from query, header, or body, falling back to default user."""
@@ -416,13 +422,16 @@ async def unregister_mcp_server(server_name: str, request: Request):
 async def get_me(request: Request):
     """Returns user profile, active bubbles, and system readiness."""
     cid = resolve_chat_id(request)
-    bubbles = db.get_memory_bubbles(cid)
-    mcp_servers = db.get_user_mcp_servers(cid)
-    timeline_spans = get_user_timeline_spans(cid)
+    bubbles, mcp_servers, timeline_spans, persona = await asyncio.gather(
+        asyncio.to_thread(db.get_memory_bubbles, cid),
+        asyncio.to_thread(db.get_user_mcp_servers, cid),
+        asyncio.to_thread(get_user_timeline_spans, cid, window_days_back=0, window_days_forward=2),
+        asyncio.to_thread(db.get_persona, cid)
+    )
     
     return {
         "chat_id": cid,
-        "persona": db.get_persona(cid) or "Executive Partner",
+        "persona": persona or "Executive Partner",
         "bubbles_count": len(bubbles),
         "active_mcp_servers": len(mcp_servers),
         "active_timeline_spans": len(timeline_spans),
@@ -555,3 +564,67 @@ async def list_shared_bubbles(request: Request, chat_id: Optional[int] = Query(N
     cid = resolve_chat_id(request, chat_id)
     shared = get_shared_bubbles_for_user(cid)
     return {"status": "success", "chat_id": cid, "count": len(shared), "shared_bubbles": shared}
+
+
+# ---------------------------------------------------------------------------
+# 11. Follow-Up & Unanswered Email Watchdog & Clash Shield
+# ---------------------------------------------------------------------------
+
+@router.get("/followups")
+async def list_followups_endpoint(request: Request, chat_id: Optional[int] = Query(None)):
+    """Retrieves all active communications awaiting replies."""
+    from services.followup_service import list_active_followups
+    cid = resolve_chat_id(request, chat_id)
+    items = list_active_followups(cid)
+    return {"status": "success", "chat_id": cid, "count": len(items), "followups": items}
+
+
+@router.post("/followups")
+async def create_followup_endpoint(req: CreateFollowupRequest, request: Request, chat_id: Optional[int] = Query(None)):
+    """Registers an outgoing communication to watch for reply."""
+    from services.followup_service import record_followup
+    cid = resolve_chat_id(request, chat_id)
+    res = record_followup(
+        user_id_or_chat_id=cid,
+        recipient=req.recipient,
+        subject=req.subject,
+        notes=req.notes,
+        days_ahead=req.days_ahead or 3
+    )
+    return res
+
+
+@router.post("/followups/{followup_id}/resolve")
+async def resolve_followup_endpoint(followup_id: int, request: Request, chat_id: Optional[int] = Query(None)):
+    """Marks a follow-up tracker as resolved."""
+    from services.followup_service import resolve_followup
+    cid = resolve_chat_id(request, chat_id)
+    ok = resolve_followup(cid, followup_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Follow-up not found or already resolved.")
+    return {"status": "success", "followup_id": followup_id, "resolved": True}
+
+
+@router.get("/clash-check")
+async def clash_check_endpoint(
+    date_str: str = Query(..., description="Target date in YYYY-MM-DD"),
+    time_str: str = Query(..., description="Proposed time e.g. 16:00 or 4 PM"),
+    duration_mins: int = Query(30, ge=15, le=480),
+    request: Request = None,
+    chat_id: Optional[int] = Query(None)
+):
+    """Proactive collision check across Google Calendar, reminders, and 4D timeline spans."""
+    from services.clash_detector import detect_schedule_clash
+    from datetime import date
+    cid = resolve_chat_id(request, chat_id)
+    try:
+        t_date = date.fromisoformat(date_str)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date_str format. Use YYYY-MM-DD.")
+
+    clash = await detect_schedule_clash(cid, t_date, time_str, duration_minutes=duration_mins)
+    return {
+        "status": "success",
+        "has_clash": bool(clash and clash.get("has_clash")),
+        "clash": clash
+    }

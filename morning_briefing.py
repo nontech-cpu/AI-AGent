@@ -338,6 +338,24 @@ async def build_morning_briefing_message(
                 tag = "Free Trial Expiry" if s.get("kind") == "trial_expiring" else "Renewal"
                 amt = f" (₹{s['amount']})" if s.get('amount') and s['amount'] != 'N/A' else ""
                 lines.append(f"• **{s['service']}** {tag} in {s['days_remaining']}d ({s['date']}){amt}")
+
+        # Follow-up Watchdog: Communications awaiting reply
+        from services.followup_service import get_due_followups
+        due_f = get_due_followups(chat_id)
+        if due_f:
+            lines.append("\n📬 **Pending Follow-ups (Awaiting Reply):**")
+            for f in due_f[:2]:
+                lines.append(f"• **{f['recipient']}** ({f['subject']}) — Reply pending (3+ days)")
+
+        # Contextual Travel Day
+        from state.timeline import get_user_timeline_spans
+        spans = get_user_timeline_spans(chat_id)
+        for sp in spans:
+            s_st = sp.get("start_dt")
+            s_en = sp.get("end_dt")
+            if s_st and s_en and s_st.date() <= target_d <= s_en.date():
+                t_title = sp.get("title") or "Trip"
+                lines.append(f"\n✈️ **Travel Day:** {t_title} (Safe travels!)")
     except Exception as radar_err:
         print("[morning_briefing.radar] error:", repr(radar_err))
 

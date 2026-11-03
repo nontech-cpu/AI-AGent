@@ -201,43 +201,42 @@ def get_user_timeline_spans(
 
     # 3. Database Memory Items (Reminders & Appointments)
     try:
-        curr_d = start_window.date()
-        end_d = end_window.date()
-        while curr_d <= end_d:
-            day_items = db.items_for_date(canon_cid, curr_d) or []
-            for it in day_items:
-                # items_for_date returns: (category, title, amount, due_time, id) or dict
-                if isinstance(it, dict):
-                    i_title = it.get("title", "")
-                    i_cat = it.get("category", "")
-                    i_time = it.get("due_time")
-                else:
-                    i_cat = it[0] if len(it) > 0 else ""
-                    i_title = it[1] if len(it) > 1 else ""
-                    i_time = it[3] if len(it) > 3 else None
+        range_items = db.items_for_date_range(canon_cid, start_window.date(), end_window.date()) or []
+        for it in range_items:
+            if isinstance(it, dict):
+                i_title = it.get("title", "")
+                i_cat = it.get("category", "")
+                i_time = it.get("due_time")
+                i_date = it.get("due_date")
+            else:
+                i_cat = it[0] if len(it) > 0 else ""
+                i_title = it[1] if len(it) > 1 else ""
+                i_time = it[3] if len(it) > 3 else None
+                i_date = it[4] if len(it) > 4 else None
 
-                if not i_time:
-                    continue
-                try:
-                    i_h = i_time.hour if hasattr(i_time, "hour") else int(str(i_time).split(":")[0])
-                    i_m = i_time.minute if hasattr(i_time, "minute") else int(str(i_time).split(":")[1])
-                    s_dt = datetime.combine(curr_d, dtime(i_h, i_m), tzinfo=IST)
-                    dur = estimate_event_duration(i_title, i_cat)
-                    e_dt = s_dt + timedelta(hours=dur)
-                    key = f"{s_dt.isoformat()}_{i_title}"
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        spans.append(TimelineSpan(
-                            title=i_title,
-                            start_dt=s_dt,
-                            end_dt=e_dt,
-                            kind="movie" if "movie" in i_title.lower() else (i_cat or "reminder"),
-                            is_blocking=True,
-                            metadata={"category": i_cat, "source": "memory_items"}
-                        ))
-                except Exception:
-                    pass
-            curr_d += timedelta(days=1)
+            if not i_time or not i_date:
+                continue
+            try:
+                if isinstance(i_date, str):
+                    i_date = date.fromisoformat(i_date)
+                i_h = i_time.hour if hasattr(i_time, "hour") else int(str(i_time).split(":")[0])
+                i_m = i_time.minute if hasattr(i_time, "minute") else int(str(i_time).split(":")[1])
+                s_dt = datetime.combine(i_date, dtime(i_h, i_m), tzinfo=IST)
+                dur = estimate_event_duration(i_title, i_cat)
+                e_dt = s_dt + timedelta(hours=dur)
+                key = f"{s_dt.isoformat()}_{i_title}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    spans.append(TimelineSpan(
+                        title=i_title,
+                        start_dt=s_dt,
+                        end_dt=e_dt,
+                        kind="movie" if "movie" in i_title.lower() else (i_cat or "reminder"),
+                        is_blocking=True,
+                        metadata={"category": i_cat, "source": "memory_items"}
+                    ))
+            except Exception:
+                pass
     except Exception as exc:
         logger.warning(f"Error parsing memory items for timeline: {exc}")
 
