@@ -121,7 +121,7 @@ async def get_user_calendar_timezone(chat_id: int) -> str:
             else:
                 _USER_TZ_CACHE[chat_id] = {"tz": "Asia/Kolkata", "exp": now_ts + 3600}
     except Exception as exc:
-        print("get_user_calendar_timezone error:", exc)
+        logger.debug("get_user_calendar_timezone error: %s", exc)
         _USER_TZ_CACHE[chat_id] = {"tz": "Asia/Kolkata", "exp": now_ts + 3600}
 
     # Check database profile timezone if Google is not connected
