@@ -57,6 +57,10 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
     if any(q in low for q in ["please confirm", "reply yes", "options:", "kya main", "kya aap", "auth/google", "oauth", "secure link", "?"]):
         return True, None
 
+    # Status statements about accounts / integrations being connected or not are informational queries, not write actions
+    if any(s in low for s in ["connected hai", "connected nahi", "link nahi", "linked nahi", "not connected", "connect nahi", "workspace:"]):
+        return True, None
+
     has_completion_claim = any(pat.search(draft_reply) for pat in ACTION_COMPLETION_PATTERNS)
     if not has_completion_claim:
         return True, None

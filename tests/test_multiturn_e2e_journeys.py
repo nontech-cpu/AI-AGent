@@ -214,5 +214,40 @@ async def test_multiturn_casual_fact_temporal_date_recall():
     assert "pizza" in block.lower()
 
 
+@pytest.mark.asyncio
+async def test_early_morning_interaction_prompt_and_mandate():
+    """
+    Verifies that early morning user interactions before 8:00 AM (or 5 AM - 11 AM)
+    dynamically produce the warm Good Morning briefing mandate, and ban call-center IVR greetings.
+    """
+    from agent.prompt import build_runtime_system_prompt
+    from unittest.mock import patch
+
+    with patch("db.is_morning_briefing_sent", return_value=False):
+        prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "Hi")
+        # Mandate must enforce natural Good Morning
+        assert "Good morning bhai!" in prompt
+        # Must strictly prohibit call center script
+        assert "STRICT BAN on 'Namaste!" in prompt
+        # Must enforce Instinct-style crisp output
+        assert "Instinct-Grade Tone" in prompt
+
+
+@pytest.mark.asyncio
+async def test_universal_connector_link_semantic_directives():
+    """
+    Verifies that 'mera X link h?' and 'X link krna h' across GitHub, Notion, Google
+    are explicitly defined in system prompt rules as account integrations, not URLs.
+    """
+    from agent.prompt import build_runtime_system_prompt
+
+    prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "mera github link h?")
+    assert "Third-Party Connectors & Account Linking (Google, GitHub, Notion, Email)" in prompt
+    assert "check_integrations_status" in prompt
+    assert "connect_integration" in prompt
+    assert "NEVER output website URLs or manual instructions on how to copy a URL from a browser address bar!" in prompt
+
+
+
 
 

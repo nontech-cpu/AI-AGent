@@ -3137,18 +3137,16 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
 CORE_TOOL_NAMES = {
     "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
-    "check_availability", "save_note_or_fact", "search_memory",
-    "save_contact", "get_contact", "list_contacts", "get_commitments", "manage_smart_list", "get_measurements", "calculate", "manage_commitment",
-    "search_user_emails", "send_email", "connect_integration", "check_integrations_status",
-    "create_notion_page", "list_notion_pages", "list_github_repos", "get_weather",
-    "request_master_privacy_wipe", "clear_chat_history", "delete_note_or_fact", "create_meeting", "get_meet_link",
-    "manage_relationship", "manage_subscription", "get_memory_health_radar", "set_user_timezone",
+    "save_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
+    "connect_integration", "check_integrations_status", "create_meeting",
     "search_web", "find_nearby_places"
 }
 
 _DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}
 
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
+def _cosine_similarity(a: Optional[List[float]], b: Optional[List[float]]) -> float:
+    if not a or not b:
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(y * y for y in b) ** 0.5
@@ -3185,11 +3183,10 @@ def is_action_or_tool_intent(user_text: str) -> bool:
 
 def route_tools(user_text: str) -> List[Dict[str, Any]]:
     """
-    Pure Neural Network Tool Routing:
-    - Core Tools (execute_python_code, Reminders, Calendar, Memory, Contacts, Health) are ALWAYS provided.
-    - Up to 4 domain tools are dynamically matched via semantic vector similarity (Neural Network vector space).
-    - ZERO regexes, zero hardcoded keyword gates. The LLM's neural network autonomously decides
-      whether to call a tool or reply directly with conversational text.
+    Intelligent Dynamic Tool Routing:
+    - Core baseline tools are ALWAYS provided (Reminders, Schedule, Contacts, Memory, Integrations, Places, Web).
+    - Relevant domain tools (GitHub, Notion, Email, Weather, Lists, Finance) are dynamically attached based on user intent.
+    - Keeps Groq prompt token usage well below TPM limits (prevents 429 errors and RAM bloat).
     """
     from memory.store import embed_text
     domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
@@ -3210,11 +3207,27 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
         low = user_text.lower()
         for dt in domain_tools:
             fname = dt["function"]["name"]
-            if fname in ("get_movie_showtimes",) and any(w in low for w in ("movie", "cinema", "showtime", "theatre")):
+            if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in low for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
                 extra_tools.append(dt)
-            elif fname in ("create_packing_list",) and any(w in low for w in ("packing", "luggage", "travel list")):
+            elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages") and any(w in low for w in ("notion", "workspace")):
                 extra_tools.append(dt)
-            elif fname in ("find_nearby_places",) and any(w in low for w in ("nearby", "near me", "restaurant", "hospital", "atm")):
+            elif fname in ("send_email", "search_user_emails") and any(w in low for w in ("mail", "email", "gmail", "inbox", "sent")):
+                extra_tools.append(dt)
+            elif fname in ("get_weather",) and any(w in low for w in ("weather", "mausam", "temperature", "rain", "barish", "cold", "garmi")):
+                extra_tools.append(dt)
+            elif fname in ("convert_currency", "get_market_price", "calculate") and any(w in low for w in ("currency", "dollar", "usd", "inr", "convert", "gold", "silver", "bitcoin", "crypto", "calc", "%", "hisaab")):
+                extra_tools.append(dt)
+            elif fname in ("request_master_privacy_wipe", "clear_chat_history") and any(w in low for w in ("wipe", "clear chat", "delete my data", "saari memory", "clear memory")):
+                extra_tools.append(dt)
+            elif fname in ("manage_smart_list",) and any(w in low for w in ("list", "smart list", "grocery", "saman", "items")):
+                extra_tools.append(dt)
+            elif fname in ("get_movie_showtimes",) and any(w in low for w in ("movie", "cinema", "showtime", "theatre")):
+                extra_tools.append(dt)
+            elif fname in ("create_packing_list",) and any(w in low for w in ("packing", "luggage", "travel list", "pack")):
+                extra_tools.append(dt)
+            elif fname in ("get_measurements", "get_memory_health_radar") and any(w in low for w in ("sugar", "glucose", "bp", "blood pressure", "health", "reading")):
+                extra_tools.append(dt)
+            elif fname in ("check_availability", "get_meet_link", "update_meeting", "delete_meeting") and any(w in low for w in ("meeting", "meet", "slot", "free slot", "availability", "clash")):
                 extra_tools.append(dt)
         return core_tools + extra_tools
 
@@ -3229,10 +3242,10 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
 
     scored_domain.sort(key=lambda x: x[0], reverse=True)
 
-    # Pick top domain tools with sim >= 0.22 (up to 4)
+    # Pick top domain tools with sim >= 0.18 (up to 5)
     selected_domain_tools = [
-        dt for sim, dt in scored_domain[:4]
-        if sim >= 0.22
+        dt for sim, dt in scored_domain[:5]
+        if sim >= 0.18
     ]
 
     return core_tools + selected_domain_tools

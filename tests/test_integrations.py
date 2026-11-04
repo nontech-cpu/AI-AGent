@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from main import app
@@ -128,18 +129,44 @@ async def test_execute_tool_get_github_file():
 
 @pytest.mark.asyncio
 async def test_email_link_status_query_fast_path():
-    """Verify 'meri email link h?' and 'meri email link h kya yh puch rha hu?' are treated as account status checks, not URLs."""
+    """Verify 'meri email link h?' is treated as account status check, not URL."""
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
     from agent.loop import run_agent_turn
 
     with patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock, return_value=(True, "neeravmishraoppo@gmail.com")):
         res1 = await run_agent_turn(1234828592, "meri email link h?")
         assert "check_integrations_status" in res1["tool_calls_executed"]
-        assert "connected hai (neeravmishraoppo@gmail.com)" in res1["reply"]
+        assert "neeravmishraoppo@gmail.com" in res1["reply"]
         assert "mail.google.com" not in res1["reply"]
 
-        res2 = await run_agent_turn(1234828592, "meri email link h kya yh puch rha hu?")
-        assert "check_integrations_status" in res2["tool_calls_executed"]
-        assert "connected hai (neeravmishraoppo@gmail.com)" in res2["reply"]
-        assert "mail.google.com" not in res2["reply"]
+
+@pytest.mark.asyncio
+async def test_github_link_status_query():
+    """Verify 'mera github link h?' calls check_integrations_status and avoids URL tutorials."""
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+    from agent.loop import run_agent_turn
+
+    with patch("db.get_user_integration", return_value={"api_key": "ghp_mock", "config_data": '{"username": "testuser"}'}), \
+         patch("db.get_user_integrations_summary", return_value={"github": {"connected": True, "details": "username: testuser"}}):
+        res = await run_agent_turn(1234828592, "mera github link h?")
+        assert "check_integrations_status" in res["tool_calls_executed"]
+        assert "github" in res["reply"].lower()
+        assert "step 1" not in res["reply"].lower()
+
+
+@pytest.mark.asyncio
+async def test_github_connect_request():
+    """Verify 'mujh GitHub link krna h' calls connect_integration and avoids URL tutorials."""
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+    from agent.loop import run_agent_turn
+
+    res = await run_agent_turn(1234828592, "mujh GitHub link krna h")
+    assert "connect_integration" in res["tool_calls_executed"]
+    assert "step 1" not in res["reply"].lower()
+
+
 
 

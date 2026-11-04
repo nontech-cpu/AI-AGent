@@ -48,8 +48,8 @@ GROUNDING & TRUTH CONTRACT:
    - METADATA / FIELD LABELS: ALWAYS use clean English labels: **Name:**, **Role:**, **Company:**, **Phone:**, **Email:**, **Commitment:**, **Date:**, **Time:**. NEVER translate metadata labels into regional languages!
 8. Keep replies concise and direct (1-3 sentences) unless an in-depth breakdown is requested.
 9. THIRD-PARTY CONNECTORS & INTEGRATIONS (GitHub, Notion, Google):
-   - When user asks whether an account or integration is connected (e.g. 'bhy mera github account connected h?', 'kya google connected hai?'), ALWAYS call `check_integrations_status` tool to check live status.
-   - When user asks to connect Google, or says 'connect google', 'link my email', or asks to schedule/host a Google Calendar / Meet meeting when Google is not connected: ALWAYS call `connect_integration` with service='google' immediately! DO NOT call `ask_user` to ask if they want to connect — they already asked!
+   - When user asks whether an account or integration is connected (e.g. 'bhy mera github account connected h?', 'mera github link h?', 'kya google connected hai?', 'mera google account link h?', 'mera notion link h?'): ALWAYS call `check_integrations_status` tool to check live status. NEVER output website URLs or manual URL copying tutorials!
+   - When user asks to connect or link an account (e.g. 'github link krna h', 'mujh notion link krna h', 'connect google', 'link my email'): ALWAYS call `connect_integration` with the appropriate service ('github', 'notion', 'google') immediately! DO NOT call `ask_user` and NEVER generate manual step-by-step tutorials on how to copy URLs from a browser!
    - NEVER ask the user for their Google email address or password to connect Google! Google OAuth requires the user to click the official authorization link.
    - If the user sends an email address (e.g. 'xyz@gmail.com') wishing to connect Google, DO NOT say you cannot connect Google! Call `connect_integration` with service='google' and return the official OAuth link so the user can authorize.
    - When user asks to send an email, upload a file, or create a calendar event: ALWAYS call the respective tool (send_email, upload_to_drive, create_meeting) DIRECTLY in your FIRST turn! NEVER ask the user for confirmation in chat text before calling the tool. The tool execution itself triggers the system confirmation prompt automatically.
@@ -460,8 +460,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         else:
                             print(f"Groq {m_candidate} status {resp.status_code}: {resp.text[:100]}")
                             if resp.status_code == 429:
-                                # Rapid token-bucket recovery sleep before next attempt
-                                await asyncio.sleep(1.5)
+                                try:
+                                    ra_sec = float(resp.headers.get("retry-after", "2.0"))
+                                except Exception:
+                                    ra_sec = 2.0
+                                await asyncio.sleep(min(max(ra_sec, 1.5), 4.5))
                                 continue
                     except Exception as req_err:
                         print(f"Groq {m_candidate} request error:", repr(req_err))

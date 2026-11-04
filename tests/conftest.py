@@ -50,6 +50,8 @@ def init_test_db():
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_chat_id INTEGER UNIQUE NOT NULL,
+                first_name TEXT,
+                username TEXT,
                 consented_at TIMESTAMP,
                 state TEXT,
                 state_data TEXT,
