@@ -6,6 +6,7 @@ __pycache__/
 *.bak
 *.bak*
 *.sqlite3
+*.db
 node_modules/
 .DS_Store
 test_card*.jpg

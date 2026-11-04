@@ -207,9 +207,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable is missing.")
 
-    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
-    if "120b" in model:
-        model = "openai/gpt-oss-20b"
+    model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
     trimmed_text = user_text.strip()
     low_prompt = trimmed_text.lower()
 
@@ -463,7 +461,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             resp = None
             backup_key = os.getenv("GROQ_API_KEY_BACKUP")
             available_keys = [groq_key] + ([backup_key] if backup_key and backup_key != groq_key else [])
-            candidate_models = [current_model, "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+            candidate_models = [current_model, "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
             # Deduplicate while preserving order
             seen_m = set()
             ordered_candidates = [m for m in candidate_models if not (m in seen_m or seen_m.add(m))]
@@ -880,7 +878,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             # Ultra-compact recovery prompt: < 100 tokens (prevents 429 TPM exhaustion during rapid multi-turn)
             recovery_system = (
                 f"You are PeculiarAI personal assistant. Answer the user's question directly, accurately, "
-                f"warmly, and concisely in {rec_lang}. Understand short follow-ups (e.g. 'jaipur me?') in the context of previous conversation."
+                f"warmly, and concisely in {rec_lang}. Keep tone friendly and peer-to-peer (1-2 sentences). "
+                f"NEVER fabricate or invent fake places, fake business/mall names, or fake URLs. "
+                f"If user expresses an open-ended goal/plan (like 'I want to go home today by 5pm'), acknowledge in 1 short line and ask ONE clarifying question (e.g. 'Got it! Where are you right now?') — never dump a multi-hour timetable."
             )
             rec_messages = [{"role": "system", "content": recovery_system}]
             rec_hist = []

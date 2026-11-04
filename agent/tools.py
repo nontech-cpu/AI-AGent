@@ -191,6 +191,9 @@ class ConnectIntegrationArgs(BaseModel):
     service: str = Field(..., description="Service to connect: 'google', 'github', or 'notion'.")
     value: Optional[str] = Field("connect", description="GitHub profile URL (e.g. 'https://github.com/nontech-cpu'), GitHub username, access token, Notion token, or 'connect' for Google.")
 
+class DisconnectIntegrationArgs(BaseModel):
+    service: str = Field(..., description="Service to disconnect: 'google', 'github', 'notion', or 'all'.")
+
 class AskUserArgs(BaseModel):
     question: str = Field(..., description="Specific question to ask the user.")
     options: Optional[List[str]] = Field(None, description="Optional list of choices for the user.")
@@ -272,13 +275,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "execute_python_code",
-            "description": "Universal Python Code Interpreter (like ChatGPT Code Interpreter). Executes Python code to dynamically generate PDFs (using reportlab), PowerPoint presentations (using pptx), Excel/CSV (using pandas/openpyxl), charts (using matplotlib), or execute calculations. Any created file is automatically delivered directly to Telegram. For PDF use reportlab: from reportlab.lib.pagesizes import letter; from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer; from reportlab.lib.styles import getSampleStyleSheet; doc = SimpleDocTemplate('name.pdf', pagesize=letter); styles = getSampleStyleSheet(); doc.build([Paragraph('Title', styles['Title']), Spacer(1, 12), Paragraph('Text', styles['Normal'])])",
+            "description": "Universal Python Code Interpreter. Runs Python code to generate files (PDF via reportlab, PPTX via pptx, Excel/CSV via pandas, charts via matplotlib) or perform calculations. Created files are sent directly to Telegram.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Complete executable Python script with imports. Save output file in current directory (e.g. 'doc.pdf', 'slides.pptx', 'data.xlsx', 'chart.png')."
+                        "description": "Complete executable Python script with imports. Save output file in current directory."
                     },
                     "purpose": {
                         "type": "string",
@@ -339,7 +342,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "save_contact",
-            "description": "Saves or updates a person or contact in the user's persistent address book and cognitive memory with phone number, email, role, and aliases. CRITICAL: When user states any purpose, project, reason for contacting, or deliverable (e.g. 'contact Aditya for designing', 'Ashwin for report on Tuesday'), ALWAYS pass that reason/purpose into the 'notes' or 'role' argument so it is permanently remembered in memory.",
+            "description": "Save or update a contact in persistent address book with phone, email, role, and context notes or promised tasks.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -348,7 +351,7 @@ TOOL_DEFINITIONS = [
                     "email": {"type": ["string", "null"], "description": "Email address."},
                     "role": {"type": ["string", "null"], "description": "Role, title, or company."},
                     "aliases": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Nicknames or alternate spellings."},
-                    "notes": {"type": ["string", "null"], "description": "CRITICAL: Any context, purpose, project, reason for contacting, or commitments mentioned by the user (e.g. 'contact for designing', 'report on Tuesday'). NEVER omit or leave null if user provided context!"}
+                    "notes": {"type": ["string", "null"], "description": "Any context, purpose, project, reason for contacting, or commitments mentioned by the user."}
                 },
                 "required": ["name"]
             }
@@ -520,11 +523,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "delete_reminder",
-            "description": "Delete, remove, or cancel a saved reminder, meeting, or task by title keyword or ID. Use ONLY when the user explicitly requests cancellation or deletion (e.g. 'delete', 'cancel', 'remove', 'hata do'). NEVER call this when user is stating or correcting a duration or detail (e.g. 'meeting 30 min ki hai') — duration statements are parameters for create_meeting or update_meeting, NOT deletions.",
+            "description": "Delete or cancel a saved reminder, meeting, or task by title keyword or ID. Use ONLY when explicitly asked to delete/cancel.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Title or keyword of the reminder/event to delete (e.g. 'electri', 'smaosa', 'meeting')."},
+                    "title": {"type": "string", "description": "Title or keyword of the reminder/event to delete."},
                     "reminder_id": {"type": ["integer", "null"], "description": "Optional specific reminder ID to delete."}
                 },
                 "required": ["title"]
@@ -534,7 +537,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "list_reminders",
-            "description": "List user's saved tasks and reminders, optionally filtered by date. Use ONLY for read-only view queries (e.g. 'mere reminders batao', 'tasks dikhao'). NEVER call this when user asks to create, set, or schedule a reminder (use create_reminder instead).",
+            "description": "List saved tasks and reminders. Use ONLY for read-only view queries (e.g. 'mere reminders batao').",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -779,6 +782,20 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "service": {"type": "string", "description": "Service to connect: 'google', 'github', or 'notion'."},
                     "value": {"type": ["string", "null"], "description": "GitHub profile URL, username, personal access token, or 'connect' for Google."}
+                },
+                "required": ["service"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "disconnect_integration",
+            "description": "Disconnect or unlink a user integration like Google, GitHub, or Notion. Removes credentials and revokes access.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "Service to disconnect: 'google', 'github', 'notion', or 'all'."}
                 },
                 "required": ["service"]
             }
@@ -2616,6 +2633,26 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                     )
                 }
 
+        elif tool_name == "disconnect_integration":
+            args = DisconnectIntegrationArgs(**arguments)
+            svc = args.service.strip().lower()
+            if svc in ("google", "gmail", "calendar", "drive"):
+                db.delete_google_token(chat_id)
+                return {"status": "success", "service": "google", "message": "✅ Aapka Google account successfully disconnect kar diya gaya hai."}
+            elif svc == "github":
+                db.delete_user_integration(chat_id, "github")
+                return {"status": "success", "service": "github", "message": "✅ Aapka GitHub account successfully disconnect kar diya gaya hai."}
+            elif svc == "notion":
+                db.delete_user_integration(chat_id, "notion")
+                return {"status": "success", "service": "notion", "message": "✅ Aapka Notion workspace successfully disconnect kar diya gaya hai."}
+            elif svc == "all":
+                db.delete_google_token(chat_id)
+                db.delete_user_integration(chat_id, "github")
+                db.delete_user_integration(chat_id, "notion")
+                return {"status": "success", "service": "all", "message": "✅ Sabhi accounts (Google, GitHub, Notion) successfully disconnect kar diye gaye hain."}
+            else:
+                return {"status": "error", "message": f"Unknown service '{svc}'. Supported services: google, github, notion, all."}
+
         elif tool_name == "create_notion_page":
             title = arguments.get("title", "")
             content = arguments.get("content", "")
@@ -3274,7 +3311,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 CORE_TOOL_NAMES = {
     "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "save_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
-    "connect_integration", "check_integrations_status", "create_meeting",
+    "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting",
     "search_web", "find_nearby_places"
 }
 

@@ -636,11 +636,59 @@ SPAM_DOMAINS = (
     "locatordb.com", "near-me.info", "locator.net", "asklaila.com"
 )
 
-async def search_web(query: str, max_results: int = 3) -> Dict[str, Any]:
+from html.parser import HTMLParser
+
+class _DDGLiteHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self._cur_link = None
+        self._in_link = False
+        self._in_snippet = False
+        self._cur_title = []
+        self._cur_snippet = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        if tag == 'a' and attrs_dict.get('class') == 'result-link':
+            self._cur_link = attrs_dict.get('href')
+            self._in_link = True
+            self._cur_title = []
+        elif tag == 'td' and attrs_dict.get('class') == 'result-snippet':
+            self._in_snippet = True
+            self._cur_snippet = []
+
+    def handle_endtag(self, tag):
+        if tag == 'a' and self._in_link:
+            self._in_link = False
+        elif tag == 'td' and self._in_snippet:
+            self._in_snippet = False
+            if self._cur_link and self._cur_title:
+                t = "".join(self._cur_title).strip()
+                s = "".join(self._cur_snippet).strip()
+                if t and s:
+                    self.results.append({
+                        'title': t,
+                        'url': self._cur_link,
+                        'snippet': s[:180] + ("..." if len(s) > 180 else "")
+                    })
+                self._cur_link = None
+                self._cur_title = []
+                self._cur_snippet = []
+
+    def handle_data(self, data):
+        if self._in_link:
+            self._cur_title.append(data)
+        elif self._in_snippet:
+            self._cur_snippet.append(data)
+
+
+async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
     """
     Performs autonomous live internet web search for real-world facts, current events,
     travel tolls, routes, distances, news, places, and documentation.
-    100% free, no API key required, with multi-source fallback.
+    Multi-engine architecture: Serper/Google Search API -> DDG Lite parser -> DDG HTML parser.
+    Strictly ground-truth, anti-hallucination.
     """
     clean_q = (query or "").strip()
     if not clean_q:
@@ -654,73 +702,95 @@ async def search_web(query: str, max_results: int = 3) -> Dict[str, Any]:
         }
 
     results = []
-    # Primary: DuckDuckGo HTML Search
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            resp = await client.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": clean_q},
-                headers=headers
-            )
-            if resp.status_code == 200:
-                raw_html = resp.text
-                titles = re.findall(r'<a rel="nofollow" class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
-                snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
-                for (u, t), s in zip(titles[:10], snippets[:10]):
-                    u_clean = u
-                    if "uddg=" in u:
-                        m = re.search(r"uddg=([^&]+)", u)
-                        if m:
-                            u_clean = unquote(m.group(1))
-                    # Skip deceptive spam directories that show fake titles
-                    if any(sp in u_clean.lower() for sp in SPAM_DOMAINS):
-                        continue
-                    t_clean = html.unescape(re.sub(r"<[^>]+>", "", t)).strip()
-                    s_clean = html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
-                    if len(s_clean) > 160:
-                        s_clean = s_clean[:157] + "..."
-                    if t_clean and s_clean:
-                        results.append({
-                            "title": t_clean,
-                            "snippet": s_clean,
-                            "url": u_clean
-                        })
-                    if len(results) >= max_results:
-                        break
-    except Exception as exc:
-        print("[utilities.search_web] DuckDuckGo HTML search error:", repr(exc))
 
-    # Secondary: DuckDuckGo Instant Answer API Fallback
-    if not results:
+    # 1. Primary: Google / Serper API if key is present
+    serp_key = os.getenv("SERPER_API_KEY") or os.getenv("GOOGLE_SEARCH_API_KEY")
+    if serp_key:
         try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(
-                    "https://api.duckduckgo.com/",
-                    params={"q": clean_q, "format": "json", "no_html": "1", "skip_disambig": "1"}
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": serp_key, "Content-Type": "application/json"},
+                    json={"q": clean_q, "num": max_results, "gl": "in", "hl": "en"}
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    abstract = data.get("AbstractText")
-                    if abstract:
-                        results.append({
-                            "title": data.get("Heading") or clean_q,
-                            "snippet": abstract,
-                            "url": data.get("AbstractURL") or "https://duckduckgo.com"
-                        })
-                    for r in data.get("RelatedTopics", [])[:3]:
-                        if isinstance(r, dict) and r.get("Text"):
+                    for org in data.get("organic", [])[:max_results]:
+                        t = org.get("title")
+                        s = org.get("snippet")
+                        u = org.get("link")
+                        if t and s:
+                            results.append({"title": t, "snippet": s, "url": u})
+        except Exception as exc_serp:
+            print("[utilities.search_web] Serper API error:", repr(exc_serp))
+
+    # 2. Secondary: DuckDuckGo Lite Search (Bypasses Cloudflare / JavaScript blocks)
+    if not results:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            async with httpx.AsyncClient(timeout=9.0, follow_redirects=True) as client:
+                resp = await client.post(
+                    "https://lite.duckduckgo.com/lite/",
+                    data={"q": clean_q},
+                    headers=headers
+                )
+                if resp.status_code == 200:
+                    parser = _DDGLiteHTMLParser()
+                    parser.feed(resp.text)
+                    for r in parser.results:
+                        u_clean = r["url"]
+                        if any(sp in u_clean.lower() for sp in SPAM_DOMAINS):
+                            continue
+                        results.append(r)
+                        if len(results) >= max_results:
+                            break
+        except Exception as exc_lite:
+            print("[utilities.search_web] DuckDuckGo Lite search error:", repr(exc_lite))
+
+    # 3. Tertiary: DuckDuckGo HTML Search
+    if not results:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                resp = await client.post(
+                    "https://html.duckduckgo.com/html/",
+                    data={"q": clean_q},
+                    headers=headers
+                )
+                if resp.status_code == 200:
+                    raw_html = resp.text
+                    titles = re.findall(r'<a rel="nofollow" class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
+                    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
+                    for (u, t), s in zip(titles[:10], snippets[:10]):
+                        u_clean = u
+                        if "uddg=" in u:
+                            m = re.search(r"uddg=([^&]+)", u)
+                            if m:
+                                u_clean = unquote(m.group(1))
+                        if any(sp in u_clean.lower() for sp in SPAM_DOMAINS):
+                            continue
+                        t_clean = html.unescape(re.sub(r"<[^>]+>", "", t)).strip()
+                        s_clean = html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+                        if len(s_clean) > 160:
+                            s_clean = s_clean[:157] + "..."
+                        if t_clean and s_clean:
                             results.append({
-                                "title": r.get("Text")[:60] + "...",
-                                "snippet": r.get("Text"),
-                                "url": r.get("FirstURL") or ""
+                                "title": t_clean,
+                                "snippet": s_clean,
+                                "url": u_clean
                             })
-        except Exception as exc2:
-            print("[utilities.search_web] DuckDuckGo API fallback error:", repr(exc2))
+                        if len(results) >= max_results:
+                            break
+        except Exception as exc:
+            print("[utilities.search_web] DuckDuckGo HTML search error:", repr(exc))
 
     if results:
         formatted = "\n\n".join([f"• **{r['title']}**\n{r['snippet']}\nLink: {r['url']}" for r in results[:max_results]])
@@ -739,7 +809,7 @@ async def search_web(query: str, max_results: int = 3) -> Dict[str, Any]:
             "query": clean_q,
             "count": 0,
             "results": [],
-            "message": f"No web search results found for '{clean_q}'. Answer directly using internal reasoning."
+            "message": f"No verified web search results found for '{clean_q}'. Do NOT invent or fabricate fake names, locations, or establishments. State clearly that verified live information was not found."
         }
 
 
@@ -900,27 +970,36 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: st
     """
     clean_cat = (category or "").strip()
     clean_area = (area or "").strip()
-    clean_city = (city or "Jodhpur").strip()
+    raw_city = (city or "Jodhpur").strip()
+
+    # Normalize common Indian city typos (e.g. 'jodhur' -> 'Jodhpur')
+    CITY_SPELL_MAP = {
+        "jodhur": "Jodhpur", "jodhpr": "Jodhpur", "joddhur": "Jodhpur", "jodhpure": "Jodhpur",
+        "jaipr": "Jaipur", "jaipure": "Jaipur", "delh": "Delhi", "dilli": "Delhi",
+        "mumba": "Mumbai", "bombay": "Mumbai", "bangalor": "Bengaluru", "bengaluru": "Bengaluru",
+        "pune": "Pune", "udaipur": "Udaipur", "ahmedabad": "Ahmedabad", "kota": "Kota"
+    }
+    clean_city = CITY_SPELL_MAP.get(raw_city.lower(), raw_city)
 
     cat_lower = clean_cat.lower().replace("-", " ").strip()
     is_generic_mall = cat_lower in ("mall", "malls", "shopping mall", "shopping malls", "market", "markets", "bazaar")
     is_generic_food = cat_lower in ("cafe", "cafes", "coffee shop", "coffee", "restaurant", "restaurants", "food", "dining", "dhaba")
 
     if is_generic_mall:
-        query = f"top shopping malls in {clean_area} {clean_city} list directory".strip()
+        query = f"shopping malls in {clean_city}" if not clean_area else f"shopping malls in {clean_area} {clean_city}"
     elif is_generic_food:
-        query = f"best {clean_cat} in {clean_area} {clean_city} zomato tripadvisor".strip()
+        query = f"best {clean_cat} in {clean_city}" if not clean_area else f"best {clean_cat} in {clean_area} {clean_city}"
     else:
         # Specific place / brand inquiry (e.g. 'kmall', 'k mall', 'ashapurna', 'starbucks')
-        query = f"{clean_cat} {clean_area} {clean_city} location address website timing".strip()
+        query = f"{clean_cat} in {clean_city} location address timing" if not clean_area else f"{clean_cat} {clean_area} {clean_city} location"
 
-    search_res = await search_web(query, max_results=5)
+    search_res = await search_web(query, max_results=6)
     results = search_res.get("results", [])
 
-    # If results are sparse, also check city-wide top places
+    # If results are sparse and area was specified, try broader city query
     if len(results) < 2 and clean_area:
-        broad_query = f"top {clean_cat} in {clean_city} list"
-        broad_res = await search_web(broad_query, max_results=4)
+        broad_query = f"top {clean_cat} in {clean_city}"
+        broad_res = await search_web(broad_query, max_results=5)
         results.extend(broad_res.get("results", []))
 
     formatted_items = []
@@ -928,9 +1007,9 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: st
         title = r.get("title", "")
         snip = r.get("snippet", "")
         url = r.get("url", "")
-        formatted_items.append(f"• {title}: {snip} (Link: {url})")
+        formatted_items.append(f"• **{title}**: {snip} (Link: {url})")
 
-    summary_text = "\n".join(formatted_items) if formatted_items else f"No verified listings found for {clean_cat} in {clean_area or clean_city}."
+    summary_text = "\n\n".join(formatted_items) if formatted_items else f"No verified listings found for {clean_cat} in {clean_area or clean_city}. Please do NOT invent fake names."
 
     return {
         "status": "success",
