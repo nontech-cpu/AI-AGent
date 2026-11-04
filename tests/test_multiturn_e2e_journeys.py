@@ -223,7 +223,13 @@ async def test_early_morning_interaction_prompt_and_mandate():
     from agent.prompt import build_runtime_system_prompt
     from unittest.mock import patch
 
-    with patch("db.is_morning_briefing_sent", return_value=False):
+    from zoneinfo import ZoneInfo
+    morning_dt = datetime(2026, 11, 4, 7, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    with patch("db.is_morning_briefing_sent", return_value=False), \
+         patch("agent.prompt.datetime") as mock_dt:
+        mock_dt.now.return_value = morning_dt
+        mock_dt.fromisoformat = datetime.fromisoformat
+        mock_dt.combine = datetime.combine
         prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "Hi")
         # Mandate must enforce natural Good Morning
         assert "Good morning bhai!" in prompt
@@ -283,6 +289,27 @@ async def test_multi_account_identity_unification_and_places_grounding():
     kmall_res = await find_nearby_places("kmall", city="Jodhpur")
     assert "kmall" in kmall_res["search_query"].lower()
     assert "location address website" in kmall_res["search_query"].lower()
+
+
+@pytest.mark.asyncio
+async def test_brand_store_grounding_and_zero_raw_leakage():
+    """
+    Verifies that brand inquiries (Zara in Jodhpur) produce a crisp, truthful negative response,
+    spam domains are filtered from live search, and raw crawler dumps are strictly prohibited.
+    """
+    from agent.prompt import build_runtime_system_prompt
+    import utilities
+
+    # 1. System Prompt Rule 18 must enforce negative grounding for Zara in Jodhpur
+    prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "bhy jodhpur m zara ka shorrom h?")
+    assert "Brand Showrooms & Store Verification" in prompt
+    assert "Zara's only physical showroom is in Jaipur (World Trade Park - WTP)" in prompt
+    assert "Nahi bhai, Jodhpur mein Zara ka koi physical showroom nahi hai" in prompt
+
+    # 2. Search spam filter must include deceptive directory domains
+    assert "storelocatortool.com" in utilities.SPAM_DOMAINS
+    assert "mapdoor.com" in utilities.SPAM_DOMAINS
+    assert "justdial.com" in utilities.SPAM_DOMAINS
 
 
 

@@ -91,6 +91,12 @@ CORE GUIDELINES:
   * Short & Elliptical Follow-Ups: When user asks a short follow-up like 'kmall?', 'k mall hai kya?', 'jaipur me?' or 'udhar ka?', ALWAYS connect it to the ongoing topic, call search_web(query=f"<place> <city> location address website") or find_nearby_places, verify if the place exists, and provide its location and website link (e.g. https://www.kmalljodhpur.com/).
   * NEVER invent or hallucinate fake mall or business names (e.g. NEVER fabricate fake names like 'Mohanlal Gaur Mall', 'Kite Mall')!
   * Anti-Sycophancy: Rely strictly on verified web findings.
+18. Brand Showrooms & Store Verification (Zara, Apple, H&M, Uniqlo):
+- When user asks if an international brand showroom exists in a tier-2 city (e.g. 'jodhpur m zara ka showroom h?', 'jodhpur me apple store h kya'):
+  * Be 100% factually grounded: Zara, H&M, and official flagship Apple Stores do NOT have physical showrooms in Jodhpur.
+  * In Rajasthan, Zara's only physical showroom is in Jaipur (World Trade Park - WTP).
+  * State the ground truth directly in 1-2 clean sentences: "Nahi bhai, Jodhpur mein Zara ka koi physical showroom nahi hai. Nearest store Jaipur (World Trade Park) mein hai, ya phir aap online unki official website/app se order kar sakte ho."
+  * NEVER claim a showroom exists based on third-party aggregator directories.
 
 CONTEXT:
 - Memory: {MEMORY_CONTEXT_BLOCK}
@@ -433,7 +439,7 @@ async def build_runtime_system_prompt(
     # 10. First Morning Interaction of the Day
     now_ist = now_user
     today_str = now_user.strftime("%Y-%m-%d")
-    is_morning_window = (5 <= now_user.hour < 11)
+    is_morning_window = (5 <= now_user.hour < 12)
     briefing_already_sent = db.is_morning_briefing_sent(chat_id, today_str)
 
     if is_morning_window and not briefing_already_sent:

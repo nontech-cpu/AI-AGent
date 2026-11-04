@@ -630,7 +630,13 @@ def calculate(expression: str) -> Dict[str, Any]:
 # 5. AUTONOMOUS LIVE WEB SEARCH (ChatGPT / Gemini Real-Time Grounding)
 # ==============================================================================
 
-async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
+SPAM_DOMAINS = (
+    "justdial.com", "sulekha.com", "indiamart.com", "tradeindia.com",
+    "magicbricks.com", "quikr.com", "storelocatortool.com", "mapdoor.com",
+    "locatordb.com", "near-me.info", "locator.net", "asklaila.com"
+)
+
+async def search_web(query: str, max_results: int = 3) -> Dict[str, Any]:
     """
     Performs autonomous live internet web search for real-world facts, current events,
     travel tolls, routes, distances, news, places, and documentation.
@@ -665,20 +671,27 @@ async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
                 raw_html = resp.text
                 titles = re.findall(r'<a rel="nofollow" class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
                 snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', raw_html, re.DOTALL)
-                for (u, t), s in zip(titles[:max_results], snippets[:max_results]):
+                for (u, t), s in zip(titles[:10], snippets[:10]):
                     u_clean = u
                     if "uddg=" in u:
                         m = re.search(r"uddg=([^&]+)", u)
                         if m:
                             u_clean = unquote(m.group(1))
+                    # Skip deceptive spam directories that show fake titles
+                    if any(sp in u_clean.lower() for sp in SPAM_DOMAINS):
+                        continue
                     t_clean = html.unescape(re.sub(r"<[^>]+>", "", t)).strip()
                     s_clean = html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+                    if len(s_clean) > 160:
+                        s_clean = s_clean[:157] + "..."
                     if t_clean and s_clean:
                         results.append({
                             "title": t_clean,
                             "snippet": s_clean,
                             "url": u_clean
                         })
+                    if len(results) >= max_results:
+                        break
     except Exception as exc:
         print("[utilities.search_web] DuckDuckGo HTML search error:", repr(exc))
 

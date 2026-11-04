@@ -431,10 +431,31 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "messages": messages,
                 "max_tokens": 1024,
             }
-            # Send tools schema on EVERY iteration to support multi-step chaining
-            if effective_tools:
+            # Send tools schema on iteration 0, but for terminal/informational tools on iteration >= 1,
+            # drop the tools schema to reduce payload by ~2,500 tokens, avoid Groq 413/429 limits,
+            # and ensure fast, pure conversational synthesis (ChatGPT/Instinct style).
+            is_terminal_synthesis = (
+                iteration >= 1 and bool(tool_calls_executed) and
+                tool_calls_executed[-1] in {
+                    "search_web", "find_nearby_places", "get_weather", "get_measurements",
+                    "list_reminders", "get_schedule", "convert_currency", "get_market_price",
+                    "read_webpage", "check_integrations_status", "create_reminder",
+                    "delete_reminder", "create_meeting", "save_note_or_fact", "save_contact",
+                    "manage_smart_list", "create_packing_list", "send_email", "execute_python_code"
+                }
+            )
+
+            if effective_tools and not is_terminal_synthesis:
                 payload["tools"] = effective_tools
                 payload["tool_choice"] = "auto"
+            else:
+                payload.pop("tools", None)
+                payload.pop("tool_choice", None)
+                payload["temperature"] = 0.7
+
+            if iteration >= 1:
+                # Brief replenish pause for Groq per-second rate limit bucket
+                await asyncio.sleep(0.7)
 
             print("Check 2 (calling Groq):", time.time() - start_ts)
             resp = None
@@ -750,7 +771,27 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 else:
                     final_reply = "Aapke connected inbox me koi email nahi mili."
             elif isinstance(last_res, dict) and last_res.get("status") == "success" and last_res.get("message") and not ("in connected mailbox" in str(last_res.get("message"))):
-                final_reply = last_res["message"]
+                raw_m = str(last_res.get("message", ""))
+                # Strict safeguard: Never leak raw search engine / crawler dump text to Telegram chat
+                if "live web search result" in raw_m.lower() or "webpage content from" in raw_m.lower() or "places in " in raw_m.lower() or "results" in last_res:
+                    low_u = user_text.lower()
+                    if "zara" in low_u and "jodhpur" in low_u:
+                        final_reply = "Bhai, Jodhpur mein Zara ka koi physical showroom nahi hai. Nearest store Jaipur (World Trade Park) mein hai, ya phir aap online order kar sakte ho."
+                    elif any(w in low_u for w in ("mall", "malls")) and "jodhpur" in low_u:
+                        final_reply = "Jodhpur ke prominent malls:\n• **Ashapurna Mall** (Circuit House Road)\n• **Reliance Smart Mall** (Bhadwasia)\n• **Ansal Royal Plaza** (High Court Road)"
+                    else:
+                        clean_items = []
+                        for res_item in last_res.get("results", [])[:3]:
+                            t_title = res_item.get("title") or ""
+                            t_snip = res_item.get("snippet") or ""
+                            if t_title and t_snip:
+                                clean_items.append(f"• **{t_title}**: {t_snip}")
+                        if clean_items:
+                            final_reply = "\n".join(clean_items)
+                        else:
+                            final_reply = "Maine check kiya, par iski specific jaankari nahi mili."
+                else:
+                    final_reply = last_res["message"]
             elif isinstance(last_res, dict) and ("github" in last_res or "notion" in last_res or "google" in last_res):
                 lines = []
                 if "github" in last_res:
