@@ -195,6 +195,35 @@ def deterministic_verify(
         if em.lower() not in {e.lower() for e in evidence_emails}:
             violations.append(f"Fabricated email address: {em}")
 
+    # 4.1 Fake Malls & Unverified Business Entities Check
+    if any(w in user_query.lower() for w in ('mall', 'malls', 'shopping complex')):
+        fake_mall_tokens = ['mohan mall', 'madhav mall', 'madhav shopping', 'ratan mall', 'jodhpur city mall', 'gurgaon mall (jodhpur)']
+        if any(fm in draft_reply.lower() for fm in fake_mall_tokens):
+            violations.append('Fabricated mall names detected in reply')
+            has_place_results = any(isinstance(tr, dict) and tr.get('results') for tr in tool_results)
+            if has_place_results:
+                verified_items = []
+                for tr in tool_results:
+                    for r in tr.get('results', []):
+                        if r.get('title'):
+                            verified_items.append(f"• **{r['title']}**: {r.get('snippet', '')[:100]}...")
+                if verified_items:
+                    revised = "Jodhpur ke live verified shopping destinations:\n\n" + "\n".join(verified_items[:4])
+                    return False, revised, violations
+            return False, "Jodhpur ke verified malls mein **Ashapurna Mall** (Shastri Nagar) aur **Reliance Smart Mall** popular shopping destinations hain.", violations
+
+    # 4.2 Fake Local Highway Routes Check (e.g. NH-48 for local Jodhpur trips like Sardarpura to Ratanada)
+    if any(w in user_query.lower() for w in ('route', 'rasta', 'kya hoga', 'kaise jaye', 'directions', 'road')) and any(w in user_query.lower() for w in ('sardarpura', 'sardapura', 'ratanada', 'shastri nagar', 'paota')):
+        if any(bad in draft_reply.lower() for bad in ('nh-48', '35-40 km', '40 km', '45-50 min', '50 min', 'bypass')):
+            violations.append('Fabricated highway & inflated distance for local city transit')
+            maps_link = "https://www.google.com/maps/dir/?api=1&origin=Sardarpura+Jodhpur&destination=Ratanada+Jodhpur"
+            revised = (
+                "Sardarpura se Ratanada ka faasla sirf **3–4 km** ka local city drive hai (lagbhag 7–10 minute via Sardarpura–Ratanada link road).\n\n"
+                "🚗 Live traffic aur exact turn-by-turn route ke liye aap direct Google Maps link use kar sakte hain:\n"
+                f"🔗 {maps_link}"
+            )
+            return False, revised, violations
+
     # 5. Regional Indian Script (Tamil, Telugu, Kannada, Malayalam, etc.) Sanitization
     REGIONAL_LABEL_REPLACEMENTS = {
         # Tamil

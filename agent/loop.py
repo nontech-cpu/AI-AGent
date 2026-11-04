@@ -445,9 +445,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 }
             )
 
-            if effective_tools and not is_terminal_synthesis:
+            if effective_tools:
                 payload["tools"] = effective_tools
-                payload["tool_choice"] = "auto"
+                if is_terminal_synthesis:
+                    payload["tool_choice"] = "none"
+                    payload["temperature"] = 0.4
+                else:
+                    # Phase 3 & 4: Deterministic Tool Routing for Real-World Facts & Places
+                    # If user asks for malls, shopping, cafes, restaurants, or live search facts, force relevant tool on iteration 0
+                    if iteration == 0 and any(w in low_prompt for w in ("mall", "malls", "shopping", "cafe", "restaurant", "store", "showroom", "bazaar", "nearby places")):
+                        payload["tool_choice"] = {"type": "function", "function": {"name": "find_nearby_places"}}
+                    elif iteration == 0 and any(w in low_prompt for w in ("who is", "latest news", "ceo of", "stock price", "toll", "highway", "train status", "flight status")):
+                        payload["tool_choice"] = {"type": "function", "function": {"name": "search_web"}}
+                    else:
+                        payload["tool_choice"] = "auto"
             else:
                 payload.pop("tools", None)
                 payload.pop("tool_choice", None)
@@ -968,8 +979,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             if not any(w in final_reply.lower() for w in ("conflict", "clash", "already", "pehle se", "booked")):
                 final_reply += f"\n\n{cw} Kya aap iska time aage-peeche karna chahenge?"
 
-    # Phase 3: Zero-Unsupported-Claims Grounding Verifier Pass
-    if tool_calls_executed:
+    # Phase 3 & 4: Zero-Unsupported-Claims Grounding Verifier Pass
+    should_run_verifier = (
+        bool(tool_calls_executed) or
+        any(w in low_prompt for w in ("mall", "malls", "route", "rasta", "distance", "highway", "showroom", "store", "cafe", "restaurant", "hospital", "places"))
+    )
+    if should_run_verifier:
         is_grounded, verified_reply, violations = await verify_and_ground_reply(
             draft_reply=final_reply,
             tool_results=tool_results_list,

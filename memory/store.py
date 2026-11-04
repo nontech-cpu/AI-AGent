@@ -116,13 +116,51 @@ def _init_sqlite_if_needed():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS working_contexts (
+                    chat_id BIGINT PRIMARY KEY,
+                    active_project TEXT,
+                    current_topic TEXT,
+                    current_task TEXT,
+                    last_connector TEXT,
+                    document_context TEXT,
+                    pending_action TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    objective TEXT,
+                    tech_stack TEXT,
+                    architecture TEXT,
+                    current_tasks TEXT,
+                    decisions TEXT,
+                    status TEXT DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS memory_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    old_content TEXT NOT NULL,
+                    new_content TEXT NOT NULL,
+                    change_reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             conn.commit()
     _SQLITE_INIT_DONE = True
 
 
 def _get_embedding_model():
-    """Lazy load FastEmbed embedding model. Disabled by default in cloud/container environments to prevent Render 512MB RAM OOM crash."""
-    if os.getenv("DISABLE_LOCAL_EMBEDDINGS", "1").lower() in ("1", "true", "yes"):
+    """Lazy load FastEmbed embedding model (sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, 384 dimensions)."""
+    if os.getenv("DISABLE_LOCAL_EMBEDDINGS", "0").lower() in ("1", "true", "yes"):
         return None
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
@@ -152,10 +190,13 @@ def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
         embeddings = list(model.embed([f"{prefix}{content.strip()}"]))
         if embeddings:
             vec = embeddings[0].tolist()
-            if len(_EMBED_QUERY_CACHE) > 500:
-                _EMBED_QUERY_CACHE.clear()
-            _EMBED_QUERY_CACHE[cache_key] = vec
-            return vec
+            if vec and len(vec) == 384:
+                if len(_EMBED_QUERY_CACHE) > 500:
+                    _EMBED_QUERY_CACHE.clear()
+                _EMBED_QUERY_CACHE[cache_key] = vec
+                return vec
+            else:
+                logger.warning(f"embed_text dimension mismatch: expected 384, got {len(vec) if vec else 0}")
     except Exception as exc:
         logger.warning(f"embed_text error: {exc}")
     return None
@@ -1231,6 +1272,287 @@ def get_recent_actions_for_user(
         return results
 
 
+# ==============================================================================
+# PHASE 1 & PHASE 2: MEMORY CONSOLIDATION, WORKING CONTEXT & PROJECTS
+# ==============================================================================
+
+def consolidate_memory_item(
+    user_id: int,
+    action: str,
+    content: str,
+    category: str = "general",
+    importance: int = 3,
+    confidence: float = 0.9,
+    entity_id: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Intelligent LLM-assisted memory consolidation:
+    - ADD: Insert distinct new memory with vector embedding and timestamps.
+    - UPDATE: Supersede conflicting/outdated memory, store history in memory_versions.
+    - DELETE: Soft-delete outdated memory (status='deleted').
+    - NOOP: Ignore duplicate, greeting, or irrelevant small-talk.
+    """
+    _init_sqlite_if_needed()
+    act = (action or "ADD").upper().strip()
+    clean_c = content.strip()
+    if not clean_c or act == "NOOP":
+        return {"status": "noop", "message": "No-op or empty content ignored."}
+
+    is_pg = db.engine.dialect.name == "postgresql"
+
+    # Duplicate check: check if exact or highly similar content already exists
+    with db.engine.connect() as conn:
+        existing = conn.execute(
+            text("SELECT id, content FROM memories WHERE user_id = :uid AND status = 'active' AND LOWER(content) = LOWER(:c) LIMIT 1"),
+            {"uid": user_id, "c": clean_c}
+        ).fetchone()
+        if existing and act == "ADD":
+            return {"status": "duplicate_skipped", "id": existing[0], "content": existing[1]}
+
+    if act == "DELETE":
+        with db.engine.connect() as conn:
+            conn.execute(
+                text("UPDATE memories SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE user_id = :uid AND LOWER(content) LIKE LOWER(:c)"),
+                {"uid": user_id, "c": f"%{clean_c[:30]}%"}
+            )
+            conn.commit()
+            return {"status": "deleted", "content": clean_c}
+
+    if act == "UPDATE":
+        # Find existing active memory for same topic/category
+        with db.engine.connect() as conn:
+            old_mem = conn.execute(
+                text("""
+                    SELECT id, content FROM memories
+                    WHERE user_id = :uid AND status = 'active'
+                      AND (subject_entity_id = :eid OR :eid IS NULL)
+                      AND (LOWER(content) LIKE LOWER(:cat_match) OR LOWER(content) LIKE LOWER(:c_prefix))
+                    ORDER BY id DESC LIMIT 1
+                """),
+                {"uid": user_id, "eid": entity_id, "cat_match": f"%{category}%", "c_prefix": f"%{clean_c[:20]}%"}
+            ).fetchone()
+
+            new_id = save_memory_item(
+                user_id=user_id,
+                content=clean_c,
+                memory_type="semantic" if category in ("preference", "work", "profile") else "episodic",
+                subject_entity_id=entity_id,
+                structured={"category": category, "confidence": confidence},
+                importance=importance
+            )
+
+            if old_mem:
+                old_id, old_txt = old_mem[0], old_mem[1]
+                conn.execute(
+                    text("UPDATE memories SET superseded_by = :nid, valid_to = CURRENT_TIMESTAMP, status = 'archived' WHERE id = :oid"),
+                    {"nid": new_id, "oid": old_id}
+                )
+                conn.execute(
+                    text("INSERT INTO memory_versions (memory_id, user_id, old_content, new_content, change_reason) VALUES (:mid, :uid, :old_c, :new_c, :reason)"),
+                    {"mid": new_id, "uid": user_id, "old_c": old_txt, "new_c": clean_c, "reason": "Consolidation UPDATE superseded old fact"}
+                )
+                conn.commit()
+                return {"status": "updated", "id": new_id, "superseded_id": old_id}
+            else:
+                conn.commit()
+                return {"status": "added", "id": new_id}
+
+    # Default ADD
+    new_id = save_memory_item(
+        user_id=user_id,
+        content=clean_c,
+        memory_type="semantic" if category in ("preference", "work", "profile") else "episodic",
+        subject_entity_id=entity_id,
+        structured={"category": category, "confidence": confidence},
+        importance=importance
+    )
+    return {"status": "added", "id": new_id}
+
+
+def save_working_context(
+    chat_id: int,
+    active_project: Optional[str] = None,
+    current_topic: Optional[str] = None,
+    current_task: Optional[str] = None,
+    last_connector: Optional[str] = None,
+    document_context: Optional[str] = None,
+    pending_action: Optional[Any] = None
+) -> None:
+    """Persists volatile working context into PostgreSQL/SQLite so context survives server restarts."""
+    _init_sqlite_if_needed()
+    is_pg = db.engine.dialect.name == "postgresql"
+    p_json = json.dumps(pending_action) if pending_action is not None else None
+
+    with db.engine.connect() as conn:
+        if is_pg:
+            conn.execute(text("""
+                INSERT INTO working_contexts (chat_id, active_project, current_topic, current_task, last_connector, document_context, pending_action, updated_at)
+                VALUES (:cid, :proj, :topic, :task, :conn, :doc, CAST(:pjson AS jsonb), CURRENT_TIMESTAMP)
+                ON CONFLICT (chat_id) DO UPDATE SET
+                    active_project = COALESCE(:proj, working_contexts.active_project),
+                    current_topic = COALESCE(:topic, working_contexts.current_topic),
+                    current_task = COALESCE(:task, working_contexts.current_task),
+                    last_connector = COALESCE(:conn, working_contexts.last_connector),
+                    document_context = COALESCE(:doc, working_contexts.document_context),
+                    pending_action = CASE WHEN :pjson IS NOT NULL THEN CAST(:pjson AS jsonb) ELSE working_contexts.pending_action END,
+                    updated_at = CURRENT_TIMESTAMP
+            """), {
+                "cid": chat_id, "proj": active_project, "topic": current_topic,
+                "task": current_task, "conn": last_connector, "doc": document_context,
+                "pjson": p_json
+            })
+        else:
+            conn.execute(text("""
+                INSERT INTO working_contexts (chat_id, active_project, current_topic, current_task, last_connector, document_context, pending_action, updated_at)
+                VALUES (:cid, :proj, :topic, :task, :conn, :doc, :pjson, CURRENT_TIMESTAMP)
+                ON CONFLICT (chat_id) DO UPDATE SET
+                    active_project = COALESCE(:proj, working_contexts.active_project),
+                    current_topic = COALESCE(:topic, working_contexts.current_topic),
+                    current_task = COALESCE(:task, working_contexts.current_task),
+                    last_connector = COALESCE(:conn, working_contexts.last_connector),
+                    document_context = COALESCE(:doc, working_contexts.document_context),
+                    pending_action = CASE WHEN :pjson IS NOT NULL THEN :pjson ELSE working_contexts.pending_action END,
+                    updated_at = CURRENT_TIMESTAMP
+            """), {
+                "cid": chat_id, "proj": active_project, "topic": current_topic,
+                "task": current_task, "conn": last_connector, "doc": document_context,
+                "pjson": p_json
+            })
+        conn.commit()
+
+
+def get_working_context(chat_id: int) -> Dict[str, Any]:
+    """Retrieves persistent working context across server restarts."""
+    _init_sqlite_if_needed()
+    with db.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT active_project, current_topic, current_task, last_connector, document_context, pending_action, updated_at FROM working_contexts WHERE chat_id = :cid"),
+            {"cid": chat_id}
+        ).fetchone()
+        if not row:
+            return {}
+        p_act = row[5]
+        if isinstance(p_act, str):
+            try:
+                p_act = json.loads(p_act)
+            except Exception:
+                pass
+        return {
+            "active_project": row[0],
+            "current_topic": row[1],
+            "current_task": row[2],
+            "last_connector": row[3],
+            "document_context": row[4],
+            "pending_action": p_act,
+            "updated_at": str(row[6]) if row[6] else None
+        }
+
+
+def save_project_context(
+    user_id: int,
+    name: str,
+    objective: Optional[str] = None,
+    tech_stack: Optional[str] = None,
+    architecture: Optional[str] = None,
+    current_tasks: Optional[str] = None,
+    decisions: Optional[str] = None,
+    status: str = "active"
+) -> int:
+    """Saves or updates a project memory compartment (name, tech stack, architecture, tasks)."""
+    _init_sqlite_if_needed()
+    clean_name = name.strip()
+    with db.engine.connect() as conn:
+        existing = conn.execute(
+            text("SELECT id FROM projects WHERE user_id = :uid AND LOWER(name) = LOWER(:n)"),
+            {"uid": user_id, "n": clean_name}
+        ).fetchone()
+        if existing:
+            conn.execute(text("""
+                UPDATE projects SET
+                    objective = COALESCE(:obj, objective),
+                    tech_stack = COALESCE(:tech, tech_stack),
+                    architecture = COALESCE(:arch, architecture),
+                    current_tasks = COALESCE(:tasks, current_tasks),
+                    decisions = COALESCE(:dec, decisions),
+                    status = :status,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :pid
+            """), {
+                "pid": existing[0], "obj": objective, "tech": tech_stack,
+                "arch": architecture, "tasks": current_tasks, "dec": decisions, "status": status
+            })
+            conn.commit()
+            return existing[0]
+        else:
+            if db.engine.dialect.name == "postgresql":
+                res = conn.execute(text("""
+                    INSERT INTO projects (user_id, name, objective, tech_stack, architecture, current_tasks, decisions, status)
+                    VALUES (:uid, :n, :obj, :tech, :arch, :tasks, :dec, :status)
+                    RETURNING id
+                """), {
+                    "uid": user_id, "n": clean_name, "obj": objective, "tech": tech_stack,
+                    "arch": architecture, "tasks": current_tasks, "dec": decisions, "status": status
+                })
+                pid = res.scalar()
+            else:
+                conn.execute(text("""
+                    INSERT INTO projects (user_id, name, objective, tech_stack, architecture, current_tasks, decisions, status)
+                    VALUES (:uid, :n, :obj, :tech, :arch, :tasks, :dec, :status)
+                """), {
+                    "uid": user_id, "n": clean_name, "obj": objective, "tech": tech_stack,
+                    "arch": architecture, "tasks": current_tasks, "dec": decisions, "status": status
+                })
+                pid = conn.execute(text("SELECT last_insert_rowid()")).scalar()
+            conn.commit()
+            return pid
+
+
+def get_active_projects(user_id: int) -> List[Dict[str, Any]]:
+    """Retrieves all active project compartments for user."""
+    _init_sqlite_if_needed()
+    with db.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT id, name, objective, tech_stack, architecture, current_tasks, decisions, status, updated_at FROM projects WHERE user_id = :uid AND status = 'active' ORDER BY updated_at DESC"),
+            {"uid": user_id}
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "name": r[1], "objective": r[2], "tech_stack": r[3],
+                "architecture": r[4], "current_tasks": r[5], "decisions": r[6],
+                "status": r[7], "updated_at": str(r[8]) if r[8] else None
+            }
+            for r in rows
+        ]
+
+
+def search_project_memory(user_id: int, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+    """Semantic/keyword search across user's project compartments."""
+    _init_sqlite_if_needed()
+    clean_q = query.strip()
+    if not clean_q:
+        return get_active_projects(user_id)[:limit]
+    with db.engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT id, name, objective, tech_stack, architecture, current_tasks, decisions, status, updated_at
+                FROM projects
+                WHERE user_id = :uid AND status = 'active'
+                  AND (LOWER(name) LIKE LOWER(:q) OR LOWER(objective) LIKE LOWER(:q) OR LOWER(tech_stack) LIKE LOWER(:q) OR LOWER(architecture) LIKE LOWER(:q) OR LOWER(decisions) LIKE LOWER(:q))
+                ORDER BY updated_at DESC LIMIT :lim
+            """),
+            {"uid": user_id, "q": f"%{clean_q}%", "lim": limit}
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "name": r[1], "objective": r[2], "tech_stack": r[3],
+                "architecture": r[4], "current_tasks": r[5], "decisions": r[6],
+                "status": r[7], "updated_at": str(r[8]) if r[8] else None
+            }
+            for r in rows
+        ]
+
+
+
 def get_core_profile(user_id: int) -> str:
     """Loads ~300 tokens of always-true core user profile directly (NO retrieval needed)."""
     now_ts = time.time()
@@ -1459,4 +1781,5 @@ def get_commitments_due_for_nudge(now_dt: Optional[datetime] = None) -> List[Dic
                 "condition_details": json.loads(r[9]) if isinstance(r[9], str) else (r[9] or {})
             })
         return results
+
 

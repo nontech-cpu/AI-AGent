@@ -1,19 +1,19 @@
 {
   "total_test_cases": 65,
-  "recall_at_3": "100.0%",
+  "recall_at_3": "87.5%",
   "recall_at_5": "100.0%",
   "math_accuracy": "100.0%",
   "hallucination_rate": "0.0%",
-  "measurements_routing_accuracy": "100.0%",
+  "measurements_routing_accuracy": "75.0%",
   "short_entity_recognition": "83.3%",
   "latency_ms": {
-    "p50": 1.2,
-    "p90": 11.43,
-    "p95": 12.99,
-    "mean": 3.19,
+    "p50": 0.12,
+    "p90": 6.02,
+    "p95": 7.96,
+    "mean": 1.59,
     "min": 0.0,
-    "max": 16.85
+    "max": 17.44
   },
-  "avg_tokens_per_turn": 236,
-  "timestamp": "2026-10-31 14:00:46"
+  "avg_tokens_per_turn": 201,
+  "timestamp": "2026-11-04 17:16:03"
 }

@@ -120,55 +120,56 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # 2. Hybrid RAG retrieval: vector + tsvector full-text + trigram merged via RRF (k=60)
+    # 2. Hybrid RAG retrieval: vector (pgvector) + tsvector full-text + trigram merged via RRF (k=60)
+    # Zero brittle keyword gating: natural questions (projects, architecture, past decisions) are searched directly
     relevant_mems = []
-    _MEM_INTENT_KWS = (
-        "glucose", "sugar", "reading", "bp", "weight", "height", "diet", "medicine",
-        "doctor", "report", "saved", "note", "yaad", "remember", "record", "kya tha",
-        "kya thi", "mera", "meri", "mere", "my", "mine", "maine", "mene", "usne", "profile",
-        "habit", "kl ke", "kal ke", "aaj ke", "pichla", "previous", "history", "blood",
-        "fasting", "pp", "test", "check", "contact", "contacts", "call", "baat", "commitment",
-        "kaam", "purpose", "reason", "unko", "un dono", "mail", "email", "sent", "bheja", "bheji", "subject",
-        "khaya", "khana", "piya", "food", "lunch", "dinner", "breakfast", "pizza", "gaya", "kiya", "oct", "nov", "dec", "jan",
-        "address", "location", "delivery", "ghar", "home", "office", "pincode", "blinkit", "road"
-    )
-    should_search_hybrid = any(kw in low for kw in _MEM_INTENT_KWS) or len(user_text.split()) > 10
-    if should_search_hybrid:
-        try:
-            raw_mems = search_memories_hybrid(user_id, user_text, limit=6, min_score=0.015)
-            for rm in raw_mems:
-                if rm.get("status") == "archived":
-                    continue
-                if rm.get("memory_type") in ("reminder", "alarm", "task") or "remind" in (rm.get("content") or "").lower():
-                    continue
-                relevant_mems.append(rm)
-                if len(relevant_mems) >= 4:
-                    break
+    projects = []
+    working_ctx = {}
+    try:
+        from memory.store import search_project_memory, get_working_context
+        projects = search_project_memory(user_id, user_text, limit=3)
+        working_ctx = get_working_context(chat_id)
+    except Exception as prj_err:
+        pass
 
-            # Also query pgvector memory bubbles (travel, health, finance, work)
-            try:
-                bubble_mems = db.search_bubble_memories_cosine(chat_id, user_text, limit=3, min_similarity=0.45)
-                seen_ids = {m.get("id") for m in relevant_mems}
-                for bm in bubble_mems:
-                    bm_content = (bm.get("content") or "").lower()
-                    if "remind" in bm_content or bm.get("bubble_slug") == "reminder":
-                        continue
-                    if bm.get("id") not in seen_ids:
-                        relevant_mems.append({
-                            "id": bm["id"],
-                            "memory_type": bm.get("bubble_slug", "note"),
-                            "title": bm.get("title"),
-                            "content": bm.get("content"),
-                            "bubble_slug": bm.get("bubble_slug"),
-                            "ocr_extracted_text": bm.get("ocr_extracted_text"),
-                            "created_at": bm.get("created_at")
-                        })
-                        if len(relevant_mems) >= 6:
-                            break
-            except Exception:
-                pass
+    try:
+        raw_mems = search_memories_hybrid(user_id, user_text, limit=8, min_score=0.010)
+        seen_ids = set()
+        for rm in raw_mems:
+            if rm.get("status") in ("archived", "deleted"):
+                continue
+            if rm.get("memory_type") in ("reminder", "alarm", "task") or "remind" in (rm.get("content") or "").lower():
+                continue
+            if rm["id"] not in seen_ids:
+                seen_ids.add(rm["id"])
+                relevant_mems.append(rm)
+            if len(relevant_mems) >= 5:
+                break
+
+        # Also query pgvector memory bubbles (travel, health, finance, work)
+        try:
+            bubble_mems = db.search_bubble_memories_cosine(chat_id, user_text, limit=3, min_similarity=0.40)
+            for bm in bubble_mems:
+                bm_content = (bm.get("content") or "").lower()
+                if "remind" in bm_content or bm.get("bubble_slug") == "reminder":
+                    continue
+                if bm.get("id") not in seen_ids:
+                    seen_ids.add(bm["id"])
+                    relevant_mems.append({
+                        "id": bm["id"],
+                        "memory_type": bm.get("bubble_slug", "note"),
+                        "title": bm.get("title"),
+                        "content": bm.get("content"),
+                        "bubble_slug": bm.get("bubble_slug"),
+                        "ocr_extracted_text": bm.get("ocr_extracted_text"),
+                        "created_at": bm.get("created_at")
+                    })
+                    if len(relevant_mems) >= 7:
+                        break
         except Exception:
-            relevant_mems = []
+            pass
+    except Exception:
+        relevant_mems = []
 
     # 2.1 Exact Temporal Date Filtered Retrieval (e.g. '10 oct ko kya khaya tha?', '15 nov ko kya hua tha')
     date_match = re.search(r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)\b', user_text, re.I)
@@ -234,6 +235,26 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
 
     # Format into context string
     lines = ["<memory>"]
+
+    if working_ctx and (working_ctx.get("active_project") or working_ctx.get("current_task")):
+        lines.append("[Active Working Memory & State (Survives Restarts)]:")
+        if working_ctx.get("active_project"):
+            lines.append(f"• Active Project: {working_ctx['active_project']}")
+        if working_ctx.get("current_topic"):
+            lines.append(f"• Current Topic: {working_ctx['current_topic']}")
+        if working_ctx.get("current_task"):
+            lines.append(f"• Ongoing Task: {working_ctx['current_task']}")
+        lines.append("")
+
+    if projects:
+        lines.append("[User Active Projects & Architectures]:")
+        for p in projects:
+            p_arch = f" | Architecture/Stack: {p['tech_stack']}" if p.get("tech_stack") else ""
+            p_obj = f" | Objective: {p['objective']}" if p.get("objective") else ""
+            p_tasks = f" | Tasks: {p['current_tasks']}" if p.get("current_tasks") else ""
+            p_dec = f" | Key Decisions: {p['decisions']}" if p.get("decisions") else ""
+            lines.append(f"• Project: {p['name']}{p_obj}{p_arch}{p_tasks}{p_dec}")
+        lines.append("")
 
     if core_profile:
         lines.append("[Core User Profile & Hard Constraints]:")

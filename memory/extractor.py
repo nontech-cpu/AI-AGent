@@ -76,7 +76,18 @@ Output valid JSON ONLY with this schema:
       "subject": "user" or "friend" or "Name",
       "fact": "Factual statement with absolute date (e.g. '2026-10-30: Friend fasting blood sugar was 84 mg/dL')",
       "category": "health" or "preference" or "personal" or "work",
+      "action": "ADD" or "UPDATE" or "DELETE" or "NOOP",
       "event_date": "YYYY-MM-DD"
+    }
+  ],
+  "projects": [
+    {
+      "name": "Project Name (e.g. 'CCTV Monitoring' or 'PeculiarAI')",
+      "objective": "High level goal of project",
+      "tech_stack": "Technologies used (e.g. 'Python, OpenCV, PostgreSQL')",
+      "architecture": "Architecture details",
+      "current_tasks": "Pending or completed tasks",
+      "decisions": "Important technical/architectural decisions"
     }
   ],
   "corrections": [
@@ -302,24 +313,49 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                     subj_eid = existing["id"] if existing else save_entity(user_id, subj_str)
 
             ev_date = fact_item.get("event_date") or today_iso
+            fact_action = fact_item.get("action", "ADD")
 
-            # Phase 2: Memory write consolidation (ADD / UPDATE / NOOP / DELETE)
-            from memory.store import consolidate_and_save_fact
-            action, mem_id = consolidate_and_save_fact(
+            # Phase 1: Memory write consolidation (ADD / UPDATE / NOOP / DELETE)
+            from memory.store import consolidate_memory_item
+            res_cons = consolidate_memory_item(
                 user_id=user_id,
+                action=fact_action,
                 content=fact_str,
-                subject_entity_id=subj_eid,
-                memory_type="semantic_fact",
-                structured={"category": fact_item.get("category", "general"), "event_date": ev_date},
-                importance=fact_item.get("importance", 3)
+                category=fact_item.get("category", "general"),
+                importance=fact_item.get("importance", 3),
+                confidence=0.95,
+                entity_id=subj_eid
             )
 
             # Verification read-back
-            if mem_id and hasattr(db, "save_user_fact") and action in ("ADD", "UPDATE"):
+            if res_cons.get("status") in ("added", "updated") and hasattr(db, "save_user_fact"):
                 try:
                     db.save_user_fact(chat_id, fact_str, fact_item.get("category", "general"))
                 except Exception:
                     pass
+
+        # 4.5. Phase 2: Persist Projects & Active Working Context
+        for prj in parsed.get("projects", []):
+            p_name = prj.get("name", "").strip()
+            if p_name and len(p_name) >= 2:
+                try:
+                    from memory.store import save_project_context, save_working_context
+                    pid = save_project_context(
+                        user_id=user_id,
+                        name=p_name,
+                        objective=prj.get("objective"),
+                        tech_stack=prj.get("tech_stack"),
+                        architecture=prj.get("architecture"),
+                        current_tasks=prj.get("current_tasks"),
+                        decisions=prj.get("decisions")
+                    )
+                    save_working_context(
+                        chat_id=chat_id,
+                        active_project=p_name,
+                        current_topic=f"Working on {p_name}"
+                    )
+                except Exception as prj_save_err:
+                    logger.warning(f"Error saving project context: {prj_save_err}")
 
         # 5. Persist Corrections (Self-Learning from User Feedback)
         for corr in parsed.get("corrections", []):
