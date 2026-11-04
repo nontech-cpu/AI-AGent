@@ -3359,83 +3359,41 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
     Intelligent Dynamic Tool Routing:
     - Core baseline tools are ALWAYS provided (Reminders, Schedule, Contacts, Memory, Integrations, Places, Web).
     - Relevant domain tools (GitHub, Notion, Email, Weather, Lists, Finance) are dynamically attached based on user intent.
-    - Keeps Groq prompt token usage well below TPM limits (prevents 429 errors and RAM bloat).
+    - Zero RAM overhead: eliminates cold-start blocking loops.
     """
-    from memory.store import embed_text
-    domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
-
-    # Pre-embed domain tool descriptions if not cached
-    for dt in domain_tools:
-        fn_name = dt["function"]["name"]
-        if fn_name not in _DOMAIN_TOOL_EMBED_CACHE:
-            desc = dt["function"].get("description", "")
-            emb = embed_text(f"{fn_name}: {desc}", is_query=False)
-            if emb:
-                _DOMAIN_TOOL_EMBED_CACHE[fn_name] = emb
-
     core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
-    user_emb = embed_text(user_text, is_query=True)
-    if not user_emb or not _DOMAIN_TOOL_EMBED_CACHE:
-        extra_tools = []
-        low = user_text.lower()
-        for dt in domain_tools:
-            fname = dt["function"]["name"]
-            if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in low for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
-                extra_tools.append(dt)
-            elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in low for w in ("notion", "workspace", "notes section", "note", "notes", "code block", "heading")):
-                extra_tools.append(dt)
-            elif fname in ("send_email", "search_user_emails") and any(w in low for w in ("mail", "email", "gmail", "inbox", "sent")):
-                extra_tools.append(dt)
-            elif fname in ("get_weather",) and any(w in low for w in ("weather", "mausam", "temperature", "rain", "barish", "cold", "garmi")):
-                extra_tools.append(dt)
-            elif fname in ("convert_currency", "get_market_price", "calculate") and any(w in low for w in ("currency", "dollar", "usd", "inr", "convert", "gold", "silver", "bitcoin", "crypto", "calc", "%", "hisaab")):
-                extra_tools.append(dt)
-            elif fname in ("request_master_privacy_wipe", "clear_chat_history") and any(w in low for w in ("wipe", "clear chat", "delete my data", "saari memory", "clear memory")):
-                extra_tools.append(dt)
-            elif fname in ("manage_smart_list",) and any(w in low for w in ("list", "smart list", "grocery", "saman", "items")):
-                extra_tools.append(dt)
-            elif fname in ("get_movie_showtimes",) and any(w in low for w in ("movie", "cinema", "showtime", "theatre")):
-                extra_tools.append(dt)
-            elif fname in ("create_packing_list",) and any(w in low for w in ("packing", "luggage", "travel list", "pack")):
-                extra_tools.append(dt)
-            elif fname in ("get_measurements", "get_memory_health_radar") and any(w in low for w in ("sugar", "glucose", "bp", "blood pressure", "health", "reading")):
-                extra_tools.append(dt)
-            elif fname in ("check_availability", "get_meet_link", "update_meeting", "delete_meeting") and any(w in low for w in ("meeting", "meet", "slot", "free slot", "availability", "clash")):
-                extra_tools.append(dt)
-        return core_tools + extra_tools
+    low = (user_text or "").lower().strip()
 
-    # Score domain tools by semantic similarity
-    scored_domain = []
-    for dt in domain_tools:
-        fn_name = dt["function"]["name"]
-        t_emb = _DOMAIN_TOOL_EMBED_CACHE.get(fn_name)
-        if t_emb:
-            sim = _cosine_similarity(user_emb, t_emb)
-            scored_domain.append((sim, dt))
+    # Fast-path: Greetings and short casual phrases need only core tools (0ms)
+    if not low or low in ("hi", "hello", "hey", "hlo", "hii", "namaste", "ping", "test", "ok", "okay", "bye") or (len(low.split()) == 1 and low in ("hi", "hello", "hey", "hlo", "hii")):
+        return core_tools
 
-    scored_domain.sort(key=lambda x: x[0], reverse=True)
+    domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
+    extra_tools = []
 
-    # Pick top domain tools with sim >= 0.18 (up to 5)
-    selected_domain_tools = [
-        dt for sim, dt in scored_domain[:5]
-        if sim >= 0.18
-    ]
-
-    # Always guarantee mandatory tools matching user's explicit domain keywords
-    low = user_text.lower()
-    mandatory_tools = []
     for dt in domain_tools:
         fname = dt["function"]["name"]
         if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in low for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
-            if dt not in mandatory_tools:
-                mandatory_tools.append(dt)
-        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in low for w in ("notion", "workspace", "notes section", "code block", "heading as heading")):
-            if dt not in mandatory_tools:
-                mandatory_tools.append(dt)
+            extra_tools.append(dt)
+        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in low for w in ("notion", "workspace", "notes section", "note", "notes", "code block", "heading")):
+            extra_tools.append(dt)
+        elif fname in ("send_email", "search_user_emails") and any(w in low for w in ("mail", "email", "gmail", "inbox", "sent")):
+            extra_tools.append(dt)
+        elif fname in ("get_weather",) and any(w in low for w in ("weather", "mausam", "temperature", "rain", "barish", "cold", "garmi")):
+            extra_tools.append(dt)
+        elif fname in ("convert_currency", "get_market_price", "calculate") and any(w in low for w in ("currency", "dollar", "usd", "inr", "convert", "gold", "silver", "bitcoin", "crypto", "calc", "%", "hisaab")):
+            extra_tools.append(dt)
+        elif fname in ("request_master_privacy_wipe", "clear_chat_history") and any(w in low for w in ("wipe", "clear chat", "delete my data", "saari memory", "clear memory")):
+            extra_tools.append(dt)
+        elif fname in ("manage_smart_list",) and any(w in low for w in ("list", "smart list", "grocery", "saman", "items")):
+            extra_tools.append(dt)
+        elif fname in ("get_movie_showtimes",) and any(w in low for w in ("movie", "cinema", "showtime", "theatre")):
+            extra_tools.append(dt)
+        elif fname in ("create_packing_list",) and any(w in low for w in ("packing", "luggage", "travel list", "pack")):
+            extra_tools.append(dt)
+        elif fname in ("get_measurements", "get_memory_health_radar") and any(w in low for w in ("sugar", "glucose", "bp", "blood pressure", "health", "reading")):
+            extra_tools.append(dt)
+        elif fname in ("check_availability", "get_meet_link", "update_meeting", "delete_meeting") and any(w in low for w in ("meeting", "meet", "slot", "free slot", "availability", "clash")):
+            extra_tools.append(dt)
 
-    combined = list(mandatory_tools)
-    for dt in selected_domain_tools:
-        if dt not in combined:
-            combined.append(dt)
-
-    return core_tools + combined
+    return core_tools + extra_tools

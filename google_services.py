@@ -6,8 +6,11 @@ import base64
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 import httpx
+import logging
 from db import engine, text, get_google_token
 from google_auth import decrypt_token, refresh_access_token
+
+logger = logging.getLogger("google_services")
 
 GOOGLE = 'https://www.googleapis.com'
 

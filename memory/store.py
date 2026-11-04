@@ -160,7 +160,8 @@ def _init_sqlite_if_needed():
 
 def _get_embedding_model():
     """Lazy load FastEmbed embedding model (sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, 384 dimensions)."""
-    if os.getenv("DISABLE_LOCAL_EMBEDDINGS", "0").lower() in ("1", "true", "yes"):
+    # If Gemini API key is available or local embeddings disabled, avoid loading heavy ONNX model in RAM
+    if os.getenv("GEMINI_API_KEY") or os.getenv("DISABLE_LOCAL_EMBEDDINGS", "0").lower() in ("1", "true", "yes"):
         return None
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
@@ -175,6 +176,31 @@ def _get_embedding_model():
 
 _EMBED_QUERY_CACHE: dict = {}
 
+def _embed_with_gemini(content: str, is_query: bool = False) -> Optional[List[float]]:
+    """Generates 384-dimensional vector embedding using Google Gemini Cloud API (0 MB local RAM)."""
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        return None
+    import requests
+    # Try models in order: gemini-embedding-2-preview, then gemini-embedding-001
+    for model_name in ("gemini-embedding-2-preview", "gemini-embedding-001"):
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:embedContent?key={gemini_key}"
+            payload = {
+                "model": f"models/{model_name}",
+                "content": {"parts": [{"text": content.strip()}]},
+                "outputDimensionality": 384
+            }
+            res = requests.post(url, json=payload, timeout=5.0)
+            if res.status_code == 200:
+                data = res.json()
+                values = data.get("embedding", {}).get("values")
+                if values and len(values) == 384:
+                    return values
+        except Exception as exc:
+            logger.debug(f"Gemini embedding ({model_name}) error: {exc}")
+    return None
+
 def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
     """Generates 384-dimensional dense vector embedding or returns None on error."""
     if not content or not content.strip():
@@ -182,6 +208,16 @@ def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
     cache_key = (content.strip().lower(), is_query)
     if cache_key in _EMBED_QUERY_CACHE:
         return _EMBED_QUERY_CACHE[cache_key]
+
+    # 1. Primary: Cloud Gemini 384-dim embeddings (0 MB RAM on Render)
+    vec = _embed_with_gemini(content, is_query=is_query)
+    if vec and len(vec) == 384:
+        if len(_EMBED_QUERY_CACHE) > 1000:
+            _EMBED_QUERY_CACHE.clear()
+        _EMBED_QUERY_CACHE[cache_key] = vec
+        return vec
+
+    # 2. Secondary fallback: Local FastEmbed (only if Gemini not available and local allowed)
     model = _get_embedding_model()
     if not model:
         return None
@@ -191,7 +227,7 @@ def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
         if embeddings:
             vec = embeddings[0].tolist()
             if vec and len(vec) == 384:
-                if len(_EMBED_QUERY_CACHE) > 500:
+                if len(_EMBED_QUERY_CACHE) > 1000:
                     _EMBED_QUERY_CACHE.clear()
                 _EMBED_QUERY_CACHE[cache_key] = vec
                 return vec
