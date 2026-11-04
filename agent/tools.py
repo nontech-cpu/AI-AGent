@@ -934,12 +934,12 @@ TOOL_DEFINITIONS = [
                         "description": "Category e.g. 'mall', 'shopping mall', 'market', 'coffee shop', 'cafe', 'restaurant'."
                     },
                     "area": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "Area or neighbourhood e.g. 'Sardarpura', 'Ratanada', or null for city-wide."
                     },
                     "city": {
-                        "type": "string",
-                        "description": "City name e.g. 'Jodhpur', 'Jaipur'."
+                        "type": ["string", "null"],
+                        "description": "City name e.g. 'Jodhpur', 'Jaipur', or null for default city."
                     }
                 },
                 "required": ["category"]

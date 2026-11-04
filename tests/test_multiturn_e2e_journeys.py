@@ -248,6 +248,44 @@ async def test_universal_connector_link_semantic_directives():
     assert "NEVER output website URLs or manual instructions on how to copy a URL from a browser address bar!" in prompt
 
 
+@pytest.mark.asyncio
+async def test_multi_account_identity_unification_and_places_grounding():
+    """
+    Verifies that:
+    1. Secondary account 1234828592 canonically maps to 1758056012.
+    2. Prompt size is compact with zero duplicate timeline block explosions.
+    3. find_nearby_places handles null area/city in schema without Groq validation failures.
+    4. Specific places like kmall generate targeted place lookup queries.
+    """
+    import db
+    from agent.prompt import build_runtime_system_prompt
+    from agent.tools import TOOL_DEFINITIONS
+    from utilities import find_nearby_places
+
+    # 1. Canonical Account Mapping
+    assert db.canonical_chat_id(1234828592) == 1758056012
+    linked = db.get_all_linked_chat_ids(1234828592)
+    assert 1758056012 in linked
+    assert 1234828592 in linked
+
+    # 2. Compact Prompt Size & Single Timeline Block
+    prompt = await build_runtime_system_prompt(1234828592, "Bhy jodhpur m konse mall h?")
+    assert len(prompt) < 18000
+    assert prompt.count("Active 4D Reality Timeline") <= 1
+
+    # 3. Tool Schema allows nullable area/city
+    places_tool = next(t for t in TOOL_DEFINITIONS if t["function"]["name"] == "find_nearby_places")
+    props = places_tool["function"]["parameters"]["properties"]
+    assert "null" in props["area"]["type"]
+    assert "null" in props["city"]["type"]
+
+    # 4. Domain-smart Queries
+    kmall_res = await find_nearby_places("kmall", city="Jodhpur")
+    assert "kmall" in kmall_res["search_query"].lower()
+    assert "location address website" in kmall_res["search_query"].lower()
+
+
+
 
 
 

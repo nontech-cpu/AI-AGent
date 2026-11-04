@@ -542,7 +542,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Only for simple, single-action commands. If user combined multiple actions (and, aur, bhi, pehle), let the agent chain tools naturally!
                 has_multi_intents = any(kw in user_text.lower() for kw in (" and ", " aur ", " b ", " bhi ", " fir ", " then ", " pehle ", " sath ", " with "))
                 if not has_multi_intents and len(tool_calls) == 1 and len(tool_results_list) == 1:
-                    if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list", "find_nearby_places"):
+                    if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list"):
                         if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
                             final_reply = tool_result["message"]
                             break

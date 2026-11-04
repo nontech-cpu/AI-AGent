@@ -129,7 +129,8 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         "habit", "kl ke", "kal ke", "aaj ke", "pichla", "previous", "history", "blood",
         "fasting", "pp", "test", "check", "contact", "contacts", "call", "baat", "commitment",
         "kaam", "purpose", "reason", "unko", "un dono", "mail", "email", "sent", "bheja", "bheji", "subject",
-        "khaya", "khana", "piya", "food", "lunch", "dinner", "breakfast", "pizza", "gaya", "kiya", "oct", "nov", "dec", "jan"
+        "khaya", "khana", "piya", "food", "lunch", "dinner", "breakfast", "pizza", "gaya", "kiya", "oct", "nov", "dec", "jan",
+        "address", "location", "delivery", "ghar", "home", "office", "pincode", "blinkit", "road"
     )
     should_search_hybrid = any(kw in low for kw in _MEM_INTENT_KWS) or len(user_text.split()) > 10
     if should_search_hybrid:
@@ -219,15 +220,15 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     except Exception:
         facts = []
 
-    # Include active bookings/travel facts if query relates to travel, tickets, documents, or morning context
+    # Include active bookings/travel/address facts if query relates to travel, tickets, documents, address, or morning context
     try:
         lower_q = (user_text or "").lower()
-        if any(w in lower_q for w in ("ticket", "flight", "train", "pnr", "booking", "plane", "travel", "sub", "subah", "bheja", "bhji", "document", "documents")):
-            top_user_facts = db.get_user_facts(chat_id, limit=5)
+        if any(w in lower_q for w in ("ticket", "flight", "train", "pnr", "booking", "plane", "travel", "sub", "subah", "bheja", "bhji", "document", "documents", "address", "location", "pincode", "delivery", "ghar", "home", "blinkit")):
+            top_user_facts = db.get_user_facts(chat_id, limit=8)
             for uf in top_user_facts:
                 f_text = uf.get("fact", "")
-                if any(w in f_text.lower() for w in ("booking", "ticket", "flight", "pnr", "train", "airways")):
-                    facts.append({"id": uf.get("id"), "fact": f_text, "category": uf.get("category", "booking")})
+                if any(w in f_text.lower() for w in ("booking", "ticket", "flight", "pnr", "train", "airways", "address", "pincode", "road", "jodhpur", "delivery", "blinkit", "home")):
+                    facts.append({"id": uf.get("id"), "fact": f_text, "category": uf.get("category", "personal")})
     except Exception:
         pass
 

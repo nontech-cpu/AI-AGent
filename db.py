@@ -470,8 +470,9 @@ def remove_email_link(chat_id):
 
 # ---------- Canonical User Identity Mapping ----------
 # Maps secondary device/Telegram accounts of the same user to their primary data ID
-# By default empty for strict multi-user tenant isolation: each user/chat remains 100% private
-CANONICAL_CHAT_ID_MAP = {}
+CANONICAL_CHAT_ID_MAP = {
+    1234828592: 1758056012,  # Neerav secondary account (Nirav / @Niirav18) -> Primary Account (Neerav)
+}
 
 def canonical_chat_id(chat_id):
     try:

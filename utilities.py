@@ -882,23 +882,42 @@ async def get_movie_showtimes(city: str = "Jodhpur", area: Optional[str] = "Sard
 
 async def find_nearby_places(category: str, area: Optional[str] = None, city: str = "Jodhpur") -> Dict[str, Any]:
     """
-    Finds real, verified local places, cafes, and restaurants by querying live search engines (Swiggy, Zomato, TripAdvisor).
+    Finds real, verified local places, malls, cafes, and restaurants by querying live search engines.
     Strictly zero mock lists, zero hardcoded fake names.
     """
     clean_cat = (category or "").strip()
     clean_area = (area or "").strip()
     clean_city = (city or "Jodhpur").strip()
 
-    # Query live search with targeted terms
-    query = f"{clean_cat} in {clean_area} {clean_city} zomato swiggy tripadvisor".strip()
+    cat_lower = clean_cat.lower().replace("-", " ").strip()
+    is_generic_mall = cat_lower in ("mall", "malls", "shopping mall", "shopping malls", "market", "markets", "bazaar")
+    is_generic_food = cat_lower in ("cafe", "cafes", "coffee shop", "coffee", "restaurant", "restaurants", "food", "dining", "dhaba")
+
+    if is_generic_mall:
+        query = f"top shopping malls in {clean_area} {clean_city} list directory".strip()
+    elif is_generic_food:
+        query = f"best {clean_cat} in {clean_area} {clean_city} zomato tripadvisor".strip()
+    else:
+        # Specific place / brand inquiry (e.g. 'kmall', 'k mall', 'ashapurna', 'starbucks')
+        query = f"{clean_cat} {clean_area} {clean_city} location address website timing".strip()
+
     search_res = await search_web(query, max_results=5)
     results = search_res.get("results", [])
 
     # If results are sparse, also check city-wide top places
     if len(results) < 2 and clean_area:
-        broad_query = f"top authentic {clean_cat} in {clean_city} zomato tripadvisor"
+        broad_query = f"top {clean_cat} in {clean_city} list"
         broad_res = await search_web(broad_query, max_results=4)
         results.extend(broad_res.get("results", []))
+
+    formatted_items = []
+    for r in results[:6]:
+        title = r.get("title", "")
+        snip = r.get("snippet", "")
+        url = r.get("url", "")
+        formatted_items.append(f"• {title}: {snip} (Link: {url})")
+
+    summary_text = "\n".join(formatted_items) if formatted_items else f"No verified listings found for {clean_cat} in {clean_area or clean_city}."
 
     return {
         "status": "success",
@@ -907,7 +926,7 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: st
         "category": clean_cat,
         "search_query": query,
         "results": results[:6],
-        "message": f"Live search results for {clean_cat} in {clean_area or clean_city} fetched successfully."
+        "message": summary_text
     }
 
 
