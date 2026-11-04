@@ -801,6 +801,20 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_notion_page_content",
+            "description": "Reads and returns the text, headings, code blocks, and notes inside a specific Notion page or section.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page_id_or_title": {"type": "string", "description": "The title, ID, or URL of the Notion page to read (e.g. 'FastAPI Quick Notes', 'Notes', 'DSA NOTES')."}
+                },
+                "required": ["page_id_or_title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
             "description": "Ask the user a single structured question when a required parameter is missing or ambiguous.",
             "parameters": {
@@ -2686,6 +2700,64 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             else:
                 return {"status": "error", "message": msg}
 
+        elif tool_name == "list_notion_pages":
+            query = arguments.get("query")
+            token_row = db.get_user_integration(chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            if not api_key:
+                return {
+                    "status": "error",
+                    "message": "Notion account is not connected. Type 'connect notion' to connect your workspace."
+                }
+
+            pages = await integrations.list_notion_pages(token=api_key, query=query)
+            if not pages:
+                return {
+                    "status": "success",
+                    "count": 0,
+                    "pages": [],
+                    "message": "Aapke Notion workspace me koi pages ya notes nahi mile."
+                }
+
+            lines = [f"📚 **Aapke Notion Pages & Notes ({len(pages)}):**\n"]
+            for p in pages:
+                lines.append(f"• **{p['title']}**\n  🔗 Link: {p['url']}")
+
+            return {
+                "status": "success",
+                "count": len(pages),
+                "pages": pages,
+                "message": "\n\n".join(lines)
+            }
+
+        elif tool_name == "get_notion_page_content":
+            page_id_or_title = arguments.get("page_id_or_title") or arguments.get("title") or arguments.get("page")
+            token_row = db.get_user_integration(chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            if not api_key:
+                return {
+                    "status": "error",
+                    "message": "Notion account is not connected. Type 'connect notion' to connect your workspace."
+                }
+
+            ok, content, pg_url = await integrations.get_notion_page_content(api_key, page_id_or_title)
+            if ok:
+                link_str = f"\n\n🔗 Link: {pg_url}" if pg_url else ""
+                return {
+                    "status": "success",
+                    "content": content,
+                    "url": pg_url or "",
+                    "message": f"{content}{link_str}"
+                }
+            else:
+                return {"status": "error", "message": content}
+
         elif tool_name == "list_github_repos":
             args = ListGitHubReposArgs(**arguments)
             req_username = args.username
@@ -3273,7 +3345,7 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
             fname = dt["function"]["name"]
             if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in low for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
                 extra_tools.append(dt)
-            elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages") and any(w in low for w in ("notion", "workspace")):
+            elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in low for w in ("notion", "workspace", "notes section", "note", "notes", "code block", "heading")):
                 extra_tools.append(dt)
             elif fname in ("send_email", "search_user_emails") and any(w in low for w in ("mail", "email", "gmail", "inbox", "sent")):
                 extra_tools.append(dt)
@@ -3312,4 +3384,21 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
         if sim >= 0.18
     ]
 
-    return core_tools + selected_domain_tools
+    # Always guarantee mandatory tools matching user's explicit domain keywords
+    low = user_text.lower()
+    mandatory_tools = []
+    for dt in domain_tools:
+        fname = dt["function"]["name"]
+        if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in low for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
+            if dt not in mandatory_tools:
+                mandatory_tools.append(dt)
+        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in low for w in ("notion", "workspace", "notes section", "code block", "heading as heading")):
+            if dt not in mandatory_tools:
+                mandatory_tools.append(dt)
+
+    combined = list(mandatory_tools)
+    for dt in selected_domain_tools:
+        if dt not in combined:
+            combined.append(dt)
+
+    return core_tools + combined

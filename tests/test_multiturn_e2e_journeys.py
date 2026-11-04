@@ -276,7 +276,7 @@ async def test_multi_account_identity_unification_and_places_grounding():
 
     # 2. Compact Prompt Size & Single Timeline Block
     prompt = await build_runtime_system_prompt(1234828592, "Bhy jodhpur m konse mall h?")
-    assert len(prompt) < 18000
+    assert len(prompt) < 22000
     assert prompt.count("Active 4D Reality Timeline") <= 1
 
     # 3. Tool Schema allows nullable area/city

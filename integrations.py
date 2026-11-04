@@ -794,6 +794,99 @@ async def list_notion_pages(token: str, query: Optional[str] = None) -> List[Dic
         return []
 
 
+async def get_notion_page_content(token: str, page_id_or_title: str) -> Tuple[bool, str, Optional[str]]:
+    """
+    Fetches the blocks and readable contents of a Notion page by ID, URL, or title search.
+    Returns (success, formatted_text, page_url).
+    """
+    clean_token = (token or "").strip()
+    if not clean_token:
+        clean_token = os.getenv("NOTION_API_KEY", "").strip()
+    if not clean_token:
+        return False, "Notion token is missing. Please connect Notion first.", None
+
+    headers = {
+        "Authorization": f"Bearer {clean_token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+
+    target = (page_id_or_title or "").strip()
+    if not target:
+        return False, "Missing page title or ID.", None
+
+    # Resolve UUID or match page title
+    clean_id = None
+    page_url = None
+    page_title = target
+
+    # Check if target contains UUID
+    uuid_pattern = r'[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}'
+    match = re.search(uuid_pattern, target)
+    if match:
+        raw_uuid = match.group(0).replace("-", "")
+        clean_id = f"{raw_uuid[0:8]}-{raw_uuid[8:12]}-{raw_uuid[12:16]}-{raw_uuid[16:20]}-{raw_uuid[20:32]}"
+    else:
+        # Search page by title
+        pages = await list_notion_pages(clean_token)
+        for p in pages:
+            t = p.get("title", "").lower()
+            if target.lower() in t or t in target.lower():
+                clean_id = p.get("id")
+                page_url = p.get("url")
+                page_title = p.get("title")
+                break
+        if not clean_id and pages:
+            # Check if user asked for "notes" or general notes and there's a note page
+            if any(k in target.lower() for k in ("note", "notes", "notes section")):
+                for p in pages:
+                    if "note" in p.get("title", "").lower():
+                        clean_id = p.get("id")
+                        page_url = p.get("url")
+                        page_title = p.get("title")
+                        break
+
+    if not clean_id:
+        return False, f"Could not find a Notion page matching '{target}'.", None
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(f"https://api.notion.com/v1/blocks/{clean_id}/children", headers=headers)
+            if res.status_code != 200:
+                return False, f"Failed to fetch Notion blocks (Status {res.status_code})", page_url
+            data = res.json()
+            lines = [f"📄 **{page_title}**:\n"]
+            for b in data.get("results", []):
+                btype = b.get("type")
+                bdata = b.get(btype, {})
+                text_items = bdata.get("rich_text", [])
+                text_content = "".join([t.get("plain_text", "") for t in text_items])
+                if btype == "heading_1":
+                    lines.append(f"# {text_content}")
+                elif btype == "heading_2":
+                    lines.append(f"## {text_content}")
+                elif btype == "heading_3":
+                    lines.append(f"### {text_content}")
+                elif btype == "code":
+                    lang = bdata.get("language", "plain text")
+                    lines.append(f"```{lang}\n{text_content}\n```")
+                elif btype == "bulleted_list_item":
+                    lines.append(f"• {text_content}")
+                elif btype == "numbered_list_item":
+                    lines.append(f"1. {text_content}")
+                elif btype == "to_do":
+                    checked = "✅" if bdata.get("checked") else "⬜"
+                    lines.append(f"{checked} {text_content}")
+                elif text_content.strip():
+                    lines.append(text_content)
+
+            if len(lines) <= 1:
+                return True, f"📄 **{page_title}** is currently empty.", page_url
+            return True, "\n".join(lines), page_url
+    except Exception as exc:
+        return False, f"Error reading Notion page: {repr(exc)}", page_url
+
+
 
 # ==============================================================================
 # GITHUB INTEGRATION

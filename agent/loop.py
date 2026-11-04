@@ -441,7 +441,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "list_reminders", "get_schedule", "convert_currency", "get_market_price",
                     "read_webpage", "check_integrations_status", "create_reminder",
                     "delete_reminder", "create_meeting", "save_note_or_fact", "save_contact",
-                    "manage_smart_list", "create_packing_list", "send_email", "execute_python_code"
+                    "manage_smart_list", "create_packing_list", "send_email", "execute_python_code",
+                    "list_notion_pages", "get_notion_page_content", "create_notion_page", "update_notion_page",
+                    "list_github_repos", "get_github_file", "update_github_file", "list_github_issues"
                 }
             )
 
