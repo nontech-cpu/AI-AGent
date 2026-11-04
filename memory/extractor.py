@@ -187,9 +187,10 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
 
         # 1. Persist Entities
         entity_id_map = {}
+        EXCLUDED_ENTITIES = {"user", "assistant", "bot", "me", "myself", "friend", "neerav", "nirav", "admin", "ai", "companion"}
         for ent in parsed.get("entities", []):
-            name = ent.get("name")
-            if not name or len(name) < 2:
+            name = (ent.get("name") or "").strip()
+            if not name or len(name) < 2 or name.lower() in EXCLUDED_ENTITIES:
                 continue
             attrs = {}
             for k in ["company", "role_title", "email", "phone"]:
@@ -205,18 +206,20 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
             )
             entity_id_map[name.lower()] = eid
 
-            try:
-                db.save_contact_memory(
-                    chat_id=chat_id,
-                    name=name,
-                    phone=ent.get("phone") or "",
-                    email=ent.get("email") or "",
-                    role_title=ent.get("role_title") or "",
-                    company=ent.get("company") or "",
-                    context_notes=ent.get("notes") or "Saved via Cognitive Extractor"
-                )
-            except Exception:
-                pass
+            # Only save to contact_memories if real contact information exists (phone/email/role or explicit contact notes)
+            if ent.get("phone") or ent.get("email") or ent.get("role_title") or (ent.get("notes") and "contact" in ent.get("notes").lower()):
+                try:
+                    db.save_contact_memory(
+                        chat_id=chat_id,
+                        name=name,
+                        phone=ent.get("phone") or "",
+                        email=ent.get("email") or "",
+                        role_title=ent.get("role_title") or "",
+                        company=ent.get("company") or "",
+                        context_notes=ent.get("notes") or "Saved via Cognitive Extractor"
+                    )
+                except Exception:
+                    pass
 
         # 2. Persist Commitments
         for comm in parsed.get("commitments", []):

@@ -1421,45 +1421,75 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             }
 
         elif tool_name == "list_contacts":
-            try:
-                from memory.store import resolve_user_id, list_entities, get_commitments_for_user
-                uid = resolve_user_id(chat_id)
-                ents = list_entities(uid, entity_type="person")
-                if ents:
-                    res_contacts = []
-                    for e in ents:
-                        comms = get_commitments_for_user(uid, entity_id=e["id"])
-                        comm_str = "; ".join([c["commitment"] for c in comms])
-                        attrs = e.get("attributes") or {}
-                        res_contacts.append({
-                            "name": e["name"],
-                            "phone": attrs.get("phone", ""),
-                            "email": attrs.get("email", ""),
-                            "role": attrs.get("role_title") or attrs.get("role", ""),
-                            "company": attrs.get("company", ""),
-                            "notes": attrs.get("context_notes", ""),
-                            "commitments": comm_str
-                        })
-                    return {"count": len(res_contacts), "contacts": res_contacts}
-            except Exception as exc:
-                print("Cognitive list_entities fallback:", exc)
+            from memory.store import resolve_user_id
+            uid = resolve_user_id(chat_id)
 
-            contacts = db.get_contact_memories(chat_id)
-            return {
-                "count": len(contacts),
-                "contacts": [
-                    {
-                        "name": c["name"],
-                        "phone": c.get("phone", ""),
-                        "email": c.get("email", ""),
-                        "role": c.get("role_title") or c.get("role", ""),
-                        "company": c.get("company", ""),
-                        "notes": c.get("context_notes", ""),
-                        "commitments": c.get("commitments", "")
-                    }
-                    for c in contacts
-                ]
-            }
+            contacts_by_name = {}
+            EXCLUDED_NAMES = {"user", "assistant", "bot", "me", "myself", "friend", "neerav", "nirav", "admin", "ai", "companion"}
+
+            # Primary: fetch from dedicated contact_memories across unified identities
+            raw_cms = db.get_contact_memories(chat_id)
+            for cm in raw_cms:
+                c_name = cm["name"].strip()
+                if c_name.lower() in EXCLUDED_NAMES or "@" in c_name:
+                    continue
+                k = c_name.lower()
+                contacts_by_name[k] = {
+                    "name": c_name,
+                    "phone": cm.get("phone") or "",
+                    "email": cm.get("email") or "",
+                    "role": cm.get("role_title") or cm.get("role") or "",
+                    "company": cm.get("company") or "",
+                    "notes": cm.get("context_notes") or "",
+                    "commitments": cm.get("commitments") or ""
+                }
+
+            # Secondary: check cognitive entities for any additional contacts with actual contact info
+            try:
+                from memory.store import list_entities, get_commitments_for_user
+                ents = list_entities(uid, entity_type="person") or []
+                for e in ents:
+                    e_name = (e.get("name") or "").strip()
+                    if not e_name or e_name.lower() in EXCLUDED_NAMES or "@" in e_name:
+                        continue
+                    attrs = e.get("attributes") or {}
+                    phone = attrs.get("phone") or ""
+                    email = attrs.get("email") or ""
+                    role = attrs.get("role_title") or attrs.get("role") or ""
+                    notes = attrs.get("context_notes") or ""
+                    # MUST have contact details (phone, email, role, or explicit contact notes)
+                    if not (phone or email or role or (notes and "contact" in notes.lower())):
+                        continue
+                    comms = get_commitments_for_user(uid, entity_id=e["id"])
+                    comm_str = "; ".join([c["commitment"] for c in comms if c.get("commitment")])
+
+                    k = e_name.lower()
+                    if k in contacts_by_name:
+                        if phone and not contacts_by_name[k]["phone"]:
+                            contacts_by_name[k]["phone"] = phone
+                        if email and not contacts_by_name[k]["email"]:
+                            contacts_by_name[k]["email"] = email
+                        if role and not contacts_by_name[k]["role"]:
+                            contacts_by_name[k]["role"] = role
+                        if notes and (not contacts_by_name[k]["notes"] or contacts_by_name[k]["notes"] == "Saved via Cognitive Extractor"):
+                            contacts_by_name[k]["notes"] = notes
+                        if comm_str and not contacts_by_name[k]["commitments"]:
+                            contacts_by_name[k]["commitments"] = comm_str
+                    else:
+                        contacts_by_name[k] = {
+                            "name": e_name,
+                            "phone": phone,
+                            "email": email,
+                            "role": role,
+                            "company": attrs.get("company") or "",
+                            "notes": notes,
+                            "commitments": comm_str
+                        }
+            except Exception as exc:
+                logger.warning(f"Cognitive list_entities fallback: {exc}")
+
+            final_contacts = list(contacts_by_name.values())
+            return {"count": len(final_contacts), "contacts": final_contacts}
 
         elif tool_name == "update_contact_commitment":
             args = UpdateContactCommitmentArgs(**arguments)
