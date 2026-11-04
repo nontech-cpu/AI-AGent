@@ -452,24 +452,25 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 }
             )
 
-            if effective_tools:
+            if effective_tools and not is_terminal_synthesis:
                 payload["tools"] = effective_tools
-                if is_terminal_synthesis:
-                    payload["tool_choice"] = "none"
-                    payload["temperature"] = 0.4
+                # Deterministic Tool Routing for High-Confidence Actions on iteration 0
+                if iteration == 0 and any(w in low_prompt for w in ("mall", "malls", "shopping", "cafe", "restaurant", "store", "showroom", "bazaar", "nearby places")):
+                    payload["tool_choice"] = {"type": "function", "function": {"name": "find_nearby_places"}}
+                elif iteration == 0 and any(w in low_prompt for w in ("who is", "latest news", "ceo of", "stock price", "toll", "highway", "train status", "flight status")):
+                    payload["tool_choice"] = {"type": "function", "function": {"name": "search_web"}}
+                elif iteration == 0 and any(w in low_prompt for w in ("reminder", "meeting")) and any(w in low_prompt for w in ("hta", "hata", "delete", "dlt", "remove", "cancel")):
+                    payload["tool_choice"] = {"type": "function", "function": {"name": "delete_reminder"}}
+                elif iteration == 0 and any(w in low_prompt for w in ("reminder lga", "reminder laga", "reminder set", "remind me", "ka reminder", "remind kr", "remind kar", "add reminder", "set reminder", "create reminder", "reminder dal", "reminder daal", "reminder bana", "reminder lgao", "reminder lagao")) and not any(w in low_prompt for w in ("hta", "hata", "delete", "dlt", "remove", "cancel", "btana", "batao", "dikhao", "check", "list")):
+                    payload["tool_choice"] = {"type": "function", "function": {"name": "create_reminder"}}
+                elif iteration == 0 and any(w in low_prompt for w in ("reminder", "reminders", "schedule")) and any(w in low_prompt for w in ("bata", "btana", "btao", "dikhao", "dekho", "check", "kya hai", "list", "show", "what", "aaj ke reminder", "aajke reminder", "kal ke reminder", "kalke reminder", "?")):
+                    payload["tool_choice"] = {"type": "function", "function": {"name": "list_reminders"}}
                 else:
-                    # Phase 3 & 4: Deterministic Tool Routing for Real-World Facts & Places
-                    # If user asks for malls, shopping, cafes, restaurants, or live search facts, force relevant tool on iteration 0
-                    if iteration == 0 and any(w in low_prompt for w in ("mall", "malls", "shopping", "cafe", "restaurant", "store", "showroom", "bazaar", "nearby places")):
-                        payload["tool_choice"] = {"type": "function", "function": {"name": "find_nearby_places"}}
-                    elif iteration == 0 and any(w in low_prompt for w in ("who is", "latest news", "ceo of", "stock price", "toll", "highway", "train status", "flight status")):
-                        payload["tool_choice"] = {"type": "function", "function": {"name": "search_web"}}
-                    else:
-                        payload["tool_choice"] = "auto"
+                    payload["tool_choice"] = "auto"
             else:
                 payload.pop("tools", None)
                 payload.pop("tool_choice", None)
-                payload["temperature"] = 0.7
+                payload["temperature"] = 0.4 if is_terminal_synthesis else 0.7
 
             if iteration >= 1:
                 # Brief replenish pause for Groq per-second rate limit bucket
