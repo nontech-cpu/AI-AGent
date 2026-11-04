@@ -300,11 +300,11 @@ async def test_brand_store_grounding_and_zero_raw_leakage():
     from agent.prompt import build_runtime_system_prompt
     import utilities
 
-    # 1. System Prompt Rule 18 must enforce negative grounding for Zara in Jodhpur
+    # 1. System Prompt Rule 18 must enforce dynamic search grounding for brand stores
     prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "bhy jodhpur m zara ka shorrom h?")
     assert "Brand Showrooms & Store Verification" in prompt
-    assert "Zara's only physical showroom is in Jaipur (World Trade Park - WTP)" in prompt
-    assert "Nahi bhai, Jodhpur mein Zara ka koi physical showroom nahi hai" in prompt
+    assert "NEVER guess, assume, or hardcode whether a brand exists in a city!" in prompt
+    assert "H&M DOES have an official physical store in Jodhpur at K Mall, while Zara does not" in prompt
 
     # 2. Search spam filter must include deceptive directory domains
     assert "storelocatortool.com" in utilities.SPAM_DOMAINS
