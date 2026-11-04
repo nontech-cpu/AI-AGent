@@ -83,6 +83,20 @@ def estimate_event_duration(title: str, kind: str = "general", route_or_summary:
     """
     t_low = (title + " " + route_or_summary).lower()
 
+    # Explicit duration stated in title or summary
+    m_hour = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:hour|hr|ghante|ghanta)\b', t_low)
+    if m_hour:
+        return float(m_hour.group(1))
+    if re.search(r'\b(?:one|1)\s*(?:hour|hr|ghanta)\b', t_low):
+        return 1.0
+    if re.search(r'\b(?:two|2)\s*(?:hours|hrs|ghante)\b', t_low):
+        return 2.0
+    if re.search(r'\b(?:half\s*an?\s*hour|30\s*(?:min|mins|minute|minutes))\b', t_low):
+        return 0.5
+    m_min = re.search(r'\b(\d+)\s*(?:min|mins|minute|minutes)\b', t_low)
+    if m_min:
+        return float(m_min.group(1)) / 60.0
+
     # 1. Travel: Flights
     if kind == "flight" or any(k in t_low for k in ("flight", "airline", "indigo", "air india", "vistara", "spicejet", "akasa", "airport", "boarding pass")):
         # 2 hrs flight + 2 hrs airport buffer + 0.5 hrs baggage = 4.5 hours
@@ -316,6 +330,36 @@ def check_timeline_collision(
                 "hours_into_journey": round(hours_into_journey, 1),
                 "explanation": explanation,
                 "suggested_free_time": f"{span.end_dt.strftime('%d %b ko %I:%M %p')} ke baad"
+            }
+
+        # Transit Buffer / Tight Transition Check:
+        # If both are physical events on the same day, and gap between one ending and the other starting is <= 30 mins
+        gap_sec = 0
+        if candidate_start_dt >= span.end_dt:
+            gap_sec = (candidate_start_dt - span.end_dt).total_seconds()
+        elif span.start_dt >= candidate_end_dt:
+            gap_sec = (span.start_dt - candidate_end_dt).total_seconds()
+
+        is_transit_sensitive = any(k in (span.title + " " + candidate_title).lower() for k in ("movie", "theatre", "theater", "cinema", "flight", "bus", "train", "travel", "meeting", "doctor", "hospital", "date"))
+        if is_transit_sensitive and 0 <= gap_sec <= 1800:
+            gap_mins = round(gap_sec / 60.0)
+            explanation = (
+                f"Schedule Conflict / Tight Buffer Detected: Aapki '{span.title}' "
+                f"{span.start_dt.strftime('%I:%M %p')} se {span.end_dt.strftime('%I:%M %p')} tak chalegi, "
+                f"aur '{candidate_title}' {candidate_start_dt.strftime('%I:%M %p')} par scheduled ho rahi hai. "
+                f"Dono ke beech sirf {gap_mins} minutes ka transit/travel window hai, jo physically bohot tight hai."
+            )
+            return {
+                "has_conflict": True,
+                "conflict_type": "tight_buffer",
+                "blocking_event": span.title,
+                "span_start_dt": span.start_dt,
+                "span_end_dt": span.end_dt,
+                "candidate_start_dt": candidate_start_dt,
+                "overlap_duration_mins": 0,
+                "gap_mins": gap_mins,
+                "explanation": explanation,
+                "suggested_free_time": f"{(span.end_dt + timedelta(minutes=45)).strftime('%d %b ko %I:%M %p')} ke baad"
             }
 
     return None

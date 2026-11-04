@@ -312,6 +312,62 @@ async def test_brand_store_grounding_and_zero_raw_leakage():
     assert "justdial.com" in utilities.SPAM_DOMAINS
 
 
+@pytest.mark.asyncio
+async def test_multiturn_meeting_conflict_and_transit_buffer_detection():
+    """
+    Verifies that:
+    1. Setting a reminder without an explicit date defaults to today.
+    2. Duration is correctly parsed (e.g. 1 hour meeting).
+    3. Tight transit buffer (< 30 min gap before/after cinema/meeting) triggers conflict detection.
+    4. Direct time overlap triggers direct conflict detection.
+    """
+    from state.timeline import estimate_event_duration, check_timeline_collision
+    from agent.tools import execute_tool, CreateReminderArgs, TOOL_DEFINITIONS
+    import db
+    from timing import IST
+    from datetime import datetime, date, timedelta, time as dtime
+
+    # 1. Verify schema: due_date is optional and defaults to today
+    rem_def = [t for t in TOOL_DEFINITIONS if t.get("function", {}).get("name") == "create_reminder"][0]
+    assert rem_def["function"]["parameters"]["required"] == ["title"]
+
+    # 2. Duration heuristic verification
+    assert estimate_event_duration("Meeting of one hour") == 1.0
+    assert estimate_event_duration("Meeting is of 2 hours") == 2.0
+    assert estimate_event_duration("30 mins sync") == 0.5
+    assert estimate_event_duration("Movie date") == 2.5
+
+    # 3. Setting a 1-hour meeting at 3:00 PM without date defaults to today
+    today_d = datetime.now(IST).date()
+    res1 = await execute_tool(
+        TEST_CHAT_ID,
+        "create_reminder",
+        {"title": "Project Meeting", "due_time": "15:00", "duration_minutes": 60}
+    )
+    assert res1.get("status") == "success"
+    assert res1.get("due_date") == today_d.isoformat()
+
+    # 4. Scheduling a direct overlap (3:30 PM call) must detect conflict
+    res_overlap = await execute_tool(
+        TEST_CHAT_ID,
+        "create_reminder",
+        {"title": "Client Call", "due_time": "15:30", "duration_minutes": 30}
+    )
+    assert res_overlap.get("status") == "conflict_detected"
+    assert res_overlap.get("has_conflict") is True
+
+    # 5. Scheduling Movie date at 4:30 PM (only 30 min transition after 4:00 PM meeting end) must detect tight buffer
+    res_buffer = await execute_tool(
+        TEST_CHAT_ID,
+        "create_reminder",
+        {"title": "Movie date", "due_time": "16:30"}
+    )
+    assert res_buffer.get("status") == "conflict_detected"
+    assert res_buffer.get("has_conflict") is True
+    assert "Project Meeting" in str(res_buffer.get("conflicts")) or "Project Meeting" in str(res_buffer.get("message"))
+
+
+
 
 
 

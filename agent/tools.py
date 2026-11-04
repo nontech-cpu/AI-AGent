@@ -91,13 +91,13 @@ class CreatePackingListArgs(BaseModel):
     trip_date: Optional[str] = Field(None, description="Date of the trip in YYYY-MM-DD format if known.")
 
 class CreateReminderArgs(BaseModel):
-    title: str = Field(..., description="Title of the reminder or task.")
-    due_date: str = Field(..., description="Due date in YYYY-MM-DD format.")
+    title: str = Field(..., description="Title of the reminder, meeting, or task.")
+    due_date: Optional[str] = Field(None, description="Due date in YYYY-MM-DD format. If omitted, defaults to today's date.")
     due_time: Optional[str] = Field(None, description="Due time in HH:MM format (24h) if specified.")
-    duration_minutes: Optional[int] = Field(None, description="Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60).")
+    duration_minutes: Optional[int] = Field(None, description="Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60, 120).")
     category: Optional[str] = Field("appointments", description="Category of reminder.")
     recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily' (for roj, daily, har din, jbtk m na khu), 'weekly', or 'none'.")
-    force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict.")
+    force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict or tight schedule.")
 
 class ListRemindersArgs(BaseModel):
     date_str: Optional[str] = Field(None, description="Optional date filter in YYYY-MM-DD format.")
@@ -499,19 +499,19 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_reminder",
-            "description": "Save a task or reminder with a due date and optional time.",
+            "description": "Save a task, meeting, or reminder with a due date and optional time. If user provides a time (e.g. '3pm', '4:30pm') but no date, due_date defaults to today's date.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Task or reminder title."},
-                    "due_date": {"type": "string", "description": "Date in YYYY-MM-DD format."},
+                    "title": {"type": "string", "description": "Task, meeting, or reminder title."},
+                    "due_date": {"type": ["string", "null"], "description": "Date in YYYY-MM-DD format. Defaults to today's date if omitted."},
                     "due_time": {"type": ["string", "null"], "description": "Time in HH:MM 24h format."},
-                    "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60)."},
+                    "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60, 120)."},
                     "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
                     "recurrence": {"type": ["string", "null"], "description": "Recurrence pattern: 'daily' for every day (roj, daily, har din, jbtk m na khu), 'weekly' for every week, or 'none' for single occurrence."},
-                    "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict exists."}
+                    "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict or tight schedule exists."}
                 },
-                "required": ["title", "due_date"]
+                "required": ["title"]
             }
         }
     },
@@ -534,7 +534,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "list_reminders",
-            "description": "List user's saved tasks and reminders, optionally filtered by date.",
+            "description": "List user's saved tasks and reminders, optionally filtered by date. Use ONLY for read-only view queries (e.g. 'mere reminders batao', 'tasks dikhao'). NEVER call this when user asks to create, set, or schedule a reminder (use create_reminder instead).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1648,7 +1648,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
         elif tool_name == "create_reminder":
             args = CreateReminderArgs(**arguments)
-            d_val = date.fromisoformat(args.due_date)
+            if not args.due_date:
+                u_tz, _ = await _resolve_user_timezone(chat_id)
+                d_val = datetime.now(u_tz).date()
+                args.due_date = d_val.isoformat()
+            else:
+                d_val = date.fromisoformat(args.due_date)
             t_val = None
             if args.due_time:
                 h, m = map(int, args.due_time.split(":")[:2])
@@ -1673,54 +1678,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
 
             matched_id_set = {mid for mid, _ in matched_existing_ids if mid is not None}
 
-            # Check for conflict against other distinct events/reminders on the same date and time
-            conflicts = []
-            for row in existing_items:
-                row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
-                row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
-                if row_id in matched_id_set:
-                    continue
-                row_time = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
-                if t_val and row_time:
-                    try:
-                        r_h = row_time.hour if hasattr(row_time, "hour") else int(str(row_time).split(":")[0])
-                        r_m = row_time.minute if hasattr(row_time, "minute") else int(str(row_time).split(":")[1])
-                        rem_start = t_val.hour * 60 + t_val.minute
-                        rem_end = rem_start + 30
-                        ex_start = r_h * 60 + r_m
-                        ex_end = ex_start + 30
-                        if (rem_start < ex_end) and (rem_end > ex_start):
-                            conflicts.append(f"'{row_title}' at {r_h:02d}:{r_m:02d}")
-                    except Exception:
-                        pass
-
-            # Also check Google Calendar for true interval overlap conflicts
-            try:
-                u_tz, _ = await _resolve_user_timezone(chat_id)
-                from main import get_unified_schedule
-                sched = await get_unified_schedule(chat_id, d_val)
-                for ev in sched.get("calendar_events", []):
-                    raw_start = ev.get("start", {}).get("dateTime")
-                    if raw_start and t_val:
-                        ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
-                        ev_raw_end = ev.get("end", {}).get("dateTime")
-                        ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
-                        rem_start = t_val.hour * 60 + t_val.minute
-                        rem_end = rem_start + 30
-                        ev_start = ev_dt.hour * 60 + ev_dt.minute
-                        ev_end = ev_end_dt.hour * 60 + ev_end_dt.minute
-                        if (rem_start < ev_end) and (rem_end > ev_start):
-                            conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' ({ev_dt.strftime('%I:%M %p')} - {ev_end_dt.strftime('%I:%M %p')})")
-            except Exception:
-                pass
-
             # 4D Continuous Timeline & Travel Transit Collision Check (World Model)
             if t_val and not getattr(args, "force", False):
                 try:
                     u_tz, _ = await _resolve_user_timezone(chat_id)
                     cand_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
-                    from state.timeline import check_timeline_collision
-                    collision = check_timeline_collision(chat_id, args.title, cand_start_dt)
+                    from state.timeline import check_timeline_collision, estimate_event_duration
+                    cand_dur_hrs = (args.duration_minutes / 60.0) if args.duration_minutes else estimate_event_duration(args.title)
+                    collision = check_timeline_collision(chat_id, args.title, cand_start_dt, candidate_duration_hours=cand_dur_hrs)
                     if collision and collision.get("has_conflict"):
                         return {
                             "status": "conflict_detected",
@@ -1737,16 +1702,84 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                 except Exception as tl_err:
                     logger.warning(f"Timeline collision check error: {tl_err}")
 
+            # Check for conflict against other distinct events/reminders on the same date and time
+            conflicts = []
+            tight_buffers = []
+            if t_val:
+                from state.timeline import estimate_event_duration
+                cand_dur = args.duration_minutes or int(estimate_event_duration(args.title) * 60)
+                rem_start = t_val.hour * 60 + t_val.minute
+                rem_end = rem_start + cand_dur
+
+                for row in existing_items:
+                    row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
+                    row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
+                    if row_id in matched_id_set:
+                        continue
+                    row_time = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
+                    if row_time:
+                        try:
+                            r_h = row_time.hour if hasattr(row_time, "hour") else int(str(row_time).split(":")[0])
+                            r_m = row_time.minute if hasattr(row_time, "minute") else int(str(row_time).split(":")[1])
+                            ex_dur = int(estimate_event_duration(row_title) * 60)
+                            ex_start = r_h * 60 + r_m
+                            ex_end = ex_start + ex_dur
+
+                            # 1. Direct mathematical interval overlap
+                            if max(rem_start, ex_start) < min(rem_end, ex_end):
+                                conflicts.append(f"'{row_title}' ({r_h:02d}:{r_m:02d} - {ex_end//60:02d}:{ex_end%60:02d})")
+                            else:
+                                # 2. Tight buffer / transit transition window (<= 30 min gap)
+                                gap = min(abs(rem_start - ex_end), abs(ex_start - rem_end))
+                                is_transit_sensitive = any(k in (row_title + " " + args.title).lower() for k in ("movie", "theatre", "theater", "cinema", "flight", "bus", "train", "travel", "meeting", "doctor", "hospital", "date"))
+                                if is_transit_sensitive and gap <= 30:
+                                    tight_buffers.append(f"'{row_title}' ({r_h:02d}:{r_m:02d} se {ex_end//60:02d}:{ex_end%60:02d} tak chalegi, sirf {gap} min transition gap hai)")
+                        except Exception as ex_err:
+                            logger.warning(f"Error checking conflict: {ex_err}")
+
+            # Also check Google Calendar for true interval overlap conflicts
+            try:
+                u_tz, _ = await _resolve_user_timezone(chat_id)
+                from main import get_unified_schedule
+                sched = await get_unified_schedule(chat_id, d_val)
+                for ev in sched.get("calendar_events", []):
+                    raw_start = ev.get("start", {}).get("dateTime")
+                    if raw_start and t_val:
+                        ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
+                        ev_raw_end = ev.get("end", {}).get("dateTime")
+                        ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
+                        rem_start = t_val.hour * 60 + t_val.minute
+                        rem_end = rem_start + cand_dur
+                        ev_start = ev_dt.hour * 60 + ev_dt.minute
+                        ev_end = ev_end_dt.hour * 60 + ev_end_dt.minute
+                        if max(rem_start, ev_start) < min(rem_end, ev_end):
+                            conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' ({ev_dt.strftime('%I:%M %p')} - {ev_end_dt.strftime('%I:%M %p')})")
+            except Exception:
+                pass
+
             # Check if there is an unforced direct time clash
             if conflicts and not getattr(args, "force", False) and not matched_existing_ids:
                 return {
                     "status": "conflict_detected",
                     "has_conflict": True,
+                    "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
                     "title": args.title,
                     "due_date": args.due_date,
                     "due_time": args.due_time,
-                    "message": f"Time Conflict: {args.due_time} par already '{', '.join(conflicts)}' scheduled hai. Kya aap iska time aage-peeche karna chahenge ya isi time par dono ka reminder lagana hai?"
+                    "message": f"Time Conflict: {args.due_time} par already {', '.join(conflicts)} scheduled hai. Kya aap iska time aage-peeche karna chahenge ya isi time par dono ka reminder lagana hai?"
+                }
+
+            if tight_buffers and not getattr(args, "force", False) and not matched_existing_ids:
+                return {
+                    "status": "conflict_detected",
+                    "has_conflict": True,
+                    "conflict_type": "tight_buffer",
+                    "conflicts": tight_buffers,
+                    "title": args.title,
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
+                    "message": f"Schedule Conflict / Tight Buffer: Aapki {', '.join(tight_buffers)}, aur '{args.title}' {t_val.strftime('%I:%M %p')} par scheduled ho rahi hai. Dono ke beech transition/travel ke liye waqt bahut tight rahega. Kya aap iska time aage shift karna chahenge ya isi time par schedule kar doon?"
                 }
 
             is_daily = (getattr(args, "recurrence", "none") or "").lower() in ("daily", "roj", "every_day", "everyday")
@@ -1881,7 +1914,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
                         start_time_part = t_val or dtime(9, 0)
                         start_dt = datetime.combine(d_val, start_time_part, tzinfo=u_tz)
                         dur_mins = getattr(args, "duration_minutes", None) or 30
-                        meet_res = await create_meeting(
+                        from google_services import create_meeting as create_google_meeting
+                        meet_res = await create_google_meeting(
                             chat_id=chat_id,
                             title=f"🔔 {args.title}",
                             start_iso=start_dt.isoformat(),
