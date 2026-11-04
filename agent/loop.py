@@ -79,6 +79,13 @@ GROUNDING & TRUTH CONTRACT:
      * ALWAYS call the `delete_reminder` tool immediately with the title keyword (e.g. `delete_reminder(title='electri')`).
      * If the user did not specify which reminder to delete (e.g. 'bhy reminder dlt krna'), call `list_reminders` to check active reminders and ask which one they want to delete.
    - NEVER EVER say: "mere paas direct access nahi hai", "main AI hoon phone settings/calendar access nahi hai", or "phone ki Clock/Calendar app khol kar delete karo". Those are FALSE refusals and strictly prohibited! You HAVE `delete_reminder`. Use it!
+14. REMINDERS & SCHEDULE ACCESS (ZERO REFUSAL MANDATE - CRITICAL):
+   - You HAVE 100% direct, live, real-time access to the user's scheduled reminders, meetings, appointments, and commitments directly in the Schedule context and via `list_reminders` / `get_schedule`.
+   - STRICT PROHIBITION: NEVER EVER output pre-trained generic AI refusals like "I don't have access to your personal calendar or reminder list", "I can't see what you've scheduled", or "mere paas direct access nahi hai"!
+   - When the user asks for their reminders or schedule (e.g. 'mere aajke reminder btana', 'aaj kya schedule hai', 'reminders dikhao', 'what are my reminders for today'):
+     * State all items directly from the Schedule block or call `list_reminders`.
+     * If no items are scheduled for today, state warmly: "Bhai, aaj aapka koi reminder ya meeting scheduled nahi hai!" (or "You have no reminders or meetings scheduled for today!"). NEVER say you lack access!
+   - TIME EXTRACTION: When user mentions any time ('11pm', '10:30pm', '3 baje', 'at 11'), ALWAYS pass `due_time` in 24h format ('23:00', '22:30', '15:00') to `create_reminder`. NEVER leave `due_time` null when user specified a time!
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
@@ -560,7 +567,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Execute tool with per-tool timeout (15s) and catch-all error handling
                 try:
                     tool_result = await asyncio.wait_for(
-                        execute_tool(chat_id, fn_name, args_dict),
+                        execute_tool(chat_id, fn_name, args_dict, user_context={"user_text": user_text}),
                         timeout=15.0
                     )
                 except asyncio.TimeoutError:

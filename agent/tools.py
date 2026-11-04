@@ -28,6 +28,40 @@ async def _resolve_user_timezone(chat_id: int):
     except Exception:
         return IST, "Asia/Kolkata"
 
+def _extract_time_from_text(text: str) -> Optional[dtime]:
+    """Safely parses natural language 12h/24h time strings from text (e.g. '11pm' -> 23:00, '10:30pm' -> 22:30, '3 baje' -> 15:00)."""
+    if not text:
+        return None
+    t_clean = text.lower()
+    # 1. Matches "11pm", "11:30 pm", "10:30am", "10.30 pm", "11:00pm", "11 pm"
+    m_ampm = re.search(r'\b(1[0-2]|0?[1-9])(?::|\.)?([0-5]\d)?\s*(am|pm)\b', t_clean)
+    if m_ampm:
+        h = int(m_ampm.group(1))
+        m = int(m_ampm.group(2)) if m_ampm.group(2) else 0
+        ampm = m_ampm.group(3)
+        if ampm == "pm" and h != 12:
+            h += 12
+        elif ampm == "am" and h == 12:
+            h = 0
+        return dtime(h, m)
+    # 2. Matches "3 baje", "10 baje", "10:30 baje", "5 bje"
+    m_baje = re.search(r'\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(?:baje|bje)\b', t_clean)
+    if m_baje:
+        h = int(m_baje.group(1))
+        m = int(m_baje.group(2)) if m_baje.group(2) else 0
+        if any(w in t_clean for w in ("shaam", "raat", "night", "dophar", "evening", "afternoon")) and h < 12:
+            h += 12
+        return dtime(h, m)
+    # 3. Matches explicit 24h or HH:MM like "23:00", "10:30"
+    m_colon = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', t_clean)
+    if m_colon:
+        h = int(m_colon.group(1))
+        m = int(m_colon.group(2))
+        if any(w in t_clean for w in ("shaam", "raat", "night", "evening")) and h < 12:
+            h += 12
+        return dtime(h, m)
+    return None
+
 # -------------------------------------------------------------
 # 1. Pydantic Tool Argument Schemas
 # -------------------------------------------------------------
@@ -93,8 +127,22 @@ class CreatePackingListArgs(BaseModel):
 class CreateReminderArgs(BaseModel):
     title: str = Field(..., description="Title of the reminder, meeting, or task.")
     due_date: Optional[str] = Field(None, description="Due date in YYYY-MM-DD format. If omitted, defaults to today's date.")
-    due_time: Optional[str] = Field(None, description="Due time in HH:MM format (24h) if specified.")
-    duration_minutes: Optional[int] = Field(None, description="Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60, 120).")
+    due_time: Optional[str] = Field(
+        None,
+        description=(
+            "Due time in 24-hour HH:MM format (e.g. '23:00' for 11pm, '22:30' for 10:30pm, '15:00' for 3pm, '10:30' for 10:30am). "
+            "MANDATORY: When the user mentions any specific time of day in natural language "
+            "(e.g. '11pm' -> '23:00', '10:30pm' -> '22:30', '3 baje' -> '15:00', 'at 11' -> '23:00' or '11:00', 'dinner at 9' -> '21:00'), "
+            "you MUST extract and convert it into 24-hour HH:MM format. NEVER leave null when the user specifies a time."
+        )
+    )
+    duration_minutes: Optional[int] = Field(
+        None,
+        description=(
+            "Duration in minutes if the user specifies how long the meeting, event, or call lasts "
+            "(e.g. '1 hour' -> 60, '1 hour ki meeting' -> 60, '30 min' -> 30, '2 hours' -> 120, '45 min' -> 45)."
+        )
+    )
     category: Optional[str] = Field("appointments", description="Category of reminder.")
     recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily' (for roj, daily, har din, jbtk m na khu), 'weekly', or 'none'.")
     force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict or tight schedule.")
@@ -502,13 +550,26 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_reminder",
-            "description": "Save a task, meeting, or reminder with a due date and optional time. If user provides a time (e.g. '3pm', '4:30pm') but no date, due_date defaults to today's date.",
+            "description": (
+                "Save a task, meeting, appointment, dinner date, or reminder with a due date and time. "
+                "CRITICAL: If the user mentions any time in natural language (e.g. '11pm', '10:30', '3 baje'), "
+                "you MUST extract and convert it into due_time in 24-hour 'HH:MM' format (e.g. '23:00'). "
+                "If user specifies duration (e.g. '1 hour'), pass duration_minutes=60. "
+                "If no date is mentioned, due_date defaults to today's date."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Task, meeting, or reminder title."},
                     "due_date": {"type": ["string", "null"], "description": "Date in YYYY-MM-DD format. Defaults to today's date if omitted."},
-                    "due_time": {"type": ["string", "null"], "description": "Time in HH:MM 24h format."},
+                    "due_time": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Due time in 24-hour HH:MM format (e.g. '23:00', '10:30', '15:00'). "
+                            "MANDATORY: Convert natural times ('11pm' -> '23:00', '10:30pm' -> '22:30', '3 baje' -> '15:00'). "
+                            "NEVER leave null when the user mentions a time!"
+                        )
+                    },
                     "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60, 120)."},
                     "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
                     "recurrence": {"type": ["string", "null"], "description": "Recurrence pattern: 'daily' for every day (roj, daily, har din, jbtk m na khu), 'weekly' for every week, or 'none' for single occurrence."},
@@ -537,7 +598,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "list_reminders",
-            "description": "List saved tasks and reminders. Use ONLY for read-only view queries (e.g. 'mere reminders batao').",
+            "description": (
+                "List saved tasks, reminders, and appointments. Call this whenever the user asks about their reminders, "
+                "tasks, or today's schedule (e.g. 'mere aajke reminder btana', 'aaj ke reminders dikhao', 'reminders check karo'). "
+                "NEVER refuse reminder view requests."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1189,7 +1254,7 @@ TOOL_DEFINITIONS = [
 # 3. Tool Execution Dispatcher
 # -------------------------------------------------------------
 
-async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
+async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
     """Executes a tool call asynchronously and returns structured JSON output."""
     try:
         # 1. Unified Connector Architecture Dispatch
@@ -1719,6 +1784,28 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict) -> dict:
             if args.due_time:
                 h, m = map(int, args.due_time.split(":")[:2])
                 t_val = dtime(h, m)
+            else:
+                # Fallback: check if time was specified in args.title or user_context
+                fallback_text = (args.title or "")
+                if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
+                    fallback_text += " " + user_context["user_text"]
+                extracted_tm = _extract_time_from_text(fallback_text)
+                if extracted_tm:
+                    t_val = extracted_tm
+                    args.due_time = f"{t_val.hour:02d}:{t_val.minute:02d}"
+                    logger.info(f"Auto-extracted missing due_time for '{args.title}': {args.due_time}")
+
+            if not args.duration_minutes:
+                # Check if duration was mentioned in user_text or title (e.g. "1 hour", "30 min")
+                fallback_dur_text = (args.title or "")
+                if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
+                    fallback_dur_text += " " + user_context["user_text"]
+                m_hour = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:hour|hr|ghante|ghanta)\b', fallback_dur_text.lower())
+                m_min = re.search(r'\b(\d+)\s*(?:min|mins|minute|minutes)\b', fallback_dur_text.lower())
+                if m_hour:
+                    args.duration_minutes = int(float(m_hour.group(1)) * 60)
+                elif m_min:
+                    args.duration_minutes = int(m_min.group(1))
 
             # Check if this is a reschedule / time update for an existing reminder on this date
             stop_kw = {"meeting", "reminder", "call", "task", "with", "ke", "saath", "ko", "time", "aaj", "kal", "par", "pe"}
