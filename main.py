@@ -313,7 +313,7 @@ def strip_markdown_formatting(text: str) -> str:
 
 async def tg(method, payload):
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{API}/{method}", json=payload)
             return resp
     except Exception as exc:
