@@ -40,9 +40,8 @@ def get_embedding_model():
 def embed_text(text: str, is_query: bool = False) -> Optional[List[float]]:
     """
     Generates a 384-dimensional vector embedding for the input text.
-    Uses bge-small-en-v1.5 prefixing for asymmetric semantic retrieval:
-      - is_query=True  -> 'Represent this sentence for searching relevant passages: '
-      - is_query=False -> standard passage
+    Primary: Cloud Gemini 384-dim embeddings (0 MB local RAM).
+    Fallback: Local model or cache.
     """
     if not text or not text.strip():
         return None
@@ -51,6 +50,17 @@ def embed_text(text: str, is_query: bool = False) -> Optional[List[float]]:
     cache_key = (clean[:300].lower(), is_query)
     if cache_key in _EMBED_CACHE:
         return _EMBED_CACHE[cache_key]
+
+    try:
+        from memory.store import embed_text as store_embed
+        vec = store_embed(clean, is_query=is_query)
+        if vec and len(vec) == 384:
+            if len(_EMBED_CACHE) >= CACHE_MAX_SIZE:
+                _EMBED_CACHE.clear()
+            _EMBED_CACHE[cache_key] = vec
+            return vec
+    except Exception:
+        pass
 
     model = get_embedding_model()
     if not model:

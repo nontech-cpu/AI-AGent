@@ -160,8 +160,8 @@ def _init_sqlite_if_needed():
 
 def _get_embedding_model():
     """Lazy load FastEmbed embedding model (sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, 384 dimensions)."""
-    # If Gemini API key is available or local embeddings disabled, avoid loading heavy ONNX model in RAM
-    if os.getenv("GEMINI_API_KEY") or os.getenv("DISABLE_LOCAL_EMBEDDINGS", "0").lower() in ("1", "true", "yes"):
+    # Cloud / Render environment or explicit disable: NEVER load heavy 330MB ONNX model into 512MB RAM
+    if os.getenv("GEMINI_API_KEY") or os.getenv("RENDER") or os.getenv("DISABLE_LOCAL_EMBEDDINGS", "1").lower() in ("1", "true", "yes"):
         return None
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
