@@ -445,7 +445,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 tool_calls_executed[-1] in {
                     "search_web", "find_nearby_places", "get_weather", "get_measurements",
                     "list_reminders", "get_schedule", "convert_currency", "get_market_price",
-                    "read_webpage", "check_integrations_status", "create_reminder",
+                    "read_webpage", "check_integrations_status", "create_reminder", "update_reminder", "add_reminder",
                     "delete_reminder", "create_meeting", "save_note_or_fact", "save_contact",
                     "manage_smart_list", "create_packing_list", "send_email", "execute_python_code",
                     "list_notion_pages", "get_notion_page_content", "create_notion_page", "update_notion_page",

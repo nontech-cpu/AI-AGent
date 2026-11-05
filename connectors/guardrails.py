@@ -119,6 +119,10 @@ def check_repeat_guard(chat_id: int, candidate_reply: str, user_text: str = "") 
                 is_repeat = True
 
         if is_repeat:
+            # Action/reminder confirmations must NEVER be hijacked by canned chitchat fallbacks
+            if any(k in c_clean.lower() for k in ("done", "reminder", "meeting", "shift kar diya", "set kar diya", "delete", "scheduled", "✅")):
+                return candidate_reply
+
             is_casual = any(w in u_clean for w in (
                 "aur bhy", "aur bhai", "aur btao", "kya haal", "kaise ho", "kaisa hai",
                 "sup", "wassup", "hi", "hello", "hey", "hlo", "namaste", "suno"

@@ -1772,7 +1772,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 "message": f"Smart packing list '{list_name}' created with {len(args.items)} items."
             }
 
-        elif tool_name == "create_reminder":
+        elif tool_name in ("create_reminder", "update_reminder", "add_reminder"):
             args = CreateReminderArgs(**arguments)
             if not args.due_date:
                 u_tz, _ = await _resolve_user_timezone(chat_id)
@@ -1808,23 +1808,47 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     args.duration_minutes = int(m_min.group(1))
 
             # Check if this is a reschedule / time update for an existing reminder on this date
-            stop_kw = {"meeting", "reminder", "call", "task", "with", "ke", "saath", "ko", "time", "aaj", "kal", "par", "pe"}
+            stop_kw = {"meeting", "reminder", "call", "task", "with", "ke", "saath", "ko", "time", "aaj", "kal", "par", "pe", "hour", "hr", "duration", "min", "mins", "minute", "minutes"}
             arg_tokens = set(re.findall(r'[a-zA-Z0-9]+', args.title.lower())) - stop_kw
+            dur_strip = r'\b(?:\d+(?:\.\d+)?\s*(?:hour|hr|ghante|ghanta|min|mins|minute|minutes)|one\s*hour|duration)\b'
 
             existing_items = db.items_for_date(chat_id, d_val)
             matched_existing_ids = []
 
             clean_arg = re.sub(r'[^a-zA-Z0-9 ]+', '', args.title.lower()).strip()
+            clean_arg_base = re.sub(dur_strip, '', clean_arg).strip()
+            clean_arg_base = re.sub(r'\s+', ' ', clean_arg_base)
+
             for row in existing_items:
                 row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
                 row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
                 clean_row = re.sub(r'[^a-zA-Z0-9 ]+', '', row_title.lower()).strip()
+                clean_row_base = re.sub(dur_strip, '', clean_row).strip()
+                clean_row_base = re.sub(r'\s+', ' ', clean_row_base)
                 row_tokens = set(re.findall(r'[a-zA-Z0-9]+', row_title.lower())) - stop_kw
-                # Only match if identical or EXACT same substantive tokens (never match across different subjects!)
-                if clean_arg == clean_row or (arg_tokens and row_tokens and arg_tokens == row_tokens):
+
+                # Match if identical, or identical root base (ignoring duration suffix), or substantive token match
+                if clean_arg_base and clean_row_base and (clean_arg_base == clean_row_base or clean_arg_base in clean_row_base or clean_row_base in clean_arg_base):
+                    matched_existing_ids.append((row_id, row_title))
+                elif clean_arg == clean_row or (arg_tokens and row_tokens and arg_tokens == row_tokens):
                     matched_existing_ids.append((row_id, row_title))
 
             matched_id_set = {mid for mid, _ in matched_existing_ids if mid is not None}
+
+            # If this is a duration or title update and time was omitted, inherit existing item's due_time
+            if matched_existing_ids and not t_val:
+                for row in existing_items:
+                    r_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
+                    if r_id == matched_existing_ids[0][0]:
+                        r_tm = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
+                        if r_tm:
+                            if hasattr(r_tm, "hour"):
+                                t_val = r_tm
+                            else:
+                                rh, rm = map(int, str(r_tm).split(":")[:2])
+                                t_val = dtime(rh, rm)
+                            args.due_time = f"{t_val.hour:02d}:{t_val.minute:02d}"
+                            break
 
             # 4D Continuous Timeline & Travel Transit Collision Check (World Model)
             if t_val and not getattr(args, "force", False):
@@ -1896,6 +1920,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                         ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
                         ev_raw_end = ev.get("end", {}).get("dateTime")
                         ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
+                        ev_summary = (ev.get("summary") or "").strip()
+                        # Exclude self-synced mirror events from conflicting with reminder being created/updated
+                        clean_ev = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", ev_summary).strip().lower()
+                        clean_target = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", args.title).strip().lower()
+                        clean_ev_b = re.sub(dur_strip, '', clean_ev).strip()
+                        clean_tgt_b = re.sub(dur_strip, '', clean_target).strip()
+                        if clean_ev_b and clean_tgt_b and (clean_ev_b == clean_tgt_b or clean_ev_b in clean_tgt_b or clean_tgt_b in clean_ev_b):
+                            continue
                         rem_start = t_val.hour * 60 + t_val.minute
                         rem_end = rem_start + cand_dur
                         ev_start = ev_dt.hour * 60 + ev_dt.minute
@@ -2012,8 +2044,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
             if matched_existing_ids:
                 primary_id, primary_title = matched_existing_ids[0]
-                # Update existing memory item
-                db.update_memory_time(chat_id, primary_id, t_val)
+                new_title = primary_title
+                if args.duration_minutes:
+                    clean_base = re.sub(r'\s*\(\d+\s*(?:hour|min)[^)]*\)', '', primary_title).strip()
+                    dur_str = f"{args.duration_minutes // 60} hour" if args.duration_minutes % 60 == 0 else f"{args.duration_minutes} min"
+                    new_title = f"{clean_base} ({dur_str} duration)"
+                elif args.title and ("duration" in args.title.lower() or "hour" in args.title.lower()):
+                    new_title = args.title
+
+                # Update existing memory item title and time
+                with db.engine.begin() as conn:
+                    conn.execute(
+                        db.text("UPDATE memory_items SET title = :t, due_time = :tm WHERE id = :id"),
+                        {"t": new_title, "tm": t_val, "id": primary_id}
+                    )
                 try:
                     from timing import build_plan
                     from db import add_reminders
@@ -2033,13 +2077,13 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 res = {
                     "status": "success",
-                    "title": primary_title or args.title,
+                    "title": new_title,
                     "due_date": args.due_date,
                     "due_time": args.due_time,
                     "rescheduled": True,
                     "conflicts": conflicts,
                     "has_conflict": len(conflicts) > 0,
-                    "message": f"Done! '{primary_title or args.title}' ka reminder {time_str} par shift kar diya hai."
+                    "message": f"Done! '{new_title}' ka reminder {time_str} par update kar diya hai."
                 }
             else:
                 item_id = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=d_val, due_time=t_val)
