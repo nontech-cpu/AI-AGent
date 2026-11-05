@@ -440,3 +440,4 @@ def test_migration_idempotence():
     apply_res2 = run_migration(dry_run=False)
     assert apply_res2["identity_links_created"] is True
     assert apply_res2["retry_queue_created"] is True
+

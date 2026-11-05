@@ -110,6 +110,7 @@ def save_pending_action(chat_id: int, action_kind: str, payload: dict, expires_m
                 "expires_at": expires_utc
             }).scalar()
 
+    _PENDING_ACTION_CACHE.pop(chat_id, None)
     return action_id
 
 

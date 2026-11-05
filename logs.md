@@ -160,8 +160,41 @@ This document maintains the persistent, chronological log of architectural upgra
 
 ---
 
-## Phase 4: Prompt & Tool Selection (Next Phase)
+## Phase 4: Prompt & Tool Selection
+
+**Status:** Completed & Verified  
+**Date:** 2026-11-05  
+**Evidence Files:**
+- [`docs/verification/phase4/phase4_summary.md`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase4/phase4_summary.md)
+- [`docs/verification/phase4/pytest_phase4.txt`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase4/pytest_phase4.txt)
+
+### Deliverables & Key Actions:
+1. **Static Prompt Compression (34KB $\to$ 3,059 Bytes)**:
+   - Reduced `RUNTIME_SYSTEM_PROMPT_TEMPLATE` in `agent/prompt.py` to 3,059 bytes, well below the $\le 4$KB requirement.
+   - Purged all accumulated test-specific hacks, scenario examples, and brand/location names (H&M, Zara, Mohan Mall, Sardarpura, Ratanada, Aditya 9034898498, fasting glucose 88, shopping at 4:30pm).
+   - Grounded the agent on clear, general operating principles: Problem-Solving Loop (Goal $\to$ Needs $\to$ Knowns $\to$ Missing info check $\to$ Immediate action / Single question), Grounding & Truth Contract, and Temporal Correctness.
+   - Retained all runtime placeholders (`{NOW_TIME}`, `{TODAY_ISO}`, `{CURRENT_YEAR}`, `{USER_TIMEZONE}`, `{WEEKDAY}`, `{LANG_STYLE}`, `{MEMORY_CONTEXT_BLOCK}`, `{SCHEDULE_CONTEXT_BLOCK}`, `{CONNECTED_INTEGRATIONS}`, `{PENDING_ACTIONS}`, `{ACTIVE_CONTEXT}`, `{LISTS_BLOCK}`).
+2. **Added `calculate` to `CORE_TOOL_NAMES`**:
+   - `calculate` is now always present in baseline tools (`CORE_TOOL_NAMES`), ensuring deterministic calculation capabilities for every turn.
+3. **Principled Semantic Tool Routing (`route_tools` in `agent/tools.py`)**:
+   - Eliminated brittle keyword matching and regex substring checks for tool routing.
+   - Replaced with dense cosine similarity matching against domain tool group embeddings (`calendar_schedule`, `reminders_alarms`, `memory_contacts`, `communication_email`, `developer_github`, `workspace_notion`, `lists_organization`, `utilities_search`, `privacy_data`).
+   - Domain activation thresholds: top-domain lead activation (`top_sim >= 0.66` and lead $\ge 0.05$) plus individual threshold $\ge 0.68$.
+   - Multi-turn context inheritance: combines `context_text` with user input, allowing short affirmations/follow-ups (`"yes"`, `"proceed"`, `"send it"`) to inherit domain tools from prior turns.
+   - Casual conversation filtering: casual queries (`"kya haal hai bhai, sab badhiya?"`) no longer attach specialized developer or workspace tools.
+4. **Pending Action & State Persistence (`state/pending.py`)**:
+   - Fixed cache invalidation bug in `save_pending_action()` where `_PENDING_ACTION_CACHE.pop(chat_id, None)` was missing, ensuring immediate consistency between database writes and memory reads.
+   - Verified that user side-questions during pending actions do not prematurely cancel or corrupt the pending action.
+   - Validated multi-turn pronoun and anaphora resolution via database chat history.
+5. **Verification Evidence**:
+   - Dedicated Phase 4 test suite `tests/test_phase4_prompt_and_routing.py` $\to$ **11/11 PASSED in 29.72s**.
+   - Full multi-phase regression suite $\to$ **48/48 PASSED in 61.05s**.
+   - Raw pytest output saved in `docs/verification/phase4/pytest_phase4.txt`.
+
+---
+
+## Phase 5: Grounding & Anti-Hallucination (Next Phase)
 
 **Status:** Awaiting User "Go Ahead"  
-*(Will be initiated once Phase 3 review is complete)*
+*(Will be initiated once Phase 4 review is complete)*
 
