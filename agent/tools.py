@@ -1770,7 +1770,9 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             }
 
         elif tool_name == "request_master_privacy_wipe":
+            from state.pending import save_pending_action
             db.set_state(chat_id, "confirm_master_wipe")
+            save_pending_action(chat_id, "master_privacy_wipe", {})
             return {
                 "status": "confirmation_required",
                 "message": (
@@ -1924,9 +1926,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                             matched_row = r
                             break
 
-                # 2. If user mentions "new", "latest", "recent", "dusri", inspect in reverse
-                is_latest_intent = any(w in user_msg for w in ("new", "latest", "recent", "dusri", "naya", "nayi", "abhi wali"))
-                search_list = list(reversed(existing_items)) if is_latest_intent else list(existing_items)
+                # 2. Inspect candidate items in reverse chronological order (most recent first)
+                search_list = list(reversed(existing_items))
 
                 # 3. Match by title keyword
                 if not matched_row and target_kw:
@@ -2135,16 +2136,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             matched_id = None
             generic_titles = {"meeting", "call", "reminder", "task", "event", "appointment", "class", "session"}
 
-            user_msg = ""
-            if user_context and isinstance(user_context, dict):
-                user_msg = (user_context.get("user_text") or "").lower()
-
-            is_explicit_reschedule = any(k in user_msg for k in ("shift", "reschedule", "badal", "change", "update", "move", "kardo"))
-
-            # Only match existing item for overwrite if:
-            # 1. User explicitly requested shift/reschedule/update, OR
-            # 2. The title is non-generic (e.g. "Meeting with Devender")
-            if is_explicit_reschedule or target_low not in generic_titles:
+            # Match existing item for overwrite if the title is non-generic (e.g. "Meeting with Devender")
+            if target_low not in generic_titles:
                 for r in existing_items:
                     r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
                     if target_low == r_title or (target_low not in generic_titles and ((len(target_low) >= 4 and target_low in r_title) or (len(r_title) >= 4 and r_title in target_low))):

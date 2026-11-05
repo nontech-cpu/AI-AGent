@@ -130,78 +130,6 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
-LANGUAGE_ALIASES = {
-    "hinglish": ["hinglish", "hinglsih", "hnglish", "hindlish", "hindi", "hindii", "hindish"],
-    "english": ["english", "englsih", "englsh", "eng", "angrezi", "angreji", "englis"],
-    "german": ["german", "deutsch", "deutch", "germn", "allemand"],
-    "spanish": ["spanish", "espanol", "español", "spnish"],
-    "french": ["french", "francais", "français", "frnch"],
-    "marathi": ["marathi", "mrathi"],
-    "gujarati": ["gujarati", "gujarathi", "gujti"],
-    "punjabi": ["punjabi", "panjabi"],
-    "bengali": ["bengali", "bangla"],
-    "tamil": ["tamil", "tamizh"],
-    "telugu": ["telugu", "telegu"],
-    "kannada": ["kannada", "kanada"],
-    "japanese": ["japanese", "japnese", "nihongo"],
-    "russian": ["russian", "ruski"],
-    "arabic": ["arabic", "arabi"],
-    "italian": ["italian", "italiano"],
-    "chinese": ["chinese", "mandarin"],
-    "korean": ["korean", "hangul"],
-    "portuguese": ["portuguese", "portugues"],
-}
-
-ALIAS_TO_CANONICAL = {}
-for canon_name, aliases in LANGUAGE_ALIASES.items():
-    for al in aliases:
-        ALIAS_TO_CANONICAL[al] = canon_name
-
-INTENT_WORDS = {
-    "talk", "tlak", "speak", "spek", "spk", "baat", "bat", "bolo", "bol", "bola", 
-    "switch", "change", "continue", "use", "in", "ign", "mein", "me", "m", 
-    "only", "pls", "please", "now", "ab", "se", "sirf", "merse", "humse"
-}
-
-def detect_explicit_language_switch(text: str) -> Optional[str]:
-    """
-    Pure semantic token/string parsing for explicit language switches. Zero brittle regexes.
-    Handles 'talk to me in english', 'english me bolo', 'english nahi hinglish', 'german me baat karo'.
-    """
-    t = text.strip().lower()
-    tokens = [w.strip(".,!?:;'\"()[]{}") for w in t.split()]
-    tokens = [w for w in tokens if w]
-    if not tokens:
-        return None
-
-    negation_words = {"nahi", "nhi", "na", "not", "mat", "dont", "never", "chhod", "bina"}
-
-    # 1. Check for contrastive: 'X nahi Y' or 'not X, Y'
-    for i in range(len(tokens) - 1):
-        if tokens[i] in ALIAS_TO_CANONICAL:
-            # Check if next word is negation followed by another language
-            if i + 2 < len(tokens) and tokens[i+1] in negation_words and tokens[i+2] in ALIAS_TO_CANONICAL:
-                return ALIAS_TO_CANONICAL[tokens[i+2]]
-
-    # 2. Check general language mentions with intent words
-    found_langs = []
-    for idx, tok in enumerate(tokens):
-        if tok in ALIAS_TO_CANONICAL:
-            canon = ALIAS_TO_CANONICAL[tok]
-            prev_toks = set(tokens[max(0, idx - 2):idx])
-            next_toks = set(tokens[idx + 1:min(len(tokens), idx + 3)])
-            is_neg = bool((prev_toks | next_toks) & negation_words)
-            found_langs.append((canon, is_neg))
-
-    if found_langs:
-        non_neg = [canon for canon, neg in found_langs if not neg]
-        if non_neg:
-            has_intent = any(w in tokens for w in INTENT_WORDS) or len(tokens) <= 6
-            if has_intent:
-                return non_neg[-1]
-
-    return None
-
 async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None, channel: str = "telegram") -> Dict[str, Any]:
     """
     Executes a single user turn through the Pure ChatGPT-Grade Native Tool-Calling Loop.
@@ -218,18 +146,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
     trimmed_text = user_text.strip()
     low_prompt = trimmed_text.lower()
-
-    # 0. Semantic Language Switch Detection & Persistence
-    detected_lang = detect_explicit_language_switch(trimmed_text)
-    if detected_lang:
-        if hasattr(db, "set_user_language"):
-            db.set_user_language(chat_id, detected_lang)
-        try:
-            from agent.prompt import _UNIFIED_PROMPT_CACHE
-            if chat_id in _UNIFIED_PROMPT_CACHE:
-                _UNIFIED_PROMPT_CACHE[chat_id]["user_lang"] = detected_lang
-        except Exception:
-            pass
 
     # 1. Direct API Token Pasting Fast-Path (Notion / GitHub)
     if (trimmed_text.startswith("secret_") or trimmed_text.startswith("ntn_")) and len(trimmed_text) > 15:
@@ -278,14 +194,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     from state.pending import (
         get_pending_action,
         save_pending_action,
-        classify_confirmation_intent,
+        classify_confirmation_intent_with_llm,
         execute_pending_action,
         cancel_pending_action
     )
     active_pending = get_pending_action(chat_id)
     is_cross_q = False
     if active_pending:
-        intent, extra = classify_confirmation_intent(user_text, active_pending)
+        intent, extra = await classify_confirmation_intent_with_llm(user_text, active_pending)
         if intent == "confirm":
             success, reply_msg = await execute_pending_action(chat_id, active_pending)
             db.log_chat_message(chat_id, "user", user_text, channel=channel)
@@ -424,10 +340,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # 5. Semantic Context-Aware Tool Suite (Embedding similarity between message and tool descriptions, no hardcoded regex gates)
     context_hint = ""
     low_u = (user_text or "").strip().lower()
-    is_short_followup = len(low_u.split()) <= 4 and (
-        low_u in ("yes", "ha", "haan", "yep", "sure", "ok", "okay", "send", "proceed", "send it", "bhej do", "confirm", "send mail", "send email", "kar do", "haanji", "bilkul")
-        or any(w in low_u for w in ("confirm", "proceed", "yes", "haan", "send"))
-    )
+    is_short_followup = len(low_u.split()) <= 4
     if is_short_followup and prior_turns:
         for pt in reversed(prior_turns):
             if pt.get("role") == "assistant":
@@ -554,8 +467,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             abort_iteration = False
             for tc in tool_calls:
                 call_id = tc.get("id") or f"call_{int(time.time())}_{iteration}"
-                fn_name = tc["function"]["name"]
-                raw_args = tc["function"].get("arguments", "{}")
+                fn_obj = tc.get("function", tc)
+                fn_name = fn_obj.get("name") if isinstance(fn_obj, dict) else tc.get("name")
+                raw_args = fn_obj.get("arguments", "{}") if isinstance(fn_obj, dict) else tc.get("arguments", "{}")
                 tool_calls_executed.append(fn_name)
 
                 # Loop Guard: detect repeated identical tool call + args
@@ -682,10 +596,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         }
                         low_u = (user_text or "").strip().lower()
                         is_initial_draft = any(k in low_u for k in ("subject", "body", "@", "mailto", "mail to", "email to", "send a mail", "send an email"))
-                        is_affirmative = not is_initial_draft and (
-                            low_u in ("yes", "ha", "haan", "yep", "sure", "ok", "okay", "send", "proceed", "send it", "bhej do", "confirm", "send mail", "send email")
-                            or (len(low_u.split()) <= 4 and classify_confirmation_intent(user_text, payload)[0] == "confirm")
-                        )
+                        is_affirmative = not is_initial_draft and (classify_confirmation_intent(user_text, payload)[0] == "confirm")
                         if is_affirmative:
                             import google_services
                             try:

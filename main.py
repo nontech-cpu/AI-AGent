@@ -153,47 +153,7 @@ async def send_system_email(to_email: str, subject: str, body: str) -> bool:
 
 
 
-def is_master_wipe_request(text: str) -> bool:
-    clean = text.strip()
-    if not clean:
-        return False
-    clean_lower = clean.lower()
 
-    # Fast exclusion 1: Code blocks, programming keywords, or external connector instructions
-    if any(sig in clean for sig in ('```', 'def ', 'class ', 'import ', 'return {', '@app', 'pip install', 'curl ', 'function(', 'console.log')):
-        return False
-    if any(k in clean_lower for k in ('notion', 'github', 'commit', 'pull request', 'repo', 'repository', 'heading as heading', 'code blocks', 'save to notion', 'add to notion', 'note on my notion')):
-        return False
-
-    # Fast exclusion 2: Long documentation/tutorials/notes (>150 chars) that are clearly not a simple wipe command
-    if len(clean) > 150:
-        if not re.search(r'^(please\s+)?(delete|wipe|clear|erase|mita|khatam)\s+(all\s+)?(my\s+|meri\s+|saari\s+)?(memory|memories|data|records|everything)', clean_lower):
-            return False
-
-    # Normalize common abbreviations and typos
-    norm = re.sub(r'\b(delte|dlete|delet|dlet|dlte|dlt|del|dleted|deleted)\b', 'delete', clean_lower)
-    norm = re.sub(r'\b(memeory|memroy|meory|memry|mmoery|memor|memorey|memries)\b', 'memory', norm)
-    norm = re.sub(r'\b(seaved|seve|savd)\b', 'saved', norm)
-    norm = re.sub(r'\b(sb|sarre|saari|sari|puri|poori)\b', 'sab', norm)
-
-    # Negative exclusions: if it specifically mentions single items like reminder, meeting, contact, task, note, file, page
-    if re.search(r'\b(reminder|meeting|call|event|task|contact|alarm|timer|note|file|page)\s+\w+', norm) and not re.search(r'\b(all|sab|everything)\b', norm):
-        return False
-
-    # Tight proximity patterns (words must be adjacent or within 1-3 words of each other, NEVER across distant lines)
-    tight_patterns = [
-        r'\b(delete|wipe|clear|erase|remove|forget|destroy|flush|mita|saaf|khatam|hata)\s+(all\s+)?(saved\s+)?(about\s+me\s+)?(my\s+|meri\s+|saari\s+|apni\s+)?(memory|memories|data|history|records|facts|everything|yaad|yaadein)\b',
-        r'\b(my\s+|meri\s+|saari\s+|apni\s+|sab\s+)?(memory|memories|data|history|records|facts|yaad|yaadein)\s+(ko\s+)?(delete|wipe|clear|erase|remove|forget|destroy|flush|mita|saaf|khatam|hata)\b',
-        r'\b(sab\s*kuch|saara\s*kuch|everything)\s+(delete|wipe|mita|saaf|khatam|hata|clear|erase|forget)\b',
-        r'\b(delete|wipe|mita|saaf|khatam|hata|clear|erase|forget)\s+(sab\s*kuch|saara\s*kuch|everything)\b',
-        r'\b(forget|wipe|clear)\s+everything\b',
-        r'\berase\s+all\s+data\b'
-    ]
-
-    for p in tight_patterns:
-        if re.search(p, norm, re.I):
-            return True
-    return False
 
 
 WELCOME_CONSENT_BASE = (
@@ -2489,27 +2449,6 @@ async def handle_active(chat_id, text):
                 await say(chat_id, fallback_msg)
                 return
 
-    # Fast local response for greetings & acknowledgments in legacy v1 mode
-    if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):
-        is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
-        if is_conn:
-            greet_reply = "Namaste! Main aapka personal assistant hu. Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
-        else:
-            greet_reply = (
-                "Namaste! Main aapka personal assistant hu.\n\n"
-                "[Recommended: Please connect and link your Google account to ensure a smooth flow]\n\n"
-                "Aap reminder, meeting schedule, ya bill tracking ke baare me bataiye!"
-            )
-        record_chat_turn(chat_id, "assistant", greet_reply)
-        await say(chat_id, greet_reply)
-        return
-
-    if re.fullmatch(r"\s*(hu+|humm+|hmm+|haan+|ji+|ok+|okay|theek|thik|acha+|achha+|suno|bhai|bhy)[!. ]*\s*", text, re.I):
-        ack_reply = "Haan ji, bataiye main aapki kya madad karun? 😊"
-        record_chat_turn(chat_id, "assistant", ack_reply)
-        await say(chat_id, ack_reply)
-        return
-
     clean_low = text.lower()
     trimmed = text.strip()
 
@@ -2889,9 +2828,11 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     st = get_state(chat_id)
     if st is None:
         ensure_user(chat_id)
-        set_state(chat_id, "consent")
-        await say(chat_id, await get_welcome_consent_text(chat_id))
-        return
+        if not has_consent(chat_id):
+            set_state(chat_id, "consent")
+            await say(chat_id, await get_welcome_consent_text(chat_id))
+            return
+        st = (None, None)
     state, data = st
 
     clean_lower = clean.lower()
@@ -3089,11 +3030,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
 
     # Master Privacy Wipe State Handling
     if state == "confirm_master_wipe":
-        yn = yes_no(clean)
-        if yn is None:
-            yn = await classify_yes_no_any_language(
-                clean, "The user is asked whether they want to permanently wipe all their memories and data."
-            )
+        from state.pending import classify_confirmation_intent_with_llm
+        intent, _ = await classify_confirmation_intent_with_llm(clean, {"action_kind": "master_privacy_wipe"})
+        yn = True if intent == "confirm" else (False if intent == "cancel" else None)
         if yn is False:
             set_state(chat_id, None)
             PENDING_WIPE_CODES.pop(chat_id, None)
@@ -3227,20 +3166,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         await handle_active(chat_id, clean)
         return
 
-    # Master Privacy Wipe Request Trigger: "dlete all memory u have about me", "delete all meory u have seaved", "wipe everything", etc.
-    if is_master_wipe_request(clean):
-        set_state(chat_id, "confirm_master_wipe")
-        PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-        await say(
-            chat_id,
-            "⚠️ **Security & Privacy Warning**:\n\n"
-            "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
-            "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
-            "Reply **yes/haan** to confirm ya **no/cancel** to abort."
-        )
-        return
-
-    if cmd_token in {"/clear", "/reset", "clear", "reset"} or any(phrase in clean_lower for phrase in ("chat history delete", "chat histroy delete", "chat clear", "saari chat delete", "sarre chat histroy delete", "chat history mita")):
+    if cmd_token in {"/clear", "/reset"}:
         set_state(chat_id, None)
         PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
         try:
@@ -3292,6 +3218,11 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             f"• **Timestamp:** {tr['created_at']}"
         )
         await say(chat_id, msg)
+        return
+
+    # In AGENT_CORE=v2 mode, route directly to the unified Agent Loop (single brain for reasoning, tools, and pending state)
+    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
+        await handle_active(chat_id, clean)
         return
 
     # Multi-turn meeting flow. A pending question must never hijack unrelated
@@ -3593,11 +3524,6 @@ async def handle_user_text(chat_id, text, lang_hint=None):
     if not get_persona(chat_id):
         set_state(chat_id, "persona")
         await ask_persona(chat_id)
-        return
-
-    # In AGENT_CORE=v2 mode, route directly to the unified Agent Loop (single brain for reasoning, tools, and pending state)
-    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
-        await handle_active(chat_id, clean)
         return
 
     # Legacy v1 mode language tracking (only reached if AGENT_CORE=v1)

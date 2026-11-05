@@ -4,14 +4,92 @@ import time
 import pytest
 from unittest.mock import patch, AsyncMock
 import db
-from main import handle_user_text, handle_mail, PENDING_WIPE_CODES, is_master_wipe_request
+from main import handle_user_text, handle_mail, PENDING_WIPE_CODES
 from agent.tools import execute_tool
+from llm.provider import LLMResponse
+
+async def fake_wipe_chat(*args, **kwargs):
+    messages = kwargs.get("messages", [])
+    last_msg = messages[-1] if messages else {}
+    last_role = last_msg.get("role")
+    last_content = str(last_msg.get("content", ""))
+
+    # If claim verifier calls LLM
+    if "audit_claims" in last_content or "is_grounded" in last_content or kwargs.get("response_format", {}).get("type") == "json_object":
+        if "confirmation intent" in last_content.lower() or "classify user confirmation" in last_content.lower():
+            import re
+            m = re.search(r'User message:\s*"([^"]+)"', last_content)
+            user_msg = m.group(1).lower() if m else last_content.lower()
+            intent = "cancel" if any(w in user_msg for w in ("cancel", "mat karo", "rehne do", "nahi", "no", "abort")) else "confirm"
+            return LLMResponse(
+                text=json.dumps({"intent": intent}),
+                tool_calls=[],
+                provider="Gemini",
+                model="gemini-3.1-flash-lite-preview"
+            )
+        return LLMResponse(
+            text=json.dumps({
+                "claims_action_done": False,
+                "which_action": None,
+                "claims_external_fact": False,
+                "sourced_by_tool": True,
+                "is_grounded": True,
+                "reason": "Verified"
+            }),
+            tool_calls=[],
+            provider="Gemini",
+            model="gemini-3.1-flash-lite-preview"
+        )
+
+    # If following tool execution
+    if last_role == "tool":
+        return LLMResponse(
+            text="⚠️ **Security & Privacy Warning**: Kya aap sach me apni saari memories, chat history, notes, reminders permanently delete karna chahte hain? Reply 'yes/haan' to confirm ya 'no/cancel' to abort.",
+            tool_calls=[],
+            provider="Gemini",
+            model="gemini-3.1-flash-lite-preview"
+        )
+
+    # If wipe query
+    if any(w in last_content.lower() for w in ("dlete", "delete", "wipe", "mita", "saaf", "sab kuch")):
+        return LLMResponse(
+            text="",
+            tool_calls=[{
+                "id": "call_wipe",
+                "type": "function",
+                "function": {"name": "request_master_privacy_wipe", "arguments": "{}"}
+            }],
+            provider="Gemini",
+            model="gemini-3.1-flash-lite-preview"
+        )
+
+    return LLMResponse(
+        text="Maine note kar liya hai.",
+        tool_calls=[],
+        provider="Gemini",
+        model="gemini-3.1-flash-lite-preview"
+    )
 
 @pytest.fixture(autouse=True)
 def setup_test_db():
     PENDING_WIPE_CODES.clear()
-    yield
+    from state.pending import cancel_pending_action
+    for cid in (998877101, 998877102, 998877103, 998877104, 998877106):
+        try:
+            db.set_state(cid, None)
+            cancel_pending_action(cid)
+        except Exception:
+            pass
+    with patch.dict(os.environ, {"AGENT_CORE": "v2"}), \
+         patch("llm.provider.chat", side_effect=fake_wipe_chat):
+        yield
     PENDING_WIPE_CODES.clear()
+    for cid in (998877101, 998877102, 998877103, 998877104, 998877106):
+        try:
+            db.set_state(cid, None)
+            cancel_pending_action(cid)
+        except Exception:
+            pass
 
 
 @pytest.mark.asyncio

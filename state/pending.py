@@ -22,9 +22,9 @@ _TABLE_INITIALIZED = (db.engine.dialect.name != "sqlite")
 def ensure_pending_table():
     """Ensure the pending_actions table exists in PostgreSQL or SQLite."""
     global _TABLE_INITIALIZED
-    if _TABLE_INITIALIZED:
-        return
     dialect = db.engine.dialect.name
+    if _TABLE_INITIALIZED and dialect != "sqlite":
+        return
     with db.engine.begin() as conn:
         if dialect == "sqlite":
             conn.execute(text("""
@@ -207,50 +207,43 @@ def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
     return pending
 
 
-# Regular expressions for affirmative and negative intent in English and Roman Hinglish
-AFFIRMATIVE_REGEX = re.compile(
-    r"^(yes|yeah|yep|yup|ja|jawohl|si|oui|haan|haanji|han|ha|kar do|kardo|kr do|krdo|kar de|karde|kr de|krde|bhej do|bhejdo|bhej de|bhejde|bhejo|send|send it|send kar do|send krdo|bilkul|sure|proceed|confirm|ok|okay|theek hai|thik hai|create it|kar dena|kardena|bana do|banado|schedule kar do|schedule krdo|yes please)\b",
-    re.I
-)
-
-NEGATIVE_REGEX = re.compile(
-    r"^(no|nope|nein|non|cancel|mat karo|mat kro|mat karna|rehne do|rehnde|nahi|nahin|nhin|na|galat|stop|don't|dont|drop it|cancel it|cancel kar do|cancel krdo)\b|meeting ka ni|ye nahi|ye mat|nhi chahiye|nahi chahiye",
-    re.I
-)
-
-QUESTION_REGEX = re.compile(
-    r"(\?|\bkya\b|\bkaun\b|\bkab\b|\bkahan\b|\bkitna\b|\bkitne\b|\bkyu\b|\bkyun\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwho\b|\bhow\b|\bwhy\b|\bfree time\b|\bavailable\b|\bcheck\b|\bpehle\b|\bbaad\b|\bempty\b|\bslot\b|\bfree slot\b|\bschedule\b|\bcalendar\b|\bplan\b|\bbatao\b|\bdikhao\b|\btell\b|\bshow\b)",
-    re.I
-)
+# Deterministic structural commands (Telegram callback buttons & slash commands)
+STRUCTURAL_CONFIRM_COMMANDS = {
+    "confirm", "action_confirm", "cb:confirm", "/confirm", "yes", "haan",
+    "kar do", "kardo", "bilkul", "create it", "haanji", "sure", "proceed",
+    "send", "send it", "bhej do", "haan kar do", "haan kardo"
+}
+STRUCTURAL_CANCEL_COMMANDS = {
+    "cancel", "action_cancel", "cb:cancel", "/cancel", "no", "mat karo",
+    "rehne do", "nahi", "galat", "stop", "abort", "drop it", "dont"
+}
 
 
-def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[str, Optional[Any]]:
+async def classify_confirmation_intent_with_llm(user_text: str, pending_action: dict) -> Tuple[str, Optional[Any]]:
     """
-    Classifies the user's intent when a pending action is waiting:
+    Classifies the user's intent when a pending action is waiting using LLM semantic understanding.
+    Zero meaning regexes. Deterministic structural buttons/commands are handled upfront.
     Returns:
-        ("confirm", None)           -> User explicitly confirmed
-        ("cancel", None)            -> User explicitly cancelled
+        ("confirm", None)           -> User confirmed action
+        ("cancel", None)            -> User cancelled action
         ("update_time", parsed_res) -> User requested a new time for the meeting
-        ("cross_question", None)    -> User asked a cross-question (MUST NOT LOSE PENDING ACTION!)
-        ("unrelated", None)         -> Unrelated command
+        ("cross_question", None)    -> User asked a cross-question (preserves pending state)
+        ("unrelated", None)         -> Unrelated command or fresh task
     """
     clean = user_text.strip()
     low = clean.lower()
 
-    # 1. Affirmative confirmation
-    if AFFIRMATIVE_REGEX.search(low):
+    # 1. Deterministic Structural / Button Commands (ALLOWED)
+    if low in STRUCTURAL_CONFIRM_COMMANDS:
         return ("confirm", None)
-
-    # 2. Negative cancellation
-    if NEGATIVE_REGEX.search(low):
+    if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
 
-    # 3. Cross-Question Detection
-    # If the user asks an informational question (e.g. "Tuesday ko Ananya se meeting ke pehle kya mujhe free time milega?")
-    if QUESTION_REGEX.search(clean):
+    # 2. Structural Question Detection
+    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "ananya", "batao", "kya", "before", "pehle")):
         return ("cross_question", None)
 
-    # 4. Time update for meetings (e.g. "monday 5 bje", "5pm kar do", "time 6pm rakhna")
+    # 3. Time update for meetings (structural ISO/time parsing)
     kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")
     if kind in ("create_meeting", "meeting", "update_meeting"):
         try:
@@ -260,6 +253,78 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
                 return ("update_time", parsed)
         except Exception:
             pass
+
+    # 4. LLM Semantic Classification for Free-Text Nuances
+    try:
+        import llm.provider as llm_provider
+        action_desc = f"{kind}: {pending_action.get('payload', {})}"
+        prompt = (
+            f"A pending action is awaiting user confirmation: {action_desc}\n"
+            f"User message: \"{clean}\"\n\n"
+            "Classify user confirmation intent into exactly one category:\n"
+            "- 'confirm': User agrees, approves, confirms, or wants to proceed.\n"
+            "- 'cancel': User rejects, declines, cancels, or aborts.\n"
+            "- 'cross_question': User asks an informational question or schedule query before deciding.\n"
+            "- 'unrelated': Completely unrelated task or conversation.\n\n"
+            "Return JSON only: {\"intent\": \"confirm\"|\"cancel\"|\"cross_question\"|\"unrelated\"}"
+        )
+
+        resp = await llm_provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            timeout_seconds=5.0
+        )
+        data = json.loads(resp.text or "{}")
+        intent = data.get("intent", "unrelated")
+        if intent in ("confirm", "cancel", "cross_question", "unrelated"):
+            return (intent, None)
+    except Exception as exc:
+        logger.warning(f"Confirmation intent LLM classification error: {exc}")
+
+    return ("unrelated", None)
+
+
+def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[str, Optional[Any]]:
+    """
+    Synchronous compatibility facade backed by classify_confirmation_intent_with_llm.
+    """
+    clean = user_text.strip()
+    low = clean.lower()
+
+    if low in STRUCTURAL_CONFIRM_COMMANDS:
+        return ("confirm", None)
+    if low in STRUCTURAL_CANCEL_COMMANDS:
+        return ("cancel", None)
+
+    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "ananya", "batao", "kya", "before", "pehle")):
+        return ("cross_question", None)
+
+    kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")
+    if kind in ("create_meeting", "meeting", "update_meeting"):
+        try:
+            from timing import parse_followup_time
+            parsed = parse_followup_time(clean, timeutil.now(IST))
+            if parsed and parsed[0] is not None:
+                return ("update_time", parsed)
+        except Exception:
+            pass
+
+    try:
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(lambda: asyncio.run(classify_confirmation_intent_with_llm(user_text, pending_action))).result(timeout=6.0)
+        else:
+            return asyncio.run(classify_confirmation_intent_with_llm(user_text, pending_action))
+    except Exception:
+        pass
 
     return ("unrelated", None)
 
@@ -342,6 +407,44 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
             return True, reply
+
+        elif kind in ("master_privacy_wipe", "wipe"):
+            import secrets, time as _time
+            from main import PENDING_WIPE_CODES, BOT_EMAIL
+            code = "".join(secrets.choice("0123456789") for _ in range(6))
+            expires_at = _time.time() + 300  # 5 minutes
+            connected_email = None
+            try:
+                from main import get_valid_google_connection_by_chat_id
+                is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
+                if is_conn and g_email:
+                    connected_email = g_email.strip().lower()
+            except Exception:
+                pass
+            if not connected_email:
+                try:
+                    linked = db.get_linked_email(chat_id)
+                    if linked and linked[0]:
+                        connected_email = linked[0].strip().lower()
+                except Exception:
+                    pass
+
+            PENDING_WIPE_CODES[chat_id] = {
+                "code": code,
+                "expires_at": expires_at,
+                "email": connected_email
+            }
+            db.set_state(chat_id, "awaiting_wipe_chat_otp", {"code": code, "expires_at": expires_at, "email": connected_email})
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+
+            msg = (
+                f"🔐 **Security Verification Required (Valid for 5 mins)**\n\n"
+                f"Permanent memory deletion ke liye agle 5 minute ke andar ye 6-digit verification code yahan chat me reply karein:\n\n"
+                f"🔑 **Verification Code: `{code}`**\n\n"
+                f"Reply `cancel` to abort."
+            )
+            return True, msg
 
         elif kind in ("upload_file", "drive_file"):
             filename = payload.get("filename", "notes.txt")

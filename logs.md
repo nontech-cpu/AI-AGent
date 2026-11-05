@@ -232,8 +232,53 @@ This document maintains the persistent, chronological log of architectural upgra
 
 ---
 
-## Phase 6: Remove Meaning-Regex (Next Phase)
+## Phase 6: Remove Meaning-Regex (Safe & Incremental)
+
+**Status:** Completed & Verified  
+**Date:** 2026-11-05  
+**Evidence Files:**
+- [`docs/verification/phase6/phase6_summary.md`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase6/phase6_summary.md)
+- [`docs/verification/phase6/audit_output.txt`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase6/audit_output.txt)
+- [`docs/verification/phase6/pytest_phase6.txt`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase6/pytest_phase6.txt)
+
+### Deliverables & Key Actions:
+1. **Meaning-Regex Audit Tool (`scripts/audit_regex_meaning.py`)**:
+   - Built a comprehensive audit scanner that verifies zero disallowed meaning-determining regexes and hardcoded keyword lists exist in active paths.
+   - Initial audit baseline: 18 DISALLOWED patterns found.
+   - Post-refactor audit result: **0 DISALLOWED patterns found** (`AUDIT RESULT: PASS`).
+2. **Confirmation Intent Refactored (`state/pending.py`)**:
+   - Completely eliminated `AFFIRMATIVE_REGEX`, `NEGATIVE_REGEX`, and `QUESTION_REGEX` (~100 hardcoded multilingual keywords and regex patterns).
+   - Introduced `classify_confirmation_intent_with_llm(user_text, pending_action)` querying the LLM provider with structured schema `{"intent": "confirm"|"cancel"|"cross_question"|"unrelated"}`.
+   - Retained allowed deterministic structural commands (`STRUCTURAL_CONFIRM_COMMANDS`, `STRUCTURAL_CANCEL_COMMANDS`) and Telegram callback payloads (`action_confirm`, `action_cancel`).
+   - Dynamic table initialization in `ensure_pending_table()` ensures table availability across SQLite test fixtures and remote PostgreSQL engines alike.
+3. **Agent Loop & Tool Heuristics Sanitized (`agent/loop.py`, `agent/tools.py`)**:
+   - Removed language switching keyword heuristics (`LANGUAGE_ALIASES`, `ALIAS_TO_CANONICAL`, `INTENT_WORDS`, `detect_explicit_language_switch`); language adaptation is handled natively by the LLM prompt mandate.
+   - Replaced affirmative keyword list in `is_short_followup` with structural token count (`len(low_u.split()) <= 4`).
+   - Stripped heuristic keyword lists in `update_reminder` and `create_reminder`.
+   - Native Master Privacy Wipe: `request_master_privacy_wipe` tool saves a pending action in `pending_actions` and transitions to `confirm_master_wipe` state.
+4. **Pre-LLM Interceptors Removed (`main.py`)**:
+   - Eliminated pre-LLM greeting and acknowledgment regex matching (`re.fullmatch(...)`).
+   - Removed `is_master_wipe_request` phrase matching regex.
+   - Converted `/clear` and `/reset` to structural slash commands only.
+   - Repositioned the unified Agent Loop entry point (`handle_active`) directly after structural commands and OTP verification checks, ensuring legacy state machines cannot intercept normal turns.
+5. **Dead v1 Paths Proposed for Deletion**:
+   - Prepared dead v1 file list for explicit user approval before deletion:
+     - `llm/legacy.py` (813 lines)
+     - `nlu.py` (~400 lines)
+     - `lang.py` (~120 lines)
+     - Dead `AGENT_CORE=v1` branch in `main.py` (lines 3228–3530).
+6. **Verification Evidence**:
+   - Meaning Regex Audit `scripts/audit_regex_meaning.py` $\to$ **PASS (0 disallowed patterns)**.
+   - Master Privacy Wipe Test Suite `tests/test_master_privacy_wipe_comprehensive.py` $\to$ **6/6 PASSED in 28.27s**.
+   - Dedicated Phase 6 Verification Suite `tests/test_phase6_meaning_regex_removal.py` $\to$ **8/8 PASSED in 18.09s**.
+   - Full Multi-Phase Regression Suite (Phases 1–6) $\to$ **62/62 PASSED in 45.43s**.
+   - Raw outputs saved in `docs/verification/phase6/audit_output.txt` and `docs/verification/phase6/pytest_phase6.txt`.
+
+---
+
+## Phase 7: Context Assembly & Conversation History (Next Phase)
 
 **Status:** Awaiting User "Go Ahead"  
-*(Will be initiated once Phase 5 review is complete)*
+*(Will be initiated once Phase 6 review is complete)*
+
 
