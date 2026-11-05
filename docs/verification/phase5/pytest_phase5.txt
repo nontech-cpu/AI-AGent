@@ -1,0 +1,105 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-9.1.1, pluggy-1.7.0 -- C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\neera\OneDrive\ai agent\ai-agent
+configfile: pytest.ini
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 73 items
+
+tests/test_phase1_time_and_clash.py::test_poisoned_cutoff_date_rejected PASSED [  1%]
+tests/test_phase1_time_and_clash.py::test_agent_loop_self_corrects_poisoned_date PASSED [  2%]
+tests/test_phase1_time_and_clash.py::test_clash_detection_meeting_vs_movie PASSED [  4%]
+tests/test_phase1_time_and_clash.py::test_list_reminders_missing_date_returns_today PASSED [  5%]
+tests/test_phase1_time_and_clash.py::test_read_tools_accept_past_dates_and_relative_expressions PASSED [  6%]
+tests/test_phase1_time_and_clash.py::test_write_tools_reject_past_datetime_and_second_attempt_succeeds PASSED [  8%]
+tests/test_crashes_and_fallback.py::test_set_user_timezone_no_unbound_local PASSED [  9%]
+tests/test_crashes_and_fallback.py::test_agent_loop_ist_scoping_no_unbound_local PASSED [ 10%]
+tests/test_crashes_and_fallback.py::test_unhandled_crash_triggers_typed_fallback_and_trace_id PASSED [ 12%]
+tests/test_phase2_llm_adapter.py::test_provider_429_backoff_and_fallback PASSED [ 13%]
+tests/test_phase2_llm_adapter.py::test_provider_timeout_failover PASSED  [ 15%]
+tests/test_phase2_llm_adapter.py::test_xml_tool_call_extraction PASSED   [ 16%]
+tests/test_phase2_llm_adapter.py::test_empty_response_normalization PASSED [ 17%]
+tests/test_phase2_llm_adapter.py::test_tool_call_invalid_arguments_structured_error PASSED [ 19%]
+tests/test_phase2_llm_adapter.py::test_typed_exceptions_produce_clean_user_reply_with_trace_id PASSED [ 20%]
+tests/test_phase2_llm_adapter.py::test_fake_llm_harness_poisoned_tool_call PASSED [ 21%]
+tests/test_phase3_memory.py::test_store_and_recall_fact PASSED           [ 23%]
+tests/test_phase3_memory.py::test_update_fact_superseding PASSED         [ 24%]
+tests/test_phase3_memory.py::test_varied_hinglish_and_english_recall[Where is my office located?] PASSED [ 26%]
+tests/test_phase3_memory.py::test_varied_hinglish_and_english_recall[mera office kahan par hai?] PASSED [ 27%]
+tests/test_phase3_memory.py::test_varied_hinglish_and_english_recall[bhai office location batana] PASSED [ 28%]
+tests/test_phase3_memory.py::test_varied_hinglish_and_english_recall[karyalaya ka address] PASSED [ 30%]
+tests/test_phase3_memory.py::test_varied_hinglish_and_english_recall[workplace address details] PASSED [ 31%]
+tests/test_phase3_memory.py::test_multi_user_isolation PASSED            [ 32%]
+tests/test_phase3_memory.py::test_forget_wipes_rows_and_embeddings PASSED [ 34%]
+tests/test_phase3_memory.py::test_prompt_injection_in_memory_treated_as_data PASSED [ 35%]
+tests/test_phase3_memory.py::test_retrieval_timeout_fallback PASSED      [ 36%]
+tests/test_phase3_memory.py::test_temporal_simulation_and_decay PASSED   [ 38%]
+tests/test_phase3_memory.py::test_embedding_retry_queue_and_worker PASSED [ 39%]
+tests/test_phase3_memory.py::test_dynamic_identity_linking PASSED        [ 41%]
+tests/test_phase3_memory.py::test_migration_idempotence PASSED           [ 42%]
+tests/test_phase4_prompt_and_routing.py::test_static_prompt_size_under_4kb PASSED [ 43%]
+tests/test_phase4_prompt_and_routing.py::test_static_prompt_contains_core_principles PASSED [ 45%]
+tests/test_phase4_prompt_and_routing.py::test_static_prompt_zero_scenario_examples_and_brand_facts PASSED [ 46%]
+tests/test_phase4_prompt_and_routing.py::test_dynamic_runtime_prompt_assembly PASSED [ 47%]
+tests/test_phase4_prompt_and_routing.py::test_route_tools_always_includes_core_tools PASSED [ 49%]
+tests/test_phase4_prompt_and_routing.py::test_route_tools_attaches_domain_tools_for_domain_queries PASSED [ 50%]
+tests/test_phase4_prompt_and_routing.py::test_route_tools_multi_turn_context_inheritance PASSED [ 52%]
+tests/test_phase4_prompt_and_routing.py::test_casual_chat_does_not_pollute_specialized_tools PASSED [ 53%]
+tests/test_phase4_prompt_and_routing.py::test_pending_action_database_persistence_across_restarts PASSED [ 54%]
+tests/test_phase4_prompt_and_routing.py::test_cross_question_preserves_pending_action PASSED [ 56%]
+tests/test_phase4_prompt_and_routing.py::test_multi_turn_anaphora_history_persistence PASSED [ 57%]
+tests/test_phase5_grounding.py::test_claim_checker_schema_and_structured_json PASSED [ 58%]
+tests/test_phase5_grounding.py::test_failure_7_claimed_create_reminder_without_tool_execution PASSED [ 60%]
+tests/test_phase5_grounding.py::test_failure_8_claimed_delete_reminder_without_tool_execution PASSED [ 61%]
+tests/test_phase5_grounding.py::test_failures_9_and_10_fabricated_malls_blocked PASSED [ 63%]
+tests/test_phase5_grounding.py::test_failure_20_fabricated_order_history_blocked PASSED [ 64%]
+tests/test_phase5_grounding.py::test_failure_24_fabricated_highway_and_distance_blocked PASSED [ 65%]
+tests/test_phase5_grounding.py::test_failure_12_and_22_connected_accounts_answered_from_db PASSED [ 67%]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[meeting ko 4pm ke badle 5pm shift kar do] PASSED [ 68%]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[reschedule 4pm meeting to 5pm] PASSED [ 69%]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[move meeting from 16:00 to 17:00] PASSED [ 71%]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[shift my meeting to 5pm] PASSED [ 72%]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[4 baje wali meeting 5 baje kardo] PASSED [ 73%]
+tests/test_phase5_grounding.py::test_agent_loop_grounding_interception_and_rerun PASSED [ 75%]
+tests/test_phase5_grounding.py::test_general_chat_and_math_pass_grounding_without_tools PASSED [ 76%]
+tests/test_verifier.py::test_verifier_catches_fabricated_meet_link PASSED [ 78%]
+tests/test_verifier.py::test_verifier_catches_unconfirmed_action_completion PASSED [ 79%]
+tests/test_verifier.py::test_verifier_catches_fake_github_repositories PASSED [ 80%]
+tests/test_verifier.py::test_verifier_allows_grounded_reply PASSED       [ 82%]
+tests/test_verifier.py::test_verify_and_ground_reply_full_flow PASSED    [ 83%]
+tests/test_verifier.py::test_verifier_allows_email_from_recent_history_when_query_is_yes PASSED [ 84%]
+tests/test_verifier.py::test_verifier_sanitizes_regional_script_labels PASSED [ 86%]
+tests/test_phase3_tools_and_verifier.py::test_ast_calculator_safe_math PASSED [ 87%]
+tests/test_phase3_tools_and_verifier.py::test_commitments_state_machine_and_nudges PASSED [ 89%]
+tests/test_phase3_tools_and_verifier.py::test_tool_execution_web_search_and_commitment PASSED [ 90%]
+tests/test_phase3_tools_and_verifier.py::test_code_level_grounding_verifier PASSED [ 91%]
+tests/test_nlu_and_parsing.py::test_sensitive_detection PASSED           [ 93%]
+tests/test_nlu_and_parsing.py::test_explicit_calendar_action_detection PASSED [ 94%]
+tests/test_nlu_and_parsing.py::test_word_numbers_devanagari_and_hinglish PASSED [ 95%]
+tests/test_nlu_and_parsing.py::test_parse_followup_time PASSED           [ 97%]
+tests/test_nlu_and_parsing.py::test_multilingual_yes_no_fast_paths PASSED [ 98%]
+tests/test_nlu_and_parsing.py::test_meeting_title_extraction PASSED      [100%]
+
+============================== warnings summary ===============================
+venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_phase1_time_and_clash.py: 9 warnings
+tests/test_crashes_and_fallback.py: 4 warnings
+tests/test_phase4_prompt_and_routing.py: 4 warnings
+tests/test_phase5_grounding.py: 18 warnings
+  C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Lib\site-packages\sqlalchemy\engine\default.py:1192: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[meeting ko 4pm ke badle 5pm shift kar do]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[reschedule 4pm meeting to 5pm]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[move meeting from 16:00 to 17:00]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[shift my meeting to 5pm]
+tests/test_phase5_grounding.py::test_failure_19_reschedule_updates_existing_item[4 baje wali meeting 5 baje kardo]
+  C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Lib\site-packages\sqlalchemy\engine\default.py:1192: DeprecationWarning: The default date adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================= 73 passed, 41 warnings in 66.99s (0:01:06) ==================

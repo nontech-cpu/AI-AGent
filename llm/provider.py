@@ -813,6 +813,21 @@ class FakeLLMProvider(BaseLLMProvider):
             "temperature": temperature
         })
         if not self.scripted_queue:
+            if response_format and response_format.get("type") == "json_object":
+                return LLMResponse(
+                    text=json.dumps({
+                        "claims_action_done": False,
+                        "which_action": None,
+                        "claims_external_fact": False,
+                        "sourced_by_tool": True,
+                        "is_grounded": True,
+                        "final_reply": "FakeLLM default scripted response.",
+                        "reason": "Default hermetic test response"
+                    }),
+                    tool_calls=[],
+                    provider=self.name,
+                    model="fake-model-v1"
+                )
             return LLMResponse(
                 text="FakeLLM default scripted response.",
                 tool_calls=[],

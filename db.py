@@ -1623,6 +1623,7 @@ def search_relevant_user_facts(chat_id, query_text: str, limit: int = 4) -> list
 # ---------- User Third-Party Integrations (Notion, GitHub, etc.) ----------
 
 def save_user_integration(chat_id, service: str, api_key: str, config_data: str = "{}"):
+    _init_frontier_sqlite_if_needed()
     chat_id = canonical_chat_id(chat_id)
     """Encrypts and securely stores an API key/token for a third-party service."""
     if not api_key or not str(api_key).strip():
@@ -1630,17 +1631,20 @@ def save_user_integration(chat_id, service: str, api_key: str, config_data: str 
     from crypto import encrypt_aes256_gcm
     enc = encrypt_aes256_gcm(str(api_key).strip())
     svc = str(service).strip().lower()
+    is_pg = engine.dialect.name == "postgresql"
+    now_expr = "now()" if is_pg else "CURRENT_TIMESTAMP"
+    true_expr = "true" if is_pg else "1"
     try:
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO user_integrations (user_id, service, api_key_enc, config_data, is_active, updated_at) "
-                    "SELECT id, :svc, :enc, :cfg, true, now() FROM users WHERE telegram_chat_id = :cid "
-                    "ON CONFLICT (user_id, service) DO UPDATE SET "
-                    "api_key_enc = EXCLUDED.api_key_enc, "
-                    "config_data = EXCLUDED.config_data, "
-                    "is_active = true, "
-                    "updated_at = now()"
+                    f"INSERT INTO user_integrations (user_id, service, api_key_enc, config_data, is_active, updated_at) "
+                    f"SELECT id, :svc, :enc, :cfg, {true_expr}, {now_expr} FROM users WHERE telegram_chat_id = :cid "
+                    f"ON CONFLICT (user_id, service) DO UPDATE SET "
+                    f"api_key_enc = EXCLUDED.api_key_enc, "
+                    f"config_data = EXCLUDED.config_data, "
+                    f"is_active = {true_expr}, "
+                    f"updated_at = {now_expr}"
                 ),
                 {"cid": chat_id, "svc": svc, "enc": enc, "cfg": config_data or "{}"}
             )
@@ -1651,17 +1655,20 @@ def save_user_integration(chat_id, service: str, api_key: str, config_data: str 
 
 
 def get_user_integration(chat_id, service: str):
+    _init_frontier_sqlite_if_needed()
     chat_id = canonical_chat_id(chat_id)
     """Retrieves and decrypts the API key/token for a user integration."""
     from crypto import decrypt_any
     svc = str(service).strip().lower()
+    is_pg = engine.dialect.name == "postgresql"
+    active_cond = "is_active = true" if is_pg else "is_active = 1"
     try:
         with engine.connect() as conn:
             row = conn.execute(
                 text(
                     "SELECT api_key_enc, config_data, is_active FROM user_integrations "
                     "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                    "AND service = :svc AND is_active = true"
+                    f"AND service = :svc AND {active_cond}"
                 ),
                 {"cid": chat_id, "svc": svc}
             ).first()
@@ -1699,6 +1706,7 @@ def delete_user_integration(chat_id, service: str):
 
 
 def get_user_integrations_summary(chat_id):
+    _init_frontier_sqlite_if_needed()
     chat_id = canonical_chat_id(chat_id)
     """Returns a status summary of all supported integrations for a user."""
     integrations = {
@@ -2309,6 +2317,28 @@ def _init_frontier_sqlite_if_needed():
                 except Exception:
                     pass
 
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS user_integrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    service TEXT NOT NULL,
+                    api_key_enc TEXT,
+                    config_data TEXT DEFAULT '{}',
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, service)
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS email_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    email TEXT NOT NULL,
+                    verified INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS user_mcp_servers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

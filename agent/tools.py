@@ -216,6 +216,7 @@ class UpdateReminderArgs(BaseModel):
     reminder_id: Optional[int] = Field(None, description="ID of the reminder if known.")
     due_date: Optional[str] = Field(None, description="Updated date in YYYY-MM-DD format if date is being changed.")
     due_time: Optional[str] = Field(None, description="Updated time in 24-hour HH:MM format if time is being changed.")
+    from_time: Optional[str] = Field(None, description="Original or current time of the meeting being changed, e.g. '16:00' if shifting from 4pm.")
     duration_minutes: Optional[Any] = Field(None, description="Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins).")
     force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
 
@@ -624,8 +625,10 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "create_reminder",
             "description": (
-                "Save a task, meeting, appointment, dinner date, shopping trip, workout, or reminder with a due date and time. "
-                "CRITICAL: If the user mentions setting a reminder for any activity (e.g. 'shopping ke liye jana hai reminder laga do', 'meeting reminder', 'gym reminder') with a time, ALWAYS call this tool. "
+                "Save a NEW task, meeting, appointment, dinner date, shopping trip, workout, or reminder with a due date and time. "
+                "CRITICAL: If the user mentions setting a brand-new reminder with a time, call this tool. "
+                "DO NOT use this tool for rescheduling, shifting, moving, postponing, preponing, or modifying an existing meeting or reminder "
+                "(use update_reminder instead). "
                 "Extract and convert time into due_time in 24-hour 'HH:MM' format (e.g. '23:00'). "
                 "If user specifies duration (e.g. '1 hour'), pass duration_minutes=60. "
                 "If no date is mentioned, due_date defaults to today's date."
@@ -659,7 +662,10 @@ TOOL_DEFINITIONS = [
             "name": "update_reminder",
             "description": (
                 "Update or reschedule an existing reminder, meeting, or event (e.g. updating duration, time, or date). "
-                "Use when user says 'meeting 1 hour ki hai', 'meeting ko 3pm shift kar do', 'meeting duration 60 mins kar do'."
+                "CRITICAL: ALWAYS call this tool when the user wants to reschedule, move, shift, postpone, prepone, change the time, "
+                "or adjust duration for an existing reminder or meeting (e.g. 'meeting ko 4pm ke badle 5pm shift kar do', "
+                "'reschedule 4pm meeting to 5pm', 'shift meeting to 5pm', 'meeting 1 hour ki hai', 'move meeting to 17:00'). "
+                "NEVER call create_reminder when rescheduling or modifying an existing meeting."
             ),
             "parameters": {
                 "type": "object",
@@ -928,7 +934,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "check_integrations_status",
-            "description": "Check whether user third-party integrations (GitHub, Notion, Google Calendar/Meet/Gmail/Drive) or email accounts are connected/linked, and retrieve which email address is linked to the user account.",
+            "description": "Check whether user third-party integrations (Google Calendar/Meet/Gmail/Drive, GitHub, Notion) or email accounts are connected/linked in the database. ALWAYS call this tool when the user asks whether their account/service is connected or linked (e.g. 'mera google account link hai?', 'is my github connected?', 'notion status').",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1897,11 +1903,24 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             else:
                 existing_items = db.items_for_date(chat_id, today_d)
 
-                # 1. If time hint or args.due_time is present, match by time first
-                if args.due_time:
+                # 1. If from_time is provided or extractable from user message, match by original time first
+                search_from_time = getattr(args, "from_time", None)
+                if not search_from_time and user_msg:
+                    import re
+                    m_time = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?\s*(?:ke badle|se|se badal|wali|ka)\b', user_msg)
+                    if m_time:
+                        hr = int(m_time.group(1))
+                        minute = int(m_time.group(2) or 0)
+                        ampm = (m_time.group(3) or "").lower()
+                        if ampm == "pm" and hr < 12: hr += 12
+                        elif ampm == "am" and hr == 12: hr = 0
+                        elif ampm == "baje" and hr < 12 and hr >= 1 and hr <= 6: hr += 12
+                        search_from_time = f"{hr:02d}:{minute:02d}"
+
+                if search_from_time:
                     for r in existing_items:
                         r_tm = _get_row_val(r, "due_time", 3)
-                        if r_tm and str(r_tm).startswith(args.due_time[:5]):
+                        if r_tm and str(r_tm).startswith(search_from_time[:5]):
                             matched_row = r
                             break
 

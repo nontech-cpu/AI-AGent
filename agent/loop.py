@@ -477,12 +477,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             if effective_tools and not is_terminal_synthesis:
                 payload["tools"] = effective_tools
-                # Dynamic Tool Routing: Let the LLM decide autonomously (tool_choice='auto')
-                if iteration == 0 and any(w in low_prompt for w in ("mall", "malls", "shopping", "cafe", "restaurant", "store", "showroom", "bazaar", "nearby places")):
-                    payload["tool_choice"] = {"type": "function", "function": {"name": "find_nearby_places"}}
-                elif iteration == 0 and any(w in low_prompt for w in ("who is", "latest news", "ceo of", "stock price", "toll", "highway", "train status", "flight status")):
-                    payload["tool_choice"] = {"type": "function", "function": {"name": "search_web"}}
-                else:
+                if payload.get("tool_choice") != "required":
                     payload["tool_choice"] = "auto"
             else:
                 payload.pop("tools", None)
@@ -534,8 +529,22 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             tool_calls = llm_resp.tool_calls
 
             if not tool_calls:
-                # No more tools requested; final conversational answer reached
-                final_reply = choice_msg.get("content") or ""
+                candidate_reply = choice_msg.get("content") or ""
+                # Audit grounding of candidate direct reply
+                is_cand_ok, v_cand_reply, cand_viols = await verify_and_ground_reply(
+                    draft_reply=candidate_reply,
+                    tool_results=tool_results_list,
+                    memory_context=mem_ctx,
+                    user_query=user_text,
+                    recent_history=recent_turns
+                )
+                if not is_cand_ok and iteration == 0 and trace_llm_calls < 2 and effective_tools:
+                    # Model claimed an unverified action or external fact without tools; re-run with tool_choice='required'
+                    logger.info(f"Ungrounded direct reply intercepted on iteration 0: {cand_viols}. Re-running with tool_choice='required'")
+                    payload["tool_choice"] = "required"
+                    continue
+
+                final_reply = candidate_reply if is_cand_ok else v_cand_reply
                 break
 
             # Append the assistant's tool-call request to messages
@@ -1034,25 +1043,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 pending_action = payload_conf
                 break
 
-    # Phase 3 & 4: Zero-Unsupported-Claims Grounding Verifier Pass
-    should_run_verifier = (
-        bool(tool_calls_executed) or
-        any(w in low_prompt for w in ("mall", "malls", "route", "rasta", "distance", "highway", "showroom", "store", "cafe", "restaurant", "hospital", "places"))
+    # Phase 5: Structured Grounding Verifier Audit
+    is_grounded, verified_reply, violations = await verify_and_ground_reply(
+        draft_reply=final_reply,
+        tool_results=tool_results_list,
+        memory_context=mem_ctx,
+        user_query=user_text,
+        recent_history=recent_turns
     )
-    if should_run_verifier:
-        is_grounded, verified_reply, violations = await verify_and_ground_reply(
-            draft_reply=final_reply,
-            tool_results=tool_results_list,
-            memory_context=mem_ctx,
-            user_query=user_text,
-            recent_history=recent_turns
-        )
-        if not is_grounded:
-            print(f"Grounding Verifier intercepted unsupported claims: {violations}")
-            final_reply = verified_reply
-    else:
-        is_grounded = True
-        violations = []
+    if not is_grounded:
+        logger.info(f"Grounding Verifier intercepted unsupported claims: {violations}")
+        final_reply = verified_reply
 
     # Guardrail: Fake-Success Prevention in code
     is_fake_ok, fake_err = check_fake_success_guard(final_reply, tool_results_list)

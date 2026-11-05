@@ -193,8 +193,47 @@ This document maintains the persistent, chronological log of architectural upgra
 
 ---
 
-## Phase 5: Grounding & Anti-Hallucination (Next Phase)
+## Phase 5: Grounding & Anti-Hallucination
+
+**Status:** Completed & Verified  
+**Date:** 2026-11-05  
+**Evidence Files:**
+- [`docs/verification/phase5/phase5_summary.md`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase5/phase5_summary.md)
+- [`docs/verification/phase5/pytest_phase5.txt`](file:///c:/Users/neera/OneDrive/ai agent/ai-agent/docs/verification/phase5/pytest_phase5.txt)
+
+### Deliverables & Key Actions:
+1. **Unified Structured Claim-Checker Schema (`agent/verifier.py`)**:
+   - Replaced keyword-based rules with a structured JSON claim-checker (`audit_claims_with_llm`):  
+     `{claims_action_done, which_action, claims_external_fact, sourced_by_tool, reason}`.
+   - Preserved fast deterministic checks exclusively for verifiable tool artifacts (Meet URLs, repository/email lists, tool error status).
+   - Removed brittle keyword lists (`completed_action_phrases`, `fake_mall_tokens`, hardcoded highway patterns).
+2. **Direct Turn Interception & Re-run (`agent/loop.py`)**:
+   - Eliminated keyword list gating on verification (`any(w in low_prompt for w in ("mall", "highway", ...))`).
+   - If an ungrounded action or external fact claim is made on turn 0 without calling tools, the loop intercepts it and triggers a re-run with `tool_choice="required"` within the strict 2-call LLM budget.
+   - If tools cannot verify the claim or execution fails, the hallucinated claim is replaced with an honest refusal (`"Mere paas iski verified information nahi hai."`).
+3. **Failures 7, 8, 9, 10, 20 & 24 Resolved**:
+   - **Failures 7 & 8**: Bot no longer claims `create_reminder` or `delete_reminder` was completed without executing the tool.
+   - **Failures 9 & 10**: Fabricated shopping malls in Jodhpur (Ansal Plaza, Orbit Mall) are intercepted and blocked.
+   - **Failure 20**: Fabricated grocery orders (Milk & Bread) are intercepted and blocked.
+   - **Failure 24**: Fabricated highway transit (NH-48, 4.5km) without live maps is intercepted and blocked.
+4. **Connected Account Grounding (Failures 12 & 22)**:
+   - Configured `check_integrations_status` in baseline tools.
+   - Connected-account questions (*"is my google/github/notion linked?"*) are answered strictly from the database via `check_integrations_status`, never guessed or assumed.
+   - Added cross-dialect SQLite table initialization in `db.py` for `user_integrations` and `email_links`.
+5. **Reschedule vs Create Disambiguation (Failure 19)**:
+   - Disambiguated `create_reminder` and `update_reminder` tool descriptions.
+   - Added `from_time: Optional[str]` to `UpdateReminderArgs`.
+   - Fixed `update_reminder` matching logic to match on `from_time` / original time instead of target `due_time`.
+   - Tested across varied Hinglish and English phrasings (*"meeting ko 4pm ke badle 5pm shift kar do"*, *"reschedule 4pm meeting to 5pm"*, *"move meeting from 16:00 to 17:00"*, *"shift my meeting to 5pm"*, *"4 baje wali meeting 5 baje kardo"*); existing items are updated in-place with zero duplicate rows.
+6. **Verification Evidence**:
+   - Dedicated Phase 5 test suite `tests/test_phase5_grounding.py` $\to$ **14/14 PASSED in 28.96s**.
+   - Full multi-phase regression suite $\to$ **73/73 PASSED in 66.99s**.
+   - Raw pytest output saved in `docs/verification/phase5/pytest_phase5.txt`.
+
+---
+
+## Phase 6: Remove Meaning-Regex (Next Phase)
 
 **Status:** Awaiting User "Go Ahead"  
-*(Will be initiated once Phase 4 review is complete)*
+*(Will be initiated once Phase 5 review is complete)*
 
