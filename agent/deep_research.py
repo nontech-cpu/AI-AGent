@@ -42,29 +42,24 @@ async def run_deep_research(topic: str, goal: Optional[str] = None) -> Dict[str,
     clean_topic = topic.strip()
     clean_goal = (goal or clean_topic).strip()
 
-    # Pass 1: Decomposer Sub-Agent
+    # Pass 1: Decomposer Sub-Agent (Phase 2 LLM Adapter)
     search_queries = [clean_topic]
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json={
-                    "model": "openai/gpt-oss-20b",
-                    "messages": [
-                        {"role": "system", "content": DECOMPOSER_PROMPT},
-                        {"role": "user", "content": f"Topic: {clean_topic}\nGoal: {clean_goal}"}
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.2
-                }
-            )
-            if resp.status_code == 200:
-                data = resp.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(data)
-                q_list = parsed.get("queries", [])
-                if q_list and isinstance(q_list, list):
-                    search_queries = [str(q).strip() for q in q_list[:3] if str(q).strip()]
+        import llm.provider as llm_provider
+        resp = await llm_provider.chat(
+            messages=[
+                {"role": "system", "content": DECOMPOSER_PROMPT},
+                {"role": "user", "content": f"Topic: {clean_topic}\nGoal: {clean_goal}"}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            timeout=15.0
+        )
+        if resp.text:
+            parsed = json.loads(resp.text)
+            q_list = parsed.get("queries", [])
+            if q_list and isinstance(q_list, list):
+                search_queries = [str(q).strip() for q in q_list[:3] if str(q).strip()]
     except Exception as exc:
         print("[DeepResearch.Decomposer] fallback to single query:", exc)
 
@@ -89,27 +84,23 @@ async def run_deep_research(topic: str, goal: Optional[str] = None) -> Dict[str,
 
     combined_evidence = "\n".join(evidence_blocks)
 
-    # Pass 3: Critic & Synthesizer Sub-Agent
+    # Pass 3: Critic & Synthesizer Sub-Agent (Phase 2 LLM Adapter)
     final_dossier = ""
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            syn_resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": CRITIC_SYNTHESIZER_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f"User Research Goal: {clean_goal}\n\nGathered Multi-Angle Evidence:\n{combined_evidence}"
-                        }
-                    ],
-                    "temperature": 0.3
+        import llm.provider as llm_provider
+        syn_resp = await llm_provider.chat(
+            messages=[
+                {"role": "system", "content": CRITIC_SYNTHESIZER_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"User Research Goal: {clean_goal}\n\nGathered Multi-Angle Evidence:\n{combined_evidence}"
                 }
-            )
-            if syn_resp.status_code == 200:
-                final_dossier = syn_resp.json()["choices"][0]["message"]["content"].strip()
+            ],
+            temperature=0.3,
+            timeout=25.0
+        )
+        if syn_resp.text:
+            final_dossier = syn_resp.text.strip()
     except Exception as exc:
         print("[DeepResearch.Critic] error:", exc)
 

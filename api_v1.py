@@ -493,14 +493,9 @@ async def _execute_user_action(chat_id: int, text_content: str, history: List[Di
     messages.append({"role": "user", "content": clean})
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
-                json={"model": "openai/gpt-oss-20b", "temperature": 0.4, "messages": messages},
-            )
-            resp.raise_for_status()
-            reply_text = resp.json()["choices"][0]["message"]["content"].strip()
+        import llm.provider as llm_provider
+        resp = await llm_provider.chat(messages=messages, temperature=0.4, timeout=15.0)
+        reply_text = (resp.text or "").strip()
     except Exception as exc:
         print("[api_v1] chat completion fallback error:", repr(exc))
         reply_text = "Main aapka personal AI companion hu! Aap mujhse mausam (weather), reminders, calendar ya kisi bhi sawal ke baare me pooch sakte ho."
@@ -1133,18 +1128,13 @@ async def execute_cross_tool_query(
     )
 
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
-                json={
-                    "model": os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b",
-                    "temperature": 0.3,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            resp.raise_for_status()
-            answer = resp.json()["choices"][0]["message"]["content"].strip()
+        import llm.provider as llm_provider
+        resp = await llm_provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            timeout=25.0
+        )
+        answer = (resp.text or "").strip()
     except Exception as exc:
         print("[api_v1] cross-query LLM error:", repr(exc))
         answer = "Cross-tool query execution is temporarily unavailable."
@@ -1407,17 +1397,13 @@ async def get_morning_briefing(
     )
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
-                json={
-                    "model": os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b",
-                    "temperature": 0.5,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            briefing_text = resp.json()["choices"][0]["message"]["content"].strip()
+        import llm.provider as llm_provider
+        resp = await llm_provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            timeout=20.0
+        )
+        briefing_text = (resp.text or "").strip()
     except Exception:
         travel_suffix = " Don't forget your Aadhaar card and boarding pass!" if has_travel else ""
         briefing_text = f"Good morning! Today is {today.strftime('%A, %d %b')}. You have {len(raw_today)} active tasks scheduled. Weather: {weather_text}.{travel_suffix} Stay focused!"

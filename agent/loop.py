@@ -20,6 +20,7 @@ logger = logging.getLogger("peculiar_agent_loop")
 
 from timing import IST
 import core.timeutil as timeutil
+import llm.provider as llm_provider
 import db
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from memory.retrieval import assemble_memory_context
@@ -422,7 +423,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # 5. Semantic Context-Aware Tool Suite (Embedding similarity between message and tool descriptions, no hardcoded regex gates)
     context_hint = ""
-    if prior_turns:
+    low_u = (user_text or "").strip().lower()
+    is_short_followup = len(low_u.split()) <= 4 and (
+        low_u in ("yes", "ha", "haan", "yep", "sure", "ok", "okay", "send", "proceed", "send it", "bhej do", "confirm", "send mail", "send email", "kar do", "haanji", "bilkul")
+        or any(w in low_u for w in ("confirm", "proceed", "yes", "haan", "send"))
+    )
+    if is_short_followup and prior_turns:
         for pt in reversed(prior_turns):
             if pt.get("role") == "assistant":
                 context_hint = (pt.get("text") or pt.get("content") or "").strip()
@@ -490,87 +496,42 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             print("Check 2 (calling LLM):", time.time() - start_ts)
             resp = None
 
-            # Multi-Tier Provider Architecture:
-            # Tier 1: Google Gemini (1 Million TPM, native tool calling, no 429 choke)
-            # Tier 2: Groq (Ultra-fast fallback)
-            llm_providers = []
-            if gemini_key:
-                llm_providers.append({
-                    "name": "Gemini",
-                    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-                    "headers": {"Authorization": f"Bearer {gemini_key}", "Content-Type": "application/json"},
-                    "models": ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]
-                })
-            if groq_key:
-                backup_key = os.getenv("GROQ_API_KEY_BACKUP")
-                available_groq_keys = [groq_key] + ([backup_key] if backup_key and backup_key != groq_key else [])
-                for gk in available_groq_keys:
-                    llm_providers.append({
-                        "name": "Groq",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "headers": {"Authorization": f"Bearer {gk}", "Content-Type": "application/json"},
-                        "models": [model, "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
-                    })
-
-            for prov in llm_providers:
-                p_name = prov["name"]
-                p_url = prov["url"]
-                p_headers = prov["headers"]
-                seen_models = set()
-                prov_models = [m for m in prov["models"] if not (m in seen_models or seen_models.add(m))]
-
-                for m_candidate in prov_models:
-                    payload["model"] = m_candidate
-                    try:
-                        resp = await client.post(
-                            p_url,
-                            headers=p_headers,
-                            json=payload
-                        )
-                        if resp.status_code == 200:
-                            current_model = m_candidate
-                            trace_provider = p_name
-                            trace_model = m_candidate
-                            break
-                        else:
-                            trace_fallback_used = True
-                            trace_fallback_reason = f"{p_name} {m_candidate} returned {resp.status_code}"
-                            logger.info(f"{p_name} {m_candidate} status {resp.status_code}: {resp.text[:100]}")
-                            if resp.status_code == 429:
-                                try:
-                                    ra_sec = float(resp.headers.get("retry-after", "1.5"))
-                                except Exception:
-                                    ra_sec = 1.5
-                                await asyncio.sleep(min(max(ra_sec, 1.0), 3.0))
-                                continue
-                    except Exception as req_err:
-                        logger.info(f"{p_name} {m_candidate} request error: {repr(req_err)}")
-                        continue
-                if resp and resp.status_code == 200:
-                    break
+            # Call Unified LLM Adapter (Phase 2)
+            try:
+                llm_resp = await llm_provider.chat(
+                    messages=messages,
+                    tools=payload.get("tools"),
+                    tool_choice=payload.get("tool_choice"),
+                    temperature=payload.get("temperature", 0.2),
+                    timeout=30.0,
+                    client=client,
+                    require_tool_on_fallback=(iteration == 0 and bool(effective_tools))
+                )
+            except Exception as llm_err:
+                logger.error(f"Turn iteration {iteration} LLM call failed: {llm_err}")
+                trace_error_type = getattr(llm_err, "error_type", "llm_error")
+                break
 
             print("Check 3 (LLM responded):", time.time() - start_ts)
 
-            if not resp or resp.status_code != 200:
-                print("All LLM candidate models failed or exhausted rate limit.")
-                break
-
-            resp_data = resp.json()
             trace_llm_calls += 1
-            usage_data = resp_data.get("usage", {})
-            trace_prompt_tokens += usage_data.get("prompt_tokens", 0)
-            trace_completion_tokens += usage_data.get("completion_tokens", 0)
-            choice = resp_data["choices"][0]
-            choice_msg = choice["message"]
-            total_tokens += resp_data.get("usage", {}).get("total_tokens", 0)
+            current_model = llm_resp.model
+            trace_provider = llm_resp.provider
+            trace_model = llm_resp.model
+            if llm_resp.fallback_used:
+                trace_fallback_used = True
+                trace_fallback_reason = llm_resp.fallback_reason
+            trace_prompt_tokens += llm_resp.usage.get("prompt_tokens", 0)
+            trace_completion_tokens += llm_resp.usage.get("completion_tokens", 0)
+            total_tokens += llm_resp.usage.get("total_tokens", 0)
 
-            # Check if model wants to call tools
-            tool_calls = choice_msg.get("tool_calls")
-            if not tool_calls and choice_msg.get("content"):
-                xml_calls = parse_xml_tool_calls(choice_msg["content"])
-                if xml_calls:
-                    tool_calls = xml_calls
-                    choice_msg["tool_calls"] = xml_calls
+            choice_msg = {
+                "role": "assistant",
+                "content": llm_resp.text or "",
+            }
+            if llm_resp.tool_calls:
+                choice_msg["tool_calls"] = llm_resp.tool_calls
+            tool_calls = llm_resp.tool_calls
 
             if not tool_calls:
                 # No more tools requested; final conversational answer reached
@@ -996,25 +957,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 rec_hist.append({"role": "user", "content": user_text})
             rec_messages.extend(rec_hist)
 
-            async with httpx.AsyncClient(timeout=15.0) as fb_client:
-                for fb_m in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
-                    fb_resp = await fb_client.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json={
-                            "model": fb_m,
-                            "temperature": 0.4,
-                            "messages": rec_messages,
-                            "max_tokens": 800,
-                        }
-                    )
-                    if fb_resp.status_code == 200:
-                        fb_data = fb_resp.json()
-                        final_reply = fb_data["choices"][0]["message"].get("content", "").strip()
-                        if final_reply:
-                            break
-                    elif fb_resp.status_code == 429:
-                        await asyncio.sleep(1.0)
+            try:
+                fb_llm_resp = await llm_provider.chat(
+                    messages=rec_messages,
+                    temperature=0.4,
+                    timeout=15.0
+                )
+                if fb_llm_resp.text:
+                    final_reply = fb_llm_resp.text.strip()
+            except Exception as fb_err:
+                logger.warning(f"Conversational recovery error: {fb_err}")
         except Exception as fb_err:
             print("Conversational recovery error:", repr(fb_err))
 

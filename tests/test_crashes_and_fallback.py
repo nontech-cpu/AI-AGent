@@ -56,10 +56,11 @@ async def test_agent_loop_ist_scoping_no_unbound_local():
         assert "colleague@example.com" in turn_res["reply"]
 
 @pytest.mark.asyncio
-async def test_unhandled_crash_triggers_network_fluctuation_fallback():
+async def test_unhandled_crash_triggers_typed_fallback_and_trace_id():
     """
-    Proves that an unhandled crash in run_agent_turn triggers the Telegram error handler in main.py,
-    which sends: 'Haanji, network mein thoda fluctuation ho gaya tha. Ek baar dobara bataenge?'
+    Phase 2: Proves that an unhandled crash in run_agent_turn triggers the Telegram error handler in main.py,
+    which logs the full traceback with trace_id and sends an accurate message offering retry,
+    instead of the legacy canned 'network fluctuation' lie.
     """
     chat_id = 998877223
     db.ensure_user(chat_id)
@@ -74,8 +75,11 @@ async def test_unhandled_crash_triggers_network_fluctuation_fallback():
         with patch.dict("os.environ", {"AGENT_CORE": "v2"}):
             await main.handle_user_text(chat_id, "Please schedule this for me")
         
-        # Verify that mock_say was called with the exact network fluctuation fallback message
         mock_say.assert_called_once()
         sent_reply = mock_say.call_args[0][1]
-        assert "network mein thoda fluctuation ho gaya tha" in sent_reply
-        assert sent_reply == "Haanji, network mein thoda fluctuation ho gaya tha. Ek baar dobara bataenge?"
+        # Never send the canned 'network fluctuation' message
+        assert "network mein thoda fluctuation" not in sent_reply
+        # Always include a trace_id reference
+        assert "Ref: trace_" in sent_reply
+        # Must offer user retry
+        assert "retry" in sent_reply.lower() or "try again" in sent_reply.lower()

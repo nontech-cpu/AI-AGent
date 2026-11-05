@@ -2456,9 +2456,10 @@ async def handle_active(chat_id, text):
                 await say(chat_id, res["reply"])
                 return
             except Exception as exc:
-                import traceback
+                import traceback, uuid
+                trace_id = f"trace_{uuid.uuid4().hex[:8]}"
                 tb_str = traceback.format_exc()
-                logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}\n{tb_str}")
+                logging.getLogger("uvicorn").error(f"Agent turn error [{trace_id}] for {chat_id}: {repr(exc)}\n{tb_str}")
                 clean_l = (text or "").strip().lower()
                 if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
                     from db import get_user_display_name
@@ -2466,7 +2467,25 @@ async def handle_active(chat_id, text):
                     prefix = f"Hey {u_name}!" if u_name else "Hey!"
                     fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
                 else:
-                    fallback_msg = "Haanji, network mein thoda fluctuation ho gaya tha. Ek baar dobara bataenge?"
+                    from llm.provider import (
+                        ProviderTimeoutError,
+                        RateLimitedError,
+                        ToolExecutionError,
+                        DatabaseUnavailableError,
+                        ValidationError,
+                    )
+                    if isinstance(exc, ProviderTimeoutError):
+                        fallback_msg = f"AI model response timed out. Please try sending your message again in a moment. [Ref: {trace_id}]"
+                    elif isinstance(exc, RateLimitedError):
+                        fallback_msg = f"AI service is currently experiencing high demand. Please wait a few seconds and try again. [Ref: {trace_id}]"
+                    elif isinstance(exc, ToolExecutionError):
+                        fallback_msg = f"An issue occurred while executing the requested action. Please verify details and retry. [Ref: {trace_id}]"
+                    elif isinstance(exc, DatabaseUnavailableError):
+                        fallback_msg = f"Database connection is temporarily slow or unavailable. Your data is safe. Please retry shortly. [Ref: {trace_id}]"
+                    elif isinstance(exc, ValidationError):
+                        fallback_msg = f"Invalid parameters provided. Please check the details and retry. [Ref: {trace_id}]"
+                    else:
+                        fallback_msg = f"Something went wrong while processing your request. Please try again. [Ref: {trace_id}]"
                 await say(chat_id, fallback_msg)
                 return
 
@@ -5537,15 +5556,14 @@ async def web_chat(request: Request):
     messages.append({"role": "user", "content": message})
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY', '')}"},
-                json={"model": os.getenv("GROQ_MODEL"), "temperature": 0.4, "messages": messages},
-            )
-            r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"].strip()
-            return {"reply": reply[:6000]}
+        import llm.provider as llm_provider
+        resp = await llm_provider.chat(
+            messages=messages,
+            temperature=0.4,
+            timeout=30.0
+        )
+        reply = (resp.text or "").strip()
+        return {"reply": reply[:6000]}
     except Exception as exc:
         print("web chat completion error:", repr(exc))
         raise HTTPException(status_code=503, detail="Assistant model is temporarily unavailable")

@@ -315,34 +315,26 @@ async def verify_and_ground_reply(
 
     # If STRICT_LLM_VERIFIER is set, perform second-tier LLM verification
     if os.getenv("STRICT_LLM_VERIFIER", "false").lower() == "true":
-        groq_key = os.getenv("GROQ_API_KEY")
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "openai/gpt-oss-20b",
-                        "messages": [
-                            {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
-                            {
-                                "role": "user",
-                                "content": f"User Query: {user_query}\nEvidence:\n{evidence_text}\nDraft Reply:\n{draft_reply}"
-                            }
-                        ],
-                        "response_format": {"type": "json_object"},
-                        "temperature": 0.0
+            import llm.provider as llm_provider
+            resp = await llm_provider.chat(
+                messages=[
+                    {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"User Query: {user_query}\nEvidence:\n{evidence_text}\nDraft Reply:\n{draft_reply}"
                     }
-                )
-
-                if resp.status_code == 200:
-                    data = resp.json()["choices"][0]["message"]["content"]
-                    result = json.loads(data)
-                    is_grounded = result.get("is_grounded", True)
-                    final_text = result.get("final_reply", draft_reply)
-                    unsupported = result.get("unsupported_claims", [])
-                    return is_grounded, final_text, unsupported
-
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+                timeout=8.0
+            )
+            if resp.text:
+                result = json.loads(resp.text)
+                is_grounded = result.get("is_grounded", True)
+                final_text = result.get("final_reply", draft_reply)
+                unsupported = result.get("unsupported_claims", [])
+                return is_grounded, final_text, unsupported
         except Exception as exc:
             logger.warning(f"LLM Verifier pass skipped: {exc}")
     return True, draft_reply, []

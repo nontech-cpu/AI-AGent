@@ -6,7 +6,9 @@ and formats it into an injection-safe <memory> block for the Agent Loop.
 import re
 from typing import Dict, Any, List, Optional
 from sqlalchemy import text
+import logging
 import db
+logger = logging.getLogger('memory.retrieval')
 from memory.store import (
     resolve_user_id,
     find_entity,
@@ -97,7 +99,8 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
             try:
                 from memory.store import get_recent_actions_for_user
                 ent["recent_actions"] = get_recent_actions_for_user(user_id, entity_id=ent["id"], limit=3)
-            except Exception:
+            except Exception as act_err:
+                logger.warning(f"Failed to fetch recent actions for entity {ent.get('id')}: {act_err}")
                 ent["recent_actions"] = []
             matched_entities.append(ent)
 
@@ -114,11 +117,12 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                     try:
                         from memory.store import get_recent_actions_for_user
                         ent["recent_actions"] = get_recent_actions_for_user(user_id, entity_id=ent["id"], limit=3)
-                    except Exception:
+                    except Exception as act_err:
+                        logger.warning(f"Failed to fetch recent actions for pronoun entity {ent.get('id')}: {act_err}")
                         ent["recent_actions"] = []
                     matched_entities.append(ent)
-        except Exception:
-            pass
+        except Exception as ana_err:
+            logger.warning(f"Anaphora entity resolution error: {ana_err}")
 
     # 2. Hybrid RAG retrieval: vector (pgvector) + tsvector full-text + trigram merged via RRF (k=60)
     # Zero brittle keyword gating: natural questions (projects, architecture, past decisions) are searched directly
@@ -130,7 +134,7 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
         projects = search_project_memory(user_id, user_text, limit=3)
         working_ctx = get_working_context(chat_id)
     except Exception as prj_err:
-        pass
+        logger.warning(f"Project memory/context retrieval error: {prj_err}")
 
     try:
         raw_mems = search_memories_hybrid(user_id, user_text, limit=8, min_score=0.010)
@@ -166,9 +170,10 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                     })
                     if len(relevant_mems) >= 7:
                         break
-        except Exception:
-            pass
-    except Exception:
+        except Exception as b_err:
+            logger.warning(f"Bubble memory cosine search error: {b_err}")
+    except Exception as rrf_err:
+        logger.warning(f"Hybrid memory search error: {rrf_err}")
         relevant_mems = []
 
     # 2.1 Exact Temporal Date Filtered Retrieval (e.g. '10 oct ko kya khaya tha?', '15 nov ko kya hua tha')
@@ -195,15 +200,16 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                             "structured": dr[3] if isinstance(dr[3], dict) else {},
                             "created_at": str(dr[4])
                         })
-        except Exception:
-            pass
+        except Exception as date_err:
+            logger.warning(f"Temporal memory search error: {date_err}")
 
     # 2.5 Structured Measurements lookup: Always include latest measurements for instant recall & short follow-ups (e.g. 'kl ke?')
     measurements = []
     try:
         from memory.store import get_measurements
         measurements = get_measurements(user_id, limit=5)
-    except Exception:
+    except Exception as meas_err:
+        logger.warning(f"Measurements retrieval error: {meas_err}")
         measurements = []
 
     # 2.8 Core User Profile (~300 tokens always-on profile, no retrieval needed)
@@ -211,14 +217,16 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
     try:
         from memory.store import get_core_profile
         core_profile = get_core_profile(user_id)
-    except Exception:
+    except Exception as cp_err:
+        logger.warning(f"Core profile retrieval error: {cp_err}")
         core_profile = ""
 
     # 3. User facts & preferences (always provide top 3 relevant facts for context grounding)
     facts = []
     try:
         facts = get_user_semantic_facts(user_id)[:3]
-    except Exception:
+    except Exception as fact_err:
+        logger.warning(f"User facts retrieval error: {fact_err}")
         facts = []
 
     # Include active bookings/travel/address facts if query relates to travel, tickets, documents, address, or morning context
@@ -230,8 +238,8 @@ def assemble_memory_context(chat_id: int, user_text: str) -> Dict[str, Any]:
                 f_text = uf.get("fact", "")
                 if any(w in f_text.lower() for w in ("booking", "ticket", "flight", "pnr", "train", "airways", "address", "pincode", "road", "jodhpur", "delivery", "blinkit", "home")):
                     facts.append({"id": uf.get("id"), "fact": f_text, "category": uf.get("category", "personal")})
-    except Exception:
-        pass
+    except Exception as uf_err:
+        logger.warning(f"Active travel/booking facts search error: {uf_err}")
 
     # Format into context string
     lines = ["<memory>"]

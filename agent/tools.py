@@ -2240,8 +2240,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     plan = build_plan(d_val, t_val)
                     if plan.get("reminders") and item_id:
                         add_reminders(item_id, plan["reminders"])
-            except Exception:
-                pass
+            except Exception as plan_err:
+                logger.warning(f"Reminder plan scheduling error: {plan_err}")
 
             # Sync to Google Calendar if connected
             sync_note = " (Telegram reminder set ✅)"
@@ -2259,15 +2259,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                         description=f"Auto-synced reminder from PeculiarAI ({dur_mins} mins)",
                     )
                     sync_note = " (Synced with Google Calendar & Telegram ✅)"
-            except Exception:
-                pass
+            except Exception as cal_err:
+                logger.warning(f"Google Calendar auto-sync error: {cal_err}")
 
             # Invalidate prompt schedule cache immediately!
             try:
                 from agent.prompt import invalidate_prompt_schedule_cache
                 invalidate_prompt_schedule_cache(chat_id)
-            except Exception:
-                pass
+            except Exception as cache_err:
+                logger.warning(f"Prompt schedule cache invalidation error: {cache_err}")
 
             time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
             date_str = d_val.strftime("%d %b %Y") if d_val else "specified date"
@@ -3623,9 +3623,9 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             return {"status": "error", "message": f"Unknown tool: '{tool_name}'"}
 
     except ValidationError as val_err:
-        return {"status": "error", "type": "ValidationError", "details": val_err.errors()}
+        return {"status": "error", "error": "validation_error", "type": "ValidationError", "details": val_err.errors(), "message": str(val_err)}
     except Exception as exc:
-        return {"status": "error", "type": type(exc).__name__, "message": str(exc)}
+        return {"status": "error", "error": "tool_execution_error", "type": type(exc).__name__, "message": str(exc)}
 
 
 CORE_TOOL_NAMES = {

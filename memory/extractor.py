@@ -161,60 +161,22 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
 
         data_json = None
 
-        # Tier 1: Try Google Gemini (1 Million TPM, zero Groq rate-limit consumption)
-        if gemini_key:
-            for g_model in ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]:
-                try:
-                    async with httpx.AsyncClient(timeout=15.0) as client:
-                        resp = await client.post(
-                            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-                            headers={"Authorization": f"Bearer {gemini_key}", "Content-Type": "application/json"},
-                            json={
-                                "model": g_model,
-                                "messages": [
-                                    {"role": "system", "content": system_prompt},
-                                    {"role": "user", "content": f"User message: {user_text}"}
-                                ],
-                                "response_format": {"type": "json_object"},
-                                "temperature": 0.1
-                            }
-                        )
-                        if resp.status_code == 200:
-                            data_json = resp.json()["choices"][0]["message"]["content"]
-                            break
-                        else:
-                            logger.info(f"Memory extraction Gemini {g_model} status {resp.status_code}")
-                except Exception as g_err:
-                    logger.info(f"Memory extraction Gemini {g_model} net error: {g_err}")
-
-        # Tier 2 Fallback: Groq candidate models
-        if not data_json and groq_key:
-            candidate_models = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
-            for model in candidate_models:
-                try:
-                    async with httpx.AsyncClient(timeout=15.0) as client:
-                        resp = await client.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                            json={
-                                "model": model,
-                                "messages": [
-                                    {"role": "system", "content": system_prompt},
-                                    {"role": "user", "content": f"User message: {user_text}"}
-                                ],
-                                "response_format": {"type": "json_object"},
-                                "temperature": 0.1
-                            }
-                        )
-                        if resp.status_code == 200:
-                            data_json = resp.json()["choices"][0]["message"]["content"]
-                            break
-                        else:
-                            logger.warning(f"Memory extraction Groq error on {model}: {resp.status_code} {resp.text[:100]}")
-                            await asyncio.sleep(1.0)
-                except Exception as net_err:
-                    logger.warning(f"Memory extraction network error on {model}: {repr(net_err)}")
-                    await asyncio.sleep(1.0)
+        # Call Unified LLM Adapter (Phase 2)
+        try:
+            import llm.provider as llm_provider
+            resp = await llm_provider.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"User message: {user_text}"}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                timeout=15.0
+            )
+            if resp.text:
+                data_json = resp.text
+        except Exception as ext_err:
+            logger.warning(f"Memory extraction error: {ext_err}")
 
         if not data_json:
             _log_failed_extraction(user_id, user_text, "Groq extraction failed on all candidate models")
