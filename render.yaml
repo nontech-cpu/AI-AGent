@@ -2,6 +2,7 @@ services:
   - type: web
     name: peculiar-ai-backend
     runtime: python
+    region: ohio
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
