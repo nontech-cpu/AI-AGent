@@ -211,7 +211,7 @@ def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
 STRUCTURAL_CONFIRM_COMMANDS = {
     "confirm", "action_confirm", "cb:confirm", "/confirm", "yes", "haan",
     "kar do", "kardo", "bilkul", "create it", "haanji", "sure", "proceed",
-    "send", "send it", "bhej do", "haan kar do", "haan kardo"
+    "send", "send it", "bhej do", "haan kar do", "haan kardo", "haan bilkul", "bilkul haan"
 }
 STRUCTURAL_CANCEL_COMMANDS = {
     "cancel", "action_cancel", "cb:cancel", "/cancel", "no", "mat karo",

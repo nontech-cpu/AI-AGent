@@ -8,7 +8,13 @@ from sqlalchemy import create_engine, text
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-raw_db_url = os.getenv("DATABASE_URL") or "sqlite:///:memory:"
+is_production = os.getenv("ENV", "").lower() == "production" or os.getenv("RENDER", "").lower() == "true" or os.getenv("ENVIRONMENT", "").lower() == "production"
+raw_db_url = os.getenv("DATABASE_URL")
+if not raw_db_url:
+    if is_production:
+        raise RuntimeError("FATAL: DATABASE_URL environment variable is missing in production environment. Refusing silent in-memory SQLite fallback.")
+    raw_db_url = "sqlite:///:memory:"
+
 if raw_db_url.startswith("postgres://"):
     raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
 
@@ -373,22 +379,115 @@ def export_data(chat_id):
     }
 
 
-# ---------- Reminders ----------
+# ---------- Reminders Scheduler & Multi-Instance Locking ----------
+
+_REMINDERS_COLS_INITIALIZED = False
+
+def _init_reminders_scheduler_columns():
+    global _REMINDERS_COLS_INITIALIZED
+    if _REMINDERS_COLS_INITIALIZED:
+        return
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_by VARCHAR(64);
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+                """))
+            else:
+                for col, c_type in [("due_at", "TIMESTAMP"), ("sent_at", "TIMESTAMP"), ("claimed_by", "TEXT"), ("claimed_at", "TIMESTAMP")]:
+                    try:
+                        conn.execute(text(f"ALTER TABLE reminders ADD COLUMN {col} {c_type}"))
+                    except Exception:
+                        pass
+        _REMINDERS_COLS_INITIALIZED = True
+    except Exception as exc:
+        logger.debug(f"Reminders scheduler column init notice: {exc}")
+
 
 def add_reminders(item_id, reminders):
+    _init_reminders_scheduler_columns()
     with engine.begin() as conn:
         for remind_at, label in reminders:
             conn.execute(
                 text(
-                    "INSERT INTO reminders (item_id, remind_at, label) "
-                    "VALUES (:i, :a, :l)"
+                    "INSERT INTO reminders (item_id, remind_at, due_at, label) "
+                    "VALUES (:i, :a, :a, :l)"
                 ),
                 {"i": item_id, "a": remind_at, "l": label},
             )
 
 
+def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int = 50, stale_seconds: int = 300):
+    """
+    Multi-instance scheduler with concurrency control.
+    Uses FOR UPDATE SKIP LOCKED on PostgreSQL to prevent double-sending across Render instances.
+    On SQLite, uses an atomic transaction.
+    """
+    from datetime import datetime, timedelta, timezone
+    from timing import IST
+    import core.timeutil as timeutil
+
+    if now is None:
+        now = timeutil.now(IST)
+
+    _init_reminders_scheduler_columns()
+    is_pg = engine.dialect.name == "postgresql"
+    stale_cutoff = now - timedelta(seconds=stale_seconds)
+
+    with engine.begin() as conn:
+        if is_pg:
+            query = text("""
+                SELECT r.id, u.telegram_chat_id, m.category, m.title, m.amount,
+                       m.due_date, m.due_time, r.label, COALESCE(r.due_at, r.remind_at) as scheduled_at
+                FROM reminders r
+                JOIN memory_items m ON m.id = r.item_id
+                JOIN users u ON u.id = m.user_id
+                WHERE (r.sent IS NOT TRUE)
+                  AND (r.claimed_at IS NULL OR r.claimed_at < :stale_cutoff)
+                  AND COALESCE(r.due_at, r.remind_at) <= :now
+                ORDER BY COALESCE(r.due_at, r.remind_at)
+                FOR UPDATE OF r SKIP LOCKED
+                LIMIT :limit
+            """)
+            rows = conn.execute(query, {"now": now, "stale_cutoff": stale_cutoff, "limit": limit}).fetchall()
+            if rows:
+                claimed_ids = [r[0] for r in rows]
+                conn.execute(
+                    text("UPDATE reminders SET claimed_by = :wid, claimed_at = :now WHERE id = ANY(:ids)"),
+                    {"wid": worker_id, "now": now, "ids": claimed_ids}
+                )
+            return rows
+        else:
+            query = text("""
+                SELECT r.id, u.telegram_chat_id, m.category, m.title, m.amount,
+                       m.due_date, m.due_time, r.label, COALESCE(r.due_at, r.remind_at) as scheduled_at
+                FROM reminders r
+                JOIN memory_items m ON m.id = r.item_id
+                JOIN users u ON u.id = m.user_id
+                WHERE (r.sent IS NOT TRUE OR r.sent = 0)
+                  AND (r.claimed_at IS NULL OR r.claimed_at < :stale_cutoff)
+                  AND COALESCE(r.due_at, r.remind_at) <= :now
+                ORDER BY COALESCE(r.due_at, r.remind_at)
+                LIMIT :limit
+            """)
+            rows = conn.execute(query, {"now": now, "stale_cutoff": stale_cutoff, "limit": limit}).fetchall()
+            if rows:
+                claimed_ids = [r[0] for r in rows]
+                for cid in claimed_ids:
+                    conn.execute(
+                        text("UPDATE reminders SET claimed_by = :wid, claimed_at = :now WHERE id = :id"),
+                        {"wid": worker_id, "now": now, "id": cid}
+                    )
+            return rows
+
+
 def get_pending_reminders(now):
-    # Jin reminders ka time aa gaya hai, aur jo abhi bheje nahi gaye
+    # Compatibility query for legacy callers
+    _init_reminders_scheduler_columns()
     with engine.connect() as conn:
         return conn.execute(
             text(
@@ -397,37 +496,41 @@ def get_pending_reminders(now):
                 "FROM reminders r "
                 "JOIN memory_items m ON m.id = r.item_id "
                 "JOIN users u ON u.id = m.user_id "
-                "WHERE (r.sent IS NOT TRUE) "
-                "AND r.remind_at <= :now "
-                "ORDER BY r.remind_at"
+                "WHERE (r.sent IS NOT TRUE OR r.sent = 0) "
+                "AND COALESCE(r.due_at, r.remind_at) <= :now "
+                "ORDER BY COALESCE(r.due_at, r.remind_at)"
             ),
             {"now": now},
         ).fetchall()
 
 
 def get_upcoming_reminders(chat_id, now):
+    _init_reminders_scheduler_columns()
     with engine.connect() as conn:
         return conn.execute(
             text(
-                "SELECT r.remind_at, r.label, m.category, m.title, m.amount, m.due_time "
+                "SELECT COALESCE(r.due_at, r.remind_at) as remind_at, r.label, m.category, m.title, m.amount, m.due_time "
                 "FROM reminders r "
                 "JOIN memory_items m ON m.id = r.item_id "
                 "JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c "
-                "AND (r.sent IS NOT TRUE) "
-                "AND r.remind_at > :now "
-                "ORDER BY r.remind_at LIMIT 30"
+                "AND (r.sent IS NOT TRUE OR r.sent = 0) "
+                "AND COALESCE(r.due_at, r.remind_at) > :now "
+                "ORDER BY COALESCE(r.due_at, r.remind_at) LIMIT 30"
             ),
             {"c": chat_id, "now": now},
         ).fetchall()
 
 
-
-def mark_sent(reminder_id):
+def mark_sent(reminder_id, sent_at=None):
+    if sent_at is None:
+        from timing import IST
+        import core.timeutil as timeutil
+        sent_at = timeutil.now(IST)
     with engine.begin() as conn:
         conn.execute(
-            text("UPDATE reminders SET sent = true WHERE id = :i"),
-            {"i": reminder_id},
+            text("UPDATE reminders SET sent = true, sent_at = :s, claimed_by = NULL, claimed_at = NULL WHERE id = :i"),
+            {"i": reminder_id, "s": sent_at},
         )
 
 # ---------- Email linking ----------

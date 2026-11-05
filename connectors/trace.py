@@ -14,9 +14,11 @@ import core.timeutil as timeutil
 
 # Redaction patterns for secrets
 SECRET_PATTERNS = [
-    (re.compile(r"ghp_[a-zA-Z0-9]{20,}", re.I), "[REDACTED_GH_TOKEN]"),
-    (re.compile(r"github_pat_[a-zA-Z0-9_]{30,}", re.I), "[REDACTED_GH_TOKEN]"),
-    (re.compile(r"(?:secret_|ntn_)[a-zA-Z0-9_]{20,}", re.I), "[REDACTED_NOTION_TOKEN]"),
+    (re.compile(r"ghp_[a-zA-Z0-9]{15,}", re.I), "[REDACTED_GH_TOKEN]"),
+    (re.compile(r"github_pat_[a-zA-Z0-9_]{20,}", re.I), "[REDACTED_GH_TOKEN]"),
+    (re.compile(r"(?:secret_|ntn_)[a-zA-Z0-9_]{10,}", re.I), "[REDACTED_NOTION_TOKEN]"),
+    (re.compile(r"gsk_[a-zA-Z0-9_]{20,}", re.I), "[REDACTED_GROQ_KEY]"),
+    (re.compile(r"AIza[0-9A-Za-z-_]{30,}", re.I), "[REDACTED_GOOGLE_KEY]"),
     (re.compile(r"Bearer\s+[a-zA-Z0-9_\-\.]{15,}", re.I), "Bearer [REDACTED_TOKEN]"),
     (re.compile(r"\b[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}\b"), "[REDACTED_CARD]"),
     (re.compile(r"\b\d{4,8}\b(?=.*(?:otp|code))", re.I), "[REDACTED_OTP]")
@@ -238,6 +240,28 @@ def log_turn_trace(
                 )
     except Exception as exc:
         print(f"log_turn_trace error (Trace {trace_id}):", repr(exc))
+
+    # Structured console log line for Render log aggregation without secrets
+    try:
+        import logging
+        turn_logger = logging.getLogger("turn_trace")
+        structured_payload = {
+            "event": "turn_completed",
+            "trace_id": trace_id,
+            "user_id": chat_id,
+            "tools": clean_tools,
+            "provider": provider,
+            "model": model,
+            "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason,
+            "latency_ms": latency_ms,
+            "tokens": tokens,
+            "error_type": error_type,
+            "memory_status": memory_status
+        }
+        turn_logger.info(json.dumps(structured_payload))
+    except Exception:
+        pass
 
     return trace_id
 

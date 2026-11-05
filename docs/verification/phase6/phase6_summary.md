@@ -79,3 +79,4 @@ Per architectural discipline and the Dead v1 Path Policy, no files have been del
 2. **`nlu.py`** (~400 lines): Hardcoded regexes for yes/no, persona guessing, and date classification.
 3. **`lang.py`** (~120 lines): Static stopword dictionaries and heuristic language scorers.
 4. **`main.py` lines 3228–3530**: Unreachable `AGENT_CORE=v1` multi-turn state machines (`meeting_offer`, `meeting_time`, `delete_meetings_target`, `create_meeting_details`, `update_meeting_time`, etc.).
+

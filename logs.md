@@ -276,9 +276,51 @@ This document maintains the persistent, chronological log of architectural upgra
 
 ---
 
-## Phase 7: Context Assembly & Conversation History (Next Phase)
+## Phase 7: Deployment, Keep-Alive & Resilience Overhaul
+
+**Status:** COMPLETED & VERIFIED  
+**Commit:** `Pending Phase 7 Commit`  
+**Evidence Artifacts:**
+- `docs/verification/phase7/phase7_summary.md`
+- `docs/verification/phase7/render_keepalive_and_deployment.md`
+- `docs/verification/phase7/pytest_phase7.txt`
+
+### Key Changes & Deliverables:
+1. **DB-Driven Distributed Scheduler (`db.py` & `main.py`)**:
+   - Upgraded `reminders` schema with `due_at`, `sent_at`, `claimed_by`, and `claimed_at` columns (`_init_reminders_scheduler_columns`).
+   - Implemented `claim_pending_reminders(worker_id, now, limit, stale_seconds)` using `SELECT ... FOR UPDATE OF r SKIP LOCKED` on PostgreSQL and atomic transactions on SQLite to guarantee multi-instance and restart safety without duplicate executions.
+   - Refactored `run_reminders()` to claim batches atomically and mark delivery with `sent_at`.
+2. **Startup Catch-Up Pass (`main.py:run_startup_catchup_pass`)**:
+   - Added automated pass in FastAPI `lifespan` before accepting traffic.
+   - Any reminders accrued while Render was asleep or restarting are claimed immediately and sent to users with explicit late notice if delayed > 120s (`⚠️ [Delivered late — Server wake-up catch-up]`).
+3. **Fail-Fast Production Validation (`main.py:validate_startup_environment`)**:
+   - Removed silent fallback to `sqlite:///:memory:` when `ENV=production` or `RENDER=true`. If `DATABASE_URL` is missing or not PostgreSQL, the application fails fast with a clear `RuntimeError`.
+   - Validates presence of `TELEGRAM_BOT_TOKEN` and primary/fallback LLM API keys on startup.
+4. **Comprehensive Production Health Endpoint (`/health` & `render.yaml`)**:
+   - Upgraded `/health` to execute live `SELECT 1` ping against Neon PostgreSQL, measuring DB latency in milliseconds.
+   - Reports status of LLM keys and embeddings. Returns HTTP `200 OK` when healthy or HTTP `503 Service Unavailable` if DB connectivity fails.
+   - Added `healthCheckPath: /health` to `render.yaml` for Render zero-downtime deploy health verification.
+5. **Crash-Resilient State Reconstruction (`state/active_context.py` & `main.py`)**:
+   - Created `active_contexts` database table. On memory cache eviction or container restart, active conversation context is transparently reconstructed from DB.
+   - `get_recent_chat_turns(chat_id, limit=20)` reconstructs recent conversation turns from `chat_logs` DB table on cache miss.
+6. **Masking & Observability (`connectors/trace.py`)**:
+   - Expanded secret patterns to mask Notion keys (`secret_`, `ntn_`), Groq keys (`gsk_`), Google API keys (`AIza`), Telegram bot tokens, GitHub PATs, credit cards, and OTPs.
+   - Emits clean structured JSON to stdout via `logging.getLogger("turn_trace")` for clean Render log streaming.
+7. **Honest Free Tier vs. Paid Documentation (`docs/verification/phase7/render_keepalive_and_deployment.md`)**:
+   - Documented Render free tier 15-minute sleep cycle and async loop pausing.
+   - Detailed free keep-alive configuration via `cron-job.org` / `UptimeRobot` pinging `/health` every 10 minutes.
+   - Documented paid Render Starter ($7/month) upgrade path for 24/7 SLA.
+8. **Verification Evidence**:
+   - Dedicated Phase 7 Suite `tests/test_phase7_deployment_and_resilience.py` $\to$ **8/8 PASSED**.
+   - Full Multi-Phase Regression Suite (Phases 1–7) $\to$ **70/70 PASSED in 45.27s**.
+   - Raw pytest log saved to `docs/verification/phase7/pytest_phase7.txt`.
+
+---
+
+## Phase 8: Final End-to-End Verification & Capstone Report (Next Phase)
 
 **Status:** Awaiting User "Go Ahead"  
-*(Will be initiated once Phase 6 review is complete)*
+*(Will be initiated once Phase 7 review is complete)*
+
 
 

@@ -5,15 +5,69 @@ so follow-ups like 'pehla wala', 'usko close kar do', 'dusra dikhao' work seamle
 """
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import json
+import logging
+from sqlalchemy import text
+import db
 from timing import IST
 import core.timeutil as timeutil
 
+logger = logging.getLogger(__name__)
+
 # Thread-safe in-memory cache of active conversational context per chat
 _ACTIVE_CONTEXT_STORE: Dict[int, Dict[str, Any]] = {}
+_ACTIVE_CONTEXT_TABLE_INITIALIZED = False
+
+def _ensure_active_context_table():
+    global _ACTIVE_CONTEXT_TABLE_INITIALIZED
+    if _ACTIVE_CONTEXT_TABLE_INITIALIZED and db.engine.dialect.name != "sqlite":
+        return
+    try:
+        is_pg = db.engine.dialect.name == "postgresql"
+        with db.engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS active_contexts (
+                        chat_id BIGINT PRIMARY KEY,
+                        context_data JSONB NOT NULL,
+                        updated_at TIMESTAMPTZ DEFAULT now()
+                    )
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS active_contexts (
+                        chat_id INTEGER PRIMARY KEY,
+                        context_data TEXT NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+        _ACTIVE_CONTEXT_TABLE_INITIALIZED = True
+    except Exception as exc:
+        logger.debug(f"active_contexts table init notice: {exc}")
 
 def get_active_context(chat_id: int) -> Dict[str, Any]:
-    """Retrieves the current active conversational context for a chat."""
+    """Retrieves the current active conversational context for a chat, rebuilding from DB if needed."""
     ctx = _ACTIVE_CONTEXT_STORE.get(chat_id)
+    if not ctx:
+        # Attempt rebuild from database
+        try:
+            _ensure_active_context_table()
+            with db.engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT context_data FROM active_contexts WHERE chat_id = :c"),
+                    {"c": chat_id}
+                ).first()
+                if row and row[0]:
+                    raw_data = row[0]
+                    if isinstance(raw_data, str):
+                        ctx = json.loads(raw_data)
+                    elif isinstance(raw_data, dict):
+                        ctx = raw_data
+                    if ctx:
+                        _ACTIVE_CONTEXT_STORE[chat_id] = ctx
+        except Exception as exc:
+            logger.debug(f"Active context DB fetch notice for {chat_id}: {exc}")
+
     if not ctx:
         return {
             "connector": None,
@@ -34,7 +88,7 @@ def update_active_context(
     objects: Optional[List[str]] = None,
     url: Optional[str] = None
 ):
-    """Updates the active focus when a tool emits results or topic changes."""
+    """Updates the active focus when a tool emits results or topic changes, persisting to DB."""
     ctx = _ACTIVE_CONTEXT_STORE.setdefault(chat_id, {
         "connector": None,
         "topic": None,
@@ -54,39 +108,40 @@ def update_active_context(
         ctx["last_url"] = url
     ctx["updated_at"] = timeutil.now(IST).isoformat()
 
-def get_active_url(chat_id: int) -> Optional[Dict[str, Any]]:
-    """Retrieves the last active URL (Notion page, Meet link, GitHub file, Drive doc)."""
-    ctx = get_active_context(chat_id)
-    if ctx.get("last_url"):
-        return {
-            "url": ctx["last_url"],
-            "title": ctx.get("topic") or "Document/Page",
-            "connector": ctx.get("connector") or "Integration"
-        }
-
-    # Fallback: scan recent assistant messages in DB for created Notion / GitHub / Meet links
+    # Persist to database
     try:
-        import db, re
-        recent = db.get_recent_chat_history(chat_id, limit=8)
-        for t in reversed(recent):
-            txt = t.get("text", "")
-            # Look for explicit Markdown or plaintext URLs
-            m = re.search(r'(https?://[^\s)\]]+)', txt)
-            if m:
-                u = m.group(1).rstrip(".,;")
-                # Ignore OAuth / connect auth URLs
-                if "oauth" not in u.lower() and "authorize" not in u.lower() and "connect.html" not in u.lower():
-                    title_match = re.search(r"'(.*?)'", txt) or re.search(r'"(.*?)"', txt)
-                    t_name = title_match.group(1) if title_match else "Item"
-                    conn = "Notion" if "notion" in u.lower() else ("GitHub" if "github" in u.lower() else "Meeting/Link")
-                    return {"url": u, "title": t_name, "connector": conn}
-    except Exception:
-        pass
-    return None
+        _ensure_active_context_table()
+        is_pg = db.engine.dialect.name == "postgresql"
+        data_json = json.dumps(ctx)
+        with db.engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    INSERT INTO active_contexts (chat_id, context_data, updated_at)
+                    VALUES (:cid, CAST(:data AS jsonb), now())
+                    ON CONFLICT (chat_id) DO UPDATE
+                    SET context_data = EXCLUDED.context_data,
+                        updated_at = EXCLUDED.updated_at
+                """), {"cid": chat_id, "data": data_json})
+            else:
+                conn.execute(text("""
+                    INSERT INTO active_contexts (chat_id, context_data, updated_at)
+                    VALUES (:cid, :data, CURRENT_TIMESTAMP)
+                    ON CONFLICT (chat_id) DO UPDATE
+                    SET context_data = EXCLUDED.context_data,
+                        updated_at = CURRENT_TIMESTAMP
+                """), {"cid": chat_id, "data": data_json})
+    except Exception as exc:
+        logger.debug(f"Active context DB persist notice for {chat_id}: {exc}")
 
 def clear_active_context(chat_id: int):
     """Clears context when user explicitly switches topic."""
     _ACTIVE_CONTEXT_STORE.pop(chat_id, None)
+    try:
+        _ensure_active_context_table()
+        with db.engine.begin() as conn:
+            conn.execute(text("DELETE FROM active_contexts WHERE chat_id = :cid"), {"cid": chat_id})
+    except Exception as exc:
+        logger.debug(f"Active context DB delete notice for {chat_id}: {exc}")
 
 def format_active_context(chat_id: int, recent_history: Optional[List[Dict[str, Any]]] = None) -> str:
     """Formats active context into a concise string for runtime system prompt injection."""

@@ -13,7 +13,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 import smtplib
@@ -218,12 +218,30 @@ RECENT_CHAT_TURNS = {}  # chat_id -> deque([{"role": str, "text": str}], maxlen=
 LAST_SCANNED_CONTACT = {}  # chat_id -> dict of last scanned contact card details
 
 
+def get_recent_chat_turns(chat_id: int, limit: int = 20) -> list:
+    """Retrieves recent chat turns from in-memory cache, safely rebuilding from DB if empty/restarted."""
+    if chat_id in RECENT_CHAT_TURNS and RECENT_CHAT_TURNS[chat_id]:
+        return list(RECENT_CHAT_TURNS[chat_id])
+    # Rebuild safely from database
+    try:
+        from db import get_recent_chat_history
+        turns = get_recent_chat_history(chat_id, limit=limit)
+        if turns:
+            RECENT_CHAT_TURNS[chat_id] = deque(turns, maxlen=limit)
+            return list(RECENT_CHAT_TURNS[chat_id])
+    except Exception as exc:
+        logging.getLogger("uvicorn").debug(f"Failed to rebuild recent chat turns for {chat_id}: {exc}")
+    return []
+
+
 def record_chat_turn(chat_id: int, role: str, text: str):
     if not text:
         return
     clean_msg = text.strip()
     if chat_id not in RECENT_CHAT_TURNS:
-        RECENT_CHAT_TURNS[chat_id] = deque(maxlen=20)
+        get_recent_chat_turns(chat_id, limit=20)
+        if chat_id not in RECENT_CHAT_TURNS:
+            RECENT_CHAT_TURNS[chat_id] = deque(maxlen=20)
     # Deduplicate consecutive identical messages
     if RECENT_CHAT_TURNS[chat_id] and RECENT_CHAT_TURNS[chat_id][-1].get("role") == role and RECENT_CHAT_TURNS[chat_id][-1].get("text") == clean_msg:
         return
@@ -3945,27 +3963,105 @@ HEADS = {
 
 def reminder_text(label, category, title, amount, due_time):
     head = HEADS.get(label, '🔔 Reminder')
-    time_str = f" at {due_time.strftime('%I:%M %p')}" if due_time else ""
+    time_str = ""
+    if due_time:
+        if hasattr(due_time, "strftime"):
+            time_str = f" at {due_time.strftime('%I:%M %p')}"
+        else:
+            time_str = f" at {due_time}"
     amt_str = f" | {amount}" if amount is not None else ""
     cat_str = f" [{CATEGORIES.get(category, category)}]" if category and category != "reminder" else ""
     return f"{head}:{cat_str} {title}{time_str}{amt_str}"
 
 
-async def run_reminders():
+def validate_startup_environment():
+    """
+    Validates essential environment variables on application startup.
+    Fails fast in production if critical configuration is missing or invalid.
+    """
+    is_prod = (
+        os.getenv("ENV", "").lower() == "production"
+        or os.getenv("RENDER", "").lower() == "true"
+        or os.getenv("ENVIRONMENT", "").lower() == "production"
+    )
+
+    db_url = os.getenv("DATABASE_URL")
+    if is_prod:
+        if not db_url:
+            raise RuntimeError("CRITICAL STARTUP ERROR: DATABASE_URL is not set in production!")
+        if "sqlite" in db_url.lower():
+            raise RuntimeError("CRITICAL STARTUP ERROR: SQLite database is forbidden in production! Provide a PostgreSQL connection.")
+
+    has_gemini = bool(os.getenv("GEMINI_API_KEY"))
+    has_groq = bool(os.getenv("GROQ_API_KEY"))
+    if not (has_gemini or has_groq):
+        err_msg = "CRITICAL STARTUP ERROR: At least one LLM API key (GEMINI_API_KEY or GROQ_API_KEY) must be provided."
+        if is_prod:
+            raise RuntimeError(err_msg)
+        else:
+            logging.getLogger("uvicorn").warning(err_msg)
+
+
+async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = False) -> int:
+    """
+    DB-driven multi-instance reminder delivery.
+    Claims rows atomically via SKIP LOCKED to prevent duplicate dispatches across instances.
+    """
     now = timeutil.now(IST)
-    for rid, chat_id, category, title, amount, due_date, due_time, label in get_pending_reminders(now):
-        # Event nikal chuka (jaise laptop band tha aur 45+ mins ho gaye) to purana reminder mat bhejo
-        if event_over(due_date, due_time, now):
-            mark_sent(rid)
-            continue
+    from db import claim_pending_reminders, mark_sent
+
+    claimed = claim_pending_reminders(worker_id=worker_id, now=now)
+    if not claimed:
+        return 0
+
+    sent_count = 0
+    for row in claimed:
+        rid = row[0]
+        chat_id = row[1]
+        category = row[2]
+        title = row[3]
+        amount = row[4]
+        due_date = row[5]
+        due_time = row[6]
+        label = row[7]
+        scheduled_at = row[8] if len(row) > 8 else None
+
+        # Determine if reminder was delayed (> 2 mins late due to server sleep/restart)
+        is_delayed = False
+        if scheduled_at:
+            sched_dt = None
+            if isinstance(scheduled_at, str):
+                try:
+                    sched_dt = datetime.fromisoformat(scheduled_at.replace(" ", "T"))
+                except Exception:
+                    try:
+                        sched_dt = datetime.strptime(scheduled_at.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        pass
+            elif isinstance(scheduled_at, datetime):
+                sched_dt = scheduled_at
+
+            if sched_dt:
+                if hasattr(sched_dt, "tzinfo") and sched_dt.tzinfo is not None:
+                    sched_ist = sched_dt.astimezone(IST)
+                else:
+                    sched_ist = sched_dt.replace(tzinfo=IST)
+                delay_sec = (now - sched_ist).total_seconds()
+                if delay_sec > 120:
+                    is_delayed = True
+
         reply_lang.set(get_language(chat_id))
-        msg_text = reminder_text(label, category, title, amount, due_time)
-        
+        base_msg = reminder_text(label, category, title, amount, due_time)
+        if is_delayed:
+            msg_text = f"⚠️ [Delivered late — Server wake-up catch-up]\n{base_msg}"
+        else:
+            msg_text = base_msg
+
         # Deliver to user chat_id and linked canonical/desktop Telegram accounts
         from db import canonical_chat_id, get_all_linked_chat_ids
         target_ids = get_all_linked_chat_ids(chat_id)
         canon_cid = canonical_chat_id(chat_id)
-        
+
         # Log turn once in chat history for canonical identity
         record_chat_turn(canon_cid, "assistant", msg_text)
 
@@ -3974,14 +4070,30 @@ async def run_reminders():
                 await send_telegram_text(cid, msg_text)
             except Exception as e:
                 print(f"Error sending reminder {rid} to {cid}:", e)
-                
-        mark_sent(rid)
+
+        mark_sent(rid, sent_at=now)
+        sent_count += 1
+
+    return sent_count
+
+
+async def run_startup_catchup_pass():
+    """
+    Startup catch-up pass: delivers missed reminders that accrued while the server was asleep or restarting.
+    """
+    worker_id = f"startup_catchup_{os.getpid()}"
+    try:
+        count = await run_reminders(worker_id=worker_id, is_catchup=True)
+        if count > 0:
+            logging.getLogger("uvicorn").info(f"Startup catch-up pass delivered {count} missed reminder(s).")
+    except Exception as exc:
+        logging.getLogger("uvicorn").error(f"Startup catch-up pass error: {exc}")
 
 
 async def reminder_loop():
     while True:
         try:
-            await run_reminders()
+            await run_reminders(worker_id=f"worker_loop_{os.getpid()}")
         except Exception as e:
             print("reminder error:", e)
         await asyncio.sleep(30)
@@ -4029,6 +4141,7 @@ async def commitment_nudge_loop():
 
 @asynccontextmanager
 async def lifespan(app):
+    validate_startup_environment()
     from morning_briefing import morning_briefing_loop
     from heartbeat import heartbeat_loop
 
@@ -4041,8 +4154,8 @@ async def lifespan(app):
             for cid in (1758056012, 1234828592):
                 m_ctx = assemble_memory_context(cid, "ping")
                 await build_runtime_system_prompt(cid, "ping", mem_ctx=m_ctx)
-            # Immediate recovery check for any pending or missed reminders during deployment reboot
-            await run_reminders()
+            # Immediate catch-up pass on startup for any missed reminders during sleep/reboot
+            await run_startup_catchup_pass()
         except Exception as w_err:
             logging.getLogger("uvicorn").warning(f"Startup warmup notice: {w_err}")
     asyncio.create_task(_warmup())
@@ -5349,8 +5462,50 @@ def root():
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(response: Response):
+    import time
+    t0 = time.perf_counter()
+    db_ok = False
+    db_latency_ms = None
+    db_error = None
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        db_ok = True
+    except Exception as exc:
+        db_error = str(exc)
+
+    gemini_key = bool(os.getenv("GEMINI_API_KEY"))
+    groq_key = bool(os.getenv("GROQ_API_KEY"))
+    llm_ok = gemini_key or groq_key
+    primary_provider = "Gemini" if gemini_key else ("Groq" if groq_key else None)
+    fallback_provider = "Groq" if (gemini_key and groq_key) else None
+
+    emb_ok = bool(os.getenv("GEMINI_API_KEY") or os.getenv("DISABLE_LOCAL_EMBEDDINGS") == "1")
+
+    is_healthy = db_ok and llm_ok
+    status_code = 200 if is_healthy else 503
+    response.status_code = status_code
+
+    return {
+        "status": "healthy" if is_healthy else "degraded",
+        "database": {
+            "status": "connected" if db_ok else "disconnected",
+            "latency_ms": db_latency_ms,
+            "error": db_error
+        },
+        "llm": {
+            "status": "configured" if llm_ok else "missing_keys",
+            "primary": primary_provider,
+            "fallback": fallback_provider
+        },
+        "embeddings": {
+            "status": "ready" if emb_ok else "degraded"
+        },
+        "timestamp": timeutil.now(IST).isoformat(),
+        "version": "v2.4.0"
+    }
 
 
 @app.get("/debug/ping")

@@ -185,3 +185,4 @@ async def test_greetings_pass_directly_to_agent_turn():
         assert "Hello!" in res["reply"]
         assert res["is_grounded"] is True
         mock_chat.assert_called_once()
+

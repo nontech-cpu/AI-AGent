@@ -123,6 +123,10 @@ def init_test_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_id INTEGER NOT NULL,
                 remind_at TIMESTAMP NOT NULL,
+                due_at TIMESTAMP,
+                sent_at TIMESTAMP,
+                claimed_by TEXT,
+                claimed_at TIMESTAMP,
                 label TEXT NOT NULL,
                 sent INTEGER DEFAULT 0
             )
