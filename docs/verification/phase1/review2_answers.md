@@ -606,3 +606,4 @@ Phase 2 is explicitly **LLM adapter + error handling**, NOT "Conversation Histor
 4. **Resilient Backoff & Rate Limit Handling**: Exponential backoff with jitter on HTTP 429 / 503 errors.
 
 **Awaiting user "go ahead" before starting Phase 2.**
+

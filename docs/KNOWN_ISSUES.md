@@ -51,3 +51,4 @@ The following shortcuts intercept user requests and generate responses *before* 
 5. **Telegram Slash Commands Fast-Path**:
    - **File:Line**: [`main.py:120-210`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/main.py#L120-L210)
    - **Mechanism**: Commands like `/start`, `/reset`, `/connect_google`, `/wipe_my_data` are handled via direct string routing prior to invoking `run_agent_turn()`.
+
