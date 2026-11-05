@@ -2361,7 +2361,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if args.date_str:
                 raw_d = str(args.date_str).strip()
                 try:
-                    target_d = date.fromisoformat(raw_d[:10])
+                    parsed_d = date.fromisoformat(raw_d[:10])
+                    # Temporal anchor: If model passed a pre-training cutoff past year (e.g. 2024 or 2025), anchor to today's year
+                    if parsed_d.year < today_d.year:
+                        target_d = today_d
+                    else:
+                        target_d = parsed_d
                 except Exception:
                     target_d = today_d
 
@@ -2378,8 +2383,11 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 }
                 for it in items
             ]
+            is_today = (target_d == today_d)
             return {
                 "date": target_d.isoformat(),
+                "is_today": is_today,
+                "day_label": "today" if is_today else target_d.strftime("%A, %d %B %Y"),
                 "count": len(formatted),
                 "reminders": formatted
             }
@@ -2392,7 +2400,12 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if args.target_date:
                 raw_d = str(args.target_date).strip()
                 try:
-                    target_d = date.fromisoformat(raw_d[:10])
+                    parsed_d = date.fromisoformat(raw_d[:10])
+                    # Temporal anchor: If model passed a pre-training cutoff past year (e.g. 2024 or 2025), anchor to today's year
+                    if parsed_d.year < today_d.year:
+                        target_d = today_d
+                    else:
+                        target_d = parsed_d
                 except Exception:
                     target_d = today_d
 

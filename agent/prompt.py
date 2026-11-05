@@ -20,7 +20,7 @@ import db
 from state.active_context import format_active_context, update_active_context, format_episodic_context
 
 RUNTIME_SYSTEM_PROMPT_TEMPLATE = """You are **PeculiarAI**, {USER_NAME}'s smart personal AI companion.
-Current Time: {NOW_TIME} ({WEEKDAY}) [{USER_TIMEZONE}] | User: {USER_NAME} | Style: {LANG_STYLE}
+Current Time: {NOW_TIME} ({WEEKDAY}) [{USER_TIMEZONE}] | Today's Date: {TODAY_ISO} | User: {USER_NAME} | Style: {LANG_STYLE}
 {LANGUAGE_MANDATE}
 
 CORE GUIDELINES:
@@ -36,7 +36,7 @@ CORE GUIDELINES:
 - REMINDER MODIFICATIONS & DURATION: When user modifies, reschedules, or states the duration of an existing meeting/reminder (e.g. 'meeting 1 hour ki hai', 'meeting ko 3pm shift kar do', 'meeting duration 60 mins kar do'):
   ALWAYS call `update_reminder(title='...', duration_minutes=..., due_time=...)`!
   NEVER call delete_reminder, and NEVER delete an existing reminder just because the user stated its duration!
-- TODAY'S DATE ANCHOR (CRITICAL): Today's date is {NOW_TIME}'s date. When user says 'aaj' or 'today', always use today's date ({NOW_TIME}'s date). Never use dates from past tickets or distant conversations!
+- TODAY'S DATE ANCHOR (CRITICAL): Today's exact calendar date is {TODAY_ISO} ({WEEKDAY}). The current year is {CURRENT_YEAR}. When user says 'aaj', 'today', 'aajke', or asks about reminders/schedule, always use today's exact date ({TODAY_ISO}). NEVER use dates with past training cutoff years (e.g. 2024 or 2025)!
 - REMINDER INTENT VS PLACE SEARCH PRIORITY (CRITICAL):
   When user mentions ANY time or says 'reminder set kar dena', 'remind me', 'alarm laga do', 'yaad dila dena' for an activity (e.g. '4:30pm shopping ke liye jana hai iska bhi reminder set kar dena', '2:30pm lunch with friend', '5pm gym jana hai', '8pm movie jana hai'):
   THIS IS 100% A REMINDER ACTION!
@@ -480,6 +480,8 @@ async def build_runtime_system_prompt(
     prompt = prompt.replace("{USER_NAME}", user_name)
     prompt = prompt.replace("{NOW_TIME}", now_user_str)
     prompt = prompt.replace("{NOW_IST}", now_user_str)
+    prompt = prompt.replace("{TODAY_ISO}", today_d.isoformat())
+    prompt = prompt.replace("{CURRENT_YEAR}", str(today_d.year))
     prompt = prompt.replace("{USER_TIMEZONE}", user_tz_str)
     prompt = prompt.replace("{WEEKDAY}", weekday)
     prompt = prompt.replace("{LANG_STYLE}", lang_style)
