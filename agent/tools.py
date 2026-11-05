@@ -219,7 +219,7 @@ class UpdateReminderArgs(BaseModel):
     force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
 
 class ListRemindersArgs(BaseModel):
-    date_str: Optional[str] = Field(None, description="Optional date filter in YYYY-MM-DD format.")
+    date_str: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. The model semantically converts relative user expressions ('today', 'aaj', 'tomorrow', 'kal', day names) into the exact YYYY-MM-DD date. Defaults to today's date if omitted.")
 
 class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
@@ -694,14 +694,18 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "list_reminders",
             "description": (
-                "List saved tasks, reminders, and appointments. Call this whenever the user asks about their reminders, "
-                "tasks, or today's schedule (e.g. 'mere aajke reminder btana', 'aaj ke reminders dikhao', 'reminders check karo'). "
-                "NEVER refuse reminder view requests."
+                "List saved tasks, reminders, and appointments for a target date. Call this whenever the user asks about their "
+                "schedule, tasks, or reminders (e.g. 'mere aajke reminder btana', 'aaj ke reminders dikhao', 'reminders check karo'). "
+                "The model must semantically convert relative temporal expressions (such as 'today', 'aaj', 'tomorrow', 'kal', day names) "
+                "into an exact ISO date YYYY-MM-DD anchored to Current Time."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "date_str": {"type": ["string", "null"], "description": "Date filter in YYYY-MM-DD format."}
+                    "date_str": {
+                        "type": ["string", "null"],
+                        "description": "Target date in YYYY-MM-DD format (e.g. '2026-11-05'). If omitted or null, defaults to today's date."
+                    }
                 }
             }
         }
@@ -2350,46 +2354,56 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
         elif tool_name == "list_reminders":
             args = ListRemindersArgs(**arguments)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            today_d = datetime.now(u_tz).date()
+
+            target_d = today_d
             if args.date_str:
-                d_val = date.fromisoformat(args.date_str)
-                items = db.items_for_date(chat_id, d_val)
-                # items_for_date returns: (category, title, amount, due_time, id)
-                formatted = [
-                    {
-                        "id": it[4],
-                        "category": it[0],
-                        "title": it[1],
-                        "due_date": args.date_str,
-                        "due_time": str(it[3]) if it[3] else None
-                    }
-                    for it in items
-                ]
-            else:
-                items = db.list_memories(chat_id)
-                # list_memories returns: (category, title, amount, due_date, due_time)
-                formatted = [
-                    {
-                        "category": it[0],
-                        "title": it[1],
-                        "due_date": str(it[3]) if len(it) > 3 and it[3] else None,
-                        "due_time": str(it[4]) if len(it) > 4 and it[4] else None
-                    }
-                    for it in items
-                ]
-            return {"reminders": formatted}
+                raw_d = str(args.date_str).strip()
+                try:
+                    target_d = date.fromisoformat(raw_d[:10])
+                except Exception:
+                    target_d = today_d
+
+            items = db.items_for_date(chat_id, target_d)
+            # items_for_date returns: (category, title, amount, due_time, id, duration_minutes, due_date)
+            formatted = [
+                {
+                    "id": it[4],
+                    "category": it[0],
+                    "title": it[1],
+                    "due_date": target_d.isoformat(),
+                    "due_time": str(it[3]) if it[3] else None,
+                    "duration_minutes": it[5] if len(it) > 5 and it[5] is not None else 30
+                }
+                for it in items
+            ]
+            return {
+                "date": target_d.isoformat(),
+                "count": len(formatted),
+                "reminders": formatted
+            }
 
         elif tool_name == "get_schedule":
             args = GetScheduleArgs(**arguments)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            today_d = datetime.now(u_tz).date()
+            target_d = today_d
+            if args.target_date:
+                raw_d = str(args.target_date).strip()
+                try:
+                    target_d = date.fromisoformat(raw_d[:10])
+                except Exception:
+                    target_d = today_d
+
             try:
                 from schedule.intervals import get_unified_daily_schedule
-                target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
                 daily = await get_unified_daily_schedule(chat_id, target_d)
                 return daily
             except Exception as exc:
                 print("Interval get_schedule fallback:", exc)
 
             from main import get_unified_schedule, format_event_clock_ist
-            target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
             sched = await get_unified_schedule(chat_id, target_d)
             evs = [
                 {
