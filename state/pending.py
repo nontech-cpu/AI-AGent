@@ -371,6 +371,39 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
                 complete_pending_action(action_id, status="confirmed")
             return True, reply
 
+        elif kind in ("delete_reminder", "reminder_delete"):
+            title = payload.get("title", "")
+            rem_id = payload.get("reminder_id")
+            from agent.tools import execute_tool
+            res = await execute_tool(chat_id, "delete_reminder", {"title": title, "reminder_id": rem_id})
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+            if res.get("status") == "success":
+                msg = res.get("message") or f"✅ Done! '{title}' reminder delete kar diya hai."
+                return True, msg
+            else:
+                msg = res.get("message") or f"'{title}' reminder delete nahi ho saka."
+                return False, msg
+
+        elif kind in ("create_reminder", "reminder_create"):
+            title = payload.get("title", "")
+            due_date = payload.get("due_date")
+            due_time = payload.get("due_time")
+            from agent.tools import execute_tool
+            res = await execute_tool(chat_id, "create_reminder", {
+                "title": title,
+                "due_date": due_date,
+                "due_time": due_time,
+                "force": True
+            })
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+            if res.get("status") in ("success", "conflict_detected"):
+                msg = res.get("message") or f"✅ Done! '{title}' reminder set kar diya hai."
+                return True, msg
+            else:
+                return False, res.get("message") or "Reminder set nahi ho saka."
+
         else:
             if action_id:
                 complete_pending_action(action_id, status="confirmed")

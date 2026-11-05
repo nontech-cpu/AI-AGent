@@ -210,9 +210,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     start_ts = time.time()
     delivery_chat_id = chat_id
     chat_id = db.canonical_chat_id(chat_id)
+    gemini_key = os.getenv("GEMINI_API_KEY")
     groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        raise RuntimeError("GROQ_API_KEY environment variable is missing.")
+    if not (gemini_key or groq_key):
+        raise RuntimeError("Neither GEMINI_API_KEY nor GROQ_API_KEY is configured.")
 
     model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
     trimmed_text = user_text.strip()
@@ -470,46 +471,68 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Brief replenish pause for Groq per-second rate limit bucket
                 await asyncio.sleep(0.7)
 
-            print("Check 2 (calling Groq):", time.time() - start_ts)
+            print("Check 2 (calling LLM):", time.time() - start_ts)
             resp = None
-            backup_key = os.getenv("GROQ_API_KEY_BACKUP")
-            available_keys = [groq_key] + ([backup_key] if backup_key and backup_key != groq_key else [])
-            candidate_models = [current_model, "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
-            # Deduplicate while preserving order
-            seen_m = set()
-            ordered_candidates = [m for m in candidate_models if not (m in seen_m or seen_m.add(m))]
 
-            for active_key in available_keys:
-                for m_candidate in ordered_candidates:
+            # Multi-Tier Provider Architecture:
+            # Tier 1: Google Gemini (1 Million TPM, native tool calling, no 429 choke)
+            # Tier 2: Groq (Ultra-fast fallback)
+            llm_providers = []
+            if gemini_key:
+                llm_providers.append({
+                    "name": "Gemini",
+                    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                    "headers": {"Authorization": f"Bearer {gemini_key}", "Content-Type": "application/json"},
+                    "models": ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
+                })
+            if groq_key:
+                backup_key = os.getenv("GROQ_API_KEY_BACKUP")
+                available_groq_keys = [groq_key] + ([backup_key] if backup_key and backup_key != groq_key else [])
+                for gk in available_groq_keys:
+                    llm_providers.append({
+                        "name": "Groq",
+                        "url": "https://api.groq.com/openai/v1/chat/completions",
+                        "headers": {"Authorization": f"Bearer {gk}", "Content-Type": "application/json"},
+                        "models": [model, "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+                    })
+
+            for prov in llm_providers:
+                p_name = prov["name"]
+                p_url = prov["url"]
+                p_headers = prov["headers"]
+                seen_models = set()
+                prov_models = [m for m in prov["models"] if not (m in seen_models or seen_models.add(m))]
+
+                for m_candidate in prov_models:
                     payload["model"] = m_candidate
                     try:
                         resp = await client.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {active_key}"},
+                            p_url,
+                            headers=p_headers,
                             json=payload
                         )
                         if resp.status_code == 200:
                             current_model = m_candidate
                             break
                         else:
-                            print(f"Groq {m_candidate} status {resp.status_code}: {resp.text[:100]}")
+                            logger.info(f"{p_name} {m_candidate} status {resp.status_code}: {resp.text[:100]}")
                             if resp.status_code == 429:
                                 try:
-                                    ra_sec = float(resp.headers.get("retry-after", "2.0"))
+                                    ra_sec = float(resp.headers.get("retry-after", "1.5"))
                                 except Exception:
-                                    ra_sec = 2.0
-                                await asyncio.sleep(min(max(ra_sec, 1.5), 4.5))
+                                    ra_sec = 1.5
+                                await asyncio.sleep(min(max(ra_sec, 1.0), 3.0))
                                 continue
                     except Exception as req_err:
-                        print(f"Groq {m_candidate} request error:", repr(req_err))
+                        logger.info(f"{p_name} {m_candidate} request error: {repr(req_err)}")
                         continue
                 if resp and resp.status_code == 200:
                     break
 
-            print("Check 3 (Groq responded):", time.time() - start_ts)
+            print("Check 3 (LLM responded):", time.time() - start_ts)
 
             if not resp or resp.status_code != 200:
-                print("All Groq candidate models failed or exhausted rate limit.")
+                print("All LLM candidate models failed or exhausted rate limit.")
                 break
 
             resp_data = resp.json()
@@ -578,6 +601,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 if not has_multi_intents and len(tool_calls) == 1 and len(tool_results_list) == 1:
                     if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list"):
                         if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
+                            if fn_name == "create_reminder" and tool_result.get("status") == "conflict_detected":
+                                payload_cf = {
+                                    "kind": "create_reminder",
+                                    "action": "create_reminder",
+                                    "title": tool_result.get("title") or args_dict.get("title"),
+                                    "due_date": tool_result.get("due_date") or args_dict.get("due_date"),
+                                    "due_time": tool_result.get("due_time") or args_dict.get("due_time"),
+                                    "force": True
+                                }
+                                save_pending_action(chat_id, "create_reminder", payload_cf)
+                                pending_action = payload_cf
                             final_reply = tool_result["message"]
                             break
 
@@ -980,6 +1014,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             cw = tr["conflict_warning"]
             if not any(w in final_reply.lower() for w in ("conflict", "clash", "already", "pehle se", "booked")):
                 final_reply += f"\n\n{cw} Kya aap iska time aage-peeche karna chahenge?"
+
+    # Proactive Confirmation Capture: If the assistant asked confirmation for an action,
+    # arm it in the deterministic pending state machine so "yes" executes immediately.
+    if not pending_action and ("?" in final_reply) and any(w in final_reply.lower() for w in ("confirm", "delete", "hata doon", "hata dein", "hata du", "remove")):
+        m_title = re.search(r"['\"]([^'\"]+)['\"]\s+(?:reminder|ko|ka|scheduled)", final_reply, re.I)
+        if m_title:
+            p_title = m_title.group(1).strip()
+            payload_del = {
+                "kind": "delete_reminder",
+                "action": "delete_reminder",
+                "title": p_title,
+                "created_at": datetime.now(IST).isoformat()
+            }
+            save_pending_action(chat_id, "delete_reminder", payload_del)
+            pending_action = payload_del
 
     # Phase 3 & 4: Zero-Unsupported-Claims Grounding Verifier Pass
     should_run_verifier = (
