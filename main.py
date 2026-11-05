@@ -5412,6 +5412,40 @@ def health():
 def debug_ping():
     return {"status": "pong", "version": "v2.3.0"}
 
+
+@app.get("/debug/db-latency")
+def debug_db_latency(samples: int = 20):
+    import time, statistics
+    samples = max(1, min(samples, 50))
+    latencies = []
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+    for _ in range(samples):
+        t0 = time.perf_counter()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        latencies.append(round((time.perf_counter() - t0) * 1000, 2))
+
+    sorted_lats = sorted(latencies)
+    p50 = sorted_lats[len(sorted_lats) // 2]
+    p95_idx = int(len(sorted_lats) * 0.95)
+    p95 = sorted_lats[min(p95_idx, len(sorted_lats) - 1)]
+
+    return {
+        "status": "ok",
+        "sample_count": len(latencies),
+        "min_ms": min(latencies),
+        "max_ms": max(latencies),
+        "mean_ms": round(statistics.mean(latencies), 2),
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "latencies_ms": latencies,
+    }
+
 @app.get("/debug/groq_ping")
 async def debug_groq_ping():
     import httpx, os

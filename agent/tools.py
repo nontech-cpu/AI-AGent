@@ -220,7 +220,7 @@ class UpdateReminderArgs(BaseModel):
     force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
 
 class ListRemindersArgs(BaseModel):
-    date_str: Optional[str] = Field(None, description="Optional target date in YYYY-MM-DD format. Leave null or omit when user asks for today's reminders ('aaj', 'today') or general schedule; backend automatically defaults to today. Only provide for specific other dates (e.g. tomorrow, yesterday, or a specific calendar date).")
+    date_str: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. The model semantically converts relative user expressions ('today', 'aaj', 'tomorrow', 'kal', day names) into the exact YYYY-MM-DD date. Defaults to today's date if omitted.")
 
 class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
@@ -695,16 +695,17 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "list_reminders",
             "description": (
-                "List saved tasks, reminders, and appointments. Call this whenever the user asks about their "
+                "List saved tasks, reminders, and appointments for a target date. Call this whenever the user asks about their "
                 "schedule, tasks, or reminders (e.g. 'mere aajke reminder btana', 'aaj ke reminders dikhao', 'reminders check karo'). "
-                "For today's reminders or general queries, leave date_str null or omitted so the server queries today's date."
+                "The model must semantically convert relative temporal expressions (such as 'today', 'aaj', 'tomorrow', 'kal', day names) "
+                "into an exact ISO date YYYY-MM-DD anchored to Current Time."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "date_str": {
                         "type": ["string", "null"],
-                        "description": "Optional target date in YYYY-MM-DD format (e.g. for past or future dates). Omit or pass null for today."
+                        "description": "Target date in YYYY-MM-DD format (e.g. '2026-11-05'). If omitted or null, defaults to today's date."
                     }
                 }
             }
@@ -2086,9 +2087,9 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     "tool_name": "create_reminder",
                     "status": "error",
                     "error": "invalid_date_or_in_past",
-                    "message": f"date {args.due_date} is invalid or in the past; today is {today_d.isoformat()} ({u_tz.key}); resend with correct date.",
+                    "message": f"date {args.due_date} is invalid or in the past; today is {today_d.isoformat()} ({u_tz.key if hasattr(u_tz, 'key') else str(u_tz)}); resend with correct date.",
                     "today": today_d.isoformat(),
-                    "timezone": u_tz.key
+                    "timezone": u_tz.key if hasattr(u_tz, "key") else str(u_tz)
                 }
             args.due_date = d_val.isoformat()
 
@@ -2376,7 +2377,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             args = ListRemindersArgs(**arguments)
             u_tz, _ = await _resolve_user_timezone(chat_id)
             today_d = timeutil.today(u_tz)
-            now_dt = timeutil.now(u_tz)
 
             target_d = today_d
             if args.date_str:
@@ -2384,49 +2384,49 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 ok_d, resolved_d, _ = timeutil.resolve_date(raw_d, tz=u_tz, allow_past=True)
                 if ok_d and resolved_d:
                     target_d = resolved_d
+                    args.date_str = target_d.isoformat()
                 else:
                     target_d = today_d
 
             items = db.items_for_date(chat_id, target_d)
             # items_for_date returns: (category, title, amount, due_time, id, duration_minutes, due_date)
-            cur_time = now_dt.time()
+            now_t = timeutil.now(u_tz).time()
             formatted = []
             for it in items:
-                t_val = it[3]
                 t_obj = None
-                if t_val:
-                    if isinstance(t_val, dtime):
-                        t_obj = t_val
-                    elif isinstance(t_val, str):
+                if it[3]:
+                    if isinstance(it[3], dtime):
+                        t_obj = it[3]
+                    else:
                         try:
-                            parts = [int(p) for p in t_val.split(":")[:2]]
-                            t_obj = dtime(parts[0], parts[1])
+                            h, m = map(int, str(it[3]).split(":")[:2])
+                            t_obj = dtime(h, m)
                         except Exception:
                             t_obj = None
 
-                status_tag = "UPCOMING"
                 if target_d < today_d:
-                    status_tag = "PAST"
-                elif target_d == today_d and t_obj:
-                    status_tag = "PAST" if t_obj < cur_time else "UPCOMING"
+                    item_status = "PAST"
+                elif target_d > today_d:
+                    item_status = "UPCOMING"
+                else:
+                    item_status = "PAST" if (t_obj and t_obj < now_t) else "UPCOMING"
 
                 formatted.append({
                     "id": it[4],
                     "category": it[0],
                     "title": it[1],
                     "due_date": target_d.isoformat(),
-                    "due_time": str(t_val) if t_val else None,
+                    "due_time": str(it[3]) if it[3] else None,
                     "duration_minutes": it[5] if len(it) > 5 and it[5] is not None else 30,
-                    "status": status_tag
+                    "status": item_status
                 })
-
-            meta = timeutil.date_metadata(target_d, today_d)
+            date_meta = timeutil.date_metadata(target_d, today_d)
             return {
-                "date": meta["date"],
-                "today": meta["today"],
-                "relative": meta["relative"],
-                "is_today": meta["is_today"],
-                "day_label": meta["day_label"],
+                "date": date_meta["date"],
+                "today": date_meta["today"],
+                "is_today": date_meta["is_today"],
+                "day_label": date_meta["day_label"],
+                "relative": date_meta["relative"],
                 "count": len(formatted),
                 "reminders": formatted
             }
@@ -2441,6 +2441,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 ok_d, resolved_d, _ = timeutil.resolve_date(raw_d, tz=u_tz, allow_past=True)
                 if ok_d and resolved_d:
                     target_d = resolved_d
+                    args.target_date = target_d.isoformat()
                 else:
                     target_d = today_d
 
@@ -3696,7 +3697,7 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
         fname = dt["function"]["name"]
         if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in combined for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
             extra_tools.append(dt)
-        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and (any(w in low for w in ("notion", "workspace", "code block", "heading")) or (any(w in low for w in ("note", "notes", "page")) and "notion" in combined)):
+        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in combined for w in ("notion", "workspace", "notes section", "note", "notes", "code block", "heading")):
             extra_tools.append(dt)
         elif fname in ("send_email", "search_user_emails") and any(w in combined for w in ("mail", "email", "gmail", "inbox", "sent")):
             extra_tools.append(dt)

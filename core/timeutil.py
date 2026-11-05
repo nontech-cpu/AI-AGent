@@ -119,26 +119,44 @@ def resolve_date(
         return True, current_date, None
 
     clean_str = str(date_str).strip()
+    low_str = clean_str.lower()
 
-    # Match YYYY-MM-DD
-    match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", clean_str)
-    if not match:
-        # Fallback check for DD-MM-YYYY or common formats
-        match_alt = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", clean_str)
-        if match_alt:
-            d_p, m_p, y_p = int(match_alt.group(1)), int(match_alt.group(2)), int(match_alt.group(3))
+    # Relative expressions
+    if low_str in ("today", "aaj"):
+        parsed = current_date
+    elif low_str in ("yesterday", "beeta kal", "kal (past)"):
+        parsed = current_date - timedelta(days=1)
+    elif low_str in ("tomorrow", "kal", "aane wala kal"):
+        parsed = current_date + timedelta(days=1)
+    elif low_str in ("last week", "past week", "pichla hafta", "pichle hafte"):
+        parsed = current_date - timedelta(days=7)
+    else:
+        # Match YYYY-MM-DD
+        match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", clean_str)
+        if match:
+            y_p, m_p, d_p = int(match.group(1)), int(match.group(2)), int(match.group(3))
             try:
                 parsed = date(y_p, m_p, d_p)
             except ValueError:
-                return False, None, f"Invalid date '{clean_str}'"
+                return False, None, f"Invalid calendar date '{clean_str}'."
         else:
-            return False, None, f"Invalid date format '{clean_str}'. Expected YYYY-MM-DD."
-    else:
-        y_p, m_p, d_p = int(match.group(1)), int(match.group(2)), int(match.group(3))
-        try:
-            parsed = date(y_p, m_p, d_p)
-        except ValueError:
-            return False, None, f"Invalid calendar date '{clean_str}'."
+            # Fallback check for DD-MM-YYYY or common numeric formats
+            match_alt = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", clean_str)
+            if match_alt:
+                d_p, m_p, y_p = int(match_alt.group(1)), int(match_alt.group(2)), int(match_alt.group(3))
+                try:
+                    parsed = date(y_p, m_p, d_p)
+                except ValueError:
+                    return False, None, f"Invalid date '{clean_str}'"
+            else:
+                # Natural date parsing fallback via dateutil (e.g. '10 Oct', 'October 10', '15 Nov 2026')
+                try:
+                    import dateutil.parser
+                    dt_default = datetime(current_date.year, current_date.month, current_date.day)
+                    parsed_dt = dateutil.parser.parse(clean_str, default=dt_default)
+                    parsed = parsed_dt.date()
+                except Exception:
+                    return False, None, f"Invalid date format '{clean_str}'. Expected YYYY-MM-DD."
 
     # Check if date is in the past for WRITE operations
     if not allow_past and parsed < current_date:

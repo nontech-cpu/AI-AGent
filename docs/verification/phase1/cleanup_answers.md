@@ -15,8 +15,8 @@ This document provides exact, file:line verified evidence addressing every singl
 ### Why Did This Happen?
 1. **Uncommitted/Undeployed Local Fixes**:
    The code running on Render production was commit `3c27a2e` because the Phase 1 branch (`fix/phase1-time-correctness`) had not yet been deployed to Render (`main` has `autoDeploy: true`).
-2. **Quota Failover to Groq Open Source Model**:
-   In `agent/loop.py:502` of commit `3c27a2e`, the primary model was set to `gemini-3-flash-preview`. Live API testing revealed that `gemini-3-flash-preview` returned HTTP 429 Quota Exceeded. The loop fell through to Groq (`openai/gpt-oss-120b`).
+2. **Model Behavior & Quota Limits**:
+   In `agent/loop.py:502` of commit `3c27a2e`, the primary model was set to `gemini-3-flash-preview`. Preview model quota exhaustion was observed on 2026-11-05; the failing turn's provider is unknown (no column existed at the time in `turn_traces`). When requests dropped to Groq (`openai/gpt-oss-120b`), knowledge cutoff bias became a factor.
 3. **Pre-Training Knowledge Cutoff Bias**:
    `openai/gpt-oss-120b` (an open-weights model hosted on Groq) has an internal training/system date cutoff of **January 2025** (specifically `2025-01-24`).
 4. **Tool Schema Ambiguity**:
@@ -86,8 +86,8 @@ This document provides exact, file:line verified evidence addressing every singl
 ### Item F: Remove Unproven Gemini 429 Claims
 - **Status**: **DONE**
 - **Evidence**:
-  - Corrected documentation in [`docs/verification/phase1/phase1_summary.md`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/docs/verification/phase1/phase1_summary.md).
-  - Explicitly states: *What is proven* = `list_reminders` received `2025-01-24` and accepted it without validation; *What was unproven* = Which provider generated `2025-01-24` on older turns prior to `turn_traces` telemetry migration.
+  - Corrected documentation in [`docs/verification/phase1/phase1_summary.md`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/docs/verification/phase1/phase1_summary.md) and [`docs/KNOWN_ISSUES.md`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/docs/KNOWN_ISSUES.md).
+  - Explicitly states: preview model quota exhaustion observed on 2026-11-05; the failing turn's provider is unknown (no column existed at the time in `turn_traces`). What is verified: `list_reminders` received `2025-01-24` and accepted it without validation.
 
 ### Item G: Turn Traces Telemetry Columns Migration
 - **Status**: **DONE**
@@ -120,3 +120,4 @@ This document provides exact, file:line verified evidence addressing every singl
   - Neon Postgres Host: `ep-mute-wave-a5905iyt-pooler.c-2.us-east-2.aws.neon.tech` (AWS Ohio, `us-east-2`).
   - Render Service Region: `oregon` (US West).
   - Inter-region cross-continent latency: ~65ms per roundtrip, justifying the asynchronous backgrounding of post-turn persistence.
+

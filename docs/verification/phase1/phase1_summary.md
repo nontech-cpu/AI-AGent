@@ -3,7 +3,7 @@
 ## 1. Executive Summary & Root Cause Resolution
 The primary defect causing the bot to reply with **"Dekhiye, maine check kiya hai aur mere paas aaj (24 January) ke liye koi bhi reminder save nahi hai"** when asked for today's reminders was verified and fixed:
 1. **Root Cause**:
-   - Primary model (`gemini-3-flash-preview`) experienced 429 quota exhaustion.
+   - Preview model quota exhaustion observed on 2026-11-05; the failing turn's provider is unknown (no column existed at the time in turn_traces). What is verified: `list_reminders` received `date_str="2025-01-24"` and accepted it without validation.
    - Cognitive loop fell back to Groq (`openai/gpt-oss-120b`).
    - The fallback model defaulted to its static training knowledge cutoff date (**24 January 2025**).
    - In `agent/tools.py:2073`, the system previously accepted model-supplied `due_date` without validation, saving reminders for 2025-01-24 instead of today (`2026-11-05`).

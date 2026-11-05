@@ -167,7 +167,8 @@ class CalendarConnector(Connector):
             t_date = args.get("target_date")
             try:
                 from main import get_unified_schedule
-                d_obj = date.fromisoformat(t_date) if t_date else timeutil.today(IST)
+                ok_d, d_obj, _ = timeutil.resolve_date(t_date, tz=IST, allow_past=True)
+                d_obj = d_obj or timeutil.today(IST)
                 sched = await get_unified_schedule(user_or_chat_id, d_obj)
                 events = sched.get("calendar_events", [])
                 rems = sched.get("reminders", [])

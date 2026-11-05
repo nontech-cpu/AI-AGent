@@ -7,13 +7,13 @@
   "measurements_routing_accuracy": "75.0%",
   "short_entity_recognition": "83.3%",
   "latency_ms": {
-    "p50": 0.05,
-    "p90": 2.9,
-    "p95": 3.2,
-    "mean": 1.01,
+    "p50": 1.2,
+    "p90": 1.97,
+    "p95": 2.19,
+    "mean": 0.95,
     "min": 0.0,
-    "max": 4.03
+    "max": 7.95
   },
-  "avg_tokens_per_turn": 230,
-  "timestamp": "2026-11-05 18:29:01"
+  "avg_tokens_per_turn": 265,
+  "timestamp": "2026-11-05 19:00:29"
 }

@@ -1,0 +1,300 @@
+{
+  "gemini_3_1_flash_lite_preview": [
+    {
+      "prompt": "bhy mere reminder toh btana aajke",
+      "status": 200,
+      "latency_ms": 1845,
+      "tools": [
+        "list_reminders"
+      ],
+      "args": [
+        "{\"date_str\":\"2026-11-05\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "and mere toh 4:30PM pr movie jana h uska timer lga dena",
+      "status": 200,
+      "latency_ms": 1641,
+      "tools": [
+        "create_reminder"
+      ],
+      "args": [
+        "{\"due_time\":\"16:30\",\"title\":\"Movie jana hai\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "meeting with Devender shift to 5pm",
+      "status": 200,
+      "latency_ms": 1449,
+      "tools": [
+        "update_reminder"
+      ],
+      "args": [
+        "{\"title\":\"Devender\",\"due_time\":\"17:00\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "Aditya ka contact save kar 9876543210 for designing",
+      "status": 200,
+      "latency_ms": 1412,
+      "tools": [
+        "save_contact"
+      ],
+      "args": [
+        "{\"name\":\"Aditya\",\"notes\":\"contact for designing\",\"phone\":\"9876543210\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "Aditya ka number kya hai",
+      "status": 200,
+      "latency_ms": 1571,
+      "tools": [
+        "get_contact"
+      ],
+      "args": [
+        "{\"name_or_alias\":\"Aditya\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "Jodhpur me kaunse malls hain",
+      "status": 200,
+      "latency_ms": 1539,
+      "tools": [
+        "find_nearby_places"
+      ],
+      "args": [
+        "{\"city\":\"Jodhpur\",\"area\":null,\"category\":\"mall\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "weather in Delhi today",
+      "status": 200,
+      "latency_ms": 1667,
+      "tools": [
+        "get_weather"
+      ],
+      "args": [
+        "{\"city\":\"Delhi\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "Send email to test@example.com subject Hello body World",
+      "status": 200,
+      "latency_ms": 1595,
+      "tools": [
+        "send_email"
+      ],
+      "args": [
+        "{\"to\":\"test@example.com\",\"subject\":\"Hello\",\"body\":\"World\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "pichle hafte ke reminders dikhana",
+      "status": 200,
+      "latency_ms": 1489,
+      "tools": [
+        "list_reminders"
+      ],
+      "args": [
+        "{\"date_str\":\"2026-10-29\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "what is 25 * 48",
+      "status": 200,
+      "latency_ms": 1778,
+      "tools": [
+        "execute_python_code"
+      ],
+      "args": [
+        "{\"code\":\"print(25 * 48)\",\"purpose\":\"Calculate 25 * 48\"}"
+      ],
+      "error": null
+    }
+  ],
+  "gemini_3_flash_preview": [
+    {
+      "prompt": "bhy mere reminder toh btana aajke",
+      "status": 429,
+      "latency_ms": 1229,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "and mere toh 4:30PM pr movie jana h uska timer lga dena",
+      "status": 429,
+      "latency_ms": 665,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "meeting with Devender shift to 5pm",
+      "status": 429,
+      "latency_ms": 1067,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "Aditya ka contact save kar 9876543210 for designing",
+      "status": 429,
+      "latency_ms": 1535,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "Aditya ka number kya hai",
+      "status": 429,
+      "latency_ms": 630,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "Jodhpur me kaunse malls hain",
+      "status": 429,
+      "latency_ms": 708,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "weather in Delhi today",
+      "status": 429,
+      "latency_ms": 695,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "Send email to test@example.com subject Hello body World",
+      "status": 429,
+      "latency_ms": 759,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "pichle hafte ke reminders dikhana",
+      "status": 429,
+      "latency_ms": 922,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    },
+    {
+      "prompt": "what is 25 * 48",
+      "status": 429,
+      "latency_ms": 920,
+      "tools": [],
+      "args": [],
+      "error": "[{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det"
+    }
+  ],
+  "groq_gpt_oss_120b": [
+    {
+      "prompt": "bhy mere reminder toh btana aajke",
+      "status": 200,
+      "latency_ms": 1231,
+      "tools": [],
+      "args": [],
+      "error": null
+    },
+    {
+      "prompt": "and mere toh 4:30PM pr movie jana h uska timer lga dena",
+      "status": 429,
+      "latency_ms": 457,
+      "tools": [],
+      "args": [],
+      "error": "{\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m65s76csea8t2kxgqmfk6bb0`"
+    },
+    {
+      "prompt": "meeting with Devender shift to 5pm",
+      "status": 200,
+      "latency_ms": 1230,
+      "tools": [
+        "update_reminder"
+      ],
+      "args": [
+        "{\"due_time\":\"17:00\",\"title\":\"meeting with Devender\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "Aditya ka contact save kar 9876543210 for designing",
+      "status": 429,
+      "latency_ms": 438,
+      "tools": [],
+      "args": [],
+      "error": "{\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m65s76csea8t2kxgqmfk6bb0`"
+    },
+    {
+      "prompt": "Aditya ka number kya hai",
+      "status": 200,
+      "latency_ms": 1038,
+      "tools": [
+        "get_contact"
+      ],
+      "args": [
+        "{\"name_or_alias\":\"Aditya\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "Jodhpur me kaunse malls hain",
+      "status": 429,
+      "latency_ms": 308,
+      "tools": [],
+      "args": [],
+      "error": "{\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m65s76csea8t2kxgqmfk6bb0`"
+    },
+    {
+      "prompt": "weather in Delhi today",
+      "status": 429,
+      "latency_ms": 319,
+      "tools": [],
+      "args": [],
+      "error": "{\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m65s76csea8t2kxgqmfk6bb0`"
+    },
+    {
+      "prompt": "Send email to test@example.com subject Hello body World",
+      "status": 200,
+      "latency_ms": 1177,
+      "tools": [
+        "send_email"
+      ],
+      "args": [
+        "{\"body\":\"World\",\"subject\":\"Hello\",\"to\":\"test@example.com\"}"
+      ],
+      "error": null
+    },
+    {
+      "prompt": "pichle hafte ke reminders dikhana",
+      "status": 429,
+      "latency_ms": 699,
+      "tools": [],
+      "args": [],
+      "error": "{\"error\":{\"message\":\"Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m65s76csea8t2kxgqmfk6bb0`"
+    },
+    {
+      "prompt": "what is 25 * 48",
+      "status": 200,
+      "latency_ms": 1395,
+      "tools": [],
+      "args": [],
+      "error": null
+    }
+  ]
+}

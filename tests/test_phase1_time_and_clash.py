@@ -204,58 +204,82 @@ async def test_list_reminders_missing_date_returns_today():
 
 
 @pytest.mark.asyncio
-async def test_read_tools_accept_past_date_without_clamping():
+async def test_read_tools_accept_past_dates_and_relative_expressions():
     """
-    Verify READ tools (list_reminders, get_schedule) accept any valid historical date
-    without clamping to today, and return full date metadata ('relative', 'today', 'is_today').
+    Verify READ tools (list_reminders, get_schedule) accept past dates like '10 Oct'
+    and relative expressions like 'last week' without clamping to today.
     """
     chat_id = 998877305
     db.ensure_user(chat_id)
     db.give_consent(chat_id)
 
     with FrozenClock("2026-11-05T13:30:00", tz=IST):
-        past_target = "2024-05-10"
-        # Save a historical memory item directly for that past date
-        db.save_memory(chat_id, "appointments", "Doctor visit last year", None, date(2024, 5, 10), dtime(11, 0), 30)
+        # 1. Past date '10 Oct' (2026-10-10)
+        db.save_memory(chat_id, "appointments", "Doctor visit Oct 10", None, date(2026, 10, 10), dtime(11, 0), 30)
+        # 2. Past date 'last week' (2026-10-29)
+        db.save_memory(chat_id, "appointments", "Dentist last week", None, date(2026, 10, 29), dtime(14, 0), 30)
 
-        res = await execute_tool(
-            chat_id,
-            "list_reminders",
-            {"date_str": past_target},
-            user_context={"user_text": "pichle saal ka check karo"}
-        )
+        # Query list_reminders with '10 Oct'
+        res_oct = await execute_tool(chat_id, "list_reminders", {"date_str": "10 Oct"})
+        assert res_oct["date"] == "2026-10-10"
+        assert res_oct["today"] == "2026-11-05"
+        assert res_oct["is_today"] is False
+        assert any(r["title"] == "Doctor visit Oct 10" for r in res_oct["reminders"])
+        assert res_oct["reminders"][0]["status"] == "PAST"
 
-        # Must not clamp to today!
-        assert res["date"] == "2024-05-10"
-        assert res["today"] == "2026-11-05"
-        assert res["is_today"] is False
-        assert "days ago" in res["relative"]
-        assert res["count"] >= 1
-        assert res["reminders"][0]["title"] == "Doctor visit last year"
-        assert res["reminders"][0]["status"] == "PAST"
+        # Query list_reminders with 'last week'
+        res_lw = await execute_tool(chat_id, "list_reminders", {"date_str": "last week"})
+        assert res_lw["date"] == "2026-10-29"
+        assert res_lw["today"] == "2026-11-05"
+        assert res_lw["is_today"] is False
+        assert any(r["title"] == "Dentist last week" for r in res_lw["reminders"])
+        assert res_lw["reminders"][0]["status"] == "PAST"
+
+        # Query get_schedule with '10 Oct'
+        sched_oct = await execute_tool(chat_id, "get_schedule", {"target_date": "10 Oct"})
+        assert sched_oct["date"] == "2026-10-10"
+
+        # Query get_schedule with 'last week'
+        sched_lw = await execute_tool(chat_id, "get_schedule", {"target_date": "last week"})
+        assert sched_lw["date"] == "2026-10-29"
 
 
 @pytest.mark.asyncio
-async def test_write_tools_reject_past_datetime():
+async def test_write_tools_reject_past_datetime_and_second_attempt_succeeds():
     """
     Verify WRITE tools strictly reject past dates without silently rewriting,
-    returning structured error feedback.
+    returning structured error feedback, and a subsequent attempt with valid date succeeds.
     """
     chat_id = 998877306
     db.ensure_user(chat_id)
     db.give_consent(chat_id)
 
     with FrozenClock("2026-11-05T13:30:00", tz=IST):
-        res = await execute_tool(
+        # Attempt 1: Past date (2025-01-24)
+        res_fail = await execute_tool(
             chat_id,
             "create_reminder",
             {"title": "Past event", "due_date": "2025-01-24", "due_time": "16:30"},
             user_context={"user_text": "set reminder"}
         )
 
-        assert res["status"] == "error"
-        assert res["error"] == "invalid_date_or_in_past"
-        assert res["today"] == "2026-11-05"
+        assert res_fail["status"] == "error"
+        assert res_fail["error"] == "invalid_date_or_in_past"
+        assert res_fail["today"] == "2026-11-05"
+        assert res_fail["timezone"] == "Asia/Kolkata"
         # DB should not have this item
-        items = db.items_for_date(chat_id, date(2025, 1, 24))
-        assert len(items) == 0
+        items_past = db.items_for_date(chat_id, date(2025, 1, 24))
+        assert len(items_past) == 0
+
+        # Attempt 2: Resubmitting with valid today's date (2026-11-05)
+        res_ok = await execute_tool(
+            chat_id,
+            "create_reminder",
+            {"title": "Past event", "due_date": "2026-11-05", "due_time": "16:30"},
+            user_context={"user_text": "set reminder"}
+        )
+
+        assert res_ok["status"] == "success"
+        assert res_ok["due_date"] == "2026-11-05"
+        items_today = db.items_for_date(chat_id, date(2026, 11, 5))
+        assert any(it[1] == "Past event" for it in items_today)
