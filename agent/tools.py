@@ -76,6 +76,31 @@ def _extract_time_from_text(text: str) -> Optional[dtime]:
                     return dtime(val, 0)
     return None
 
+def _safe_int(val: Any, default: int = 30) -> int:
+    """Safely converts string/float/int durations into integer minutes without regex."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return int(val)
+    s = str(val).strip().lower()
+    if not s:
+        return default
+    if "hour" in s or "hr" in s:
+        part = s.split("hour")[0].split("hr")[0].strip()
+        num_str = "".join(ch for ch in part if ch.isdigit() or ch == ".")
+        if num_str:
+            try:
+                return int(float(num_str) * 60)
+            except Exception:
+                pass
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if digits:
+        try:
+            return int(digits)
+        except Exception:
+            return default
+    return default
+
 # -------------------------------------------------------------
 # 1. Pydantic Tool Argument Schemas
 # -------------------------------------------------------------
@@ -174,7 +199,7 @@ class CreateReminderArgs(BaseModel):
             "you MUST extract and convert it into 24-hour HH:MM format. NEVER leave null when the user specifies a time."
         )
     )
-    duration_minutes: Optional[int] = Field(
+    duration_minutes: Optional[Any] = Field(
         None,
         description=(
             "Duration in minutes if the user specifies how long the meeting, event, or call lasts "
@@ -190,7 +215,7 @@ class UpdateReminderArgs(BaseModel):
     reminder_id: Optional[int] = Field(None, description="ID of the reminder if known.")
     due_date: Optional[str] = Field(None, description="Updated date in YYYY-MM-DD format if date is being changed.")
     due_time: Optional[str] = Field(None, description="Updated time in 24-hour HH:MM format if time is being changed.")
-    duration_minutes: Optional[int] = Field(None, description="Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins).")
+    duration_minutes: Optional[Any] = Field(None, description="Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins).")
     force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
 
 class ListRemindersArgs(BaseModel):
@@ -206,7 +231,7 @@ class GetScheduleArgs(BaseModel):
 class CheckAvailabilityArgs(BaseModel):
     start_time: str = Field(..., description="Planned start time in HH:MM format (e.g. '17:00' for 5 PM).")
     target_date: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. Defaults to today or tomorrow IST.")
-    duration_minutes: Optional[int] = Field(60, description="Estimated duration in minutes (e.g. 180 for movie, 30 for call).")
+    duration_minutes: Optional[Any] = Field(60, description="Estimated duration in minutes (e.g. 180 for movie, 30 for call).")
     activity_type: Optional[str] = Field("general", description="Type of activity e.g. 'movie', 'meeting', 'dinner'.")
 
 class CreateMeetingArgs(BaseModel):
@@ -598,9 +623,9 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "create_reminder",
             "description": (
-                "Save a task, meeting, appointment, dinner date, or reminder with a due date and time. "
-                "CRITICAL: If the user mentions any time in natural language (e.g. '11pm', '10:30', '3 baje'), "
-                "you MUST extract and convert it into due_time in 24-hour 'HH:MM' format (e.g. '23:00'). "
+                "Save a task, meeting, appointment, dinner date, shopping trip, workout, or reminder with a due date and time. "
+                "CRITICAL: If the user mentions setting a reminder for any activity (e.g. 'shopping ke liye jana hai reminder laga do', 'meeting reminder', 'gym reminder') with a time, ALWAYS call this tool. "
+                "Extract and convert time into due_time in 24-hour 'HH:MM' format (e.g. '23:00'). "
                 "If user specifies duration (e.g. '1 hour'), pass duration_minutes=60. "
                 "If no date is mentioned, due_date defaults to today's date."
             ),
@@ -1091,7 +1116,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "find_nearby_places",
-            "description": "Discover real, verified local places, shopping malls, markets, cafes, coffee shops, restaurants, and amenities in a specific city or neighborhood. Zero hallucination.",
+            "description": "Discover real, verified local places, shopping malls, markets, cafes, coffee shops, restaurants, and amenities in a specific city or neighborhood. Zero hallucination. Do NOT use this tool when the user is asking to set a reminder or schedule an activity.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1850,6 +1875,10 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             target_kw = (args.title or "").strip().lower()
             rem_id = args.reminder_id
 
+            user_msg = ""
+            if user_context and isinstance(user_context, dict):
+                user_msg = (user_context.get("user_text") or "").lower()
+
             # Find matching item from DB
             matched_row = None
             if rem_id:
@@ -1860,15 +1889,31 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     ).mappings().first()
                     if row:
                         matched_row = dict(row)
-            elif target_kw:
-                # Search today's items first, then upcoming 7 days
+            else:
                 existing_items = db.items_for_date(chat_id, today_d)
-                for r in existing_items:
-                    r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
-                    if target_kw == r_title or target_kw in r_title or r_title in target_kw:
-                        matched_row = r
-                        break
-                if not matched_row:
+
+                # 1. If time hint or args.due_time is present, match by time first
+                if args.due_time:
+                    for r in existing_items:
+                        r_tm = _get_row_val(r, "due_time", 3)
+                        if r_tm and str(r_tm).startswith(args.due_time[:5]):
+                            matched_row = r
+                            break
+
+                # 2. If user mentions "new", "latest", "recent", "dusri", inspect in reverse
+                is_latest_intent = any(w in user_msg for w in ("new", "latest", "recent", "dusri", "naya", "nayi", "abhi wali"))
+                search_list = list(reversed(existing_items)) if is_latest_intent else list(existing_items)
+
+                # 3. Match by title keyword
+                if not matched_row and target_kw:
+                    for r in search_list:
+                        r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
+                        if target_kw == r_title or target_kw in r_title or r_title in target_kw:
+                            matched_row = r
+                            break
+
+                # 4. If still not matched, search upcoming 7 days
+                if not matched_row and target_kw:
                     range_items = db.items_for_date_range(chat_id, today_d, today_d + timedelta(days=7))
                     for r in range_items:
                         r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
@@ -1876,8 +1921,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                             matched_row = r
                             break
 
+                # 5. If title keyword was omitted or generic and only one/latest item exists today
+                if not matched_row and existing_items:
+                    matched_row = search_list[0]
+
             if not matched_row:
                 return {
+                    "action": "update_reminder",
+                    "tool_name": "update_reminder",
                     "status": "error",
                     "message": f"Aapka '{args.title or 'item'}' se related koi active reminder nahi mila jise update kiya ja sake."
                 }
@@ -1886,7 +1937,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             orig_title = _get_row_val(matched_row, "title", 1, "")
             curr_date = _get_row_val(matched_row, "due_date", 6, today_d) or today_d
             curr_time = _get_row_val(matched_row, "due_time", 3)
-            curr_dur = _get_row_val(matched_row, "duration_minutes", 5, 30)
+            curr_dur = _safe_int(_get_row_val(matched_row, "duration_minutes", 5, 30), default=30)
 
             new_title = (args.title or orig_title).strip()
             new_date = date.fromisoformat(args.due_date) if args.due_date else curr_date
@@ -1901,7 +1952,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 parts = list(map(int, new_time.split(":")[:2]))
                 new_time = dtime(parts[0], parts[1])
 
-            new_dur = int(args.duration_minutes) if args.duration_minutes is not None else int(curr_dur)
+            new_dur = _safe_int(args.duration_minutes, default=curr_dur) if args.duration_minutes is not None else curr_dur
 
             # Mathematical Collision Check
             conflicts = []
@@ -1918,7 +1969,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                         continue
                     r_h = r_tm.hour if hasattr(r_tm, "hour") else int(str(r_tm).split(":")[0])
                     r_m = r_tm.minute if hasattr(r_tm, "minute") else int(str(r_tm).split(":")[1])
-                    r_dur = int(_get_row_val(r, "duration_minutes", 5, 30) or 30)
+                    r_dur = _safe_int(_get_row_val(r, "duration_minutes", 5, 30), default=30)
                     ex_start = r_h * 60 + r_m
                     ex_end = ex_start + r_dur
 
@@ -1953,6 +2004,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if conflicts and not args.force:
                 time_disp = new_time.strftime("%I:%M %p") if new_time else "specified time"
                 return {
+                    "action": "update_reminder",
+                    "tool_name": "update_reminder",
                     "status": "conflict_detected",
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
@@ -1980,9 +2033,18 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             except Exception:
                 pass
 
+            # Invalidate prompt schedule cache immediately!
+            try:
+                from agent.prompt import invalidate_prompt_schedule_cache
+                invalidate_prompt_schedule_cache(chat_id)
+            except Exception:
+                pass
+
             time_str = new_time.strftime("%I:%M %p") if new_time else "specified time"
             date_str = new_date.strftime("%d %b %Y") if new_date else "specified date"
             return {
+                "action": "update_reminder",
+                "tool_name": "update_reminder",
                 "status": "success",
                 "title": new_title,
                 "due_date": new_date.isoformat(),
@@ -2020,18 +2082,30 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     t_val = extracted_tm
                     args.due_time = f"{t_val.hour:02d}:{t_val.minute:02d}"
 
-            dur_mins = int(args.duration_minutes) if args.duration_minutes else 30
+            dur_mins = _safe_int(args.duration_minutes, default=30)
 
-            # Check if this is an update to an existing reminder on this date with matching title
+            # Check if this is an explicit reschedule of an existing reminder
             existing_items = db.items_for_date(chat_id, d_val)
             clean_title = args.title.strip()
             target_low = clean_title.lower()
             matched_id = None
-            for r in existing_items:
-                r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
-                if target_low == r_title or (len(target_low) >= 3 and target_low in r_title) or (len(r_title) >= 3 and r_title in target_low):
-                    matched_id = _get_row_val(r, "id", 4)
-                    break
+            generic_titles = {"meeting", "call", "reminder", "task", "event", "appointment", "class", "session"}
+
+            user_msg = ""
+            if user_context and isinstance(user_context, dict):
+                user_msg = (user_context.get("user_text") or "").lower()
+
+            is_explicit_reschedule = any(k in user_msg for k in ("shift", "reschedule", "badal", "change", "update", "move", "kardo"))
+
+            # Only match existing item for overwrite if:
+            # 1. User explicitly requested shift/reschedule/update, OR
+            # 2. The title is non-generic (e.g. "Meeting with Devender")
+            if is_explicit_reschedule or target_low not in generic_titles:
+                for r in existing_items:
+                    r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
+                    if target_low == r_title or (target_low not in generic_titles and ((len(target_low) >= 4 and target_low in r_title) or (len(r_title) >= 4 and r_title in target_low))):
+                        matched_id = _get_row_val(r, "id", 4)
+                        break
 
             # Pure Math Collision Check
             conflicts = []
@@ -2048,7 +2122,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                         continue
                     r_h = r_tm.hour if hasattr(r_tm, "hour") else int(str(r_tm).split(":")[0])
                     r_m = r_tm.minute if hasattr(r_tm, "minute") else int(str(r_tm).split(":")[1])
-                    r_dur = int(_get_row_val(r, "duration_minutes", 5, 30) or 30)
+                    r_dur = _safe_int(_get_row_val(r, "duration_minutes", 5, 30), default=30)
                     ex_start = r_h * 60 + r_m
                     ex_end = ex_start + r_dur
 
@@ -2091,6 +2165,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if conflicts and not args.force and not matched_id:
                 time_disp = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 return {
+                    "action": "create_reminder",
+                    "tool_name": "create_reminder",
                     "status": "conflict_detected",
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
@@ -2105,6 +2181,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if tight_buffers and not args.force and not matched_id:
                 time_disp = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 return {
+                    "action": "create_reminder",
+                    "tool_name": "create_reminder",
                     "status": "conflict_detected",
                     "has_conflict": True,
                     "conflict_type": "tight_buffer",
@@ -2159,10 +2237,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             except Exception:
                 pass
 
+            # Invalidate prompt schedule cache immediately!
+            try:
+                from agent.prompt import invalidate_prompt_schedule_cache
+                invalidate_prompt_schedule_cache(chat_id)
+            except Exception:
+                pass
+
             time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
             date_str = d_val.strftime("%d %b %Y") if d_val else "specified date"
             action_word = "shift" if rescheduled else "set"
             return {
+                "action": "create_reminder",
+                "tool_name": "create_reminder",
                 "status": "success",
                 "title": clean_title,
                 "due_date": args.due_date,
@@ -2225,6 +2312,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             try:
                 from api_v1 import _invalidate_all_app_caches
                 _invalidate_all_app_caches()
+                from agent.prompt import invalidate_prompt_schedule_cache
+                invalidate_prompt_schedule_cache(chat_id)
             except Exception:
                 pass
 
@@ -2232,6 +2321,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 return {
                     "status": "success",
                     "action": "delete_reminder",
+                    "tool_name": "delete_reminder",
                     "title": ", ".join(deleted_titles),
                     "deleted_count": len(deleted_titles),
                     "deleted_titles": deleted_titles,

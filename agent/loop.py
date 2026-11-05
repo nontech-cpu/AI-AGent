@@ -591,24 +591,28 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 except Exception as tool_exc:
                     tool_result = {"status": "error", "message": f"Tool '{fn_name}' error: {str(tool_exc)}"}
 
+                if isinstance(tool_result, dict):
+                    tool_result.setdefault("action", fn_name)
+                    tool_result.setdefault("tool_name", fn_name)
+
                 tool_results_list.append(tool_result)
 
                 # Single-turn direct response optimization:
                 # Only for simple, single-action commands. If user combined multiple actions (and, aur, bhi, pehle), let the agent chain tools naturally!
                 has_multi_intents = any(kw in user_text.lower() for kw in (" and ", " aur ", " b ", " bhi ", " fir ", " then ", " pehle ", " sath ", " with "))
                 if not has_multi_intents and len(tool_calls) == 1 and len(tool_results_list) == 1:
-                    if fn_name in ("create_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list"):
+                    if fn_name in ("create_reminder", "update_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list"):
                         if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
-                            if fn_name == "create_reminder" and tool_result.get("status") == "conflict_detected":
+                            if fn_name in ("create_reminder", "update_reminder") and tool_result.get("status") == "conflict_detected":
                                 payload_cf = {
-                                    "kind": "create_reminder",
-                                    "action": "create_reminder",
+                                    "kind": fn_name,
+                                    "action": fn_name,
                                     "title": tool_result.get("title") or args_dict.get("title"),
                                     "due_date": tool_result.get("due_date") or args_dict.get("due_date"),
                                     "due_time": tool_result.get("due_time") or args_dict.get("due_time"),
                                     "force": True
                                 }
-                                save_pending_action(chat_id, "create_reminder", payload_cf)
+                                save_pending_action(chat_id, fn_name, payload_cf)
                                 pending_action = payload_cf
                             final_reply = tool_result["message"]
                             break

@@ -37,6 +37,13 @@ CORE GUIDELINES:
   ALWAYS call `update_reminder(title='...', duration_minutes=..., due_time=...)`!
   NEVER call delete_reminder, and NEVER delete an existing reminder just because the user stated its duration!
 - TODAY'S DATE ANCHOR (CRITICAL): Today's date is {NOW_TIME}'s date. When user says 'aaj' or 'today', always use today's date ({NOW_TIME}'s date). Never use dates from past tickets or distant conversations!
+- REMINDER INTENT VS PLACE SEARCH PRIORITY (CRITICAL):
+  When user mentions ANY time or says 'reminder set kar dena', 'remind me', 'alarm laga do', 'yaad dila dena' for an activity (e.g. '4:30pm shopping ke liye jana hai iska bhi reminder set kar dena', '2:30pm lunch with friend', '5pm gym jana hai', '8pm movie jana hai'):
+  THIS IS 100% A REMINDER ACTION!
+  You MUST IMMEDIATELY call `create_reminder(title='Shopping', due_time='16:30')`!
+  DO NOT call `find_nearby_places` or `search_web` instead of `create_reminder`! Place discovery is ONLY when the user asks where places/malls are (e.g. 'jodhpur me kaunse mall hain', 'recommend cafes'). If the user mentions an activity with a time to set a reminder, it is STRICTLY `create_reminder`.
+- STRICT BAN ON TEMPLATE PLACEHOLDERS:
+  NEVER EVER output bracketed placeholder text like `[Pehle wali meeting ka time]`, `[time]`, `[insert date]`. If a specific value is unknown, check memory/schedule or ask the user directly in natural conversational words.
 6. Universal Python Code Interpreter: Call execute_python_code for documents (PDF, PPTX, Excel, CSV), charts, or calculations. Created files are sent directly to the user.
 7. Memory & Health: You have direct live access to Memory and Schedule blocks. State values directly; never claim lack of access.
 8. Output Style, Instinct-Grade Tone & Brevity Principle (ZERO OVER-SOLVING):
@@ -376,11 +383,22 @@ async def build_runtime_system_prompt(
         if isinstance(r, dict):
             title = r.get("title", "Reminder")
             d_time = r.get("due_time")
+            dur = int(r.get("duration_minutes") or 30)
         else:
             title = r[1] if len(r) > 1 else "Reminder"
             d_time = r[3] if len(r) > 3 else None
-        time_str = d_time.strftime("%I:%M %p") if hasattr(d_time, "strftime") else (str(d_time) if d_time else "all day")
-        return f"{title} ({time_str})"
+            dur = int(r[5] if len(r) > 5 and r[5] is not None else 30)
+        if d_time and hasattr(d_time, "hour"):
+            st_clk = d_time.strftime("%I:%M %p")
+            end_min = d_time.hour * 60 + d_time.minute + dur
+            end_h = (end_min // 60) % 24
+            end_m = end_min % 60
+            end_dtime = dtime(end_h, end_m)
+            end_clk = end_dtime.strftime("%I:%M %p")
+            return f"{title} ({st_clk} - {end_clk}, {dur}m)"
+        elif d_time:
+            return f"{title} ({str(d_time)})"
+        return f"{title} (all day)"
 
     def _format_cal_event(ev):
         if not isinstance(ev, dict):
@@ -488,10 +506,18 @@ async def build_runtime_system_prompt(
 
 def invalidate_prompt_schedule_cache(chat_id=None):
     """Instantly busts prompt schedule cache so the bot's next turn sees newly created/deleted items immediately."""
-    if hasattr(build_runtime_system_prompt, "_sched_cache"):
-        if chat_id is None:
+    global _UNIFIED_PROMPT_CACHE
+    if chat_id is None:
+        _UNIFIED_PROMPT_CACHE.clear()
+        if hasattr(build_runtime_system_prompt, "_sched_cache"):
             build_runtime_system_prompt._sched_cache.clear()
-        else:
+    else:
+        try:
+            cid_can = db.canonical_chat_id(chat_id)
+            _UNIFIED_PROMPT_CACHE.pop(cid_can, None)
+        except Exception:
+            _UNIFIED_PROMPT_CACHE.clear()
+        if hasattr(build_runtime_system_prompt, "_sched_cache"):
             cid_int = int(chat_id) if str(chat_id).isdigit() else chat_id
             build_runtime_system_prompt._sched_cache = {
                 k: v for k, v in build_runtime_system_prompt._sched_cache.items()

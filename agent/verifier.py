@@ -93,31 +93,44 @@ def deterministic_verify(
         ("email bhej diya", ["send_email"]),
         ("email send kar diya", ["send_email"]),
         ("drive pe upload kar diya", ["upload_drive"]),
-        ("reminder set kar diya", ["create_reminder"]),
-        ("reminder laga diya", ["create_reminder"]),
-        ("reminder save kar diya", ["create_reminder"]),
+        ("reminder set kar diya", ["create_reminder", "update_reminder"]),
+        ("reminder laga diya", ["create_reminder", "update_reminder"]),
+        ("reminder save kar diya", ["create_reminder", "update_reminder"]),
+        ("reminder update kar diya", ["update_reminder", "create_reminder"]),
+        ("reminder shift kar diya", ["update_reminder", "create_reminder"]),
         ("notion pe save kar diya", ["create_notion_page", "update_notion_page", "append_notion_page"]),
         ("notion page bana di", ["create_notion_page", "update_notion_page", "append_notion_page"]),
     ]
     low_reply = draft_reply.lower()
-    for phrase, required_actions in completed_action_phrases:
-        if phrase in low_reply:
-            action_succeeded = any(
-                isinstance(tr, dict) and tr.get("status") in ("success", "ok") and
-                (tr.get("action") in required_actions or tr.get("tool_name") in required_actions or
-                 any(act in str(tr.get("message", "")).lower() for act in required_actions))
-                for tr in tool_results
-            )
-            needs_confirm = any(
-                isinstance(tr, dict) and tr.get("status") == "needs_confirmation"
-                for tr in tool_results
-            )
-            if not action_succeeded:
-                violations.append(f"Claimed action completed without success: '{phrase}'")
-                if needs_confirm:
-                    return False, "Maine details prepare kar li hain. Kya aap confirm karte hain ki ise proceed kar doon? (Reply yes/no)", violations
-                else:
-                    return False, f"Maine koshish ki lekin '{phrase}' complete nahi ho paya. Kripya check karein.", violations
+
+    # If the reply or tool results report a conflict/issue to the user, do not flag as fake success
+    is_reporting_issue_or_conflict = any(
+        isinstance(tr, dict) and tr.get("status") in ("conflict_detected", "error")
+        for tr in tool_results
+    ) or any(
+        cw in low_reply for cw in ("conflict", "clash", "already scheduled", "pehle se", "nahi ho paya", "nahi ho paaya")
+    )
+
+    if not is_reporting_issue_or_conflict:
+        for phrase, required_actions in completed_action_phrases:
+            if phrase in low_reply:
+                action_succeeded = any(
+                    isinstance(tr, dict) and tr.get("status") in ("success", "ok") and
+                    (tr.get("action") in required_actions or tr.get("tool_name") in required_actions or
+                     any(act in str(tr.get("message", "")).lower() for act in required_actions) or
+                     any(act in str(tr).lower() for act in required_actions))
+                    for tr in tool_results
+                )
+                needs_confirm = any(
+                    isinstance(tr, dict) and tr.get("status") == "needs_confirmation"
+                    for tr in tool_results
+                )
+                if not action_succeeded:
+                    violations.append(f"Claimed action completed without success: '{phrase}'")
+                    if needs_confirm:
+                        return False, "Maine details prepare kar li hain. Kya aap confirm karte hain ki ise proceed kar doon? (Reply yes/no)", violations
+                    else:
+                        return False, f"Maine koshish ki lekin '{phrase}' complete nahi ho paya. Kripya check karein.", violations
 
     # 3. Fake GitHub Repositories Check
     if "github" in user_query.lower() or "repo" in user_query.lower():
