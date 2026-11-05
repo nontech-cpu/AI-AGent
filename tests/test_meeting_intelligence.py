@@ -1,3 +1,4 @@
+import os
 import pytest
 from datetime import datetime, date, time
 import zoneinfo
@@ -48,7 +49,8 @@ async def test_pending_action_updates_meeting_time_on_user_reschedule(fixed_now)
     async def mock_say(cid, text):
         sent.append(text)
 
-    with patch("main.say", side_effect=mock_say), \
+    with patch.dict(os.environ, {"AGENT_CORE": "v1"}), \
+         patch("main.say", side_effect=mock_say), \
          patch("main.get_state", return_value=(None, None)), \
          patch("main.has_consent", return_value=True), \
          patch("main.get_persona", return_value="professional"), \
@@ -84,7 +86,8 @@ async def test_ask_for_meet_link_returns_real_link():
     async def mock_say(cid, text):
         sent.append(text)
 
-    with patch("main.say", side_effect=mock_say), \
+    with patch.dict(os.environ, {"AGENT_CORE": "v1"}), \
+         patch("main.say", side_effect=mock_say), \
          patch("main.get_state", return_value=(None, None)), \
          patch("main.has_consent", return_value=True), \
          patch("main.get_persona", return_value="professional"), \
@@ -92,6 +95,7 @@ async def test_ask_for_meet_link_returns_real_link():
          patch("main.set_language"), \
          patch("main.log_chat_message"), \
          patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "test@gmail.com")), \
+         patch("google_services.list_calendar_events", new_callable=AsyncMock, return_value=mock_events), \
          patch("main.google_list_calendar_events", new_callable=AsyncMock, return_value=mock_events):
 
         await handle_user_text(chat_id, "meeting ka link ya de")
@@ -106,7 +110,8 @@ async def test_create_meeting_defaults_title_when_start_iso_is_present():
     async def mock_say(cid, text):
         sent.append(text)
 
-    with patch("main.say", side_effect=mock_say), \
+    with patch.dict(os.environ, {"AGENT_CORE": "v1"}), \
+         patch("main.say", side_effect=mock_say), \
          patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "test@gmail.com")), \
          patch("main.detect_meeting_conflicts", return_value=([], [])):
 

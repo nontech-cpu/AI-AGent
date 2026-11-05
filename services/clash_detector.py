@@ -69,17 +69,28 @@ async def detect_schedule_clash(
             it_time = it.get("due_time") if isinstance(it, dict) else (it[3] if len(it) > 3 else None)
             it_mins = parse_time_to_minutes(it_time)
             if it_mins is not None:
-                # Default reminder window is 30 mins
-                it_end_mins = it_mins + 30
-                if (start_mins < it_end_mins) and (end_mins > it_mins):
+                # Use stored duration_minutes from database (defaults to 30 mins)
+                it_dur = 30
+                if isinstance(it, dict):
+                    it_dur = int(it.get("duration_minutes") or 30)
+                elif len(it) > 5 and it[5] is not None:
+                    try:
+                        it_dur = int(it[5])
+                    except (ValueError, TypeError):
+                        it_dur = 30
+                it_end_mins = it_mins + it_dur
+                # Pure mathematical interval collision: max(s1, s2) < min(e1, e2)
+                if max(start_mins, it_mins) < min(end_mins, it_end_mins):
                     h_s = it_mins // 60
                     m_s = it_mins % 60
+                    h_e = it_end_mins // 60
+                    m_e = it_end_mins % 60
                     return {
                         "has_clash": True,
                         "kind": "reminder",
                         "title": it_title,
                         "time_str": f"{h_s:02d}:{m_s:02d}",
-                        "message": f"Existing task '{it_title}' at {h_s:02d}:{m_s:02d}",
+                        "message": f"Existing task '{it_title}' ({h_s:02d}:{m_s:02d} - {h_e:02d}:{m_e:02d})",
                     }
     except Exception as e:
         logger.warning(f"Error checking reminder clashes: {e}")

@@ -179,4 +179,7 @@ with engine.begin() as conn:
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_memories_subject_entity ON memories(subject_entity_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories USING hnsw (embedding vector_cosine_ops)"))
 
-print("All tables including entities, entity_aliases, and memories created successfully!")
+    # 11. Ensure memory_items has numeric duration_minutes column
+    conn.execute(text("ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS duration_minutes INTEGER DEFAULT 30"))
+
+print("All tables including entities, entity_aliases, memories, and duration_minutes column verified successfully!")

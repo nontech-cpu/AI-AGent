@@ -162,41 +162,39 @@ INTENT_WORDS = {
 }
 
 def detect_explicit_language_switch(text: str) -> Optional[str]:
+    """
+    Pure semantic token/string parsing for explicit language switches. Zero brittle regexes.
+    Handles 'talk to me in english', 'english me bolo', 'english nahi hinglish', 'german me baat karo'.
+    """
     t = text.strip().lower()
+    tokens = [w.strip(".,!?:;'\"()[]{}") for w in t.split()]
+    tokens = [w for w in tokens if w]
+    if not tokens:
+        return None
 
-    # 1. Contrastive: 'X nahi Y' or 'not X, Y' (e.g. 'english nhi hinglish', 'merse hinglsih m baat kro english m nhi')
-    contrast = re.search(r'\b([a-z]{3,15})\s+(?:me\s+|m\s+)?(?:nahi|nhi|na|not|mat|chhod\s+ke|ke\s+alawa)\s+(?:balki\s+|par\s+|sirf\s+)?([a-z]{3,15})\b', t)
-    if contrast:
-        rej, sel = contrast.groups()
-        if sel in ALIAS_TO_CANONICAL:
-            return ALIAS_TO_CANONICAL[sel]
+    negation_words = {"nahi", "nhi", "na", "not", "mat", "dont", "never", "chhod", "bina"}
 
-    # 2. Dynamic patterns: "talk to me in X", "speak in X", "X me baat karo", "X me bolo"
-    dyn_match = re.search(r'\b(?:talk|tlak|speak|spek|chat|write|continue)\s+(?:to\s+me\s+)?(?:the\s+)?(?:in|ign)\s+([a-z]{3,15})\b', t)
-    if dyn_match:
-        cand = dyn_match.group(1)
-        canon = ALIAS_TO_CANONICAL.get(cand, cand)
-        return canon
+    # 1. Check for contrastive: 'X nahi Y' or 'not X, Y'
+    for i in range(len(tokens) - 1):
+        if tokens[i] in ALIAS_TO_CANONICAL:
+            # Check if next word is negation followed by another language
+            if i + 2 < len(tokens) and tokens[i+1] in negation_words and tokens[i+2] in ALIAS_TO_CANONICAL:
+                return ALIAS_TO_CANONICAL[tokens[i+2]]
 
-    dyn_match_hi = re.search(r'\b([a-z]{3,15})\s+(?:me|mein|m)\s+(?:baat|bat|bolo|bol|likho)\b', t)
-    if dyn_match_hi:
-        cand = dyn_match_hi.group(1)
-        canon = ALIAS_TO_CANONICAL.get(cand, cand)
-        return canon
-
-    # 3. Check for negated languages vs preferred languages
+    # 2. Check general language mentions with intent words
     found_langs = []
-    for word in re.findall(r'\b[a-z]{3,15}\b', t):
-        if word in ALIAS_TO_CANONICAL:
-            canon = ALIAS_TO_CANONICAL[word]
-            if canon not in [l[0] for l in found_langs]:
-                is_neg = bool(re.search(rf'\b{word}\s+(?:me\s+|m\s+)?(?:nahi|nhi|na|not|mat)\b', t)) or bool(re.search(rf'\b(?:mat|dont|never)\s+{word}\b', t))
-                found_langs.append((canon, is_neg))
+    for idx, tok in enumerate(tokens):
+        if tok in ALIAS_TO_CANONICAL:
+            canon = ALIAS_TO_CANONICAL[tok]
+            prev_toks = set(tokens[max(0, idx - 2):idx])
+            next_toks = set(tokens[idx + 1:min(len(tokens), idx + 3)])
+            is_neg = bool((prev_toks | next_toks) & negation_words)
+            found_langs.append((canon, is_neg))
 
     if found_langs:
         non_neg = [canon for canon, neg in found_langs if not neg]
         if non_neg:
-            has_intent = any(w in t.split() for w in INTENT_WORDS) or len(t.split()) <= 6
+            has_intent = any(w in tokens for w in INTENT_WORDS) or len(tokens) <= 6
             if has_intent:
                 return non_neg[-1]
 
@@ -1015,20 +1013,24 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             if not any(w in final_reply.lower() for w in ("conflict", "clash", "already", "pehle se", "booked")):
                 final_reply += f"\n\n{cw} Kya aap iska time aage-peeche karna chahenge?"
 
-    # Proactive Confirmation Capture: If the assistant asked confirmation for an action,
-    # arm it in the deterministic pending state machine so "yes" executes immediately.
-    if not pending_action and ("?" in final_reply) and any(w in final_reply.lower() for w in ("confirm", "delete", "hata doon", "hata dein", "hata du", "remove")):
-        m_title = re.search(r"['\"]([^'\"]+)['\"]\s+(?:reminder|ko|ka|scheduled)", final_reply, re.I)
-        if m_title:
-            p_title = m_title.group(1).strip()
-            payload_del = {
-                "kind": "delete_reminder",
-                "action": "delete_reminder",
-                "title": p_title,
-                "created_at": datetime.now(IST).isoformat()
-            }
-            save_pending_action(chat_id, "delete_reminder", payload_del)
-            pending_action = payload_del
+    # Structured Confirmation Capture: If a conflict was detected or action requested confirmation,
+    # arm it in the deterministic pending state machine directly from structured tool results.
+    if not pending_action:
+        for tr in tool_results_list:
+            if isinstance(tr, dict) and tr.get("status") == "conflict_detected":
+                c_title = tr.get("title") or "Meeting"
+                payload_conf = {
+                    "kind": "create_reminder",
+                    "action": "create_reminder",
+                    "title": c_title,
+                    "due_time": tr.get("due_time"),
+                    "due_date": tr.get("due_date"),
+                    "force": True,
+                    "created_at": datetime.now(IST).isoformat()
+                }
+                save_pending_action(chat_id, "create_reminder", payload_conf)
+                pending_action = payload_conf
+                break
 
     # Phase 3 & 4: Zero-Unsupported-Claims Grounding Verifier Pass
     should_run_verifier = (

@@ -3,7 +3,6 @@ PeculiarAI Interval Schedule Engine (Phase 4)
 Precise temporal arithmetic, duration heuristics, travel buffers,
 and timezone-safe IST overlap detection.
 """
-import re
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date, time as dtime, timedelta
@@ -131,29 +130,24 @@ def normalize_to_ist(dt_input: Any, target_tz=None) -> datetime:
 def parse_activity_duration(activity_type: Optional[str] = None, text_content: Optional[str] = None) -> int:
     """
     Determines duration in minutes from activity keyword or explicit text.
-    '2 ghante movie' -> 120 min
-    '3 hours' -> 180 min
-    'movie' -> 180 min
+    Pure string/token parsing, zero regex.
     """
     combined = f"{activity_type or ''} {text_content or ''}".lower()
+    tokens = [w.strip(".,!?:;()") for w in combined.split()]
 
-    # 1. Explicit hour mention
-    hr_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|ghante?)', combined)
-    if hr_match:
-        try:
-            return int(float(hr_match.group(1)) * 60)
-        except Exception:
-            pass
+    for idx, tok in enumerate(tokens):
+        next_tok = tokens[idx + 1] if idx + 1 < len(tokens) else ""
+        if next_tok in ("hour", "hours", "hr", "hrs", "ghante", "ghanta"):
+            try:
+                return int(float(tok) * 60)
+            except ValueError:
+                pass
+        if next_tok in ("min", "mins", "minute", "minutes", "minut"):
+            try:
+                return int(tok)
+            except ValueError:
+                pass
 
-    # 2. Explicit minute mention
-    min_match = re.search(r'(\d+)\s*(?:mins?|minutes?|minut)', combined)
-    if min_match:
-        try:
-            return int(min_match.group(1))
-        except Exception:
-            pass
-
-    # 3. Known activity type heuristics
     for act, dur in ACTIVITY_DURATIONS.items():
         if act in combined:
             return dur
@@ -162,14 +156,21 @@ def parse_activity_duration(activity_type: Optional[str] = None, text_content: O
 
 
 def parse_clock_time_ist(time_str: str, target_d: date) -> datetime:
-    """Parses '5 PM', '17:00', '5:30 pm' into IST datetime for target_d."""
+    """Parses '5 PM', '17:00', '5:30 pm' into IST datetime for target_d using pure string parsing."""
     clean = time_str.strip().lower()
     is_pm = "pm" in clean
     is_am = "am" in clean
-    numbers = re.findall(r'\d+', clean)
 
-    hour = int(numbers[0]) if numbers else 17
-    minute = int(numbers[1]) if len(numbers) > 1 else 0
+    if ":" in clean:
+        parts = clean.split(":")
+        h_part = "".join(c for c in parts[0] if c.isdigit())
+        m_part = "".join(c for c in parts[1][:2] if c.isdigit())
+        hour = int(h_part) if h_part else 17
+        minute = int(m_part) if m_part else 0
+    else:
+        digits = "".join(c for c in clean if c.isdigit())
+        hour = int(digits) if digits else 17
+        minute = 0
 
     if is_pm and hour < 12:
         hour += 12

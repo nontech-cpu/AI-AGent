@@ -119,8 +119,8 @@ def check_repeat_guard(chat_id: int, candidate_reply: str, user_text: str = "") 
                 is_repeat = True
 
         if is_repeat:
-            # Action/reminder confirmations must NEVER be hijacked by canned chitchat fallbacks
-            if any(k in c_clean.lower() for k in ("done", "reminder", "meeting", "shift kar diya", "set kar diya", "delete", "scheduled", "✅")):
+            # Action/reminder confirmations or real responses must NEVER be hijacked by canned fallbacks
+            if any(k in c_clean.lower() for k in ("done", "reminder", "meeting", "shift kar diya", "set kar diya", "delete", "scheduled", "conflict", "clash", "✅")):
                 return candidate_reply
 
             is_casual = any(w in u_clean for w in (
@@ -129,8 +129,8 @@ def check_repeat_guard(chat_id: int, candidate_reply: str, user_text: str = "") 
             ))
             if is_casual:
                 return "Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch plan hai aaj ka ya koi specific kaam?"
-            else:
-                return "Bataiye bhai, isme aur koi specific detail dekhni hai ya koi naya topic explore karein?"
+            # Preserve original reply if no casual greeting matched
+            return candidate_reply
     except Exception as e:
         print("check_repeat_guard exception:", repr(e))
 

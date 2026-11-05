@@ -4,7 +4,6 @@ Provides continuous interval-based temporal reasoning (spans with start and end 
 midnight rollover continuity, pre-action common-sense physical feasibility checks,
 and anti-sycophantic grounded timeline blocks for frontier-grade agentic intelligence.
 """
-import re
 import logging
 from datetime import datetime, date, timedelta, time as dtime
 from typing import List, Dict, Any, Optional
@@ -82,20 +81,26 @@ def estimate_event_duration(title: str, kind: str = "general", route_or_summary:
     Used to construct continuous spans for World Model conflict detection.
     """
     t_low = (title + " " + route_or_summary).lower()
+    tokens = [w.strip(".,!?:;()") for w in t_low.split()]
 
-    # Explicit duration stated in title or summary
-    m_hour = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:hour|hr|ghante|ghanta)\b', t_low)
-    if m_hour:
-        return float(m_hour.group(1))
-    if re.search(r'\b(?:one|1)\s*(?:hour|hr|ghanta)\b', t_low):
-        return 1.0
-    if re.search(r'\b(?:two|2)\s*(?:hours|hrs|ghante)\b', t_low):
-        return 2.0
-    if re.search(r'\b(?:half\s*an?\s*hour|30\s*(?:min|mins|minute|minutes))\b', t_low):
+    # Explicit duration stated in title or summary (pure token parsing)
+    if "half" in tokens and any(h in tokens for h in ("hour", "hr", "ghanta")):
         return 0.5
-    m_min = re.search(r'\b(\d+)\s*(?:min|mins|minute|minutes)\b', t_low)
-    if m_min:
-        return float(m_min.group(1)) / 60.0
+
+    for idx, tok in enumerate(tokens):
+        next_tok = tokens[idx + 1] if idx + 1 < len(tokens) else ""
+        if next_tok in ("hour", "hours", "hr", "hrs", "ghante", "ghanta"):
+            if tok in ("one", "1", "a"):
+                return 1.0
+            if tok in ("two", "2"):
+                return 2.0
+            try:
+                return float(tok)
+            except ValueError:
+                pass
+        if next_tok in ("min", "mins", "minute", "minutes"):
+            if tok.isdigit():
+                return float(tok) / 60.0
 
     # 1. Travel: Flights
     if kind == "flight" or any(k in t_low for k in ("flight", "airline", "indigo", "air india", "vistara", "spicejet", "akasa", "airport", "boarding pass")):
@@ -184,17 +189,19 @@ def get_user_timeline_spans(
             f_text = f.get("fact", "")
             if not any(k in f_text.lower() for k in ("booking/ticket:", "ticket:", "pnr:", "route:")):
                 continue
-            date_m = re.search(r"(?:date|travel date)[:\s]+([^|]+)", f_text, re.I)
-            if not date_m:
+            fields = {}
+            for part in f_text.split("|"):
+                if ":" in part:
+                    k_name, v_val = part.split(":", 1)
+                    fields[k_name.strip().lower()] = v_val.strip()
+            raw_dt_str = fields.get("travel date") or fields.get("date")
+            if not raw_dt_str:
                 continue
-            raw_dt_str = date_m.group(1).strip()
             parsed_dt = parse_datetime_flexible(raw_dt_str)
             if not parsed_dt or not (start_window <= parsed_dt <= end_window):
                 continue
-            carrier_m = re.search(r"(?:booking/ticket|provider|service)[:\s]+([^|]+)", f_text, re.I)
-            route_m = re.search(r"route[:\s]+([^|]+)", f_text, re.I)
-            c_title = carrier_m.group(1).strip() if carrier_m else "Travel Journey"
-            route_str = route_m.group(1).strip() if route_m else ""
+            c_title = fields.get("booking/ticket") or fields.get("provider") or fields.get("service") or fields.get("ticket") or "Travel Journey"
+            route_str = fields.get("route") or ""
             t_kind = "bus" if "bus" in f_text.lower() or "travels" in c_title.lower() else ("flight" if "flight" in f_text.lower() else "train")
             dur = estimate_event_duration(c_title, t_kind, route_str + " " + f_text)
             span_end = parsed_dt + timedelta(hours=dur)
@@ -222,11 +229,13 @@ def get_user_timeline_spans(
                 i_cat = it.get("category", "")
                 i_time = it.get("due_time")
                 i_date = it.get("due_date")
+                i_dur_mins = it.get("duration_minutes")
             else:
                 i_cat = it[0] if len(it) > 0 else ""
                 i_title = it[1] if len(it) > 1 else ""
                 i_time = it[3] if len(it) > 3 else None
                 i_date = it[4] if len(it) > 4 else None
+                i_dur_mins = it[6] if len(it) > 6 else None
 
             if not i_time or not i_date:
                 continue
@@ -236,7 +245,11 @@ def get_user_timeline_spans(
                 i_h = i_time.hour if hasattr(i_time, "hour") else int(str(i_time).split(":")[0])
                 i_m = i_time.minute if hasattr(i_time, "minute") else int(str(i_time).split(":")[1])
                 s_dt = datetime.combine(i_date, dtime(i_h, i_m), tzinfo=IST)
-                dur = estimate_event_duration(i_title, i_cat)
+                # Prioritize exact numeric duration stored in database over heuristics
+                if i_dur_mins and int(i_dur_mins) > 0:
+                    dur = float(i_dur_mins) / 60.0
+                else:
+                    dur = estimate_event_duration(i_title, i_cat)
                 e_dt = s_dt + timedelta(hours=dur)
                 key = f"{s_dt.isoformat()}_{i_title}"
                 if key not in seen_keys:

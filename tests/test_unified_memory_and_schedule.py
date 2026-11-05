@@ -97,6 +97,8 @@ async def test_show_range_free_query_when_completely_free():
 
 @pytest.mark.asyncio
 async def test_detect_meeting_conflicts_google_calendar():
+    from main import _UNIFIED_SCHED_CACHE
+    _UNIFIED_SCHED_CACHE.clear()
     chat_id = 999999
     start_iso = "2026-10-27T17:00:00+05:30"
 

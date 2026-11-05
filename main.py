@@ -2447,26 +2447,27 @@ def _get_chat_lock(cid: int) -> asyncio.Lock:
 
 async def handle_active(chat_id, text):
     # Feature Flag: AGENT_CORE=v2 (Pure Native Tool-Calling Agent Loop)
-    async with _get_chat_lock(chat_id):
-        try:
-            from agent.loop import run_agent_turn
-            res = await run_agent_turn(chat_id, text, channel="telegram")
-            await say(chat_id, res["reply"])
-            return
-        except Exception as exc:
-            import traceback
-            tb_str = traceback.format_exc()
-            logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}\n{tb_str}")
-            clean_l = (text or "").strip().lower()
-            if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
-                from db import get_user_display_name
-                u_name = get_user_display_name(chat_id)
-                prefix = f"Hey {u_name}!" if u_name else "Hey!"
-                fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
-            else:
-                fallback_msg = "Haanji, network mein thoda fluctuation ho gaya tha. Ek baar dobara bataenge?"
-            await say(chat_id, fallback_msg)
-            return
+    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
+        async with _get_chat_lock(chat_id):
+            try:
+                from agent.loop import run_agent_turn
+                res = await run_agent_turn(chat_id, text, channel="telegram")
+                await say(chat_id, res["reply"])
+                return
+            except Exception as exc:
+                import traceback
+                tb_str = traceback.format_exc()
+                logging.getLogger("uvicorn").error(f"Agent turn error for {chat_id}: {repr(exc)}\n{tb_str}")
+                clean_l = (text or "").strip().lower()
+                if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
+                    from db import get_user_display_name
+                    u_name = get_user_display_name(chat_id)
+                    prefix = f"Hey {u_name}!" if u_name else "Hey!"
+                    fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
+                else:
+                    fallback_msg = "Haanji, network mein thoda fluctuation ho gaya tha. Ek baar dobara bataenge?"
+                await say(chat_id, fallback_msg)
+                return
 
     # Fast local response for greetings & acknowledgments in legacy v1 mode
     if re.fullmatch(r"\s*(hi+|hello+|heello+|hey+|hlo+|hii+|namaste|namaskar|salam|salaam|adaab|good morning|good evening|good afternoon)[!. ]*\s*", text, re.I):

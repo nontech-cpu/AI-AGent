@@ -4,7 +4,6 @@ All tools validated with Pydantic models. All tool execution functions are async
 Write actions implement the Two-Phase Confirmation Gate (return needs_confirmation).
 """
 import os
-import re
 import json
 import logging
 from typing import Any, Optional, List, Dict
@@ -29,42 +28,81 @@ async def _resolve_user_timezone(chat_id: int):
         return IST, "Asia/Kolkata"
 
 def _extract_time_from_text(text: str) -> Optional[dtime]:
-    """Safely parses natural language 12h/24h time strings from text (e.g. '11pm' -> 23:00, '10:30pm' -> 22:30, '3 baje' -> 15:00)."""
+    """Safely parses 12h/24h time strings from text without brittle regexes."""
     if not text:
         return None
-    t_clean = text.lower()
-    # 1. Matches "11pm", "11:30 pm", "10:30am", "10.30 pm", "11:00pm", "11 pm"
-    m_ampm = re.search(r'\b(1[0-2]|0?[1-9])(?::|\.)?([0-5]\d)?\s*(am|pm)\b', t_clean)
-    if m_ampm:
-        h = int(m_ampm.group(1))
-        m = int(m_ampm.group(2)) if m_ampm.group(2) else 0
-        ampm = m_ampm.group(3)
-        if ampm == "pm" and h != 12:
-            h += 12
-        elif ampm == "am" and h == 12:
-            h = 0
-        return dtime(h, m)
-    # 2. Matches "3 baje", "10 baje", "10:30 baje", "5 bje"
-    m_baje = re.search(r'\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(?:baje|bje)\b', t_clean)
-    if m_baje:
-        h = int(m_baje.group(1))
-        m = int(m_baje.group(2)) if m_baje.group(2) else 0
-        if any(w in t_clean for w in ("shaam", "raat", "night", "dophar", "evening", "afternoon")) and h < 12:
-            h += 12
-        return dtime(h, m)
-    # 3. Matches explicit 24h or HH:MM like "23:00", "10:30"
-    m_colon = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', t_clean)
-    if m_colon:
-        h = int(m_colon.group(1))
-        m = int(m_colon.group(2))
-        if any(w in t_clean for w in ("shaam", "raat", "night", "evening")) and h < 12:
-            h += 12
-        return dtime(h, m)
+    tokens = text.lower().replace(".", ":").split()
+    is_pm_hint = any(w in tokens for w in ("pm", "shaam", "sham", "raat", "night", "dophar", "evening", "afternoon"))
+    is_am_hint = any(w in tokens for w in ("am", "subah", "subha", "morning"))
+
+    for tok in tokens:
+        clean_tok = tok.strip(" ,.!?")
+        if ":" in clean_tok:
+            parts = clean_tok.split(":")
+            h_part = "".join(c for c in parts[0] if c.isdigit())
+            m_part = "".join(c for c in parts[1][:2] if c.isdigit())
+            if h_part:
+                h = int(h_part)
+                m = int(m_part) if m_part else 0
+                if "pm" in clean_tok or (is_pm_hint and h < 12):
+                    if h != 12:
+                        h += 12
+                elif "am" in clean_tok or (is_am_hint and h == 12):
+                    h = 0
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    return dtime(h, m)
+
+    for idx, tok in enumerate(tokens):
+        clean_tok = tok.strip(" ,.!?")
+        digits = "".join(c for c in clean_tok if c.isdigit())
+        if digits and digits.isdigit():
+            val = int(digits)
+            if 1 <= val <= 23:
+                next_tok = tokens[idx + 1] if idx + 1 < len(tokens) else ""
+                has_pm = "pm" in clean_tok or (next_tok in ("pm", "baje", "bje") and is_pm_hint)
+                has_am = "am" in clean_tok or (next_tok in ("am",)) or (next_tok in ("baje", "bje") and is_am_hint)
+                has_baje = "baje" in clean_tok or "bje" in clean_tok or next_tok in ("baje", "bje")
+
+                if has_pm or (has_baje and is_pm_hint):
+                    if val < 12:
+                        val += 12
+                elif has_am:
+                    if val == 12:
+                        val = 0
+                elif has_baje and 1 <= val <= 7:
+                    val += 12
+
+                if 0 <= val <= 23:
+                    return dtime(val, 0)
     return None
 
 # -------------------------------------------------------------
 # 1. Pydantic Tool Argument Schemas
 # -------------------------------------------------------------
+
+
+def _get_row_val(r: Any, key: str, idx: Optional[int] = None, default: Any = None) -> Any:
+    if r is None:
+        return default
+    if isinstance(r, dict):
+        return r.get(key, default)
+    if hasattr(r, "_mapping"):
+        try:
+            val = r._mapping.get(key)
+            return val if val is not None else default
+        except Exception:
+            pass
+    if idx is not None:
+        try:
+            if len(r) > idx and r[idx] is not None:
+                return r[idx]
+        except Exception:
+            pass
+    try:
+        val = getattr(r, key, default)
+        return val if val is not None else default
+    except Exception:
+        return default
 
 class SearchMemoryArgs(BaseModel):
     query: str = Field(..., description="Keywords or topic to search across user memories and past conversations.")
@@ -147,11 +185,20 @@ class CreateReminderArgs(BaseModel):
     recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily' (for roj, daily, har din, jbtk m na khu), 'weekly', or 'none'.")
     force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict or tight schedule.")
 
+class UpdateReminderArgs(BaseModel):
+    title: Optional[str] = Field(None, description="Title or keyword of the reminder, meeting, or task to update.")
+    reminder_id: Optional[int] = Field(None, description="ID of the reminder if known.")
+    due_date: Optional[str] = Field(None, description="Updated date in YYYY-MM-DD format if date is being changed.")
+    due_time: Optional[str] = Field(None, description="Updated time in 24-hour HH:MM format if time is being changed.")
+    duration_minutes: Optional[int] = Field(None, description="Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins).")
+    force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
+
 class ListRemindersArgs(BaseModel):
     date_str: Optional[str] = Field(None, description="Optional date filter in YYYY-MM-DD format.")
 
 class DeleteReminderArgs(BaseModel):
-    reminder_id: int = Field(..., description="The ID of the reminder to delete.")
+    title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
+    reminder_id: Optional[int] = Field(None, description="The ID of the reminder to delete if known.")
 
 class GetScheduleArgs(BaseModel):
     target_date: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. Defaults to today IST.")
@@ -583,6 +630,28 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "update_reminder",
+            "description": (
+                "Update or reschedule an existing reminder, meeting, or event (e.g. updating duration, time, or date). "
+                "Use when user says 'meeting 1 hour ki hai', 'meeting ko 3pm shift kar do', 'meeting duration 60 mins kar do'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": ["string", "null"], "description": "Title or keyword of the reminder or meeting to update (e.g. 'Meeting')."},
+                    "reminder_id": {"type": ["integer", "null"], "description": "ID of the reminder if known."},
+                    "due_date": {"type": ["string", "null"], "description": "Updated date in YYYY-MM-DD format if date is being changed."},
+                    "due_time": {"type": ["string", "null"], "description": "Updated time in 24-hour HH:MM format if time is being changed."},
+                    "duration_minutes": {"type": ["integer", "null"], "description": "Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins)."},
+                    "force": {"type": ["boolean", "null"], "description": "Set to true to force update even if a time conflict exists."}
+                }
+            }
+        }
+    },
+    
+    {
+        "type": "function",
+        "function": {
             "name": "delete_reminder",
             "description": "Delete or cancel a saved reminder, meeting, or task by title keyword or ID. Use ONLY when explicitly asked to delete/cancel.",
             "parameters": {
@@ -594,7 +663,8 @@ TOOL_DEFINITIONS = [
                 "required": ["title"]
             }
         }
-    },{
+    },
+    {
         "type": "function",
         "function": {
             "name": "list_reminders",
@@ -1772,20 +1842,176 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 "message": f"Smart packing list '{list_name}' created with {len(args.items)} items."
             }
 
-        elif tool_name in ("create_reminder", "update_reminder", "add_reminder"):
+        elif tool_name == "update_reminder":
+            args = UpdateReminderArgs(**arguments)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            today_d = datetime.now(u_tz).date()
+
+            target_kw = (args.title or "").strip().lower()
+            rem_id = args.reminder_id
+
+            # Find matching item from DB
+            matched_row = None
+            if rem_id:
+                with db.engine.connect() as conn:
+                    row = conn.execute(
+                        db.text("SELECT id, title, due_date, due_time, COALESCE(duration_minutes, 30) AS duration_minutes FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
+                        {"id": rem_id, "c": chat_id}
+                    ).mappings().first()
+                    if row:
+                        matched_row = dict(row)
+            elif target_kw:
+                # Search today's items first, then upcoming 7 days
+                existing_items = db.items_for_date(chat_id, today_d)
+                for r in existing_items:
+                    r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
+                    if target_kw == r_title or target_kw in r_title or r_title in target_kw:
+                        matched_row = r
+                        break
+                if not matched_row:
+                    range_items = db.items_for_date_range(chat_id, today_d, today_d + timedelta(days=7))
+                    for r in range_items:
+                        r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
+                        if target_kw == r_title or target_kw in r_title or r_title in target_kw:
+                            matched_row = r
+                            break
+
+            if not matched_row:
+                return {
+                    "status": "error",
+                    "message": f"Aapka '{args.title or 'item'}' se related koi active reminder nahi mila jise update kiya ja sake."
+                }
+
+            row_id = _get_row_val(matched_row, "id", 4)
+            orig_title = _get_row_val(matched_row, "title", 1, "")
+            curr_date = _get_row_val(matched_row, "due_date", 6, today_d) or today_d
+            curr_time = _get_row_val(matched_row, "due_time", 3)
+            curr_dur = _get_row_val(matched_row, "duration_minutes", 5, 30)
+
+            new_title = (args.title or orig_title).strip()
+            new_date = date.fromisoformat(args.due_date) if args.due_date else curr_date
+            if isinstance(new_date, str):
+                new_date = date.fromisoformat(new_date)
+
+            new_time = curr_time
+            if args.due_time:
+                h, m = map(int, args.due_time.split(":")[:2])
+                new_time = dtime(h, m)
+            elif isinstance(new_time, str):
+                parts = list(map(int, new_time.split(":")[:2]))
+                new_time = dtime(parts[0], parts[1])
+
+            new_dur = int(args.duration_minutes) if args.duration_minutes is not None else int(curr_dur)
+
+            # Mathematical Collision Check
+            conflicts = []
+            if new_time and not args.force:
+                cand_start = new_time.hour * 60 + new_time.minute
+                cand_end = cand_start + new_dur
+
+                day_items = db.items_for_date(chat_id, new_date)
+                for r in day_items:
+                    if _get_row_val(r, "id", 4) == row_id:
+                        continue
+                    r_tm = _get_row_val(r, "due_time", 3)
+                    if not r_tm:
+                        continue
+                    r_h = r_tm.hour if hasattr(r_tm, "hour") else int(str(r_tm).split(":")[0])
+                    r_m = r_tm.minute if hasattr(r_tm, "minute") else int(str(r_tm).split(":")[1])
+                    r_dur = int(_get_row_val(r, "duration_minutes", 5, 30) or 30)
+                    ex_start = r_h * 60 + r_m
+                    ex_end = ex_start + r_dur
+
+                    # Pure mathematical interval collision: max(s1, s2) < min(e1, e2)
+                    if max(cand_start, ex_start) < min(cand_end, ex_end):
+                        r_title = _get_row_val(r, "title", 1, "Existing task")
+                        h_end = ex_end // 60
+                        m_end = ex_end % 60
+                        conflicts.append(f"'{r_title}' ({r_h:02d}:{r_m:02d} - {h_end:02d}:{m_end:02d})")
+
+                # Also check Google Calendar
+                try:
+                    from main import get_unified_schedule
+                    sched = await get_unified_schedule(chat_id, new_date)
+                    for ev in sched.get("calendar_events", []):
+                        raw_start = ev.get("start", {}).get("dateTime")
+                        if raw_start:
+                            ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
+                            ev_raw_end = ev.get("end", {}).get("dateTime")
+                            ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
+                            ev_summ = (ev.get("summary") or "").strip()
+                            clean_ev = ev_summ.replace("🔔", "").replace("⏰", "").strip().lower()
+                            if clean_ev == orig_title.lower() or orig_title.lower() in clean_ev:
+                                continue
+                            ev_s = ev_dt.hour * 60 + ev_dt.minute
+                            ev_e = ev_end_dt.hour * 60 + ev_end_dt.minute
+                            if max(cand_start, ev_s) < min(cand_end, ev_e):
+                                conflicts.append(f"Calendar Event '{ev_summ}' ({ev_dt.strftime('%I:%M %p')} - {ev_end_dt.strftime('%I:%M %p')})")
+                except Exception:
+                    pass
+
+            if conflicts and not args.force:
+                time_disp = new_time.strftime("%I:%M %p") if new_time else "specified time"
+                return {
+                    "status": "conflict_detected",
+                    "has_conflict": True,
+                    "conflict_type": "direct_overlap",
+                    "conflicts": conflicts,
+                    "title": new_title,
+                    "due_date": new_date.isoformat(),
+                    "due_time": args.due_time or (new_time.strftime("%H:%M") if new_time else None),
+                    "duration_minutes": new_dur,
+                    "message": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai. Kya aap confirm karna chahenge ya iska time change karna hai?"
+                }
+
+            # Update database cleanly
+            db.update_memory_item_full(chat_id, row_id, title=new_title, due_date=new_date, due_time=new_time, duration_minutes=new_dur)
+
+            # Rebuild reminders
+            try:
+                from timing import build_plan
+                from db import add_reminders
+                with db.engine.begin() as conn:
+                    conn.execute(db.text("DELETE FROM reminders WHERE item_id = :id"), {"id": row_id})
+                if new_date and new_time:
+                    plan = build_plan(new_date, new_time)
+                    if plan.get("reminders"):
+                        add_reminders(row_id, plan["reminders"])
+            except Exception:
+                pass
+
+            time_str = new_time.strftime("%I:%M %p") if new_time else "specified time"
+            date_str = new_date.strftime("%d %b %Y") if new_date else "specified date"
+            return {
+                "status": "success",
+                "title": new_title,
+                "due_date": new_date.isoformat(),
+                "due_time": new_time.strftime("%H:%M") if new_time else None,
+                "duration_minutes": new_dur,
+                "rescheduled": True,
+                "conflicts": conflicts,
+                "has_conflict": len(conflicts) > 0,
+                "message": f"Done! '{new_title}' ka reminder {date_str} ko {time_str} ({new_dur} min duration) ke liye update kar diya hai."
+            }
+
+        elif tool_name in ("create_reminder", "add_reminder"):
             args = CreateReminderArgs(**arguments)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            today_d = datetime.now(u_tz).date()
+
+            # Date resolution
             if not args.due_date:
-                u_tz, _ = await _resolve_user_timezone(chat_id)
-                d_val = datetime.now(u_tz).date()
+                d_val = today_d
                 args.due_date = d_val.isoformat()
             else:
                 d_val = date.fromisoformat(args.due_date)
+
+            # Time resolution
             t_val = None
             if args.due_time:
                 h, m = map(int, args.due_time.split(":")[:2])
                 t_val = dtime(h, m)
             else:
-                # Fallback: check if time was specified in args.title or user_context
                 fallback_text = (args.title or "")
                 if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
                     fallback_text += " " + user_context["user_text"]
@@ -1793,362 +2019,160 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 if extracted_tm:
                     t_val = extracted_tm
                     args.due_time = f"{t_val.hour:02d}:{t_val.minute:02d}"
-                    logger.info(f"Auto-extracted missing due_time for '{args.title}': {args.due_time}")
 
-            if not args.duration_minutes:
-                # Check if duration was mentioned in user_text or title (e.g. "1 hour", "30 min")
-                fallback_dur_text = (args.title or "")
-                if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
-                    fallback_dur_text += " " + user_context["user_text"]
-                m_hour = re.search(r'\b(\d+(?:\.\d+)?)\s*(?:hour|hr|ghante|ghanta)\b', fallback_dur_text.lower())
-                m_min = re.search(r'\b(\d+)\s*(?:min|mins|minute|minutes)\b', fallback_dur_text.lower())
-                if m_hour:
-                    args.duration_minutes = int(float(m_hour.group(1)) * 60)
-                elif m_min:
-                    args.duration_minutes = int(m_min.group(1))
+            dur_mins = int(args.duration_minutes) if args.duration_minutes else 30
 
-            # Check if this is a reschedule / time update for an existing reminder on this date
-            stop_kw = {"meeting", "reminder", "call", "task", "with", "ke", "saath", "ko", "time", "aaj", "kal", "par", "pe", "hour", "hr", "duration", "min", "mins", "minute", "minutes"}
-            arg_tokens = set(re.findall(r'[a-zA-Z0-9]+', args.title.lower())) - stop_kw
-            dur_strip = r'\b(?:\d+(?:\.\d+)?\s*(?:hour|hr|ghante|ghanta|min|mins|minute|minutes)|one\s*hour|duration)\b'
-
+            # Check if this is an update to an existing reminder on this date with matching title
             existing_items = db.items_for_date(chat_id, d_val)
-            matched_existing_ids = []
+            clean_title = args.title.strip()
+            target_low = clean_title.lower()
+            matched_id = None
+            for r in existing_items:
+                r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
+                if target_low == r_title or (len(target_low) >= 3 and target_low in r_title) or (len(r_title) >= 3 and r_title in target_low):
+                    matched_id = _get_row_val(r, "id", 4)
+                    break
 
-            clean_arg = re.sub(r'[^a-zA-Z0-9 ]+', '', args.title.lower()).strip()
-            clean_arg_base = re.sub(dur_strip, '', clean_arg).strip()
-            clean_arg_base = re.sub(r'\s+', ' ', clean_arg_base)
-
-            for row in existing_items:
-                row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
-                row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
-                clean_row = re.sub(r'[^a-zA-Z0-9 ]+', '', row_title.lower()).strip()
-                clean_row_base = re.sub(dur_strip, '', clean_row).strip()
-                clean_row_base = re.sub(r'\s+', ' ', clean_row_base)
-                row_tokens = set(re.findall(r'[a-zA-Z0-9]+', row_title.lower())) - stop_kw
-
-                # Match if identical, or identical root base (ignoring duration suffix), or substantive token match
-                if clean_arg_base and clean_row_base and (clean_arg_base == clean_row_base or clean_arg_base in clean_row_base or clean_row_base in clean_arg_base):
-                    matched_existing_ids.append((row_id, row_title))
-                elif clean_arg == clean_row or (arg_tokens and row_tokens and arg_tokens == row_tokens):
-                    matched_existing_ids.append((row_id, row_title))
-
-            matched_id_set = {mid for mid, _ in matched_existing_ids if mid is not None}
-
-            # If this is a duration or title update and time was omitted, inherit existing item's due_time
-            if matched_existing_ids and not t_val:
-                for row in existing_items:
-                    r_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
-                    if r_id == matched_existing_ids[0][0]:
-                        r_tm = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
-                        if r_tm:
-                            if hasattr(r_tm, "hour"):
-                                t_val = r_tm
-                            else:
-                                rh, rm = map(int, str(r_tm).split(":")[:2])
-                                t_val = dtime(rh, rm)
-                            args.due_time = f"{t_val.hour:02d}:{t_val.minute:02d}"
-                            break
-
-            # 4D Continuous Timeline & Travel Transit Collision Check (World Model)
-            if t_val and not getattr(args, "force", False):
-                try:
-                    u_tz, _ = await _resolve_user_timezone(chat_id)
-                    cand_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
-                    from state.timeline import check_timeline_collision, estimate_event_duration
-                    cand_dur_hrs = (args.duration_minutes / 60.0) if args.duration_minutes else estimate_event_duration(args.title)
-                    collision = check_timeline_collision(chat_id, args.title, cand_start_dt, candidate_duration_hours=cand_dur_hrs)
-                    if collision and collision.get("has_conflict"):
-                        return {
-                            "status": "conflict_detected",
-                            "has_conflict": True,
-                            "conflict_type": collision.get("conflict_type", "transit"),
-                            "conflicting_event": collision.get("blocking_event"),
-                            "conflicts": [collision.get("blocking_event")] if collision.get("blocking_event") else [],
-                            "title": args.title,
-                            "due_date": args.due_date,
-                            "due_time": args.due_time,
-                            "message": collision.get("explanation"),
-                            "suggested_action": f"Task ko {collision.get('suggested_free_time')} shift karein, ya agar fir bhi isi waqt schedule karna hai toh confirm karein."
-                        }
-                except Exception as tl_err:
-                    logger.warning(f"Timeline collision check error: {tl_err}")
-
-            # Check for conflict against other distinct events/reminders on the same date and time
+            # Pure Math Collision Check
             conflicts = []
             tight_buffers = []
             if t_val:
-                from state.timeline import estimate_event_duration
-                cand_dur = args.duration_minutes or int(estimate_event_duration(args.title) * 60)
-                rem_start = t_val.hour * 60 + t_val.minute
-                rem_end = rem_start + cand_dur
+                cand_start = t_val.hour * 60 + t_val.minute
+                cand_end = cand_start + dur_mins
 
-                for row in existing_items:
-                    row_title = row.get("title") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
-                    row_id = row.get("id") if isinstance(row, dict) else (row[4] if len(row) > 4 else None)
-                    if row_id in matched_id_set:
+                for r in existing_items:
+                    if matched_id and _get_row_val(r, "id", 4) == matched_id:
                         continue
-                    row_time = row.get("due_time") if isinstance(row, dict) else (row[3] if len(row) > 3 else None)
-                    if row_time:
-                        try:
-                            r_h = row_time.hour if hasattr(row_time, "hour") else int(str(row_time).split(":")[0])
-                            r_m = row_time.minute if hasattr(row_time, "minute") else int(str(row_time).split(":")[1])
-                            ex_dur = int(estimate_event_duration(row_title) * 60)
-                            ex_start = r_h * 60 + r_m
-                            ex_end = ex_start + ex_dur
+                    r_tm = _get_row_val(r, "due_time", 3)
+                    if not r_tm:
+                        continue
+                    r_h = r_tm.hour if hasattr(r_tm, "hour") else int(str(r_tm).split(":")[0])
+                    r_m = r_tm.minute if hasattr(r_tm, "minute") else int(str(r_tm).split(":")[1])
+                    r_dur = int(_get_row_val(r, "duration_minutes", 5, 30) or 30)
+                    ex_start = r_h * 60 + r_m
+                    ex_end = ex_start + r_dur
 
-                            # 1. Direct mathematical interval overlap
-                            if max(rem_start, ex_start) < min(rem_end, ex_end):
-                                conflicts.append(f"'{row_title}' ({r_h:02d}:{r_m:02d} - {ex_end//60:02d}:{ex_end%60:02d})")
-                            else:
-                                # 2. Tight buffer / transit transition window (<= 30 min gap)
-                                gap = min(abs(rem_start - ex_end), abs(ex_start - rem_end))
-                                is_transit_sensitive = any(k in (row_title + " " + args.title).lower() for k in ("movie", "theatre", "theater", "cinema", "flight", "bus", "train", "travel", "meeting", "doctor", "hospital", "date"))
-                                if is_transit_sensitive and gap <= 30:
-                                    tight_buffers.append(f"'{row_title}' ({r_h:02d}:{r_m:02d} se {ex_end//60:02d}:{ex_end%60:02d} tak chalegi, sirf {gap} min transition gap hai)")
-                        except Exception as ex_err:
-                            logger.warning(f"Error checking conflict: {ex_err}")
+                    # Pure mathematical interval collision: max(s1, s2) < min(e1, e2)
+                    if max(cand_start, ex_start) < min(cand_end, ex_end):
+                        r_title = _get_row_val(r, "title", 1, "Existing task")
+                        h_end = ex_end // 60
+                        m_end = ex_end % 60
+                        conflicts.append(f"'{r_title}' ({r_h:02d}:{r_m:02d} - {h_end:02d}:{m_end:02d})")
+                    else:
+                        # Tight buffer checking
+                        gap = min(abs(cand_start - ex_end), abs(ex_start - cand_end))
+                        r_title = _get_row_val(r, "title", 1, "Existing task")
+                        is_heavy_transit = any(k in clean_title.lower() for k in ("movie", "theatre", "flight", "bus", "train", "travel", "doctor"))
+                        buffer_limit = 30 if is_heavy_transit else 20
+                        if gap <= buffer_limit and (is_heavy_transit or (gap < 20 and any(k in (r_title + " " + clean_title).lower() for k in ("meeting", "sync", "call")))):
+                            tight_buffers.append(f"'{r_title}' (gap sirf {gap} min hai)")
 
-            # Also check Google Calendar for true interval overlap conflicts
-            try:
-                u_tz, _ = await _resolve_user_timezone(chat_id)
-                from main import get_unified_schedule
-                sched = await get_unified_schedule(chat_id, d_val)
-                for ev in sched.get("calendar_events", []):
-                    raw_start = ev.get("start", {}).get("dateTime")
-                    if raw_start and t_val:
-                        ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
-                        ev_raw_end = ev.get("end", {}).get("dateTime")
-                        ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
-                        ev_summary = (ev.get("summary") or "").strip()
-                        # Exclude self-synced mirror events from conflicting with reminder being created/updated
-                        clean_ev = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", ev_summary).strip().lower()
-                        clean_target = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", args.title).strip().lower()
-                        clean_ev_b = re.sub(dur_strip, '', clean_ev).strip()
-                        clean_tgt_b = re.sub(dur_strip, '', clean_target).strip()
-                        if clean_ev_b and clean_tgt_b and (clean_ev_b == clean_tgt_b or clean_ev_b in clean_tgt_b or clean_tgt_b in clean_ev_b):
-                            continue
-                        rem_start = t_val.hour * 60 + t_val.minute
-                        rem_end = rem_start + cand_dur
-                        ev_start = ev_dt.hour * 60 + ev_dt.minute
-                        ev_end = ev_end_dt.hour * 60 + ev_end_dt.minute
-                        if max(rem_start, ev_start) < min(rem_end, ev_end):
-                            conflicts.append(f"Calendar Meeting '{ev.get('summary', 'Meeting')}' ({ev_dt.strftime('%I:%M %p')} - {ev_end_dt.strftime('%I:%M %p')})")
-            except Exception:
-                pass
+                # Also check Google Calendar
+                try:
+                    from main import get_unified_schedule
+                    sched = await get_unified_schedule(chat_id, d_val)
+                    for ev in sched.get("calendar_events", []):
+                        raw_start = ev.get("start", {}).get("dateTime")
+                        if raw_start and t_val:
+                            ev_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00")).astimezone(u_tz)
+                            ev_raw_end = ev.get("end", {}).get("dateTime")
+                            ev_end_dt = datetime.fromisoformat(ev_raw_end.replace("Z", "+00:00")).astimezone(u_tz) if ev_raw_end else (ev_dt + timedelta(minutes=45))
+                            ev_summ = (ev.get("summary") or "").strip()
+                            clean_ev = ev_summ.replace("🔔", "").replace("⏰", "").strip().lower()
+                            if clean_ev == target_low or target_low in clean_ev:
+                                continue
+                            ev_s = ev_dt.hour * 60 + ev_dt.minute
+                            ev_e = ev_end_dt.hour * 60 + ev_end_dt.minute
+                            if max(cand_start, ev_s) < min(cand_end, ev_e):
+                                conflicts.append(f"Calendar Meeting '{ev_summ}' ({ev_dt.strftime('%I:%M %p')} - {ev_end_dt.strftime('%I:%M %p')})")
+                except Exception:
+                    pass
 
-            # Check if there is an unforced direct time clash
-            if conflicts and not getattr(args, "force", False) and not matched_existing_ids:
+            if conflicts and not args.force and not matched_id:
+                time_disp = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 return {
                     "status": "conflict_detected",
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
-                    "title": args.title,
+                    "title": clean_title,
                     "due_date": args.due_date,
                     "due_time": args.due_time,
-                    "message": f"Time Conflict: {args.due_time} par already {', '.join(conflicts)} scheduled hai. Kya aap iska time aage-peeche karna chahenge ya isi time par dono ka reminder lagana hai?"
+                    "duration_minutes": dur_mins,
+                    "message": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai. Kya aap iska time aage-peeche karna chahenge ya confirm karna chahenge?"
                 }
 
-            if tight_buffers and not getattr(args, "force", False) and not matched_existing_ids:
+            if tight_buffers and not args.force and not matched_id:
+                time_disp = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 return {
                     "status": "conflict_detected",
                     "has_conflict": True,
                     "conflict_type": "tight_buffer",
                     "conflicts": tight_buffers,
-                    "title": args.title,
+                    "title": clean_title,
                     "due_date": args.due_date,
                     "due_time": args.due_time,
-                    "message": f"Schedule Conflict / Tight Buffer: Aapki {', '.join(tight_buffers)}, aur '{args.title}' {t_val.strftime('%I:%M %p')} par scheduled ho rahi hai. Dono ke beech transition/travel ke liye waqt bahut tight rahega. Kya aap iska time aage shift karna chahenge ya isi time par schedule kar doon?"
+                    "duration_minutes": dur_mins,
+                    "message": f"Schedule Conflict / Tight Buffer: Aapki {', '.join(tight_buffers)}, aur '{clean_title}' {time_disp} par scheduled ho rahi hai. Dono ke beech transition gap bahut tight hai. Kya aap time shift karna chahenge?"
                 }
 
-            is_daily = (getattr(args, "recurrence", "none") or "").lower() in ("daily", "roj", "every_day", "everyday")
-            time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
-            date_str = d_val.strftime("%d %b %Y") if d_val else (args.due_date or "specified date")
-
-            if is_daily:
-                rule_text = f"Daily recurring reminder: {args.title} at {time_str}"
-                db.add_user_rule(chat_id, rule_text)
-
-                # Clean up any pre-existing duplicates or distant future dates for this title
-                try:
-                    with db.engine.begin() as conn:
-                        conn.execute(
-                            db.text(
-                                "DELETE FROM reminders WHERE item_id IN ("
-                                "  SELECT id FROM memory_items "
-                                "  WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                                "  AND LOWER(title) = LOWER(:t) AND due_date > :max_d"
-                                ")"
-                            ),
-                            {"cid": chat_id, "t": args.title, "max_d": d_val + timedelta(days=1)}
-                        )
-                        conn.execute(
-                            db.text(
-                                "DELETE FROM memory_items "
-                                "WHERE user_id IN (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                                "AND LOWER(title) = LOWER(:t) AND due_date > :max_d"
-                            ),
-                            {"cid": chat_id, "t": args.title, "max_d": d_val + timedelta(days=1)}
-                        )
-                except Exception as ex_clean:
-                    logger.warning(f"Cleanup future recurrence error: {ex_clean}")
-
-                # Create ONLY for today (if time hasn't passed) and tomorrow (the upcoming instance)
-                now_curr = datetime.now(IST)
-                today_d = now_curr.date()
-
-                target_dates = []
-                if d_val == today_d:
-                    if not t_val or t_val >= now_curr.time():
-                        target_dates.append(d_val)
-                    target_dates.append(d_val + timedelta(days=1))
-                else:
-                    target_dates.append(d_val)
-
-                for tgt_d in target_dates:
-                    day_existing = db.items_for_date(chat_id, tgt_d)
-                    already_exists = False
-                    for r in day_existing:
-                        r_title = r.get("title") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
-                        if args.title.lower() in (r_title or "").lower():
-                            already_exists = True
-                            break
-                    if already_exists:
-                        continue
-
-                    cid = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=tgt_d, due_time=t_val)
-                    try:
-                        from timing import build_plan
-                        from db import add_reminders
-                        plan = build_plan(tgt_d, t_val)
-                        if plan.get("reminders") and cid:
-                            add_reminders(cid, plan["reminders"])
-                    except Exception:
-                        pass
-
-                try:
-                    from api_v1 import _invalidate_all_app_caches
-                    _invalidate_all_app_caches()
-                except Exception:
-                    pass
-
-                return {
-                    "status": "success",
-                    "title": args.title,
-                    "due_date": args.due_date,
-                    "due_time": args.due_time,
-                    "recurrence": "daily",
-                    "message": f"Done bhai! '{args.title}' ka daily reminder roz subah {time_str} ke liye set kar diya hai. Backend isko dynamically roz aage badhayega jab tak aap ise cancel nahi karte!"
-                }
-
-            if matched_existing_ids:
-                primary_id, primary_title = matched_existing_ids[0]
-                new_title = primary_title
-                if args.duration_minutes:
-                    clean_base = re.sub(r'\s*\(\d+\s*(?:hour|min)[^)]*\)', '', primary_title).strip()
-                    dur_str = f"{args.duration_minutes // 60} hour" if args.duration_minutes % 60 == 0 else f"{args.duration_minutes} min"
-                    new_title = f"{clean_base} ({dur_str} duration)"
-                elif args.title and ("duration" in args.title.lower() or "hour" in args.title.lower()):
-                    new_title = args.title
-
-                # Update existing memory item title and time
-                with db.engine.begin() as conn:
-                    conn.execute(
-                        db.text("UPDATE memory_items SET title = :t, due_time = :tm WHERE id = :id"),
-                        {"t": new_title, "tm": t_val, "id": primary_id}
-                    )
-                try:
-                    from timing import build_plan
-                    from db import add_reminders
-                    with db.engine.begin() as conn:
-                        conn.execute(db.text("DELETE FROM reminders WHERE item_id = :id"), {"id": primary_id})
-                        if len(matched_existing_ids) > 1:
-                            for extra_id, _ in matched_existing_ids[1:]:
-                                if extra_id:
-                                    conn.execute(db.text("DELETE FROM reminders WHERE item_id = :eid"), {"eid": extra_id})
-                                    conn.execute(db.text("DELETE FROM memory_items WHERE id = :eid"), {"eid": extra_id})
-                    plan = build_plan(d_val, t_val)
-                    if plan.get("reminders"):
-                        add_reminders(primary_id, plan["reminders"])
-                except Exception:
-                    pass
-
-                time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
-                res = {
-                    "status": "success",
-                    "title": new_title,
-                    "due_date": args.due_date,
-                    "due_time": args.due_time,
-                    "rescheduled": True,
-                    "conflicts": conflicts,
-                    "has_conflict": len(conflicts) > 0,
-                    "message": f"Done! '{new_title}' ka reminder {time_str} par update kar diya hai."
-                }
+            # If matched existing ID, update it cleanly
+            if matched_id:
+                db.update_memory_item_full(chat_id, matched_id, title=clean_title, due_date=d_val, due_time=t_val, duration_minutes=dur_mins)
+                item_id = matched_id
+                rescheduled = True
             else:
-                item_id = db.save_memory(chat_id, args.category or 'appointments', args.title, amount=None, due_date=d_val, due_time=t_val)
-                try:
-                    from timing import build_plan
-                    from db import add_reminders
+                item_id = db.save_memory(chat_id, args.category or 'appointments', clean_title, amount=None, due_date=d_val, due_time=t_val, duration_minutes=dur_mins)
+                rescheduled = False
+
+            # Add reminders
+            try:
+                from timing import build_plan
+                from db import add_reminders
+                if rescheduled:
+                    with db.engine.begin() as conn:
+                        conn.execute(db.text("DELETE FROM reminders WHERE item_id = :id"), {"id": item_id})
+                if d_val and t_val:
                     plan = build_plan(d_val, t_val)
                     if plan.get("reminders") and item_id:
                         add_reminders(item_id, plan["reminders"])
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-                # Cross-sync to Google Calendar ONLY if current chat_id is legitimately connected
-                sync_note = " (Telegram notification active 🔔)"
-                try:
-                    from main import get_valid_google_connection_by_chat_id
-                    is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
-                    if is_conn and d_val:
-                        u_tz, user_tz_str = await _resolve_user_timezone(chat_id)
-                        start_time_part = t_val or dtime(9, 0)
-                        start_dt = datetime.combine(d_val, start_time_part, tzinfo=u_tz)
-                        dur_mins = getattr(args, "duration_minutes", None) or 30
-                        from google_services import create_meeting as create_google_meeting
-                        meet_res = await create_google_meeting(
-                            chat_id=chat_id,
-                            title=f"🔔 {args.title}",
-                            start_iso=start_dt.isoformat(),
-                            duration_minutes=dur_mins
-                        )
-                        if meet_res and meet_res.get("status") == "success":
-                            sync_note = " (Google Calendar synced ✅)"
-                        else:
-                            sync_note = " (Telegram reminder set ✅)"
-                    elif not is_conn:
-                        sync_note = " (Telegram reminder set ✅. Google Calendar connected nahi hai - calendar sync ke liye /connect bhejein)"
-                except Exception as g_err:
-                    print("Google Calendar sync attempt error:", g_err)
-                    sync_note = " (Telegram reminder set ✅)"
-                res = {
-                    "status": "success",
-                    "title": args.title,
-                    "due_date": args.due_date,
-                    "due_time": args.due_time,
-                    "rescheduled": False,
-                    "conflicts": conflicts,
-                    "has_conflict": len(conflicts) > 0,
-                    "message": f"Done bhai! '{args.title}' ka reminder {date_str} ko {time_str} ke liye set kar diya hai.{sync_note}"
-                }
-                try:
-                    from state.active_context import set_active_event
-                    set_active_event(chat_id, {
-                        "title": args.title,
-                        "due_date": args.due_date,
-                        "due_time": args.due_time,
-                        "duration_minutes": getattr(args, "duration_minutes", 30),
-                        "type": "reminder"
-                    })
-                except Exception:
-                    pass
+            # Sync to Google Calendar if connected
+            sync_note = " (Telegram reminder set ✅)"
+            try:
+                from main import get_valid_google_connection_by_chat_id
+                is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+                if is_conn and d_val and t_val:
+                    import google_services
+                    ev_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
+                    ev_end_dt = ev_start_dt + timedelta(minutes=dur_mins)
+                    await google_services.create_calendar_event(
+                        chat_id,
+                        summary=f"🔔 {clean_title}",
+                        start_time=ev_start_dt.isoformat(),
+                        end_time=ev_end_dt.isoformat(),
+                        description=f"Auto-synced reminder from PeculiarAI ({dur_mins} mins)",
+                    )
+                    sync_note = " (Synced with Google Calendar & Telegram ✅)"
+            except Exception:
+                pass
 
-            if conflicts:
-                res["conflict_warning"] = (
-                    f"⚠️ Time Conflict Alert: Is samay par already {', '.join(conflicts)} scheduled hai!"
-                )
-            return res
+            time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
+            date_str = d_val.strftime("%d %b %Y") if d_val else "specified date"
+            action_word = "shift" if rescheduled else "set"
+            return {
+                "status": "success",
+                "title": clean_title,
+                "due_date": args.due_date,
+                "due_time": args.due_time,
+                "duration_minutes": dur_mins,
+                "rescheduled": rescheduled,
+                "conflicts": conflicts,
+                "has_conflict": len(conflicts) > 0,
+                "message": f"Done bhai! '{clean_title}' ka reminder {date_str} ko {time_str} ke liye {action_word} kar diya hai.{sync_note}"
+            }
 
         elif tool_name == "delete_reminder":
             kw = str(arguments.get("title", "")).strip().lower()
@@ -2156,11 +2180,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             from db import canonical_chat_id, engine, text, items_for_date
             can_cid = canonical_chat_id(chat_id)
 
-            # Robust keyword cleaning: remove asterisks, times (- 05:30 PM), filler words
-            clean_kw = kw.replace("*", "").strip()
-            clean_kw = re.sub(r"[-–—\s]*(?:at\s*)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?.*$", "", clean_kw, flags=re.I).strip()
-            clean_kw = re.sub(r"(reminder|rmeinder|remidner|meeting|wala|wali|ko|ka|ki)", "", clean_kw, flags=re.I).strip()
-            clean_kw = re.sub(r"^[⏰⏳▶🔔📅\s*]+", "", clean_kw).strip()
+            clean_kw = kw.replace("*", "").replace("'", "").replace('"', "").strip()
 
             deleted_titles = []
             with engine.begin() as conn:
@@ -2318,11 +2338,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
             sched = await get_unified_schedule(chat_id, target_d)
 
-            time_parts = re.findall(r"\d+", args.start_time)
-            h = int(time_parts[0]) if time_parts else 17
-            m = int(time_parts[1]) if len(time_parts) > 1 else 0
-            if "pm" in args.start_time.lower() and h < 12:
+            st_clean = args.start_time.strip().lower()
+            if ":" in st_clean:
+                parts = st_clean.split(":")
+                h = int("".join(c for c in parts[0] if c.isdigit()) or 17)
+                m = int("".join(c for c in parts[1][:2] if c.isdigit()) or 0)
+            else:
+                digits = "".join(c for c in st_clean if c.isdigit())
+                h = int(digits) if digits else 17
+                m = 0
+            if "pm" in st_clean and h < 12:
                 h += 12
+            elif "am" in st_clean and h == 12:
+                h = 0
             activity_start_mins = h * 60 + m
             dur = args.duration_minutes or (180 if "movie" in (args.activity_type or "").lower() else 60)
             activity_end_mins = activity_start_mins + dur
@@ -2949,10 +2977,11 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 recent_history = db.get_recent_chat_history(chat_id, limit=6)
                 for h in reversed(recent_history):
                     txt = h.get("text", "")
-                    m = re.search(r"github\.com/([a-zA-Z0-9_\-]+)", txt)
-                    if m:
-                        req_username = m.group(1)
-                        break
+                    if "github.com/" in txt:
+                        parts = txt.split("github.com/")[1].split()
+                        if parts:
+                            req_username = parts[0].strip("/ ,.!?()[]{}")
+                            break
 
             # Fallback to system token
             if not token:
@@ -3047,23 +3076,30 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if not req_repo:
                 recent = db.get_recent_chat_history(chat_id, limit=6)
                 for t in reversed(recent):
-                    match = re.search(r'\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+-project|[a-zA-Z0-9_-]+-repo)\b', t.get("text", ""))
-                    if match:
-                        req_repo = match.group(1)
+                    txt = t.get("text", "")
+                    for tok in txt.split():
+                        tok_clean = tok.strip("`'\"()[],;").lower()
+                        if "/" in tok_clean and len(tok_clean.split("/")) == 2 and not tok_clean.startswith("http"):
+                            req_repo = tok_clean
+                            break
+                        if "-project" in tok_clean or "-repo" in tok_clean:
+                            req_repo = tok_clean
+                            break
+                    if req_repo:
                         break
 
             if not req_content:
                 recent = db.get_recent_chat_history(chat_id, limit=6)
                 for t in reversed(recent):
                     txt = t.get("text", "")
-                    m = re.search(r'<parameter=content>(.*?)</parameter>', txt, re.DOTALL)
-                    if m:
-                        req_content = m.group(1).strip()
+                    if "<parameter=content>" in txt and "</parameter>" in txt:
+                        req_content = txt.split("<parameter=content>")[1].split("</parameter>")[0].strip()
                         break
-                    code_m = re.search(r'```(?:markdown)?\n?(.*?)```', txt, re.DOTALL)
-                    if code_m:
-                        req_content = code_m.group(1).strip()
-                        break
+                    if "```" in txt:
+                        parts = txt.split("```")
+                        if len(parts) >= 3:
+                            req_content = parts[1].lstrip("markdown\n").strip()
+                            break
 
             if not req_repo:
                 req_repo = "php-project"
@@ -3440,7 +3476,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
 
 CORE_TOOL_NAMES = {
-    "execute_python_code", "create_reminder", "delete_reminder", "list_reminders", "get_schedule",
+    "execute_python_code", "create_reminder", "update_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "save_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting",
     "search_web", "find_nearby_places"

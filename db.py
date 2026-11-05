@@ -145,11 +145,12 @@ def set_user_language(chat_id, lang: str):
         print("set_user_language error:", exc)
 
 
-def save_memory(chat_id, category, title, amount, due_date, due_time):
+def save_memory(chat_id, category, title, amount, due_date, due_time, duration_minutes=30):
     chat_id = canonical_chat_id(chat_id)
     category = category or "appointments"
     tm = due_time
     d = due_date
+    dur = int(duration_minutes) if duration_minutes else 30
     if engine.dialect.name == "sqlite":
         if hasattr(due_time, "strftime"):
             tm = due_time.strftime("%H:%M:%S")
@@ -159,12 +160,12 @@ def save_memory(chat_id, category, title, amount, due_date, due_time):
         row = conn.execute(
             text(
                 "INSERT INTO memory_items "
-                "(user_id, category, title, amount, due_date, due_time) "
-                "SELECT id, :cat, :t, :a, :d, :tm FROM users "
+                "(user_id, category, title, amount, due_date, due_time, duration_minutes) "
+                "SELECT id, :cat, :t, :a, :d, :tm, :dur FROM users "
                 "WHERE telegram_chat_id = :c RETURNING id"
             ),
             {"cat": category, "t": title, "a": amount, "d": d,
-             "tm": tm, "c": chat_id},
+             "tm": tm, "dur": dur, "c": chat_id},
         ).first()
     return row[0] if row else None
 
@@ -173,7 +174,7 @@ def list_memories(chat_id):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT m.category, m.title, m.amount, m.due_date, m.due_time "
+                "SELECT m.category, m.title, m.amount, m.due_date, m.due_time, COALESCE(m.duration_minutes, 30) AS duration_minutes "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c "
                 "ORDER BY m.due_date NULLS LAST, m.due_time NULLS LAST, m.id DESC "
@@ -190,7 +191,7 @@ def items_for_date(chat_id, d):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT m.category, m.title, m.amount, m.due_time, m.id "
+                "SELECT m.category, m.title, m.amount, m.due_time, m.id, COALESCE(m.duration_minutes, 30) AS duration_minutes, m.due_date "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.due_date = :d "
                 "ORDER BY m.due_time NULLS FIRST, m.id"
@@ -207,7 +208,7 @@ def items_for_date_range(chat_id, start_d, end_d):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT m.category, m.title, m.amount, m.due_time, m.due_date, m.id "
+                "SELECT m.category, m.title, m.amount, m.due_time, m.due_date, m.id, COALESCE(m.duration_minutes, 30) AS duration_minutes "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.due_date >= :s AND m.due_date <= :e "
                 "ORDER BY m.due_date ASC, m.due_time NULLS FIRST, m.id"
@@ -230,6 +231,28 @@ def update_memory_time(chat_id, item_id, new_due_time):
             ),
             {"tm": tm, "id": item_id, "c": chat_id}
         )
+
+
+def update_memory_item_full(chat_id, item_id, title=None, due_time=None, due_date=None, duration_minutes=None):
+    chat_id = canonical_chat_id(chat_id)
+    updates = []
+    params = {"id": item_id, "c": chat_id}
+    if title is not None:
+        updates.append("title = :t")
+        params["t"] = title
+    if due_time is not None:
+        updates.append("due_time = :tm")
+        params["tm"] = due_time.strftime("%H:%M:%S") if (engine.dialect.name == "sqlite" and hasattr(due_time, "strftime")) else due_time
+    if due_date is not None:
+        updates.append("due_date = :d")
+        params["d"] = due_date.isoformat() if (engine.dialect.name == "sqlite" and hasattr(due_date, "isoformat")) else due_date
+    if duration_minutes is not None:
+        updates.append("duration_minutes = :dur")
+        params["dur"] = int(duration_minutes)
+    if updates:
+        sql = f"UPDATE memory_items SET {', '.join(updates)} WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"
+        with engine.begin() as conn:
+            conn.execute(text(sql), params)
 
 
 

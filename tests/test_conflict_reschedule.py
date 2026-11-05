@@ -30,6 +30,7 @@ def init_test_db():
                 amount REAL,
                 due_date DATE,
                 due_time TIME,
+                duration_minutes INTEGER DEFAULT 30,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))

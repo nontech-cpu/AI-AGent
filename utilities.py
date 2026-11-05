@@ -991,7 +991,7 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: st
         query = f"best {clean_cat} in {clean_city}" if not clean_area else f"best {clean_cat} in {clean_area} {clean_city}"
     else:
         # Specific place / brand inquiry (e.g. 'kmall', 'k mall', 'ashapurna', 'starbucks')
-        query = f"{clean_cat} in {clean_city} location address timing" if not clean_area else f"{clean_cat} {clean_area} {clean_city} location"
+        query = f"{clean_cat} in {clean_city} location address website timing" if not clean_area else f"{clean_cat} {clean_area} {clean_city} location address website"
 
     search_res = await search_web(query, max_results=6)
     results = search_res.get("results", [])
