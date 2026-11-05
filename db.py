@@ -492,16 +492,78 @@ def remove_email_link(chat_id):
 
 # ---------- Conversation state (WhatsApp-style flow) ----------
 
-# ---------- Canonical User Identity Mapping ----------
-# Maps secondary device/Telegram accounts of the same user to their primary data ID
-CANONICAL_CHAT_ID_MAP = {
-    1234828592: 1758056012,  # Neerav secondary account (Nirav / @Niirav18) -> Primary Account (Neerav)
-}
+# ---------- Dynamic User Identity Mapping (Phase 3) ----------
+# Replaced hardcoded dictionary with dynamic database-backed identity_links table
+_IDENTITY_LINKS_CACHE = {}
+_IDENTITY_LINKS_CACHE_EXPIRY = 0.0
+
+def get_identity_links() -> dict:
+    global _IDENTITY_LINKS_CACHE, _IDENTITY_LINKS_CACHE_EXPIRY
+    import time as _t
+    now_ts = _t.time()
+    if _IDENTITY_LINKS_CACHE and now_ts < _IDENTITY_LINKS_CACHE_EXPIRY:
+        return _IDENTITY_LINKS_CACHE
+
+    links = {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT source_chat_id, canonical_chat_id FROM identity_links")).fetchall()
+            for r in rows:
+                links[int(r[0])] = int(r[1])
+        _IDENTITY_LINKS_CACHE = links
+        _IDENTITY_LINKS_CACHE_EXPIRY = now_ts + 60.0  # 60s TTL cache
+    except Exception:
+        pass
+    return links
+
+def link_user_identities(source_chat_id: int, canonical_chat_id: int, label: str = "linked_account"):
+    """Persist identity link in database and invalidate cache."""
+    global _IDENTITY_LINKS_CACHE_EXPIRY
+    is_pg = engine.dialect.name == "postgresql"
+    with engine.begin() as conn:
+        if is_pg:
+            conn.execute(text("""
+                INSERT INTO identity_links (source_chat_id, canonical_chat_id, label, created_at)
+                VALUES (:src, :canon, :lbl, CURRENT_TIMESTAMP)
+                ON CONFLICT (source_chat_id) DO UPDATE SET canonical_chat_id = :canon, label = :lbl
+            """), {"src": int(source_chat_id), "canon": int(canonical_chat_id), "lbl": label})
+        else:
+            conn.execute(text("""
+                INSERT OR REPLACE INTO identity_links (source_chat_id, canonical_chat_id, label, created_at)
+                VALUES (:src, :canon, :lbl, CURRENT_TIMESTAMP)
+            """), {"src": int(source_chat_id), "canon": int(canonical_chat_id), "lbl": label})
+    _IDENTITY_LINKS_CACHE_EXPIRY = 0.0
+
+def unlink_user_identity(source_chat_id: int):
+    """Removes an identity link from database and invalidates cache."""
+    global _IDENTITY_LINKS_CACHE_EXPIRY
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM identity_links WHERE source_chat_id = :src"), {"src": int(source_chat_id)})
+    except Exception as exc:
+        logger.warning(f"unlink_user_identity error: {exc}")
+    _IDENTITY_LINKS_CACHE_EXPIRY = 0.0
+
+class _CanonicalMapProxy(dict):
+    """Compatibility proxy that delegates lookups to get_identity_links()."""
+    def get(self, key, default=None):
+        return get_identity_links().get(key, default)
+    def items(self):
+        return get_identity_links().items()
+    def __getitem__(self, key):
+        return get_identity_links()[key]
+    def __contains__(self, key):
+        return key in get_identity_links()
+    def __len__(self):
+        return len(get_identity_links())
+
+CANONICAL_CHAT_ID_MAP = _CanonicalMapProxy()
 
 def canonical_chat_id(chat_id):
     try:
         cid_int = int(chat_id)
-        return CANONICAL_CHAT_ID_MAP.get(cid_int, cid_int)
+        links = get_identity_links()
+        return links.get(cid_int, cid_int)
     except Exception:
         return chat_id
 
@@ -514,7 +576,8 @@ def get_all_linked_chat_ids(chat_id: int) -> set[int]:
         return {chat_id}
     canon = canonical_chat_id(cid_int)
     targets = {cid_int, canon}
-    for orig, c in CANONICAL_CHAT_ID_MAP.items():
+    links = get_identity_links()
+    for orig, c in links.items():
         if c == canon:
             targets.add(orig)
     return targets
@@ -1517,97 +1580,43 @@ def delete_matching_user_facts(chat_id, query):
 
 def search_relevant_user_facts(chat_id, query_text: str, limit: int = 4) -> list:
     """
-    Contextual Memory RAG: Extracts search tokens from query_text and retrieves
-    matching facts, episodic memories, and relevant historical chat snippets.
-    Prevents unrelated recent chatter from polluting the LLM context or wasting tokens.
+    Phase 3: Cognitive Memory RAG.
+    Delegates directly to memories table via hybrid vector/FTS/trigram search (RRF, k=60),
+    eliminating fragile stopword/keyword filtering.
     """
     chat_id = canonical_chat_id(chat_id)
     if not query_text or not str(query_text).strip():
         return []
 
-    import re
-    stopwords = {
-        "hai", "bhy", "bhai", "mera", "meri", "mere", "mujhe", "kya", "tha", "thi",
-        "the", "ko", "koo", "ka", "ki", "ke", "aur", "and", "karo", "bhejna", "kar",
-        "bolo", "batao", "batana", "meeting", "reminder", "today", "tomorrow", "time",
-        "please", "help", "with", "from", "toh", "krdo", "kardo", "krna", "mtlb",
-        "aaj", "kal", "parso", "subah", "shaam", "sham", "dopahar", "raat", "saath", "sath",
-        "bhi", "yeh", "kuch", "pehle", "baad", "waqt", "nhi", "nahi", "nahin", "hain",
-        "naam", "sirf", "theek", "thik", "badhiya", "rha", "raha", "rahe", "rahi",
-        "hlo", "hello", "hey", "namaste", "task", "tasks", "wala", "wali", "wale",
-        "jab", "tab", "kidhar", "kahan", "kab", "kisko", "kaun", "kiska", "main", "mein",
-        "hum", "tum", "aap", "unka", "unki", "uska", "uski", "wahan", "idhar", "udhar",
-        "stayed", "hotel", "trip", "about", "what", "where", "when", "which", "give"
-    }
-
-    words = re.findall(r'[a-zA-Z0-9]{3,}', query_text.lower())
-    search_tokens = [w for w in words if w not in stopwords][:4]
+    try:
+        from memory.store import resolve_user_id, search_memories_hybrid
+        uid = resolve_user_id(chat_id)
+        mems = search_memories_hybrid(uid, query_text, limit=limit)
+        results = [m["content"] for m in mems if m.get("content")]
+        if results:
+            return results[:limit]
+    except Exception as exc:
+        logger.warning(f"search_relevant_user_facts hybrid search error: {exc}")
 
     matched_facts = []
     seen = set()
-
-    if not search_tokens:
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT fact FROM user_facts "
-                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                        "AND status = 'active' ORDER BY updated_at DESC LIMIT 2"
-                    ),
-                    {"cid": chat_id}
-                ).fetchall()
-                for r in rows:
-                    if r[0] and r[0].lower() not in seen:
-                        seen.add(r[0].lower())
-                        matched_facts.append(r[0])
-        except Exception:
-            pass
-        return matched_facts
-
     try:
         with engine.connect() as conn:
-            # 1. Search in user_facts table matching search tokens
-            for tok in search_tokens:
-                pat = f"%{tok}%"
-                rows = conn.execute(
-                    text(
-                        "SELECT fact FROM user_facts "
-                        "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                        "AND status = 'active' AND LOWER(fact) LIKE :pat LIMIT :lim"
-                    ),
-                    {"cid": chat_id, "pat": pat, "lim": limit}
-                ).fetchall()
-                for r in rows:
-                    f_str = r[0].strip()
-                    if f_str and f_str.lower() not in seen:
-                        seen.add(f_str.lower())
-                        matched_facts.append(f_str)
-                if len(matched_facts) >= limit:
-                    break
-
-            # 2. Search in memories table (semantic facts & notes)
-            if len(matched_facts) < limit:
-                for tok in search_tokens:
-                    pat = f"%{tok}%"
-                    rows = conn.execute(
-                        text(
-                            "SELECT content FROM memories "
-                            "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                            "AND status = 'active' AND LOWER(content) LIKE :pat LIMIT :lim"
-                        ),
-                        {"cid": chat_id, "pat": pat, "lim": limit - len(matched_facts)}
-                    ).fetchall()
-                    for r in rows:
-                        f_str = r[0].strip()
-                        if f_str and f_str.lower() not in seen:
-                            seen.add(f_str.lower())
-                            matched_facts.append(f_str)
-                    if len(matched_facts) >= limit:
-                        break
-    except Exception as exc:
-        print("search_relevant_user_facts error:", repr(exc))
-
+            rows = conn.execute(
+                text("""
+                    SELECT content FROM memories
+                    WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid)
+                      AND status = 'active' AND valid_to IS NULL
+                    ORDER BY importance DESC, created_at DESC LIMIT :lim
+                """),
+                {"cid": chat_id, "lim": limit}
+            ).fetchall()
+            for r in rows:
+                if r[0] and r[0].lower() not in seen:
+                    seen.add(r[0].lower())
+                    matched_facts.append(r[0])
+    except Exception:
+        pass
     return matched_facts[:limit]
 
 

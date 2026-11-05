@@ -336,34 +336,17 @@ async def build_runtime_system_prompt(
     except Exception:
         pass
 
-    # 4. Context Memory Block (Always-on cognitive memory)
-    memory_block = "No specific entity/promise retrieved for this turn."
+    # 4. Context Memory Block (Phase 3 Single Source of Truth)
+    memory_block = ""
     if mem_ctx and isinstance(mem_ctx, dict):
-        memory_block = mem_ctx.get("formatted_block") or memory_block
+        memory_block = mem_ctx.get("formatted_block") or ""
     else:
         try:
             from memory.retrieval import assemble_memory_context
-            _computed_ctx = await asyncio.wait_for(asyncio.to_thread(assemble_memory_context, chat_id, user_text), timeout=0.6)
+            _computed_ctx = await asyncio.wait_for(asyncio.to_thread(assemble_memory_context, chat_id, user_text), timeout=2.5)
             memory_block = _computed_ctx.get("formatted_block") or ""
         except Exception:
             memory_block = ""
-
-    # Contextual Memory RAG: Search specifically for facts matching query and active bookings
-    try:
-        matched_rag_facts = db.search_relevant_user_facts(chat_id, user_text, limit=4)
-        if matched_rag_facts:
-            rag_lines = [f"• {f}" for f in matched_rag_facts]
-            rag_str = "[Contextually Retrieved Past Facts & Active Bookings]:\n" + "\n".join(rag_lines)
-            memory_block = f"{memory_block}\n\n{rag_str}".strip() if memory_block else rag_str
-        elif not mem_ctx:
-            top_facts = db.get_user_facts(chat_id, limit=2)
-            if top_facts:
-                facts_lines = [f"• {f.get('fact')}" for f in top_facts if f.get('fact')]
-                if facts_lines:
-                    facts_str = "User Profile:\n" + "\n".join(facts_lines)
-                    memory_block = f"{memory_block}\n{facts_str}".strip() if memory_block else facts_str
-    except Exception:
-        pass
 
     # Contextual People CRM / Relationship Knowledge Graph
     try:
@@ -375,7 +358,7 @@ async def build_runtime_system_prompt(
         pass
 
     if not memory_block:
-        memory_block = "User lives in Jodhpur, Rajasthan (Sardarpura area)."
+        memory_block = "No permanent profile or memories recorded yet."
 
     conv_summary = "Recent conversation active in chat dialogue."
 

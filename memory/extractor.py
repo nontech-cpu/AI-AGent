@@ -41,6 +41,7 @@ STRICT EXTRACTION RULES (CRITICAL):
 5. SUBJECT ACCURACY: Identify who the information is about ("user", "friend", or a named person like "Ananya"). Content MUST clearly state who it is about (e.g. "Friend's fasting blood sugar is 84 mg/dL", NEVER say "User's" for a friend).
 6. ABSOLUTE DATE RESOLUTION: If the user says "aaj" (today), "kal" (yesterday or tomorrow), or "morning", resolve it to the exact absolute date ({CURRENT_DATE_IST}) in YYYY-MM-DD.
 7. STRUCTURED MEASUREMENTS: If user mentions health, fitness, or numerical readings (glucose, blood sugar, blood pressure, weight, heart rate), ALWAYS populate the "measurements" list!
+8. PROFILE & IMPORTANCE (CRITICAL): Stable personal facts (home/work address, transport habits, vehicle, name, key relationships, permanent preferences) MUST be marked with "memory_type": "profile" and "importance": 5. General facts use "memory_type": "semantic_fact" and "importance": 3. Contradicting facts MUST use "action": "UPDATE".
 
 Output valid JSON ONLY with this schema:
 {
@@ -77,6 +78,8 @@ Output valid JSON ONLY with this schema:
       "subject": "user" or "friend" or "Name",
       "fact": "Factual statement with absolute date (e.g. '2026-10-30: Friend fasting blood sugar was 84 mg/dL')",
       "category": "health" or "preference" or "personal" or "work",
+      "memory_type": "profile" or "semantic_fact",
+      "importance": 1 to 5,
       "action": "ADD" or "UPDATE" or "DELETE" or "NOOP",
       "event_date": "YYYY-MM-DD"
     }
@@ -144,9 +147,9 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
         if not (gemini_key or groq_key):
             return
 
-        # Skip trivial greetings or confirmations
+        # Skip trivial greetings or confirmations using lightweight length/token check (LLM call budget)
         clean_user = user_text.strip().lower()
-        if clean_user in {"hi", "hello", "hey", "yes", "no", "haan", "ok", "theek hai", "cancel", "thanks", "thank you"}:
+        if not clean_user or (len(clean_user.split()) <= 2 and clean_user in {"hi", "hello", "hey", "yes", "no", "haan", "ok", "theek", "theek hai", "cancel", "thanks", "thank you"}):
             return
 
         # Explicitly ignore assistant reply to eliminate negative-fact poisoning
@@ -307,14 +310,22 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
             ev_date = fact_item.get("event_date") or today_iso
             fact_action = fact_item.get("action", "ADD")
 
-            # Phase 1: Memory write consolidation (ADD / UPDATE / NOOP / DELETE)
+            # Phase 3: Memory write consolidation (single source of truth with memory_type & importance)
             from memory.store import consolidate_memory_item
+            m_type = fact_item.get("memory_type")
+            if not m_type:
+                m_type = "profile" if fact_item.get("category") == "personal" or fact_item.get("importance", 3) >= 4 else "semantic_fact"
+            imp = fact_item.get("importance")
+            if imp is None:
+                imp = 5 if m_type == "profile" else 3
+
             res_cons = consolidate_memory_item(
                 user_id=user_id,
                 action=fact_action,
                 content=fact_str,
                 category=fact_item.get("category", "general"),
-                importance=fact_item.get("importance", 3),
+                memory_type=m_type,
+                importance=int(imp),
                 confidence=0.95,
                 entity_id=subj_eid
             )

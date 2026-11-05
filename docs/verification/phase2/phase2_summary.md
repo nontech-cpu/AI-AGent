@@ -194,3 +194,4 @@ Phase 3 is **Memory (single source of truth)**:
 - Replace hardcoded `CANONICAL_CHAT_ID_MAP` with identity-linking table.
 
 **Phase 2 is complete. Awaiting user "go ahead" before proceeding to Phase 3.**
+

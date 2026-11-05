@@ -154,6 +154,27 @@ def _init_sqlite_if_needed():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS identity_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_chat_id INTEGER UNIQUE NOT NULL,
+                    canonical_chat_id INTEGER NOT NULL,
+                    label TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS embedding_retry_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id INTEGER,
+                    attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    status TEXT DEFAULT 'pending',
+                    next_retry_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             conn.commit()
     _SQLITE_INIT_DONE = True
 
@@ -242,6 +263,120 @@ _RESOLVED_USER_ID_CACHE: Dict[int, int] = {}
 _MEASUREMENTS_CACHE: Dict[Tuple, Dict[str, Any]] = {}
 _CORE_PROFILE_CACHE: Dict[int, Dict[str, Any]] = {}
 _CONV_SUMMARY_CACHE: Dict[int, Dict[str, Any]] = {}
+
+def enqueue_embedding_retry(memory_id: int, error_msg: str = "Pending embedding"):
+    """Enqueues a memory ID into embedding_retry_queue for background processing."""
+    _init_sqlite_if_needed()
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO embedding_retry_queue (memory_id, last_error, status, created_at, updated_at)
+                VALUES (:mid, :err, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """), {"mid": memory_id, "err": error_msg[:400]})
+    except Exception as exc:
+        logger.warning(f"Failed to enqueue embedding retry for memory {memory_id}: {exc}")
+
+
+def process_embedding_retry_queue(batch_size: int = 10) -> int:
+    """
+    Processes pending items from embedding_retry_queue with exponential backoff and retry tracking.
+    Returns count of successfully embedded memories.
+    """
+    _init_sqlite_if_needed()
+    is_pg = db.engine.dialect.name == "postgresql"
+    processed = 0
+
+    try:
+        with db.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT q.id, q.memory_id, q.attempts, m.content, m.user_id
+                FROM embedding_retry_queue q
+                JOIN memories m ON m.id = q.memory_id
+                WHERE q.status = 'pending' AND q.attempts < 5
+                ORDER BY q.created_at ASC
+                LIMIT :lim
+            """), {"lim": batch_size}).fetchall()
+    except Exception as exc:
+        logger.warning(f"Error querying embedding_retry_queue: {exc}")
+        return 0
+
+    for q_id, mem_id, attempts, mem_content, uid in rows:
+        try:
+            emb = embed_text(mem_content)
+            if emb and len(emb) == 384:
+                with db.engine.begin() as conn:
+                    if is_pg:
+                        conn.execute(text("""
+                            UPDATE memories SET embedding = CAST(:emb AS vector), updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :mid
+                        """), {"mid": mem_id, "emb": str(emb)})
+                    else:
+                        conn.execute(text("""
+                            UPDATE memories SET embedding = :emb, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :mid
+                        """), {"mid": mem_id, "emb": json.dumps(emb)})
+                    conn.execute(text("""
+                        UPDATE embedding_retry_queue
+                        SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :qid
+                    """), {"qid": q_id})
+                processed += 1
+                logger.info(f"Successfully processed embedding retry for memory {mem_id}")
+            else:
+                with db.engine.begin() as conn:
+                    conn.execute(text("""
+                        UPDATE embedding_retry_queue
+                        SET attempts = attempts + 1, last_error = 'Embedding returned None or dimension mismatch', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :qid
+                    """), {"qid": q_id})
+        except Exception as exc:
+            with db.engine.begin() as conn:
+                conn.execute(text("""
+                    UPDATE embedding_retry_queue
+                    SET attempts = attempts + 1, last_error = :err, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :qid
+                """), {"qid": q_id, "err": str(exc)[:400]})
+            logger.warning(f"Embedding retry failed for memory {mem_id} (attempt {attempts+1}): {exc}")
+
+    return processed
+
+
+def backfill_null_embeddings() -> int:
+    """Enqueues all active memories with NULL embedding into embedding_retry_queue and processes them."""
+    _init_sqlite_if_needed()
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO embedding_retry_queue (memory_id, status, created_at, updated_at)
+                SELECT m.id, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM memories m
+                WHERE m.embedding IS NULL AND m.status = 'active'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM embedding_retry_queue q WHERE q.memory_id = m.id
+                  )
+            """))
+    except Exception as exc:
+        logger.warning(f"Error backfilling null embeddings: {exc}")
+    return process_embedding_retry_queue(batch_size=50)
+
+
+def invalidate_memory_caches(user_id: Optional[int] = None):
+    """Invalidates core profile cache, conversation summary cache, and retrieval context cache."""
+    global _CORE_PROFILE_CACHE, _CONV_SUMMARY_CACHE
+    if user_id is not None:
+        _CORE_PROFILE_CACHE.pop(user_id, None)
+        _CONV_SUMMARY_CACHE.pop(user_id, None)
+    else:
+        _CORE_PROFILE_CACHE.clear()
+        _CONV_SUMMARY_CACHE.clear()
+
+    try:
+        import memory.retrieval as _ret
+        if hasattr(_ret, "_MEM_CTX_CACHE"):
+            _ret._MEM_CTX_CACHE.clear()
+    except Exception:
+        pass
+
 
 
 def resolve_user_id(chat_id_or_user_id: int) -> int:
@@ -699,6 +834,9 @@ def save_memory_item(
             mem_id = res.fetchone()[0]
 
         conn.commit()
+        if emb is None:
+            enqueue_embedding_retry(mem_id, "Initial embedding returned None")
+        invalidate_memory_caches(user_id)
         return mem_id
 
 
@@ -886,7 +1024,8 @@ def search_memories_hybrid(
                                COALESCE(1.0 / (60.0 + vr.v_rank), 0.0) +
                                COALESCE(1.0 / (60.0 + fr.f_rank), 0.0) +
                                COALESCE(1.0 / (60.0 + tr.t_rank), 0.0) +
-                               (0.015 / (1.0 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400.0))
+                               (0.015 / (1.0 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400.0)) +
+                               (0.005 * COALESCE(m.importance, 3))
                            ) AS score
                     FROM candidates c
                     JOIN memories m ON m.id = c.id
@@ -950,7 +1089,7 @@ def search_memories_hybrid(
             rows = conn.execute(
                 text("""
                     SELECT m.id, m.memory_type, m.content, m.structured, m.status,
-                           m.created_at, e.name AS entity_name
+                           m.created_at, e.name AS entity_name, COALESCE(m.importance, 3) AS importance
                     FROM memories m
                     LEFT JOIN entities e ON e.id = m.subject_entity_id
                     WHERE m.user_id = :uid AND m.status = 'active' AND m.valid_to IS NULL
@@ -966,6 +1105,7 @@ def search_memories_hybrid(
                 score = difflib.SequenceMatcher(None, q_clean.lower(), content.lower()).ratio()
                 if q_clean.lower() in content.lower():
                     score += 0.5
+                score += 0.05 * (r[7] if len(r) > 7 and r[7] else 3)
                 raw_struct = r[3]
                 struct = json.loads(raw_struct) if isinstance(raw_struct, str) else (raw_struct or {})
                 scored.append({
@@ -1209,24 +1349,47 @@ def get_active_memories(user_id: int) -> List[Dict[str, Any]]:
 
 
 def forget_memory(user_id: int, id_or_keyword: str) -> bool:
-    """Soft-deletes active memories matching ID or keyword (sets valid_to = CURRENT_TIMESTAMP and status = 'archived')."""
+    """
+    Physical privacy wipe for active memories matching ID or keyword.
+    Removes rows AND vector embeddings from memories and clears associated retry queue items and caches.
+    """
     _init_sqlite_if_needed()
+    deleted_count = 0
+    clean = id_or_keyword.strip()
+
     with db.engine.begin() as conn:
-        clean = id_or_keyword.strip()
         if clean.isdigit():
+            conn.execute(text("DELETE FROM embedding_retry_queue WHERE memory_id = :mid"), {"mid": int(clean)})
             res = conn.execute(text("""
-                UPDATE memories
-                SET valid_to = CURRENT_TIMESTAMP, status = 'archived'
-                WHERE user_id = :uid AND id = :mid AND valid_to IS NULL
+                DELETE FROM memories
+                WHERE user_id = :uid AND id = :mid
             """), {"uid": user_id, "mid": int(clean)})
-            return res.rowcount > 0
+            deleted_count = res.rowcount or 0
         else:
-            res = conn.execute(text("""
-                UPDATE memories
-                SET valid_to = CURRENT_TIMESTAMP, status = 'archived'
-                WHERE user_id = :uid AND valid_to IS NULL AND LOWER(content) LIKE :kw
+            conn.execute(text("""
+                DELETE FROM embedding_retry_queue
+                WHERE memory_id IN (
+                    SELECT id FROM memories WHERE user_id = :uid AND LOWER(content) LIKE :kw
+                )
             """), {"uid": user_id, "kw": f"%{clean.lower()}%"})
-            return res.rowcount > 0
+            res = conn.execute(text("""
+                DELETE FROM memories
+                WHERE user_id = :uid AND LOWER(content) LIKE :kw
+            """), {"uid": user_id, "kw": f"%{clean.lower()}%"})
+            deleted_count = res.rowcount or 0
+
+        # Also purge matching legacy user_facts to prevent legacy resurrection
+        try:
+            if not clean.isdigit():
+                conn.execute(text("""
+                    DELETE FROM user_facts
+                    WHERE user_id = :uid AND LOWER(fact) LIKE :kw
+                """), {"uid": user_id, "kw": f"%{clean.lower()}%"})
+        except Exception:
+            pass
+
+    invalidate_memory_caches(user_id)
+    return deleted_count > 0
 
 
 def record_action_event(
@@ -1317,15 +1480,16 @@ def consolidate_memory_item(
     action: str,
     content: str,
     category: str = "general",
+    memory_type: Optional[str] = None,
     importance: int = 3,
     confidence: float = 0.9,
     entity_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Intelligent LLM-assisted memory consolidation:
+    Intelligent memory consolidation (Phase 3 single source of truth):
     - ADD: Insert distinct new memory with vector embedding and timestamps.
-    - UPDATE: Supersede conflicting/outdated memory, store history in memory_versions.
-    - DELETE: Soft-delete outdated memory (status='deleted').
+    - UPDATE: Supersede conflicting/outdated memory (valid_to=now, superseded_by=new_id), store history in memory_versions.
+    - DELETE: Soft-delete outdated memory (status='deleted', valid_to=now).
     - NOOP: Ignore duplicate, greeting, or irrelevant small-talk.
     """
     _init_sqlite_if_needed()
@@ -1334,12 +1498,13 @@ def consolidate_memory_item(
     if not clean_c or act == "NOOP":
         return {"status": "noop", "message": "No-op or empty content ignored."}
 
-    is_pg = db.engine.dialect.name == "postgresql"
+    eff_mtype = memory_type or ("profile" if category in ("personal", "preference") or importance >= 4 else "semantic_fact")
+    eff_importance = importance if importance != 3 else (5 if eff_mtype == "profile" else 3)
 
     # Duplicate check: check if exact or highly similar content already exists
     with db.engine.connect() as conn:
         existing = conn.execute(
-            text("SELECT id, content FROM memories WHERE user_id = :uid AND status = 'active' AND LOWER(content) = LOWER(:c) LIMIT 1"),
+            text("SELECT id, content FROM memories WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL AND LOWER(content) = LOWER(:c) LIMIT 1"),
             {"uid": user_id, "c": clean_c}
         ).fetchone()
         if existing and act == "ADD":
@@ -1348,33 +1513,34 @@ def consolidate_memory_item(
     if act == "DELETE":
         with db.engine.connect() as conn:
             conn.execute(
-                text("UPDATE memories SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE user_id = :uid AND LOWER(content) LIKE LOWER(:c)"),
+                text("UPDATE memories SET status = 'deleted', valid_to = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = :uid AND valid_to IS NULL AND LOWER(content) LIKE LOWER(:c)"),
                 {"uid": user_id, "c": f"%{clean_c[:30]}%"}
             )
             conn.commit()
+            invalidate_memory_caches(user_id)
             return {"status": "deleted", "content": clean_c}
 
     if act == "UPDATE":
-        # Find existing active memory for same topic/category
         with db.engine.connect() as conn:
+            # Match existing active memory for same topic/entity/category
             old_mem = conn.execute(
                 text("""
                     SELECT id, content FROM memories
-                    WHERE user_id = :uid AND status = 'active'
+                    WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
                       AND (subject_entity_id = :eid OR :eid IS NULL)
-                      AND (LOWER(content) LIKE LOWER(:cat_match) OR LOWER(content) LIKE LOWER(:c_prefix))
+                      AND (LOWER(content) LIKE LOWER(:cat_match) OR LOWER(content) LIKE LOWER(:c_prefix) OR memory_type = :mtype)
                     ORDER BY id DESC LIMIT 1
                 """),
-                {"uid": user_id, "eid": entity_id, "cat_match": f"%{category}%", "c_prefix": f"%{clean_c[:20]}%"}
+                {"uid": user_id, "eid": entity_id, "cat_match": f"%{category}%", "c_prefix": f"%{clean_c[:20]}%", "mtype": eff_mtype}
             ).fetchone()
 
             new_id = save_memory_item(
                 user_id=user_id,
                 content=clean_c,
-                memory_type="semantic" if category in ("preference", "work", "profile") else "episodic",
+                memory_type=eff_mtype,
                 subject_entity_id=entity_id,
                 structured={"category": category, "confidence": confidence},
-                importance=importance
+                importance=eff_importance
             )
 
             if old_mem:
@@ -1388,20 +1554,23 @@ def consolidate_memory_item(
                     {"mid": new_id, "uid": user_id, "old_c": old_txt, "new_c": clean_c, "reason": "Consolidation UPDATE superseded old fact"}
                 )
                 conn.commit()
+                invalidate_memory_caches(user_id)
                 return {"status": "updated", "id": new_id, "superseded_id": old_id}
             else:
                 conn.commit()
+                invalidate_memory_caches(user_id)
                 return {"status": "added", "id": new_id}
 
     # Default ADD
     new_id = save_memory_item(
         user_id=user_id,
         content=clean_c,
-        memory_type="semantic" if category in ("preference", "work", "profile") else "episodic",
+        memory_type=eff_mtype,
         subject_entity_id=entity_id,
         structured={"category": category, "confidence": confidence},
-        importance=importance
+        importance=eff_importance
     )
+    invalidate_memory_caches(user_id)
     return {"status": "added", "id": new_id}
 
 
@@ -1590,24 +1759,32 @@ def search_project_memory(user_id: int, query: str, limit: int = 3) -> List[Dict
 
 
 def get_core_profile(user_id: int) -> str:
-    """Loads ~300 tokens of always-true core user profile directly (NO retrieval needed)."""
+    """Loads ~300 tokens of always-true core user profile directly with temporal anchoring (NO retrieval needed)."""
     now_ts = time.time()
     if user_id in _CORE_PROFILE_CACHE and (now_ts - _CORE_PROFILE_CACHE[user_id]["ts"] < 300.0):
         return _CORE_PROFILE_CACHE[user_id]["data"]
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT content FROM memories
+            SELECT content, created_at FROM memories
             WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
               AND (importance >= 4 OR memory_type IN ('preference', 'profile'))
             ORDER BY importance DESC, created_at DESC
-            LIMIT 6
+            LIMIT 10
         """), {"uid": user_id}).fetchall()
-        facts = [r[0] for r in rows]
+        facts = []
+        for r in rows:
+            c = r[0]
+            d = str(r[1])[:10] if r[1] else ""
+            date_anchor = f" (added {d})" if d else ""
+            facts.append(f"• {c}{date_anchor}")
         if not facts:
             _CORE_PROFILE_CACHE[user_id] = {"ts": now_ts, "data": ""}
             return ""
-        res_profile = "\n".join([f"• {f}" for f in facts])
+        res_profile = "\n".join(facts)
+        # Cap core profile at ~1200 characters (~300 tokens)
+        if len(res_profile) > 1200:
+            res_profile = res_profile[:1190] + "\n• ..."
         _CORE_PROFILE_CACHE[user_id] = {"ts": now_ts, "data": res_profile}
         return res_profile
 
