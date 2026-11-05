@@ -42,6 +42,7 @@ from llm import (extract, understand, guess_persona, is_sensitive, parse_followu
                  answer_conversation_memory)
 from nlu import yes_no, match_persona, PERSONA_LABELS
 from timing import IST, build_plan, fmt_when, event_over
+import core.timeutil as timeutil
 from inbox import fetch_unseen
 from email_intelligence import analyze_incoming_email
 from lang import (reply_lang, detect_text_language, language_from_whisper,
@@ -382,7 +383,7 @@ async def save_item_flow(chat_id, item):
         parts.append(f"Time: {item['due_time'].strftime('%H:%M')}")
 
     if plan["status"] == "scheduled":
-        now = datetime.now(IST)
+        now = timeutil.now(IST)
         when = ", ".join(fmt_when(at, now) for at, _ in plan["reminders"])
         parts.append(f"I'll remind you: {when}")
     elif plan["status"] == "past":
@@ -702,7 +703,7 @@ async def detect_meeting_conflicts(chat_id: int, start_iso: str, duration_minute
 
 
 async def show_range(chat_id, start, end, meeting_only=False, query_text=""):
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     today = now.date()
     try:
         start = _as_date(start)
@@ -747,7 +748,7 @@ async def show_range(chat_id, start, end, meeting_only=False, query_text=""):
                 # Check if user mentioned a specific time in their query (e.g. 5 bje / 5 pm for movie)
                 time_warning = ""
                 queried_time = None
-                parsed_q = parse_followup_time(query_text, datetime.now(IST))
+                parsed_q = parse_followup_time(query_text, timeutil.now(IST))
                 if parsed_q and parsed_q[0] is not None:
                     queried_time = parsed_q[0]
                 else:
@@ -1091,8 +1092,8 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
         "Return strictly JSON: {\"facts\": [{\"fact\": \"...\", \"category\": \"plan|preference|profile|work\"}]}"
     )
     try:
-        data = await _chat_json(prompt, text)
-        facts = data.get("facts") or []
+        data = (await _chat_json(prompt, text)) or {}
+        facts = data.get("facts", []) if isinstance(data, dict) else []
         for item in facts:
             f_text = (item.get("fact") or "").strip()
             cat = item.get("category") or "general"
@@ -1151,7 +1152,7 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
             if any(w in t_low for w in commitment_signals):
                 from memory.store import resolve_user_id, create_commitment
                 uid = resolve_user_id(chat_id)
-                target_dt = datetime.now(IST).date()
+                target_dt = timeutil.today(IST)
                 if any(w in t_low for w in ("kal", "tomorrow", "next day")):
                     target_dt = target_dt + timedelta(days=1)
                 elif any(w in t_low for w in ("parso", "day after")):
@@ -1561,7 +1562,7 @@ async def connected_user_gmail_monitor_loop():
                             try:
                                 from services.clash_detector import detect_schedule_clash
                                 if dt_str and dt_str != "Check email details":
-                                    today_ist = datetime.now(IST).date()
+                                    today_ist = timeutil.today(IST)
                                     clash_res = await detect_schedule_clash(chat_id, today_ist, dt_str, duration_minutes=45, exclude_title=comp_str)
                                     if clash_res and clash_res.get("has_clash"):
                                         alert_text += f"\n\n⚠️ **Schedule Conflict Alert:** Is samay aapke schedule mein already '{clash_res['message']}' hai! Ek baar apna calendar zaroor review karein."
@@ -1947,7 +1948,7 @@ async def prepare_google_action(chat_id, r):
         if not to or not EMAIL_OK.match(to) or not subject or not body:
             await say(chat_id, "Email bhejne ke liye recipient email, subject aur message chahiye. Example: 'Send an email to name@example.com, subject Test, message Hello'.")
             return
-        pending = {'kind':'send_email','to':to,'subject':subject,'body':body, 'created_at': datetime.now(IST)}
+        pending = {'kind':'send_email','to':to,'subject':subject,'body':body, 'created_at': timeutil.now(IST)}
         PENDING_GOOGLE_ACTIONS[chat_id] = pending
         await say(chat_id, f"Please confirm — I will send this email from your connected Gmail account:\nTo: {to}\nSubject: {subject}\nMessage: {body}\n\nReply yes to send or no to cancel.")
     elif intent == 'upload_file':
@@ -1958,7 +1959,7 @@ async def prepare_google_action(chat_id, r):
         folders = await list_drive_folders(chat_id)
         folder = next((f for f in folders if f.get('name','').lower() == 'ai assistant'), None)
         folder_id = folder.get('id') if folder else None
-        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'upload_file','filename':filename,'content':content,'folder_id':folder_id, 'created_at': datetime.now(IST)}
+        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'upload_file','filename':filename,'content':content,'folder_id':folder_id, 'created_at': timeutil.now(IST)}
         folder_name = folder.get('name') if folder else 'My Drive root'
         await say(chat_id, f"Please confirm — upload/create `{filename}` in Google Drive ({folder_name}) with this content:\n{content}\n\nReply yes to upload or no to cancel.")
     elif intent == 'create_meeting':
@@ -2010,7 +2011,7 @@ async def prepare_google_action(chat_id, r):
         if day_commitments:
             conflict_msg += "📌 **Existing Commitments:** Us din aapka yeh commitment bhi hai: " + ", ".join(day_commitments) + "\n\n"
 
-        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees, 'created_at': datetime.now(IST)}
+        PENDING_GOOGLE_ACTIONS[chat_id] = {'kind':'create_meeting','title':title,'start_iso':start_iso,'duration_minutes':r.get('duration_minutes',30),'attendees':attendees, 'created_at': timeutil.now(IST)}
         confirm_text = f"{conflict_msg}Please confirm — create this Google Calendar meeting with a Google Meet link?\nTitle: {title}\nStart: {start_iso} (India time)\nDuration: {r.get('duration_minutes',30)} minutes\nAttendees: {', '.join(attendees) if attendees else 'None'}\n\nReply yes to create or no to cancel."
         await say(chat_id, confirm_text)
     elif intent == 'update_meeting':
@@ -2051,7 +2052,7 @@ async def prepare_google_action(chat_id, r):
             'new_title': final_title,
             'new_start_iso': start_iso,
             'duration_minutes': r.get('duration_minutes', 30),
-            'created_at': datetime.now(IST),
+            'created_at': timeutil.now(IST),
         }
         PENDING_GOOGLE_ACTIONS[chat_id] = pending
         title_change_text = f" with new title '{final_title}'" if new_title and new_title.lower() != old_title.lower() else ""
@@ -2080,7 +2081,7 @@ async def prepare_google_action(chat_id, r):
                     'kind': 'delete_meeting',
                     'event_id': event['id'],
                     'title': event.get('summary') or target_title or 'Meeting',
-                    'created_at': datetime.now(IST),
+                    'created_at': timeutil.now(IST),
                 }
                 PENDING_GOOGLE_ACTIONS[chat_id] = pending
                 await say(chat_id, f"Please confirm — delete this meeting from your Google Calendar?\nTitle: {event.get('summary')}\nStart: {event.get('start', {}).get('dateTime', '')}\n\nReply yes to delete or no to cancel.")
@@ -2207,7 +2208,7 @@ async def _begin_meeting_deletion(chat_id, clean):
                 'kind': 'delete_meeting',
                 'event_id': ev['id'],
                 'title': ev.get('summary') or 'Meeting',
-                'created_at': datetime.now(IST),
+                'created_at': timeutil.now(IST),
             }
             PENDING_GOOGLE_ACTIONS[chat_id] = pending
             formatted_time = format_event_time_ist(ev.get('start', {}).get('dateTime'))
@@ -2217,17 +2218,17 @@ async def _begin_meeting_deletion(chat_id, clean):
     # 3. Check local database reminders
     exact_times = _extract_requested_times(clean)
     if exact_times:
-        rows = find_meetings_at_times(chat_id, datetime.now(IST).date(), exact_times, clean)
+        rows = find_meetings_at_times(chat_id, timeutil.today(IST), exact_times, clean)
     else:
         before_time = _deletion_time(clean)
         if before_time:
-            rows = find_meetings_before(chat_id, datetime.now(IST).date(), before_time)
+            rows = find_meetings_before(chat_id, timeutil.today(IST), before_time)
         else:
             recent = find_recent_meetings(chat_id, limit=2)
             if recent:
                 rows = [recent[0]]
             else:
-                set_state(chat_id, "delete_meetings_target", json.dumps({"date": datetime.now(IST).date().isoformat(), "source": clean}))
+                set_state(chat_id, "delete_meetings_target", json.dumps({"date": timeutil.today(IST).isoformat(), "source": clean}))
                 await say(chat_id, "Kaunse meeting reminders delete karne hain? Exact time batao (jaise '5 baje' ya 17:00). Abhi kuch delete nahi hua.")
                 return True
 
@@ -2274,7 +2275,7 @@ async def _handle_meeting_offer(chat_id, clean, data):
 
 async def _handle_meeting_time_followup(chat_id, clean, data):
     payload = _state_payload(data)
-    parsed = parse_followup_time(clean, datetime.now(IST))
+    parsed = parse_followup_time(clean, timeutil.now(IST))
     if not parsed:
         if re.search(r"\b(cancel|cancel karo|rehne do|nahi|no)\b", clean.lower()):
             set_state(chat_id, None)
@@ -2315,7 +2316,7 @@ async def _handle_delete_meetings_confirmation(chat_id, clean, data, raw_text=""
             await say(chat_id, f"Done — {deleted} meeting reminder(s) delete kar diye ✅.")
             await handle_active(chat_id, rem_clean)
             return True
-        set_state(chat_id, "updated_reminders_offer", json.dumps({"date": datetime.now(IST).date().isoformat()}))
+        set_state(chat_id, "updated_reminders_offer", json.dumps({"date": timeutil.today(IST).isoformat()}))
         await say(chat_id, f"Done — {deleted} meeting reminder(s) delete kar diye. Kya aaj ki updated reminder list dikhaun?")
     else:
         await say(chat_id, "Koi item delete nahi hua. Database mein matching items dobara verify karna hoga.")
@@ -2560,7 +2561,7 @@ async def handle_active(chat_id, text):
                 u_tz = ZoneInfo(user_tz_str)
             except Exception:
                 u_tz = IST
-            now_iso = datetime.now(u_tz).isoformat()
+            now_iso = timeutil.now(u_tz).isoformat()
             try:
                 events = await google_list_calendar_events(chat_id, time_min_iso=now_iso, max_results=5)
                 meet_events = [ev for ev in events if ev.get('meet_url')]
@@ -2580,7 +2581,7 @@ async def handle_active(chat_id, text):
             return
 
     # Check if this message is a meeting follow-up like "monday 5 bje" or "tuesday 5pm" when recent context was about a meeting
-    parsed_time_active = parse_followup_time(text, datetime.now(IST))
+    parsed_time_active = parse_followup_time(text, timeutil.now(IST))
     if parsed_time_active and parsed_time_active[0] is not None:
         history = list(RECENT_CHAT_TURNS.get(chat_id, []))
         last_bot_turn = next((t["content"] for t in reversed(history) if t["role"] == "assistant"), "").lower()
@@ -2618,7 +2619,7 @@ async def handle_active(chat_id, text):
                 if r_item.get("intent") == "save_item" and r_item.get("item"):
                     await save_item_flow(chat_id, r_item["item"])
                 else:
-                    now_ist = datetime.now(IST)
+                    now_ist = timeutil.now(IST)
                     ex_prompt = (
                         f"Today is {now_ist.strftime('%A, %Y-%m-%d')}. "
                         "The user message may combine a file request with a reminder/task/commitment. "
@@ -3306,7 +3307,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             # Only consume this message as a time follow-up if a time was actually
             # parsed, or as a clear cancellation. Otherwise let the normal router
             # interpret it as a fresh request (e.g. "hi" or create a Meet link).
-            parsed_time = parse_followup_time(clean, datetime.now(IST))
+            parsed_time = parse_followup_time(clean, timeutil.now(IST))
             yn = yes_no(clean)
             if yn is None and not parsed_time:
                 yn = await classify_yes_no_any_language(
@@ -3363,7 +3364,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             return
 
         # Check if user is actually providing date/time or meeting details
-        parsed = parse_followup_time(clean, datetime.now(IST))
+        parsed = parse_followup_time(clean, timeutil.now(IST))
         has_time_kw = any(w in clean_low for w in ("baje", "pm", "am", "clock", ":00", ":30", ":15", ":45", "today", "tomorrow", "kal", "aaj", "parso", "shaam", "sham", "evening", "morning", "dopahar", "afternoon", "raat", "night"))
         has_meeting_kw = any(w in clean_low for w in ("meeting", "schedule", "title", "naam", "minute", "minutes", "min", "host", "link"))
 
@@ -3427,7 +3428,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say(chat_id, "Theek hai, meeting update cancel kar diya. Kuch update nahi hua.")
             return
         context = _state_payload(data)
-        parsed = parse_followup_time(clean, datetime.now(IST))
+        parsed = parse_followup_time(clean, timeutil.now(IST))
         has_time_kw = any(w in clean.lower() for w in ("baje", "pm", "am", "today", "tomorrow", "kal", "aaj", "parso"))
         if not parsed or parsed[0] is None:
             if not has_time_kw:
@@ -3447,7 +3448,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             'title': context.get('title', 'Meeting'),
             'new_start_iso': start_dt.isoformat(),
             'duration_minutes': context.get('duration_minutes', 30),
-            'created_at': datetime.now(IST),
+            'created_at': timeutil.now(IST),
         }
         PENDING_GOOGLE_ACTIONS[chat_id] = pending
         await say(chat_id, f"Please confirm — update '{context.get('title')}' to {start_dt.isoformat()}?\n(Existing Meet link will be preserved).\n\nReply yes to confirm or no to cancel.")
@@ -3460,7 +3461,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             yn = await classify_yes_no_any_language(clean, "The assistant asked whether to show the updated reminder list.")
         set_state(chat_id, None)
         if yn is True:
-            today = datetime.now(IST).date()
+            today = timeutil.today(IST)
             await show_range(chat_id, today, today)
         elif yn is False:
             await say(chat_id, "Theek hai, nahi dikhata. Thank you!")
@@ -3598,7 +3599,7 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 created_at = None
         if created_at and created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=IST)
-        age = (datetime.now(IST) - created_at).total_seconds() if created_at else 0
+        age = (timeutil.now(IST) - created_at).total_seconds() if created_at else 0
         if age > 900:  # Expired after 15 minutes
             PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
         else:
@@ -3612,12 +3613,12 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             else:
                 # If user replied with a new date/time for the pending meeting (e.g. "monday 5 bje" or "tuesday 5pm"):
                 if pending.get('kind') == 'create_meeting':
-                    parsed_new = parse_followup_time(clean, datetime.now(IST))
+                    parsed_new = parse_followup_time(clean, timeutil.now(IST))
                     if parsed_new and parsed_new[0] is not None:
                         new_due_time, new_due_date = parsed_new
                         new_dt = datetime.combine(new_due_date, new_due_time, tzinfo=IST)
                         pending['start_iso'] = new_dt.isoformat()
-                        pending['created_at'] = datetime.now(IST)
+                        pending['created_at'] = timeutil.now(IST)
 
                         time_conflicts, day_commitments = await detect_meeting_conflicts(chat_id, pending['start_iso'], pending.get('duration_minutes', 30))
                         conflict_msg = ""
@@ -3712,7 +3713,7 @@ def is_recent_document_query(chat_id: int, text: str) -> bool:
     doc = RECENT_DOCS.get(chat_id)
     if not doc:
         return False
-    age = (datetime.now(IST) - doc["timestamp"]).total_seconds()
+    age = (timeutil.now(IST) - doc["timestamp"]).total_seconds()
     if age > 7200:  # 2 hours validity
         return False
 
@@ -3763,7 +3764,7 @@ async def process_photo(chat_id, photo_list, caption=""):
             "content": analysis,
             "type": "image",
             "summary": analysis,
-            "timestamp": datetime.now(IST),
+            "timestamp": timeutil.now(IST),
         }
         record_chat_turn(chat_id, "user", f"[Sent Photo] {caption or ''}")
         record_chat_turn(chat_id, "assistant", analysis)
@@ -3827,7 +3828,7 @@ async def process_photo(chat_id, photo_list, caption=""):
                 PENDING_GOOGLE_ACTIONS[chat_id] = {
                     "kind": "save_item",
                     "item": item,
-                    "created_at": datetime.now(IST)
+                    "created_at": timeutil.now(IST)
                 }
                 confirm_msg = (
                     f"Maine aapke photo se ye details extract ki hain:\n\n"
@@ -3848,7 +3849,7 @@ async def process_photo(chat_id, photo_list, caption=""):
                     "start_iso": m_start,
                     "duration_minutes": r.get("duration_minutes", 30),
                     "attendees": r.get("attendees", []),
-                    "created_at": datetime.now(IST)
+                    "created_at": timeutil.now(IST)
                 }
                 confirm_msg = (
                     f"Maine aapke image se meeting details extract ki hain:\n\n"
@@ -3906,7 +3907,7 @@ async def process_document(chat_id, doc, caption=""):
             "content": text_content,
             "type": "document",
             "summary": "",
-            "timestamp": datetime.now(IST),
+            "timestamp": timeutil.now(IST),
         }
         record_chat_turn(chat_id, "user", f"[Sent Document: {file_name}] {caption or ''}")
 
@@ -3915,7 +3916,7 @@ async def process_document(chat_id, doc, caption=""):
             set_active_document(chat_id, {
                 "filename": file_name,
                 "content": text_content,
-                "timestamp": datetime.now(IST).isoformat(),
+                "timestamp": timeutil.now(IST).isoformat(),
             })
         except Exception as act_err:
             print("set_active_document error:", repr(act_err))
@@ -3961,7 +3962,7 @@ async def process_document(chat_id, doc, caption=""):
                         PENDING_GOOGLE_ACTIONS[chat_id] = {
                             "kind": "save_item",
                             "item": item,
-                            "created_at": datetime.now(IST)
+                            "created_at": timeutil.now(IST)
                         }
                         combined_msg = (
                             f"{summary}\n\n"
@@ -4006,7 +4007,7 @@ def reminder_text(label, category, title, amount, due_time):
 
 
 async def run_reminders():
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     for rid, chat_id, category, title, amount, due_date, due_time, label in get_pending_reminders(now):
         # Event nikal chuka (jaise laptop band tha aur 45+ mins ho gaye) to purana reminder mat bhejo
         if event_over(due_date, due_time, now):

@@ -17,6 +17,7 @@ import db
 from timing import IST
 import google_services
 import integrations
+import core.timeutil as timeutil
 from file_generator import build_contacts_excel, build_styled_pdf
 
 async def _resolve_user_timezone(chat_id: int):
@@ -219,7 +220,7 @@ class UpdateReminderArgs(BaseModel):
     force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
 
 class ListRemindersArgs(BaseModel):
-    date_str: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. The model semantically converts relative user expressions ('today', 'aaj', 'tomorrow', 'kal', day names) into the exact YYYY-MM-DD date. Defaults to today's date if omitted.")
+    date_str: Optional[str] = Field(None, description="Optional target date in YYYY-MM-DD format. Leave null or omit when user asks for today's reminders ('aaj', 'today') or general schedule; backend automatically defaults to today. Only provide for specific other dates (e.g. tomorrow, yesterday, or a specific calendar date).")
 
 class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
@@ -694,17 +695,16 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "list_reminders",
             "description": (
-                "List saved tasks, reminders, and appointments for a target date. Call this whenever the user asks about their "
+                "List saved tasks, reminders, and appointments. Call this whenever the user asks about their "
                 "schedule, tasks, or reminders (e.g. 'mere aajke reminder btana', 'aaj ke reminders dikhao', 'reminders check karo'). "
-                "The model must semantically convert relative temporal expressions (such as 'today', 'aaj', 'tomorrow', 'kal', day names) "
-                "into an exact ISO date YYYY-MM-DD anchored to Current Time."
+                "For today's reminders or general queries, leave date_str null or omitted so the server queries today's date."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "date_str": {
                         "type": ["string", "null"],
-                        "description": "Target date in YYYY-MM-DD format (e.g. '2026-11-05'). If omitted or null, defaults to today's date."
+                        "description": "Optional target date in YYYY-MM-DD format (e.g. for past or future dates). Omit or pass null for today."
                     }
                 }
             }
@@ -1397,7 +1397,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             tkt = get_active_ticket(chat_id)
             dt_str = (arguments.get("datetime_str") or (tkt.get("datetime_str") if tkt else None))
             tkt_dt = parse_ticket_datetime(dt_str) if dt_str else None
-            now_ist = datetime.now(IST)
+            now_ist = timeutil.now(IST)
             is_past = (tkt_dt < now_ist) if tkt_dt else False
             return {
                 "status": "success",
@@ -1874,7 +1874,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
         elif tool_name == "update_reminder":
             args = UpdateReminderArgs(**arguments)
             u_tz, _ = await _resolve_user_timezone(chat_id)
-            today_d = datetime.now(u_tz).date()
+            today_d = timeutil.today(u_tz)
 
             target_kw = (args.title or "").strip().lower()
             rem_id = args.reminder_id
@@ -1944,7 +1944,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             curr_dur = _safe_int(_get_row_val(matched_row, "duration_minutes", 5, 30), default=30)
 
             new_title = (args.title or orig_title).strip()
-            new_date = date.fromisoformat(args.due_date) if args.due_date else curr_date
+            if args.due_date:
+                ok_d, resolved_new_date, err_d = timeutil.resolve_date(args.due_date, tz=u_tz, allow_past=False)
+                if not ok_d:
+                    return {
+                        "action": "update_reminder",
+                        "tool_name": "update_reminder",
+                        "status": "error",
+                        "error": "invalid_date_or_in_past",
+                        "message": f"date {args.due_date} is invalid or in the past; today is {today_d.isoformat()} ({u_tz.key}); resend with correct date."
+                    }
+                new_date = resolved_new_date
+            else:
+                new_date = curr_date
             if isinstance(new_date, str):
                 new_date = date.fromisoformat(new_date)
 
@@ -2014,6 +2026,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
+                    "conflict_warning": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai.",
                     "title": new_title,
                     "due_date": new_date.isoformat(),
                     "due_time": args.due_time or (new_time.strftime("%H:%M") if new_time else None),
@@ -2063,14 +2076,21 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
         elif tool_name in ("create_reminder", "add_reminder"):
             args = CreateReminderArgs(**arguments)
             u_tz, _ = await _resolve_user_timezone(chat_id)
-            today_d = datetime.now(u_tz).date()
+            today_d = timeutil.today(u_tz)
 
-            # Date resolution
-            if not args.due_date:
-                d_val = today_d
-                args.due_date = d_val.isoformat()
-            else:
-                d_val = date.fromisoformat(args.due_date)
+            # Date resolution with strict validation
+            ok_d, d_val, err_d = timeutil.resolve_date(args.due_date, tz=u_tz, allow_past=False)
+            if not ok_d:
+                return {
+                    "action": "create_reminder",
+                    "tool_name": "create_reminder",
+                    "status": "error",
+                    "error": "invalid_date_or_in_past",
+                    "message": f"date {args.due_date} is invalid or in the past; today is {today_d.isoformat()} ({u_tz.key}); resend with correct date.",
+                    "today": today_d.isoformat(),
+                    "timezone": u_tz.key
+                }
+            args.due_date = d_val.isoformat()
 
             # Time resolution
             t_val = None
@@ -2175,6 +2195,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
+                    "conflict_warning": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai.",
                     "title": clean_title,
                     "due_date": args.due_date,
                     "due_time": args.due_time,
@@ -2227,7 +2248,6 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 from main import get_valid_google_connection_by_chat_id
                 is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
                 if is_conn and d_val and t_val:
-                    import google_services
                     ev_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
                     ev_end_dt = ev_start_dt + timedelta(minutes=dur_mins)
                     await google_services.create_calendar_event(
@@ -2333,7 +2353,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 }
             else:
                 # If not found or empty title, fetch active reminders to guide user
-                today_items = items_for_date(can_cid, datetime.now(IST).date())
+                today_items = items_for_date(can_cid, timeutil.today(IST))
                 if today_items:
                     rem_lines = [f"• {it[1]}" + (f" ({it[3].strftime('%I:%M %p')})" if it[3] else "") for it in today_items]
                     active_hint = "\n\nAapke active reminders:\n" + "\n".join(rem_lines)
@@ -2355,39 +2375,58 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
         elif tool_name == "list_reminders":
             args = ListRemindersArgs(**arguments)
             u_tz, _ = await _resolve_user_timezone(chat_id)
-            today_d = datetime.now(u_tz).date()
+            today_d = timeutil.today(u_tz)
+            now_dt = timeutil.now(u_tz)
 
             target_d = today_d
             if args.date_str:
                 raw_d = str(args.date_str).strip()
-                try:
-                    parsed_d = date.fromisoformat(raw_d[:10])
-                    # Temporal anchor: If model passed a pre-training cutoff past year (e.g. 2024 or 2025), anchor to today's year
-                    if parsed_d.year < today_d.year:
-                        target_d = today_d
-                    else:
-                        target_d = parsed_d
-                except Exception:
+                ok_d, resolved_d, _ = timeutil.resolve_date(raw_d, tz=u_tz, allow_past=True)
+                if ok_d and resolved_d:
+                    target_d = resolved_d
+                else:
                     target_d = today_d
 
             items = db.items_for_date(chat_id, target_d)
             # items_for_date returns: (category, title, amount, due_time, id, duration_minutes, due_date)
-            formatted = [
-                {
+            cur_time = now_dt.time()
+            formatted = []
+            for it in items:
+                t_val = it[3]
+                t_obj = None
+                if t_val:
+                    if isinstance(t_val, dtime):
+                        t_obj = t_val
+                    elif isinstance(t_val, str):
+                        try:
+                            parts = [int(p) for p in t_val.split(":")[:2]]
+                            t_obj = dtime(parts[0], parts[1])
+                        except Exception:
+                            t_obj = None
+
+                status_tag = "UPCOMING"
+                if target_d < today_d:
+                    status_tag = "PAST"
+                elif target_d == today_d and t_obj:
+                    status_tag = "PAST" if t_obj < cur_time else "UPCOMING"
+
+                formatted.append({
                     "id": it[4],
                     "category": it[0],
                     "title": it[1],
                     "due_date": target_d.isoformat(),
-                    "due_time": str(it[3]) if it[3] else None,
-                    "duration_minutes": it[5] if len(it) > 5 and it[5] is not None else 30
-                }
-                for it in items
-            ]
-            is_today = (target_d == today_d)
+                    "due_time": str(t_val) if t_val else None,
+                    "duration_minutes": it[5] if len(it) > 5 and it[5] is not None else 30,
+                    "status": status_tag
+                })
+
+            meta = timeutil.date_metadata(target_d, today_d)
             return {
-                "date": target_d.isoformat(),
-                "is_today": is_today,
-                "day_label": "today" if is_today else target_d.strftime("%A, %d %B %Y"),
+                "date": meta["date"],
+                "today": meta["today"],
+                "relative": meta["relative"],
+                "is_today": meta["is_today"],
+                "day_label": meta["day_label"],
                 "count": len(formatted),
                 "reminders": formatted
             }
@@ -2395,18 +2434,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
         elif tool_name == "get_schedule":
             args = GetScheduleArgs(**arguments)
             u_tz, _ = await _resolve_user_timezone(chat_id)
-            today_d = datetime.now(u_tz).date()
+            today_d = timeutil.today(u_tz)
             target_d = today_d
             if args.target_date:
                 raw_d = str(args.target_date).strip()
-                try:
-                    parsed_d = date.fromisoformat(raw_d[:10])
-                    # Temporal anchor: If model passed a pre-training cutoff past year (e.g. 2024 or 2025), anchor to today's year
-                    if parsed_d.year < today_d.year:
-                        target_d = today_d
-                    else:
-                        target_d = parsed_d
-                except Exception:
+                ok_d, resolved_d, _ = timeutil.resolve_date(raw_d, tz=u_tz, allow_past=True)
+                if ok_d and resolved_d:
+                    target_d = resolved_d
+                else:
                     target_d = today_d
 
             try:
@@ -2452,7 +2487,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 print("Interval availability check fallback:", exc)
 
             from main import get_unified_schedule, format_event_clock_ist
-            target_d = date.fromisoformat(args.target_date) if args.target_date else datetime.now(IST).date()
+            target_d = date.fromisoformat(args.target_date) if args.target_date else timeutil.today(IST)
             sched = await get_unified_schedule(chat_id, target_d)
 
             st_clean = args.start_time.strip().lower()
@@ -2543,7 +2578,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if not is_conn:
                 return {"status": "error", "message": "Google account is not connected."}
             u_tz, _ = await _resolve_user_timezone(chat_id)
-            events = await google_services.list_calendar_events(chat_id, time_min_iso=datetime.now(u_tz).isoformat(), max_results=5)
+            events = await google_services.list_calendar_events(chat_id, time_min_iso=timeutil.now(u_tz).isoformat(), max_results=5)
             meet_evs = [ev for ev in events if ev.get("meet_url")]
             if meet_evs:
                 ev = meet_evs[0]
@@ -3638,18 +3673,20 @@ def is_action_or_tool_intent(user_text: str) -> bool:
     return False
 
 
-def route_tools(user_text: str) -> List[Dict[str, Any]]:
+def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Intelligent Dynamic Tool Routing:
     - Core baseline tools are ALWAYS provided (Reminders, Schedule, Contacts, Memory, Integrations, Places, Web).
-    - Relevant domain tools (GitHub, Notion, Email, Weather, Lists, Finance) are dynamically attached based on user intent.
+    - Relevant domain tools (GitHub, Notion, Email, Weather, Lists, Finance) are dynamically attached based on user intent and multi-turn context.
     - Zero RAM overhead: eliminates cold-start blocking loops.
     """
     core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
     low = (user_text or "").lower().strip()
+    ctx_low = (context_text or "").lower().strip()
+    combined = f"{low} {ctx_low}".strip()
 
-    # Fast-path: Greetings and short casual phrases need only core tools (0ms)
-    if not low or low in ("hi", "hello", "hey", "hlo", "hii", "namaste", "ping", "test", "ok", "okay", "bye") or (len(low.split()) == 1 and low in ("hi", "hello", "hey", "hlo", "hii")):
+    # Fast-path: Pure greetings and short casual phrases with no context need only core tools (0ms)
+    if (not low or low in ("hi", "hello", "hey", "hlo", "hii", "namaste", "ping", "test", "bye")) and not ctx_low:
         return core_tools
 
     domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
@@ -3657,27 +3694,27 @@ def route_tools(user_text: str) -> List[Dict[str, Any]]:
 
     for dt in domain_tools:
         fname = dt["function"]["name"]
-        if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in low for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
+        if fname in ("list_github_repos", "get_github_file", "update_github_file", "list_github_issues") and any(w in combined for w in ("git", "github", "repo", "readme", "commit", "issue", "pr")):
             extra_tools.append(dt)
-        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and any(w in low for w in ("notion", "workspace", "notes section", "note", "notes", "code block", "heading")):
+        elif fname in ("create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content") and (any(w in low for w in ("notion", "workspace", "code block", "heading")) or (any(w in low for w in ("note", "notes", "page")) and "notion" in combined)):
             extra_tools.append(dt)
-        elif fname in ("send_email", "search_user_emails") and any(w in low for w in ("mail", "email", "gmail", "inbox", "sent")):
+        elif fname in ("send_email", "search_user_emails") and any(w in combined for w in ("mail", "email", "gmail", "inbox", "sent")):
             extra_tools.append(dt)
-        elif fname in ("get_weather",) and any(w in low for w in ("weather", "mausam", "temperature", "rain", "barish", "cold", "garmi")):
+        elif fname in ("get_weather",) and any(w in combined for w in ("weather", "mausam", "temperature", "rain", "barish", "cold", "garmi")):
             extra_tools.append(dt)
-        elif fname in ("convert_currency", "get_market_price", "calculate") and any(w in low for w in ("currency", "dollar", "usd", "inr", "convert", "gold", "silver", "bitcoin", "crypto", "calc", "%", "hisaab")):
+        elif fname in ("convert_currency", "get_market_price", "calculate") and any(w in combined for w in ("currency", "dollar", "usd", "inr", "convert", "gold", "silver", "bitcoin", "crypto", "calc", "%", "hisaab", "sona", "chandi", "bhav", "rate", "price")):
             extra_tools.append(dt)
-        elif fname in ("request_master_privacy_wipe", "clear_chat_history") and any(w in low for w in ("wipe", "clear chat", "delete my data", "saari memory", "clear memory")):
+        elif fname in ("request_master_privacy_wipe", "clear_chat_history") and any(w in combined for w in ("wipe", "clear chat", "delete my data", "saari memory", "clear memory")):
             extra_tools.append(dt)
-        elif fname in ("manage_smart_list",) and any(w in low for w in ("list", "smart list", "grocery", "saman", "items")):
+        elif fname in ("manage_smart_list",) and any(w in combined for w in ("list", "smart list", "grocery", "saman", "items")):
             extra_tools.append(dt)
-        elif fname in ("get_movie_showtimes",) and any(w in low for w in ("movie", "cinema", "showtime", "theatre")):
+        elif fname in ("get_movie_showtimes",) and any(w in combined for w in ("movie", "cinema", "showtime", "theatre")):
             extra_tools.append(dt)
-        elif fname in ("create_packing_list",) and any(w in low for w in ("packing", "luggage", "travel list", "pack")):
+        elif fname in ("create_packing_list",) and any(w in combined for w in ("packing", "luggage", "travel list", "pack")):
             extra_tools.append(dt)
-        elif fname in ("get_measurements", "get_memory_health_radar") and any(w in low for w in ("sugar", "glucose", "bp", "blood pressure", "health", "reading")):
+        elif fname in ("get_measurements", "get_memory_health_radar") and any(w in combined for w in ("sugar", "glucose", "bp", "blood pressure", "health", "reading")):
             extra_tools.append(dt)
-        elif fname in ("check_availability", "get_meet_link", "update_meeting", "delete_meeting") and any(w in low for w in ("meeting", "meet", "slot", "free slot", "availability", "clash")):
+        elif fname in ("check_availability", "get_meet_link", "update_meeting", "delete_meeting") and any(w in combined for w in ("meeting", "meet", "slot", "free slot", "availability", "clash")):
             extra_tools.append(dt)
 
     return core_tools + extra_tools

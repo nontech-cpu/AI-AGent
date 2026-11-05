@@ -6,6 +6,7 @@ so follow-ups like 'pehla wala', 'usko close kar do', 'dusra dikhao' work seamle
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from timing import IST
+import core.timeutil as timeutil
 
 # Thread-safe in-memory cache of active conversational context per chat
 _ACTIVE_CONTEXT_STORE: Dict[int, Dict[str, Any]] = {}
@@ -51,7 +52,7 @@ def update_active_context(
         ctx["objects"] = objects[:15]
     if url is not None:
         ctx["last_url"] = url
-    ctx["updated_at"] = datetime.now(IST).isoformat()
+    ctx["updated_at"] = timeutil.now(IST).isoformat()
 
 def get_active_url(chat_id: int) -> Optional[Dict[str, Any]]:
     """Retrieves the last active URL (Notion page, Meet link, GitHub file, Drive doc)."""
@@ -349,7 +350,7 @@ def get_episodic_context(chat_id: int) -> Dict[str, Any]:
                 {"topic": "hotel", "summary": "Jaipur hotel booking query (status: unbooked, no charges incurred)"}
             ],
             "last_active_topic": None,
-            "updated_at": datetime.now(IST).isoformat()
+            "updated_at": timeutil.now(IST).isoformat()
         }
     return _EPISODIC_MEMORY_STORE[chat_id]
 
@@ -373,7 +374,7 @@ def update_episodic_context(
         episodes = ctx.setdefault("recent_episodes", [])
         episodes.append({"topic": topic or "general", "summary": new_episode})
         ctx["recent_episodes"] = episodes[-5:]
-    ctx["updated_at"] = datetime.now(IST).isoformat()
+    ctx["updated_at"] = timeutil.now(IST).isoformat()
 
 
 def format_episodic_context(chat_id: int) -> str:

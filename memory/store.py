@@ -1776,7 +1776,7 @@ def update_commitment_status(
 def get_commitments_due_for_nudge(now_dt: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """Returns all pending commitments ready to be nudged (nudge_count < max_nudges)."""
     _init_sqlite_if_needed()
-    now_dt = now_dt or datetime.now()
+    now_dt = now_dt or timeutil.now(IST)
     is_pg = db.engine.dialect.name == "postgresql"
 
     with db.engine.connect() as conn:

@@ -10,6 +10,7 @@ from typing import Dict, Any, List
 from sqlalchemy import text
 import db
 from timing import IST
+import core.timeutil as timeutil
 
 logger = logging.getLogger("saptic_health_radar")
 
@@ -33,7 +34,7 @@ def compute_memory_health_score(user_id_or_chat_id: int) -> Dict[str, Any]:
       + Reward for recently completed tasks: +2 points each (up to +10)
     """
     uid = _resolve_uid(user_id_or_chat_id)
-    today = datetime.now(IST).date()
+    today = timeutil.today(IST)
     today_str = str(today)
 
     score = 100
@@ -129,7 +130,7 @@ def compute_memory_health_score(user_id_or_chat_id: int) -> Dict[str, Any]:
         "deductions": deductions,
         "accomplishments": accomplishments,
         "action_recommendations": action_recommendations,
-        "calculated_at": datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST"),
+        "calculated_at": timeutil.now(IST).strftime("%d %b %Y, %I:%M %p IST"),
     }
 
 

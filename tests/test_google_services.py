@@ -44,11 +44,10 @@ async def test_create_meeting_success():
             
             assert res["id"] == "cal_evt_12345"
             assert res["meet_url"] == "https://meet.google.com/abc-defg-hij"
-            mock_req.assert_called_once()
-            call_args = mock_req.call_args
-            assert call_args[0][0] == "POST"
-            assert "calendar" in call_args[0][1]
-            assert call_args[1]["json"]["summary"] == "Client Discussion"
+            assert mock_req.call_count == 2
+            post_call = [c for c in mock_req.call_args_list if c[0][0] == "POST"][0]
+            assert "calendar" in post_call[0][1]
+            assert post_call[1]["json"]["summary"] == "Client Discussion"
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
+import core.timeutil as timeutil
 
 IST = ZoneInfo("Asia/Kolkata")
 MORNING = dtime(9, 0)   # din wale reminders ka time
@@ -7,6 +8,11 @@ URGENT_MINUTES = 10     # itne ya kam minute me ho to turant alert
 
 
 def _at(d, t):
+    if isinstance(d, str):
+        from datetime import date
+        d = date.fromisoformat(d)
+    if isinstance(t, str):
+        t = dtime.fromisoformat(t)
     return datetime.combine(d, t, tzinfo=IST)
 
 
@@ -18,7 +24,7 @@ def parse_followup_time(message, now=None):
 def build_plan(due_date, due_time, now=None):
     """Returns {"status": none|past|urgent|scheduled, "minutes": int|None,
     "reminders": [(remind_at, label), ...]}"""
-    now = now or datetime.now(IST)
+    now = now or timeutil.now(IST)
     if due_date is None:
         return {"status": "none", "minutes": None, "reminders": []}
 
@@ -67,7 +73,7 @@ def event_over(due_date, due_time, now):
 
 
 def fmt_when(at, now=None):
-    now = now or datetime.now(IST)
+    now = now or timeutil.now(IST)
     at = at.astimezone(IST)
     if at.date() == now.date():
         day = "today"
@@ -91,4 +97,4 @@ def format_event_clock_ist(dt_str: str | None) -> str:
             dt_ist = dt.astimezone(IST)
         return dt_ist.strftime("%I:%M %p").lstrip("0")
     except Exception:
-        return dt_str[11:16] if len(dt_str) >= 16 else (dt_str or "All day")
+        return dt_str[11:16] if len(dt_str) >= 16 else (dt_str or "All day")

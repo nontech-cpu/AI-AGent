@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from zoneinfo import ZoneInfo
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 import google_services
 
@@ -124,7 +125,7 @@ def normalize_to_ist(dt_input: Any, target_tz=None) -> datetime:
         return dt.astimezone(tz)
     except Exception:
         # Fallback to current time
-        return datetime.now(tz)
+        return timeutil.now(tz)
 
 
 def parse_activity_duration(activity_type: Optional[str] = None, text_content: Optional[str] = None) -> int:
@@ -192,7 +193,7 @@ async def check_interval_availability(
     Checks if user is free for an activity at a given time and date,
     detecting interval clashes (e.g. 5 PM movie clashing with 6 PM meeting).
     """
-    now_ist = datetime.now(IST)
+    now_ist = timeutil.now(IST)
 
     # 1. Resolve Target Date
     if target_date_str:
@@ -325,7 +326,7 @@ async def get_unified_daily_schedule(chat_id: int, target_date: Optional[date] =
     Reminders, and Contact commitments.
     """
     from main import get_unified_schedule
-    target_d = target_date or datetime.now(IST).date()
+    target_d = target_date or timeutil.today(IST)
     sched = await get_unified_schedule(chat_id, target_d)
 
     timeline = []

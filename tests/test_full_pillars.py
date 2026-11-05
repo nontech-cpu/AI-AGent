@@ -80,9 +80,14 @@ def init_test_db():
                 amount REAL,
                 due_date DATE,
                 due_time TIME,
+                duration_minutes INTEGER DEFAULT 30,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        try:
+            conn.execute(text("ALTER TABLE memory_items ADD COLUMN duration_minutes INTEGER DEFAULT 30"))
+        except Exception:
+            pass
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -473,7 +478,7 @@ async def test_reminder_conflict_detection():
         "due_date": today_str,
         "due_time": "17:00:00"
     })
-    assert res2.get("status") == "success"
+    assert res2.get("status") == "conflict_detected"
     assert res2.get("has_conflict") is True
     assert "conflict_warning" in res2
     assert "Meeting" in res2["conflict_warning"] or len(res2["conflicts"]) > 0

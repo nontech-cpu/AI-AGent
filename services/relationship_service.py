@@ -1,3 +1,4 @@
+from sqlalchemy import bindparam as text_bindparam
 """
 Saptic AI — Relationship Knowledge Graph & People CRM Engine
 Tracks kinship, roles, professional relationships, birthdays, and anniversaries.
@@ -10,6 +11,7 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy import text
 import db
 from timing import IST
+import core.timeutil as timeutil
 
 logger = logging.getLogger("saptic_relationship")
 
@@ -184,7 +186,12 @@ def format_relationships_context(user_id_or_chat_id: int) -> str:
         return ""
     items = []
     for r in rels[:8]:  # Limit to top 8 to stay strictly within tiny token budget
-        bday_str = f", bday: {r['birthday'].strftime('%d %b')}" if r.get("birthday") else ""
+        bday_raw = r.get("birthday")
+        if bday_raw:
+            b_obj = date.fromisoformat(bday_raw) if isinstance(bday_raw, str) else bday_raw
+            bday_str = f", bday: {b_obj.strftime('%d %b')}" if hasattr(b_obj, "strftime") else f", bday: {bday_raw}"
+        else:
+            bday_str = ""
         items.append(f"{r['name']} ({r['relationship']}{bday_str})")
     return "Known Relationships: " + "; ".join(items)
 
@@ -193,7 +200,7 @@ def get_upcoming_birthdays(user_id_or_chat_id: int, days_ahead: int = 2) -> List
     """Returns people whose birthday falls in the next N days."""
     uid = _resolve_uid(user_id_or_chat_id)
     rels = get_user_relationships(uid)
-    today = datetime.now(IST).date()
+    today = timeutil.today(IST)
     upcoming = []
 
     for r in rels:
@@ -201,6 +208,8 @@ def get_upcoming_birthdays(user_id_or_chat_id: int, days_ahead: int = 2) -> List
         if not bday:
             continue
         try:
+            if isinstance(bday, str):
+                bday = date.fromisoformat(bday)
             # Check birthday this year
             bday_this_year = date(today.year, bday.month, bday.day)
             delta = (bday_this_year - today).days
@@ -231,10 +240,16 @@ def record_relationship_interaction(user_id_or_chat_id: int, text_sample: str) -
         return 0
     try:
         with db.engine.begin() as conn:
-            conn.execute(
-                text("UPDATE user_relationships SET last_interacted_at = CURRENT_TIMESTAMP WHERE id = ANY(:ids) AND user_id = :uid"),
-                {"ids": matched_ids, "uid": uid}
-            )
+            if db.engine.dialect.name == "sqlite":
+                conn.execute(
+                    text("UPDATE user_relationships SET last_interacted_at = CURRENT_TIMESTAMP WHERE id IN :ids AND user_id = :uid").bindparams(text_bindparam("ids", expanding=True)),
+                    {"ids": matched_ids, "uid": uid}
+                )
+            else:
+                conn.execute(
+                    text("UPDATE user_relationships SET last_interacted_at = CURRENT_TIMESTAMP WHERE id = ANY(:ids) AND user_id = :uid"),
+                    {"ids": matched_ids, "uid": uid}
+                )
             return len(matched_ids)
     except Exception as exc:
         logger.error(f"record_relationship_interaction error: {exc}")
@@ -246,18 +261,33 @@ def get_dormant_relationships(user_id_or_chat_id: int, days_threshold: int = 30)
     uid = _resolve_uid(user_id_or_chat_id)
     try:
         with db.engine.connect() as conn:
-            rows = conn.execute(
-                text("""
-                    SELECT id, name, relationship, phone, last_interacted_at,
-                           DATE_PART('day', NOW() - COALESCE(last_interacted_at, created_at)) as days_since
-                    FROM user_relationships
-                    WHERE user_id = :uid
-                      AND COALESCE(last_interacted_at, created_at) < (NOW() - (:d || ' days')::INTERVAL)
-                    ORDER BY COALESCE(last_interacted_at, created_at) ASC
-                    LIMIT 3
-                """),
-                {"uid": uid, "d": days_threshold}
-            ).mappings().all()
+            if db.engine.dialect.name == "sqlite":
+                cutoff = timeutil.now(IST) - timedelta(days=days_threshold)
+                rows = conn.execute(
+                    text("""
+                        SELECT id, name, relationship, phone, last_interacted_at,
+                               CAST((julianday('now') - julianday(COALESCE(last_interacted_at, created_at))) AS INTEGER) as days_since
+                        FROM user_relationships
+                        WHERE user_id = :uid
+                          AND COALESCE(last_interacted_at, created_at) < :cutoff
+                        ORDER BY COALESCE(last_interacted_at, created_at) ASC
+                        LIMIT 3
+                    """),
+                    {"uid": uid, "cutoff": cutoff}
+                ).mappings().all()
+            else:
+                rows = conn.execute(
+                    text("""
+                        SELECT id, name, relationship, phone, last_interacted_at,
+                               DATE_PART('day', NOW() - COALESCE(last_interacted_at, created_at)) as days_since
+                        FROM user_relationships
+                        WHERE user_id = :uid
+                          AND COALESCE(last_interacted_at, created_at) < (NOW() - (:d || ' days')::INTERVAL)
+                        ORDER BY COALESCE(last_interacted_at, created_at) ASC
+                        LIMIT 3
+                    """),
+                    {"uid": uid, "d": days_threshold}
+                ).mappings().all()
             return [dict(r) for r in rows]
     except Exception as exc:
         logger.error(f"get_dormant_relationships error: {exc}")

@@ -48,7 +48,8 @@ def give_consent(chat_id):
     try:
         from datetime import datetime
         from timing import IST
-        now_ist = datetime.now(IST)
+        import core.timeutil as timeutil
+        now_ist = timeutil.now(IST)
         if now_ist.hour >= 11:
             record_morning_briefing_sent(chat_id, now_ist.strftime("%Y-%m-%d"), "onboarding_afternoon_skipped")
     except Exception:

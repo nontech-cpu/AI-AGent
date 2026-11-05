@@ -24,6 +24,7 @@ from services.storage import process_and_ingest_asset, upload_asset
 from services.elevenlabs_service import synthesize_speech, generate_morning_audio_briefing
 from services.mcp_client import discover_and_cache_mcp_tools
 from timing import IST
+import core.timeutil as timeutil
 
 logger = logging.getLogger("peculiar_frontier")
 
@@ -162,7 +163,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Thinking",
             "detail": "Analyzing user message and temporal intent...",
             "status": "running",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
         await asyncio.sleep(0.04)
 
@@ -172,7 +173,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Searching",
             "detail": f"Searching pgvector cosine distance in '{bubble_slug}' bubble...",
             "status": "running",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
         matched_mems = await asyncio.to_thread(db.search_bubble_memories_cosine, chat_id, req.message, bubble_slug=bubble_slug, limit=5)
         yield format_event({
@@ -180,7 +181,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Searching",
             "detail": f"Found {len(matched_mems)} relevant memories in pgvector",
             "status": "completed",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
 
         # Step 3: Checking 4D Timeline
@@ -189,7 +190,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Checking",
             "detail": "Checking continuous timeline & schedule collision guards...",
             "status": "running",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
         timeline_spans = await asyncio.to_thread(get_user_timeline_spans, chat_id)
         yield format_event({
@@ -197,7 +198,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Checking",
             "detail": f"Timeline validated ({len(timeline_spans)} spans active)",
             "status": "completed",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
 
         # Step 4: Executing Agent Turn
@@ -206,7 +207,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Executing",
             "detail": "Executing autonomous partner reasoning & tool calls...",
             "status": "running",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
         agent_task = asyncio.create_task(run_agent_turn(chat_id, req.message, channel="web"))
         while not agent_task.done():
@@ -225,7 +226,7 @@ async def assistant_chat(req: ChatRequest, request: Request):
             "name": "Executing",
             "detail": f"Action complete ({len(tools_executed)} tools invoked)",
             "status": "completed",
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": timeutil.now(IST).isoformat()
         })
 
         # Step 5: Streaming Token Deltas

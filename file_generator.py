@@ -2,6 +2,8 @@ import io
 import os
 import re
 from datetime import datetime
+import core.timeutil as timeutil
+from timing import IST
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -147,7 +149,7 @@ def build_styled_pdf(title: str, sections: list[dict], author: str = "PeculiarAI
 
     story = [
         Paragraph(title, title_style),
-        Paragraph(f"Prepared by {author} • Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}", subtitle_style),
+        Paragraph(f"Prepared by {author} • Generated on {timeutil.now(IST).strftime('%d %B %Y, %I:%M %p')}", subtitle_style),
         HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#1F4E79'), spaceBefore=2, spaceAfter=14),
     ]
 

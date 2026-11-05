@@ -19,6 +19,7 @@ load_dotenv()
 logger = logging.getLogger("peculiar_agent_loop")
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from memory.retrieval import assemble_memory_context
@@ -420,12 +421,29 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     # 5. Semantic Context-Aware Tool Suite (Embedding similarity between message and tool descriptions, no hardcoded regex gates)
+    context_hint = ""
+    if prior_turns:
+        for pt in reversed(prior_turns):
+            if pt.get("role") == "assistant":
+                context_hint = (pt.get("text") or pt.get("content") or "").strip()
+                if context_hint:
+                    break
+
     from agent.tools import route_tools
-    effective_tools = route_tools(user_text)
+    effective_tools = route_tools(user_text, context_text=context_hint)
 
     MAX_TOOL_ITERATIONS = 6
     current_model = model
     executed_tool_signatures = set()
+    trace_provider = "Gemini" if gemini_key else "Groq"
+    trace_model = current_model
+    trace_fallback_used = False
+    trace_fallback_reason = None
+    trace_llm_calls = 0
+    trace_prompt_tokens = 0
+    trace_completion_tokens = 0
+    trace_error_type = None
+    trace_memory_status = "ok" if (mem_ctx and mem_ctx.get("relevant_memories")) else "empty"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -481,7 +499,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "name": "Gemini",
                     "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
                     "headers": {"Authorization": f"Bearer {gemini_key}", "Content-Type": "application/json"},
-                    "models": ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"]
+                    "models": ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]
                 })
             if groq_key:
                 backup_key = os.getenv("GROQ_API_KEY_BACKUP")
@@ -511,8 +529,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         )
                         if resp.status_code == 200:
                             current_model = m_candidate
+                            trace_provider = p_name
+                            trace_model = m_candidate
                             break
                         else:
+                            trace_fallback_used = True
+                            trace_fallback_reason = f"{p_name} {m_candidate} returned {resp.status_code}"
                             logger.info(f"{p_name} {m_candidate} status {resp.status_code}: {resp.text[:100]}")
                             if resp.status_code == 429:
                                 try:
@@ -534,6 +556,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 break
 
             resp_data = resp.json()
+            trace_llm_calls += 1
+            usage_data = resp_data.get("usage", {})
+            trace_prompt_tokens += usage_data.get("prompt_tokens", 0)
+            trace_completion_tokens += usage_data.get("completion_tokens", 0)
             choice = resp_data["choices"][0]
             choice_msg = choice["message"]
             total_tokens += resp_data.get("usage", {}).get("total_tokens", 0)
@@ -682,18 +708,38 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             "to": tool_result.get("to"),
                             "subject": tool_result.get("subject", "No Subject"),
                             "body": tool_result.get("body", ""),
-                            "created_at": datetime.now(IST).isoformat()
+                            "created_at": timeutil.now(IST).isoformat()
                         }
+                        low_u = (user_text or "").strip().lower()
+                        is_initial_draft = any(k in low_u for k in ("subject", "body", "@", "mailto", "mail to", "email to", "send a mail", "send an email"))
+                        is_affirmative = not is_initial_draft and (
+                            low_u in ("yes", "ha", "haan", "yep", "sure", "ok", "okay", "send", "proceed", "send it", "bhej do", "confirm", "send mail", "send email")
+                            or (len(low_u.split()) <= 4 and classify_confirmation_intent(user_text, payload)[0] == "confirm")
+                        )
+                        if is_affirmative:
+                            import google_services
+                            try:
+                                msg_id = await google_services.send_email(
+                                    chat_id=chat_id,
+                                    to=payload["to"],
+                                    subject=payload["subject"],
+                                    body=payload["body"]
+                                )
+                                final_reply = f"Email successfully sent to {payload['to']} (Subject: {payload['subject']})."
+                                break
+                            except Exception as em_err:
+                                final_reply = f"Failed to send email to {payload['to']}: {em_err}"
+                                break
                         pending_action = payload
                         save_pending_action(chat_id, "send_email", payload)
                         from main import PENDING_GOOGLE_ACTIONS
                         PENDING_GOOGLE_ACTIONS[chat_id] = payload
                         final_reply = (
-                            f"Please confirm — send this email from your connected Gmail?\n\n"
-                            f"📤 **To:** {payload['to']}\n"
-                            f"📝 **Subject:** {payload['subject']}\n"
-                            f"💬 **Message:** {payload['body']}\n\n"
-                            f"Reply yes to send or no to cancel."
+                            f"Please confirm 📤 send this email from your connected Gmail?\n\n"
+                            f"• **To:** {payload['to']}\n"
+                            f"• **Subject:** {payload['subject']}\n"
+                            f"• **Body:** {payload['body']}\n\n"
+                            "Reply 'yes' to send, or let me know what changes to make."
                         )
                         break
 
@@ -704,7 +750,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             "filename": tool_result.get("filename", "notes.txt"),
                             "content": tool_result.get("content", ""),
                             "folder_id": tool_result.get("folder_id"),
-                            "created_at": datetime.now(IST).isoformat()
+                            "created_at": timeutil.now(IST).isoformat()
                         }
                         pending_action = payload
                         save_pending_action(chat_id, "upload_file", payload)
@@ -724,7 +770,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             "action": "delete_meeting",
                             "event_id": tool_result.get("event_id"),
                             "title": tool_result.get("title", "Meeting"),
-                            "created_at": datetime.now(IST).isoformat()
+                            "created_at": timeutil.now(IST).isoformat()
                         }
                         pending_action = payload
                         save_pending_action(chat_id, "delete_meeting", payload)
@@ -744,7 +790,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             "start_iso": tool_result.get("start_iso"),
                             "duration_minutes": tool_result.get("duration_minutes", 30),
                             "attendees": tool_result.get("attendees", []),
-                            "created_at": datetime.now(IST).isoformat()
+                            "created_at": timeutil.now(IST).isoformat()
                         }
                         pending_action = payload
                         save_pending_action(chat_id, tool_result.get("action", "create_meeting"), payload)
@@ -1030,7 +1076,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "due_time": tr.get("due_time"),
                     "due_date": tr.get("due_date"),
                     "force": True,
-                    "created_at": datetime.now(IST).isoformat()
+                    "created_at": timeutil.now(IST).isoformat()
                 }
                 save_pending_action(chat_id, "create_reminder", payload_conf)
                 pending_action = payload_conf
@@ -1084,25 +1130,23 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         f"tools={tool_calls_executed} retrieved={retrieved_summary}"
     )
 
-    # Immediately persist conversation turn so subsequent turns have perfect history
-    try:
-        await asyncio.to_thread(db.log_chat_message, chat_id, "user", user_text, channel)
-        await asyncio.to_thread(db.log_chat_message, chat_id, "assistant", final_reply, channel)
-    except Exception as db_persist_err:
-        logger.warning(f"DB persist error: {db_persist_err}")
-
     # Mark morning briefing as sent if this is an early morning interaction
     try:
-        from timing import IST
-        now_ist = datetime.now(IST)
+        now_ist = timeutil.now(IST)
         today_str = now_ist.strftime("%Y-%m-%d")
         if 5 <= now_ist.hour < 11 and not db.is_morning_briefing_sent(chat_id, today_str):
             db.record_morning_briefing_sent(chat_id, today_str, trigger_kind="early_user_interaction")
     except Exception as emb_err:
         logger.warning(f"Early morning briefing record error: {emb_err}")
 
-    # Non-blocking background tracing (do NOT delay response delivery to user)
+    # Non-blocking background persistence & tracing (off critical latency path)
     async def _post_turn_persist():
+        try:
+            db.log_chat_message(chat_id, "user", user_text, channel)
+            db.log_chat_message(chat_id, "assistant", final_reply, channel)
+        except Exception as log_err:
+            logger.warning(f"Async log chat message error: {log_err}")
+
         try:
             from connectors.trace import log_turn_trace
             is_suspect = (not is_grounded) or (not is_fake_ok)
@@ -1118,7 +1162,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 reply_path="tool_calling_v2",
                 detected_connector=None,
                 is_suspect=is_suspect,
-                suspect_reason=suspect_reason
+                suspect_reason=suspect_reason,
+                provider=trace_provider,
+                model=trace_model,
+                fallback_used=trace_fallback_used,
+                fallback_reason=trace_fallback_reason,
+                llm_calls=trace_llm_calls,
+                prompt_tokens=trace_prompt_tokens,
+                completion_tokens=trace_completion_tokens,
+                error_type=trace_error_type,
+                memory_status=trace_memory_status
             )
         except Exception as post_err:
             logger.warning(f"Post-turn persist error: {post_err}")

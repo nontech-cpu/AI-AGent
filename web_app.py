@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import urllib.parse
 from datetime import datetime, timedelta
+import core.timeutil as timeutil
 
 import streamlit as st
 import requests
@@ -135,10 +136,10 @@ def init_oauth_state_db():
 
 def save_oauth_state(state):
     init_oauth_state_db()
-    cutoff = (datetime.utcnow() - timedelta(minutes=15)).isoformat()
+    cutoff = (timeutil.utcnow() - timedelta(minutes=15)).isoformat()
     with sqlite3.connect(OAUTH_STATE_DB) as conn:
         conn.execute("DELETE FROM oauth_states WHERE created_at < ?", (cutoff,))
-        conn.execute("INSERT INTO oauth_states(state, created_at) VALUES (?, ?)", (state, datetime.utcnow().isoformat()))
+        conn.execute("INSERT INTO oauth_states(state, created_at) VALUES (?, ?)", (state, timeutil.utcnow().isoformat()))
         conn.commit()
 
 
@@ -146,7 +147,7 @@ def consume_oauth_state(state):
     if not state:
         return False
     init_oauth_state_db()
-    cutoff = (datetime.utcnow() - timedelta(minutes=15)).isoformat()
+    cutoff = (timeutil.utcnow() - timedelta(minutes=15)).isoformat()
     with sqlite3.connect(OAUTH_STATE_DB) as conn:
         row = conn.execute("SELECT state FROM oauth_states WHERE state = ? AND created_at >= ?", (state, cutoff)).fetchone()
         if row:

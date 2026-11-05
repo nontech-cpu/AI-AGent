@@ -133,8 +133,9 @@ async def generate_morning_audio_briefing(chat_id: int) -> Tuple[Optional[bytes]
     from morning_briefing import generate_briefing_content
     from datetime import datetime
     from timing import IST
+    import core.timeutil as timeutil
 
-    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+    today_str = timeutil.today(IST).isoformat()
     text_briefing = generate_briefing_content(chat_id, today_str)
     
     clean_speech = clean_text_for_speech(text_briefing)

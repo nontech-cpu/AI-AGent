@@ -44,6 +44,8 @@ def test_structured_memory_bubbles():
         assert expected in slugs
 
     # 2. Create custom bubble
+    with db.engine.begin() as conn:
+        conn.execute(db.text("DELETE FROM memory_bubbles WHERE slug = 'investments'"))
     create_res = client.post(
         "/api/bubbles",
         headers={"X-Chat-Id": str(TEST_CHAT_ID)},

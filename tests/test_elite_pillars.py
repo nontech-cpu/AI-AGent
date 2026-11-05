@@ -32,16 +32,20 @@ from services.relationship_service import (
 from memory.store import resolve_user_id, create_commitment, get_commitments
 
 
+import pytest
+import core.timeutil as timeutil
+
 TEST_USER_CID = 887766551
 
 
+@pytest.mark.asyncio
 async def test_all_elite_pillars():
     print("=" * 60)
     print("SAPTIC AI — 5 ELITE COGNITIVE PILLARS VERIFICATION")
     print("=" * 60)
 
     uid = resolve_user_id(TEST_USER_CID)
-    today = datetime.now(IST).date()
+    today = timeutil.today(IST)
     tomorrow = today + timedelta(days=1)
 
     # -------------------------------------------------------------
@@ -165,9 +169,10 @@ async def test_all_elite_pillars():
 
     # Set interaction date to 40 days ago to test dormant detection
     with db.engine.begin() as conn:
+        past_40 = timeutil.now(IST) - timedelta(days=40)
         conn.execute(
-            db.text("UPDATE user_relationships SET last_interacted_at = (NOW() - INTERVAL '40 days') WHERE user_id = :uid AND LOWER(name) LIKE 'rohit%'"),
-            {"uid": uid}
+            db.text("UPDATE user_relationships SET last_interacted_at = :past WHERE user_id = :uid AND LOWER(name) LIKE 'rohit%'"),
+            {"past": past_40, "uid": uid}
         )
 
     dormant = get_dormant_relationships(TEST_USER_CID, days_threshold=30)

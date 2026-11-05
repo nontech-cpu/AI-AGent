@@ -123,5 +123,18 @@
     "notion page link do",
     "action items notion me append kr",
     "notion notes update kr"
+  ],
+  "mcp": [
+    "mcp servers dikhao",
+    "mcp list",
+    "mcp protocol tools",
+    "custom tool run karo",
+    "remote tool list",
+    "mcp status check",
+    "server list mcp",
+    "plugin tool execute",
+    "mcp call test",
+    "show mcp servers",
+    "mcp server connection"
   ]
 }

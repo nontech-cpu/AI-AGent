@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 import httpx
 import logging
+import core.timeutil as timeutil
 from db import engine, text, get_google_token
 from google_auth import decrypt_token, refresh_access_token
 
@@ -252,7 +253,7 @@ async def find_calendar_event(chat_id, title_query=None, target_date=None, targe
     except Exception:
         from timing import IST
         u_tz = IST
-    now = datetime.now(u_tz)
+    now = timeutil.now(u_tz)
     if target_date:
         if isinstance(target_date, str):
             target_date = d_date.fromisoformat(target_date)

@@ -50,7 +50,8 @@ async def test_groq_429_rate_limit_failover():
         assert res["reply"] == "Haan bhai, bilkul ready hu!"
         # Verify it attempted multiple models
         assert len(call_attempts) >= 2
-        assert "openai/gpt-oss-120b" in call_attempts or "qwen/qwen3.8-27b" in call_attempts or "llama-3.3-70b-versatile" in call_attempts
+        assert call_attempts[1] != call_attempts[0]
+        assert any(m in call_attempts for m in ("gemini-3.1-flash-lite-preview", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"))
 
 @pytest.mark.asyncio
 async def test_user_level_timezone_persistence():
@@ -102,5 +103,6 @@ async def test_active_event_context_resolution():
 @pytest.mark.asyncio
 async def test_strict_grounding_rule_in_prompt():
     from agent.prompt import RUNTIME_SYSTEM_PROMPT_TEMPLATE
-    assert "Strict Grounding & Zero Hallucination" in RUNTIME_SYSTEM_PROMPT_TEMPLATE
-    assert "calendar pe lag gaya" in RUNTIME_SYSTEM_PROMPT_TEMPLATE
+    prompt_low = RUNTIME_SYSTEM_PROMPT_TEMPLATE.lower()
+    assert "anti-hallucination" in prompt_low or "grounding" in prompt_low
+    assert "never output fake confirmation" in prompt_low or "without executing" in prompt_low

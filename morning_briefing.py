@@ -25,6 +25,7 @@ from typing import Dict, Any, Optional, Tuple, List
 import httpx
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 from utilities import get_weather
 from state.active_context import get_active_ticket, parse_ticket_datetime
@@ -77,7 +78,7 @@ def detect_early_morning_event(chat_id: int, target_date: date, unified_sched: O
     scheduled before 08:30 AM IST on target_date.
     Returns event info and adaptive wake-up trigger time.
     """
-    now_ist = datetime.now(IST)
+    now_ist = timeutil.now(IST)
 
     # 1. Check Active Travel Ticket (e.g. PNR / Flight / Train)
     try:
@@ -452,7 +453,7 @@ async def morning_briefing_job():
     Periodic job invoked in background loop.
     Iterates through all registered active users and checks if they need their morning briefing.
     """
-    now_ist = datetime.now(IST)
+    now_ist = timeutil.now(IST)
     users = db.get_all_active_telegram_users()
     tasks = []
     seen_canonical = set()

@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 
 logger = logging.getLogger("peculiar_timeline")
@@ -145,7 +146,7 @@ def get_user_timeline_spans(
     and active travel transit blocks around center_dt.
     """
     canon_cid = db.canonical_chat_id(chat_id)
-    center_dt = center_dt or datetime.now(IST)
+    center_dt = center_dt or timeutil.now(IST)
     start_window = center_dt - timedelta(days=window_days_back)
     end_window = center_dt + timedelta(days=window_days_forward)
 
@@ -383,7 +384,7 @@ def format_continuous_timeline_prompt_block(chat_id: int, now_ist: Optional[date
     Formats a chronological, continuous moving timeline block for runtime prompt injection.
     Eliminates midnight rollover confusion and prevents sycophantic hallucinations.
     """
-    now_ist = now_ist or datetime.now(IST)
+    now_ist = now_ist or timeutil.now(IST)
     spans = get_user_timeline_spans(chat_id, center_dt=now_ist, window_days_back=1, window_days_forward=3)
 
     if not spans:

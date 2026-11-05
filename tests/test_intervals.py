@@ -101,3 +101,14 @@ def test_find_free_slots():
     slots = find_free_slots(busy, t_date)
     assert len(slots) >= 2
     assert "10:00 AM – 02:00 PM" in slots[0]
+
+
+def test_timing_at_handles_string_dates():
+    from timing import _at, event_over
+    from datetime import datetime, time as dtime
+    res = _at('2026-11-05', '16:00:00')
+    assert res == datetime(2026, 11, 5, 16, 0, tzinfo=IST)
+    
+    now = datetime(2026, 11, 5, 17, 0, tzinfo=IST)
+    assert event_over('2026-11-05', '16:00:00', now) is True
+    assert event_over('2026-11-05', '16:30:00', now) is False

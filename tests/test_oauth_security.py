@@ -6,7 +6,7 @@ import pytest
 import google_auth
 
 
-def test_clean_public_base_url_sanitization():
+def test_clean_public_base_url_sanitization(monkeypatch):
     # Strips query strings copied from chatgpt or browser
     malformed = "https://peculiar-ai-backend.onrender.com?utm_source=chatgpt.com/google/callback"
     cleaned = google_auth.clean_public_base_url(malformed)
@@ -16,7 +16,8 @@ def test_clean_public_base_url_sanitization():
     trailing = "https://peculiar-ai-backend.onrender.com///"
     assert google_auth.clean_public_base_url(trailing) == "https://peculiar-ai-backend.onrender.com"
 
-    # Callback URL construction
+    # Callback URL construction with explicit public base url
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://peculiar-ai-backend.onrender.com")
     assert google_auth.callback_url() == "https://peculiar-ai-backend.onrender.com/google/callback"
 
 

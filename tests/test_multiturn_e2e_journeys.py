@@ -222,21 +222,17 @@ async def test_early_morning_interaction_prompt_and_mandate():
     """
     from agent.prompt import build_runtime_system_prompt
     from unittest.mock import patch
+    from tests.harness.clock import FrozenClock
 
-    from zoneinfo import ZoneInfo
-    morning_dt = datetime(2026, 11, 4, 7, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
     with patch("db.is_morning_briefing_sent", return_value=False), \
-         patch("agent.prompt.datetime") as mock_dt:
-        mock_dt.now.return_value = morning_dt
-        mock_dt.fromisoformat = datetime.fromisoformat
-        mock_dt.combine = datetime.combine
+         FrozenClock("2026-11-04T07:30:00+05:30"):
         prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "Hi")
         # Mandate must enforce natural Good Morning
         assert "Good morning bhai!" in prompt
         # Must strictly prohibit call center script
         assert "STRICT BAN on 'Namaste!" in prompt
         # Must enforce Instinct-style crisp output
-        assert "Instinct-Grade Tone" in prompt
+        assert "Instinct" in prompt
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy import text
 import db
 from timing import IST
+import core.timeutil as timeutil
 
 # Redaction patterns for secrets
 SECRET_PATTERNS = [
@@ -35,8 +36,9 @@ def redact_secrets(data: Any) -> Any:
     return data
 
 def init_trace_tables():
-    """Initializes turn_traces table if not present."""
+    """Initializes turn_traces table if not present and adds observability columns."""
     try:
+        from sqlalchemy import inspect
         is_pg = db.engine.dialect.name == "postgresql"
         with db.engine.begin() as conn:
             if is_pg:
@@ -58,6 +60,22 @@ def init_trace_tables():
                         created_at TIMESTAMPTZ DEFAULT now()
                     )
                 """))
+                cols = [
+                    "provider TEXT",
+                    "model TEXT",
+                    "fallback_used BOOLEAN DEFAULT FALSE",
+                    "fallback_reason TEXT",
+                    "llm_calls INTEGER DEFAULT 0",
+                    "prompt_tokens INTEGER DEFAULT 0",
+                    "completion_tokens INTEGER DEFAULT 0",
+                    "error_type TEXT",
+                    "memory_status TEXT"
+                ]
+                for c in cols:
+                    try:
+                        conn.execute(text(f"ALTER TABLE turn_traces ADD COLUMN IF NOT EXISTS {c}"))
+                    except Exception:
+                        pass
             else:
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS turn_traces (
@@ -77,6 +95,25 @@ def init_trace_tables():
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """))
+                try:
+                    insp = inspect(conn)
+                    existing = [col["name"] for col in insp.get_columns("turn_traces")]
+                    cols_to_add = [
+                        ("provider", "TEXT"),
+                        ("model", "TEXT"),
+                        ("fallback_used", "BOOLEAN DEFAULT 0"),
+                        ("fallback_reason", "TEXT"),
+                        ("llm_calls", "INTEGER DEFAULT 0"),
+                        ("prompt_tokens", "INTEGER DEFAULT 0"),
+                        ("completion_tokens", "INTEGER DEFAULT 0"),
+                        ("error_type", "TEXT"),
+                        ("memory_status", "TEXT")
+                    ]
+                    for col_name, col_type in cols_to_add:
+                        if col_name not in existing:
+                            conn.execute(text(f"ALTER TABLE turn_traces ADD COLUMN {col_name} {col_type}"))
+                except Exception:
+                    pass
     except Exception as exc:
         print("init_trace_tables warning:", exc)
 
@@ -94,9 +131,18 @@ def log_turn_trace(
     reply_path: str,
     detected_connector: Optional[str] = None,
     is_suspect: bool = False,
-    suspect_reason: Optional[str] = None
+    suspect_reason: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    fallback_used: bool = False,
+    fallback_reason: Optional[str] = None,
+    llm_calls: int = 1,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    error_type: Optional[str] = None,
+    memory_status: str = "ok"
 ) -> str:
-    """Logs a clean, redacted turn trace to DB."""
+    """Logs a clean, redacted turn trace to DB with comprehensive telemetry."""
     trace_id = f"tr_{uuid.uuid4().hex[:12]}"
     clean_msg = redact_secrets(message)
     clean_tools = redact_secrets(tools_called)
@@ -104,35 +150,92 @@ def log_turn_trace(
     clean_guards = redact_secrets(guard_results)
 
     try:
+        is_pg = db.engine.dialect.name == "postgresql"
         with db.engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO turn_traces (
-                        trace_id, chat_id, message, detected_connector,
-                        tools_called, tool_results, guard_results,
-                        latency_ms, tokens, reply_path, is_suspect, suspect_reason, created_at
-                    ) VALUES (
-                        :tid, :cid, :msg, :conn,
-                        CAST(:tc AS jsonb), CAST(:tr AS jsonb), CAST(:gr AS jsonb),
-                        :lat, :tok, :rp, :susp, :sreason, :cat
-                    )
-                """),
-                {
-                    "tid": trace_id,
-                    "cid": chat_id,
-                    "msg": clean_msg,
-                    "conn": detected_connector,
-                    "tc": json.dumps(clean_tools),
-                    "tr": json.dumps(clean_results),
-                    "gr": json.dumps(clean_guards),
-                    "lat": latency_ms,
-                    "tok": tokens,
-                    "rp": reply_path,
-                    "susp": is_suspect,
-                    "sreason": suspect_reason,
-                    "cat": datetime.now(IST)
-                }
-            )
+            if is_pg:
+                conn.execute(
+                    text("""
+                        INSERT INTO turn_traces (
+                            trace_id, chat_id, message, detected_connector,
+                            tools_called, tool_results, guard_results,
+                            latency_ms, tokens, reply_path, is_suspect, suspect_reason, created_at,
+                            provider, model, fallback_used, fallback_reason,
+                            llm_calls, prompt_tokens, completion_tokens, error_type, memory_status
+                        ) VALUES (
+                            :tid, :cid, :msg, :conn,
+                            CAST(:tc AS jsonb), CAST(:tr AS jsonb), CAST(:gr AS jsonb),
+                            :lat, :tok, :rp, :susp, :sreason, :cat,
+                            :prov, :mod, :fb_used, :fb_reason,
+                            :llm_c, :p_tok, :c_tok, :err_t, :mem_s
+                        )
+                    """),
+                    {
+                        "tid": trace_id,
+                        "cid": chat_id,
+                        "msg": clean_msg,
+                        "conn": detected_connector,
+                        "tc": json.dumps(clean_tools),
+                        "tr": json.dumps(clean_results),
+                        "gr": json.dumps(clean_guards),
+                        "lat": latency_ms,
+                        "tok": tokens,
+                        "rp": reply_path,
+                        "susp": is_suspect,
+                        "sreason": suspect_reason,
+                        "cat": timeutil.now(IST),
+                        "prov": provider,
+                        "mod": model,
+                        "fb_used": fallback_used,
+                        "fb_reason": fallback_reason,
+                        "llm_c": llm_calls,
+                        "p_tok": prompt_tokens,
+                        "c_tok": completion_tokens,
+                        "err_t": error_type,
+                        "mem_s": memory_status
+                    }
+                )
+            else:
+                conn.execute(
+                    text("""
+                        INSERT INTO turn_traces (
+                            trace_id, chat_id, message, detected_connector,
+                            tools_called, tool_results, guard_results,
+                            latency_ms, tokens, reply_path, is_suspect, suspect_reason, created_at,
+                            provider, model, fallback_used, fallback_reason,
+                            llm_calls, prompt_tokens, completion_tokens, error_type, memory_status
+                        ) VALUES (
+                            :tid, :cid, :msg, :conn,
+                            :tc, :tr, :gr,
+                            :lat, :tok, :rp, :susp, :sreason, :cat,
+                            :prov, :mod, :fb_used, :fb_reason,
+                            :llm_c, :p_tok, :c_tok, :err_t, :mem_s
+                        )
+                    """),
+                    {
+                        "tid": trace_id,
+                        "cid": chat_id,
+                        "msg": clean_msg,
+                        "conn": detected_connector,
+                        "tc": json.dumps(clean_tools),
+                        "tr": json.dumps(clean_results),
+                        "gr": json.dumps(clean_guards),
+                        "lat": latency_ms,
+                        "tok": tokens,
+                        "rp": reply_path,
+                        "susp": is_suspect,
+                        "sreason": suspect_reason,
+                        "cat": timeutil.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                        "prov": provider,
+                        "mod": model,
+                        "fb_used": 1 if fallback_used else 0,
+                        "fb_reason": fallback_reason,
+                        "llm_c": llm_calls,
+                        "p_tok": prompt_tokens,
+                        "c_tok": completion_tokens,
+                        "err_t": error_type,
+                        "mem_s": memory_status
+                    }
+                )
     except Exception as exc:
         print(f"log_turn_trace error (Trace {trace_id}):", repr(exc))
 

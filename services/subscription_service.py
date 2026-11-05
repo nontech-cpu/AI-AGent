@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy import text
 import db
 from timing import IST
+import core.timeutil as timeutil
 
 logger = logging.getLogger("saptic_subscription")
 
@@ -123,13 +124,15 @@ def check_expiring_subscriptions(user_id_or_chat_id: int, days_ahead: int = 3) -
     Returns alerts that can be sent proactively to Telegram.
     """
     subs = get_user_subscriptions(user_id_or_chat_id)
-    today = datetime.now(IST).date()
+    today = timeutil.today(IST)
     alerts = []
 
     for s in subs:
         # 1. Free Trial Expiry Check
         if s.get("is_trial") and s.get("trial_expiry_date"):
             t_date = s["trial_expiry_date"]
+            if isinstance(t_date, str):
+                t_date = date.fromisoformat(t_date)
             delta = (t_date - today).days
             if 0 <= delta <= days_ahead:
                 alerts.append({
@@ -143,6 +146,8 @@ def check_expiring_subscriptions(user_id_or_chat_id: int, days_ahead: int = 3) -
         # 2. Upcoming Renewal Check
         elif s.get("next_renewal_date"):
             r_date = s["next_renewal_date"]
+            if isinstance(r_date, str):
+                r_date = date.fromisoformat(r_date)
             delta = (r_date - today).days
             if 0 <= delta <= days_ahead:
                 alerts.append({

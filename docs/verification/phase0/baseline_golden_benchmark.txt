@@ -1,0 +1,21 @@
+================================================================================
+🚀 RUNNING PECULIARAI GOLDEN EVALUATION BENCHMARK (65 TEST CASES)
+================================================================================
+
+================================================================================
+📊 PECULIARAI GOLDEN BENCHMARK SCORECARD
+================================================================================
+Total Test Cases:            65
+Memory Retrieval Recall@3:   100.0%
+Memory Retrieval Recall@5:   100.0%
+Math AST Calculator Acc:     100.0% (All expressions computed safely)
+Hallucination Rate:          0.0% (0 unverified claims slipped)
+Measurements SQL Routing:    75.0%
+Short Entity Recognition:    83.3%
+Latency P50:                 0.04 ms
+Latency P90:                 9082.17 ms
+Latency P95:                 9336.4 ms
+Latency Mean:                3200.28 ms
+Avg Tokens / Turn:           ~270 tokens
+================================================================================
+

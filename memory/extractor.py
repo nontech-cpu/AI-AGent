@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, List
 import httpx
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 from memory.store import (
     save_entity,
@@ -150,7 +151,7 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
 
         # Explicitly ignore assistant reply to eliminate negative-fact poisoning
         # Pass ONLY user's message to the extraction prompt
-        now_ist = datetime.now(IST)
+        now_ist = timeutil.now(IST)
         today_iso = now_ist.strftime("%Y-%m-%d")
 
         system_prompt = EXTRACTION_SYSTEM_PROMPT.replace("{CURRENT_DATE_IST}", today_iso)

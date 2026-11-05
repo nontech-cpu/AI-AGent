@@ -142,6 +142,7 @@ async def test_email_link_status_query_fast_path():
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_llm
 async def test_github_link_status_query():
     """Verify 'mera github link h?' calls check_integrations_status and avoids URL tutorials."""
     from dotenv import load_dotenv
@@ -157,6 +158,7 @@ async def test_github_link_status_query():
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_llm
 async def test_github_connect_request():
     """Verify 'mujh GitHub link krna h' calls connect_integration and avoids URL tutorials."""
     from dotenv import load_dotenv

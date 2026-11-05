@@ -1,0 +1,629 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-9.1.1, pluggy-1.7.0 -- C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\neera\OneDrive\ai agent\ai-agent
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 354 items
+
+tests/connectors/test_connector_matrix.py::test_connector_contract_compliance[github] PASSED [  0%]
+tests/connectors/test_connector_matrix.py::test_connector_contract_compliance[gmail] PASSED [  0%]
+tests/connectors/test_connector_matrix.py::test_connector_contract_compliance[calendar] PASSED [  0%]
+tests/connectors/test_connector_matrix.py::test_connector_contract_compliance[drive] PASSED [  1%]
+tests/connectors/test_connector_matrix.py::test_connector_contract_compliance[notion] PASSED [  1%]
+tests/connectors/test_connector_matrix.py::test_connector_contract_compliance[mcp] PASSED [  1%]
+tests/connectors/test_connector_matrix.py::test_scenario_happy_path_read[github] PASSED [  1%]
+tests/connectors/test_connector_matrix.py::test_scenario_happy_path_read[gmail] SKIPPED [  2%]
+tests/connectors/test_connector_matrix.py::test_scenario_happy_path_read[calendar] PASSED [  2%]
+tests/connectors/test_connector_matrix.py::test_scenario_happy_path_read[drive] SKIPPED [  2%]
+tests/connectors/test_connector_matrix.py::test_scenario_happy_path_read[notion] PASSED [  3%]
+tests/connectors/test_connector_matrix.py::test_scenario_happy_path_read[mcp] PASSED [  3%]
+tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[github] PASSED [  3%]
+tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[gmail] PASSED [  3%]
+tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[calendar] PASSED [  4%]
+tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[drive] PASSED [  4%]
+tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[notion] PASSED [  4%]
+tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[mcp] FAILED [  5%]
+tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[github] PASSED [  5%]
+tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[gmail] PASSED [  5%]
+tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[calendar] PASSED [  5%]
+tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[drive] PASSED [  6%]
+tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[notion] PASSED [  6%]
+tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[mcp] FAILED [  6%]
+tests/connectors/test_connector_matrix.py::test_scenario_fake_success_prevention[github] PASSED [  7%]
+tests/connectors/test_connector_matrix.py::test_scenario_fake_success_prevention[gmail] PASSED [  7%]
+tests/connectors/test_connector_matrix.py::test_scenario_fake_success_prevention[calendar] PASSED [  7%]
+tests/connectors/test_connector_matrix.py::test_scenario_fake_success_prevention[drive] PASSED [  7%]
+tests/connectors/test_connector_matrix.py::test_scenario_fake_success_prevention[notion] PASSED [  8%]
+tests/connectors/test_connector_matrix.py::test_scenario_fake_success_prevention[mcp] PASSED [  8%]
+tests/connectors/test_connector_matrix.py::test_scenario_untrusted_content_injection_neutralized[github] PASSED [  8%]
+tests/connectors/test_connector_matrix.py::test_scenario_untrusted_content_injection_neutralized[gmail] PASSED [  9%]
+tests/connectors/test_connector_matrix.py::test_scenario_untrusted_content_injection_neutralized[calendar] PASSED [  9%]
+tests/connectors/test_connector_matrix.py::test_scenario_untrusted_content_injection_neutralized[drive] PASSED [  9%]
+tests/connectors/test_connector_matrix.py::test_scenario_untrusted_content_injection_neutralized[notion] PASSED [  9%]
+tests/connectors/test_connector_matrix.py::test_scenario_untrusted_content_injection_neutralized[mcp] PASSED [ 10%]
+tests/connectors/test_connector_matrix.py::test_scenario_active_context_follow_up[github] PASSED [ 10%]
+tests/connectors/test_connector_matrix.py::test_scenario_active_context_follow_up[gmail] PASSED [ 10%]
+tests/connectors/test_connector_matrix.py::test_scenario_active_context_follow_up[calendar] PASSED [ 11%]
+tests/connectors/test_connector_matrix.py::test_scenario_active_context_follow_up[drive] PASSED [ 11%]
+tests/connectors/test_connector_matrix.py::test_scenario_active_context_follow_up[notion] PASSED [ 11%]
+tests/connectors/test_connector_matrix.py::test_scenario_active_context_follow_up[mcp] PASSED [ 11%]
+tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[github] PASSED [ 12%]
+tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[gmail] PASSED [ 12%]
+tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[calendar] PASSED [ 12%]
+tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[drive] PASSED [ 12%]
+tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[notion] PASSED [ 13%]
+tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[mcp] FAILED [ 13%]
+tests/connectors/test_connector_matrix.py::test_scenario_hallucination_canary[github] PASSED [ 13%]
+tests/connectors/test_connector_matrix.py::test_scenario_hallucination_canary[gmail] PASSED [ 14%]
+tests/connectors/test_connector_matrix.py::test_scenario_hallucination_canary[calendar] PASSED [ 14%]
+tests/connectors/test_connector_matrix.py::test_scenario_hallucination_canary[drive] PASSED [ 14%]
+tests/connectors/test_connector_matrix.py::test_scenario_hallucination_canary[notion] PASSED [ 14%]
+tests/connectors/test_connector_matrix.py::test_scenario_hallucination_canary[mcp] PASSED [ 15%]
+tests/test_adversarial_and_security.py::test_scenario_01_meeting_without_date_or_time PASSED [ 15%]
+tests/test_adversarial_and_security.py::test_scenario_02_complete_meeting_request PASSED [ 15%]
+tests/test_adversarial_and_security.py::test_scenario_03_confirm_pending_action PASSED [ 16%]
+tests/test_adversarial_and_security.py::test_scenario_04_unrelated_text_during_confirmation PASSED [ 16%]
+tests/test_adversarial_and_security.py::test_scenario_05_cancel_pending_action PASSED [ 16%]
+tests/test_adversarial_and_security.py::test_scenario_06_new_task_while_confirmation_pending PASSED [ 16%]
+tests/test_adversarial_and_security.py::test_scenario_07_duplicate_confirmations PASSED [ 17%]
+tests/test_adversarial_and_security.py::test_scenario_08_calendar_creation_timeout PASSED [ 17%]
+tests/test_adversarial_and_security.py::test_scenario_09_calendar_authorization_error PASSED [ 17%]
+tests/test_adversarial_and_security.py::test_scenario_10_unverified_event_result PASSED [ 18%]
+tests/test_adversarial_and_security.py::test_scenario_11_event_relative_referencing PASSED [ 18%]
+tests/test_adversarial_and_security.py::test_scenario_12_concurrent_users_isolation PASSED [ 18%]
+tests/test_adversarial_and_security.py::test_scenario_13_cross_user_token_isolation PASSED [ 18%]
+tests/test_adversarial_and_security.py::test_scenario_14_invalid_oauth_state PASSED [ 19%]
+tests/test_adversarial_and_security.py::test_scenario_15_groq_failure_handling PASSED [ 19%]
+tests/test_adversarial_and_security.py::test_scenario_16_empty_voice_transcription PASSED [ 19%]
+tests/test_adversarial_and_security.py::test_scenario_17_malicious_document_injection PASSED [ 20%]
+tests/test_adversarial_and_security.py::test_scenario_18_malformed_tool_output PASSED [ 20%]
+tests/test_adversarial_and_security.py::test_scenario_19_sensitive_credentials_filtering PASSED [ 20%]
+tests/test_adversarial_and_security.py::test_scenario_20_long_conversation_bounded PASSED [ 20%]
+tests/test_adversarial_and_security.py::test_scenario_21_webhook_duplicate_delivery PASSED [ 21%]
+tests/test_adversarial_and_security.py::test_scenario_22_rapid_requests_handling PASSED [ 21%]
+tests/test_adversarial_and_security.py::test_scenario_23_db_fallback_and_recovery PASSED [ 21%]
+tests/test_adversarial_and_security.py::test_scenario_24_frontend_resilience PASSED [ 22%]
+tests/test_adversarial_and_security.py::test_scenario_25_action_success_with_response_generation_failure PASSED [ 22%]
+tests/test_agent_v2.py::test_tool_get_contact_fuzzy PASSED               [ 22%]
+tests/test_agent_v2.py::test_tool_check_availability_detects_conflict PASSED [ 22%]
+tests/test_agent_v2.py::test_tool_create_meeting_two_phase_confirmation PASSED [ 23%]
+tests/test_agent_v2.py::test_agent_loop_executes_tool_and_answers PASSED [ 23%]
+tests/test_agent_v2.py::test_tool_save_contact_and_lookup_typo PASSED    [ 23%]
+tests/test_agent_v2.py::test_create_meeting_fails_gracefully_when_google_not_connected PASSED [ 24%]
+tests/test_agent_v2.py::test_connect_integration_google_returns_oauth_url PASSED [ 24%]
+tests/test_agent_v2.py::test_standalone_email_provides_google_oauth_url FAILED [ 24%]
+tests/test_agent_v2.py::test_send_email_confirmation_dialogue_formats_email_not_meeting FAILED [ 24%]
+tests/test_agent_v2.py::test_fake_success_guard_does_not_block_conversational_text PASSED [ 25%]
+tests/test_agent_v2.py::test_casual_trip_schedule_never_creates_notion_page PASSED [ 25%]
+tests/test_agent_v2.py::test_affirmative_yes_to_conversational_email_draft_executes_send_email FAILED [ 25%]
+tests/test_agent_v2.py::test_multi_intent_execution_and_tool_catalog FAILED [ 25%]
+tests/test_api_endpoints.py::test_root_endpoint PASSED                   [ 26%]
+tests/test_api_endpoints.py::test_health_endpoint PASSED                 [ 26%]
+tests/test_api_endpoints.py::test_google_diagnostic_endpoint PASSED      [ 26%]
+tests/test_api_endpoints.py::test_web_verification_start_validation PASSED [ 27%]
+tests/test_api_endpoints.py::test_telegram_webhook_unauthorized PASSED   [ 27%]
+tests/test_api_endpoints.py::test_telegram_webhook_deduplication PASSED  [ 27%]
+tests/test_api_endpoints.py::test_chat_history_synchronization_endpoint PASSED [ 27%]
+tests/test_api_v1.py::test_auth_unauthorized PASSED                      [ 28%]
+tests/test_api_v1.py::test_auth_session_creation_and_profile PASSED      [ 28%]
+tests/test_api_v1.py::test_auth_consent_update PASSED                    [ 28%]
+tests/test_api_v1.py::test_chat_message_save_item_flow PASSED            [ 29%]
+tests/test_api_v1.py::test_workspace_office_agenda PASSED                [ 29%]
+tests/test_api_v1.py::test_workspace_park_bubbles PASSED                 [ 29%]
+tests/test_api_v1.py::test_tools_status PASSED                           [ 29%]
+tests/test_api_v1.py::test_document_trunk_upload_and_query PASSED        [ 30%]
+tests/test_api_v1.py::test_task_boards_crud PASSED                       [ 30%]
+tests/test_api_v1.py::test_smart_lists_crud PASSED                       [ 30%]
+tests/test_api_v1.py::test_user_behavioral_rules PASSED                  [ 31%]
+tests/test_api_v1.py::test_serendipity_feed_and_action PASSED            [ 31%]
+tests/test_api_v1.py::test_briefings_morning_and_weekly PASSED           [ 31%]
+tests/test_api_v1.py::test_contacts_networking_memory PASSED             [ 31%]
+tests/test_canned_fallback_ban.py::test_no_canned_fallback_in_agent_code PASSED [ 32%]
+tests/test_channel_privacy_isolation.py::test_channel_privacy_isolation_and_unified_memory PASSED [ 32%]
+tests/test_companion_api.py::test_dashboard_overview_endpoint PASSED     [ 32%]
+tests/test_companion_api.py::test_reminders_crud_endpoints PASSED        [ 33%]
+tests/test_companion_api.py::test_calendar_events_and_creation PASSED    [ 33%]
+tests/test_companion_api.py::test_lists_from_template PASSED             [ 33%]
+tests/test_companion_api.py::test_tasks_endpoints_and_ai_generation PASSED [ 33%]
+tests/test_companion_api.py::test_integrations_and_activity_ledger PASSED [ 34%]
+tests/test_companion_api.py::test_emergency_travel_vault PASSED          [ 34%]
+tests/test_companion_api.py::test_serve_companion_app_ui PASSED          [ 34%]
+tests/test_companion_api.py::test_serve_connect_portal_and_active_profile PASSED [ 35%]
+tests/test_conflict_reschedule.py::test_smart_reschedule_and_deduplication PASSED [ 35%]
+tests/test_connected_email_intelligence.py::test_processed_user_emails_deduplication PASSED [ 35%]
+tests/test_connected_email_intelligence.py::test_heuristic_interview_extraction PASSED [ 35%]
+tests/test_connected_email_intelligence.py::test_heuristic_ticket_booking_extraction PASSED [ 36%]
+tests/test_connected_email_intelligence.py::test_heuristic_credit_card_bill_extraction PASSED [ 36%]
+tests/test_connected_email_intelligence.py::test_heuristic_urgent_delivery_extraction PASSED [ 36%]
+tests/test_connected_email_intelligence.py::test_promotional_rejection_no_hallucination PASSED [ 37%]
+tests/test_connected_email_intelligence.py::test_analyze_incoming_email_async PASSED [ 37%]
+tests/test_connected_email_intelligence.py::test_extract_body_from_gmail_payload PASSED [ 37%]
+tests/test_connected_email_intelligence.py::test_fetch_user_inbox_messages_mocked PASSED [ 37%]
+tests/test_connected_email_intelligence.py::test_connected_user_gmail_monitor_loop_end_to_end PASSED [ 38%]
+tests/test_connected_email_intelligence.py::test_search_user_emails_tool FAILED [ 38%]
+tests/test_connected_email_intelligence.py::test_ticket_email_fast_path PASSED [ 38%]
+tests/test_connected_email_intelligence.py::test_ticket_past_date_calendar_rejection PASSED [ 38%]
+tests/test_connected_email_intelligence.py::test_ticket_future_date_calendar_scheduling PASSED [ 39%]
+tests/test_connected_email_intelligence.py::test_pre_connection_email_filtering PASSED [ 39%]
+tests/test_connected_email_intelligence.py::test_post_connection_new_email_triggers_alert PASSED [ 39%]
+tests/test_contact_and_schedule_intelligence.py::test_format_event_clock_ist PASSED [ 40%]
+tests/test_contact_and_schedule_intelligence.py::test_find_matching_contact_fuzzy PASSED [ 40%]
+tests/test_contact_and_schedule_intelligence.py::test_show_range_movie_conflict_warning PASSED [ 40%]
+tests/test_contact_and_schedule_intelligence.py::test_contact_commitment_query_answers_directly PASSED [ 40%]
+tests/test_contact_and_schedule_intelligence.py::test_generic_contact_commitment_for_any_contact PASSED [ 41%]
+tests/test_crypto.py::test_aes256_gcm_encrypt_decrypt_roundtrip PASSED   [ 41%]
+tests/test_crypto.py::test_aes256_gcm_tamper_detection PASSED            [ 41%]
+tests/test_crypto.py::test_aes256_gcm_empty_input_validation PASSED      [ 42%]
+tests/test_crypto.py::test_aes256_gcm_key_generation PASSED              [ 42%]
+tests/test_crypto.py::test_strict_key_validation_invalid_hex PASSED      [ 42%]
+tests/test_crypto.py::test_missing_key_in_production_raises_runtime_error PASSED [ 42%]
+tests/test_crypto.py::test_missing_all_keys_in_dev_raises_runtime_error PASSED [ 43%]
+tests/test_crypto.py::test_wrong_key_fails_decryption PASSED             [ 43%]
+tests/test_crypto.py::test_decrypt_any_fallback_modes PASSED             [ 43%]
+tests/test_crypto.py::test_real_sqlite_persistence_roundtrip PASSED      [ 44%]
+tests/test_device_sessions.py::test_device_session_db_helpers PASSED     [ 44%]
+tests/test_device_sessions.py::test_web_google_status_device_isolation PASSED [ 44%]
+tests/test_dynamic_timezone_and_duration.py::test_dynamic_timezone_resolution_america PASSED [ 44%]
+tests/test_dynamic_timezone_and_duration.py::test_dynamic_timezone_resolution_london PASSED [ 45%]
+tests/test_dynamic_timezone_and_duration.py::test_create_meeting_respects_user_timezone_offset PASSED [ 45%]
+tests/test_dynamic_timezone_and_duration.py::test_tool_definitions_zero_hardcoded_offsets PASSED [ 45%]
+tests/test_elite_pillars.py::test_all_elite_pillars FAILED               [ 46%]
+tests/test_eval_scenarios.py::test_scenario_01 PASSED                    [ 46%]
+tests/test_eval_scenarios.py::test_scenario_02 PASSED                    [ 46%]
+tests/test_eval_scenarios.py::test_scenario_03 PASSED                    [ 46%]
+tests/test_eval_scenarios.py::test_scenario_04 PASSED                    [ 47%]
+tests/test_eval_scenarios.py::test_scenario_05 PASSED                    [ 47%]
+tests/test_eval_scenarios.py::test_scenario_06 PASSED                    [ 47%]
+tests/test_eval_scenarios.py::test_scenario_07 PASSED                    [ 48%]
+tests/test_eval_scenarios.py::test_scenario_08 PASSED                    [ 48%]
+tests/test_eval_scenarios.py::test_scenario_09 PASSED                    [ 48%]
+tests/test_eval_scenarios.py::test_scenario_10 PASSED                    [ 48%]
+tests/test_eval_scenarios.py::test_scenario_11 PASSED                    [ 49%]
+tests/test_eval_scenarios.py::test_scenario_12 PASSED                    [ 49%]
+tests/test_frontier_memorae.py::test_frontier_get_me PASSED              [ 49%]
+tests/test_frontier_memorae.py::test_structured_memory_bubbles PASSED    [ 50%]
+tests/test_frontier_memorae.py::test_pgvector_cosine_search PASSED       [ 50%]
+tests/test_frontier_memorae.py::test_s3_r2_asset_pipeline PASSED         [ 50%]
+tests/test_frontier_memorae.py::test_mcp_client_and_registry PASSED      [ 50%]
+tests/test_frontier_memorae.py::test_elevenlabs_and_audio_engine PASSED  [ 51%]
+tests/test_frontier_memorae.py::test_react_step_streaming_endpoint PASSED [ 51%]
+tests/test_full_pillars.py::test_phone_first_device_adoption PASSED      [ 51%]
+tests/test_full_pillars.py::test_inbound_ticket_parsing_and_prompt PASSED [ 51%]
+tests/test_full_pillars.py::test_delete_note_or_fact_tool PASSED         [ 52%]
+tests/test_full_pillars.py::test_non_clashing_meeting_boundaries PASSED  [ 52%]
+tests/test_full_pillars.py::test_adaptive_morning_briefing_with_early_wakeup_and_uv PASSED [ 52%]
+tests/test_full_pillars.py::test_create_packing_list_tool PASSED         [ 53%]
+tests/test_full_pillars.py::test_update_github_file_tool PASSED          [ 53%]
+tests/test_full_pillars.py::test_onboarding_conditional_google_recommendation PASSED [ 53%]
+tests/test_full_pillars.py::test_master_privacy_wipe_flow PASSED         [ 53%]
+tests/test_full_pillars.py::test_reminder_conflict_detection FAILED      [ 54%]
+tests/test_full_pillars.py::test_detect_meeting_conflicts_dict_and_tuple PASSED [ 54%]
+tests/test_google_services.py::test_access_token_for_chat_not_connected PASSED [ 54%]
+tests/test_google_services.py::test_create_meeting_success FAILED        [ 55%]
+tests/test_google_services.py::test_send_email_success PASSED            [ 55%]
+tests/test_google_services.py::test_upload_text_file_drive PASSED        [ 55%]
+tests/test_harness.py::test_frozen_clock_anchoring PASSED                [ 55%]
+tests/test_harness.py::test_fake_llm_scripted_responses PASSED           [ 56%]
+tests/test_harness.py::test_isolated_db_engine PASSED                    [ 56%]
+tests/test_integrations.py::test_integration_token_encryption PASSED     [ 56%]
+tests/test_integrations.py::test_validate_notion_token_prefix PASSED     [ 57%]
+tests/test_integrations.py::test_web_integrations_endpoints PASSED       [ 57%]
+tests/test_integrations.py::test_get_github_file_autonomous PASSED       [ 57%]
+tests/test_integrations.py::test_execute_tool_get_github_file PASSED     [ 57%]
+tests/test_integrations.py::test_email_link_status_query_fast_path PASSED [ 58%]
+tests/test_integrations.py::test_github_link_status_query FAILED         [ 58%]
+tests/test_integrations.py::test_github_connect_request PASSED           [ 58%]
+tests/test_intervals.py::test_time_interval_overlap_logic PASSED         [ 59%]
+tests/test_intervals.py::test_activity_duration_parsing PASSED           [ 59%]
+tests/test_intervals.py::test_utc_to_ist_normalization PASSED            [ 59%]
+tests/test_intervals.py::test_detects_movie_clashing_with_meeting PASSED [ 59%]
+tests/test_intervals.py::test_find_free_slots PASSED                     [ 60%]
+tests/test_live_chat_scenario.py::test_full_scenario_clash_and_multi_meeting PASSED [ 60%]
+tests/test_master_privacy_wipe_comprehensive.py::test_wipe_with_typo_chat_otp_verification PASSED [ 60%]
+tests/test_master_privacy_wipe_comprehensive.py::test_wipe_with_second_typo_phrase_and_email_verification PASSED [ 61%]
+tests/test_master_privacy_wipe_comprehensive.py::test_wipe_connected_email_user_can_still_verify_in_chat PASSED [ 61%]
+tests/test_master_privacy_wipe_comprehensive.py::test_wipe_cancellation PASSED [ 61%]
+tests/test_master_privacy_wipe_comprehensive.py::test_agent_tool_request_master_privacy_wipe PASSED [ 61%]
+tests/test_master_privacy_wipe_comprehensive.py::test_cross_question_does_not_block_user_during_wipe_pending PASSED [ 62%]
+tests/test_master_repairs.py::test_failure_01_update_existing_event_patches_same_id PASSED [ 62%]
+tests/test_master_repairs.py::test_failure_01_update_nonexistent_event_never_creates PASSED [ 62%]
+tests/test_master_repairs.py::test_failure_02_cancellation_of_pending_proposal PASSED [ 62%]
+tests/test_master_repairs.py::test_failure_02_cancellation_of_existing_google_event PASSED [ 63%]
+tests/test_master_repairs.py::test_failure_03_context_memory_question PASSED [ 63%]
+tests/test_master_repairs.py::test_failure_04_kal_shaam_ambiguity_policy PASSED [ 63%]
+tests/test_master_repairs.py::test_failure_05_connected_account_does_not_shortcircuit_task FAILED [ 64%]
+tests/test_master_repairs.py::test_create_meeting_details_does_not_trap_greetings FAILED [ 64%]
+tests/test_master_repairs.py::test_create_meeting_details_does_not_trap_agenda_query FAILED [ 64%]
+tests/test_master_repairs.py::test_start_command_with_bot_username_resets_state PASSED [ 64%]
+tests/test_master_repairs.py::test_create_meeting_details_does_not_trap_casual_chat FAILED [ 65%]
+tests/test_master_repairs.py::test_cancel_and_replace_meeting_compound_intent FAILED [ 65%]
+tests/test_master_repairs.py::test_utc_calendar_event_formatted_in_ist PASSED [ 65%]
+tests/test_master_repairs.py::test_compound_confirmation_with_new_meeting_command PASSED [ 66%]
+tests/test_master_repairs.py::test_new_meeting_cancel_command_interrupts_pending_google_action FAILED [ 66%]
+tests/test_master_repairs.py::test_new_user_start_triggers_consent_not_welcome_back PASSED [ 66%]
+tests/test_meeting_clash_multiturn.py::test_meeting_update_duration_and_lunch_clash_detection PASSED [ 66%]
+tests/test_meeting_intelligence.py::test_parse_followup_time_weekdays_and_typos PASSED [ 67%]
+tests/test_meeting_intelligence.py::test_pending_action_updates_meeting_time_on_user_reschedule PASSED [ 67%]
+tests/test_meeting_intelligence.py::test_ask_for_meet_link_returns_real_link PASSED [ 67%]
+tests/test_meeting_intelligence.py::test_create_meeting_defaults_title_when_start_iso_is_present PASSED [ 68%]
+tests/test_memory_engine.py::test_extract_potential_entity_tokens PASSED [ 68%]
+tests/test_memory_engine.py::test_entity_creation_and_fuzzy_phonetic_lookup PASSED [ 68%]
+tests/test_memory_engine.py::test_hybrid_vector_and_trigram_search PASSED [ 68%]
+tests/test_memory_engine.py::test_assemble_memory_context_integration PASSED [ 69%]
+tests/test_morning_briefing.py::test_detect_user_city PASSED             [ 69%]
+tests/test_morning_briefing.py::test_detect_early_flight PASSED          [ 69%]
+tests/test_morning_briefing.py::test_detect_no_early_event_for_afternoon_meeting PASSED [ 70%]
+tests/test_morning_briefing.py::test_briefing_message_with_early_flight_and_city PASSED [ 70%]
+tests/test_morning_briefing.py::test_briefing_message_without_city_omits_weather PASSED [ 70%]
+tests/test_morning_briefing.py::test_database_deduplication PASSED       [ 70%]
+tests/test_multimodal_documents.py::test_extract_text_from_pdf_empty_and_corrupt PASSED [ 71%]
+tests/test_multimodal_documents.py::test_process_telegram_document_text_file PASSED [ 71%]
+tests/test_multimodal_documents.py::test_summarize_document_content PASSED [ 71%]
+tests/test_multimodal_documents.py::test_answer_document_query_untrusted_content_isolation PASSED [ 72%]
+tests/test_multimodal_documents.py::test_photo_smart_scheduling_confirmation PASSED [ 72%]
+tests/test_multimodal_documents.py::test_greeting_conditional_google_recommendation FAILED [ 72%]
+tests/test_multiturn_e2e_journeys.py::test_multiturn_contact_purpose_persistence_and_anaphora PASSED [ 72%]
+tests/test_multiturn_e2e_journeys.py::test_multiturn_meeting_duration_guard PASSED [ 73%]
+tests/test_multiturn_e2e_journeys.py::test_multiturn_web_search_available_and_transit_grounding PASSED [ 73%]
+tests/test_multiturn_e2e_journeys.py::test_multiturn_action_ledger_sent_email_subject_recall PASSED [ 73%]
+tests/test_multiturn_e2e_journeys.py::test_multiturn_casual_fact_temporal_date_recall PASSED [ 74%]
+tests/test_multiturn_e2e_journeys.py::test_early_morning_interaction_prompt_and_mandate PASSED [ 74%]
+tests/test_multiturn_e2e_journeys.py::test_universal_connector_link_semantic_directives PASSED [ 74%]
+tests/test_multiturn_e2e_journeys.py::test_multi_account_identity_unification_and_places_grounding PASSED [ 74%]
+tests/test_multiturn_e2e_journeys.py::test_brand_store_grounding_and_zero_raw_leakage PASSED [ 75%]
+tests/test_multiturn_e2e_journeys.py::test_multiturn_meeting_conflict_and_transit_buffer_detection PASSED [ 75%]
+tests/test_nlu_and_parsing.py::test_sensitive_detection PASSED           [ 75%]
+tests/test_nlu_and_parsing.py::test_explicit_calendar_action_detection PASSED [ 75%]
+tests/test_nlu_and_parsing.py::test_word_numbers_devanagari_and_hinglish PASSED [ 76%]
+tests/test_nlu_and_parsing.py::test_parse_followup_time PASSED           [ 76%]
+tests/test_nlu_and_parsing.py::test_multilingual_yes_no_fast_paths PASSED [ 76%]
+tests/test_nlu_and_parsing.py::test_meeting_title_extraction PASSED      [ 77%]
+tests/test_notion_advanced.py::test_notion_auth_url_and_state PASSED     [ 77%]
+tests/test_notion_advanced.py::test_notion_state_tampering_rejected PASSED [ 77%]
+tests/test_notion_advanced.py::test_parse_content_to_notion_blocks_headings_and_bullets PASSED [ 77%]
+tests/test_notion_advanced.py::test_parse_content_force_bullets PASSED   [ 78%]
+tests/test_notion_advanced.py::test_notion_appends_to_default_notes_section PASSED [ 78%]
+tests/test_notion_advanced.py::test_notion_appends_to_explicit_existing_section PASSED [ 78%]
+tests/test_notion_advanced.py::test_notion_connector_contract_execution PASSED [ 79%]
+tests/test_notion_advanced.py::test_list_notion_pages_integration PASSED [ 79%]
+tests/test_notion_advanced.py::test_notion_connector_list_pages_contract PASSED [ 79%]
+tests/test_notion_advanced.py::test_parse_content_markdown_table_to_notion_table PASSED [ 79%]
+tests/test_notion_advanced.py::test_parse_content_wrapped_bold_headings_and_inline_bold PASSED [ 80%]
+tests/test_notion_advanced.py::test_create_notion_page_explicit_new_creates_workspace_page PASSED [ 80%]
+tests/test_notion_advanced.py::test_list_notion_pages_filters_archived_and_database_rows PASSED [ 80%]
+tests/test_notion_advanced.py::test_parse_content_code_block_native_notion_block PASSED [ 81%]
+tests/test_notion_advanced.py::test_append_to_notion_page_with_code_block PASSED [ 81%]
+tests/test_oauth_security.py::test_clean_public_base_url_sanitization FAILED [ 81%]
+tests/test_oauth_security.py::test_oauth_state_hmac_integrity PASSED     [ 81%]
+tests/test_oauth_security.py::test_oauth_state_expiration PASSED         [ 82%]
+tests/test_oauth_security.py::test_fernet_token_encryption_and_isolation PASSED [ 82%]
+tests/test_oauth_security.py::test_github_oauth_state_hmac_integrity PASSED [ 82%]
+tests/test_oauth_security.py::test_github_auth_url_construction PASSED   [ 83%]
+tests/test_oauth_security.py::test_github_callback_endpoint PASSED       [ 83%]
+tests/test_pending_state.py::test_save_and_retrieve_pending_action PASSED [ 83%]
+tests/test_pending_state.py::test_persistence_across_simulated_restart PASSED [ 83%]
+tests/test_pending_state.py::test_classify_confirmation_intent PASSED    [ 84%]
+tests/test_pending_state.py::test_cross_question_preserves_pending_action PASSED [ 84%]
+tests/test_pending_state.py::test_superseding_older_action PASSED        [ 84%]
+tests/test_pending_state.py::test_persistent_dict_proxy_isolation PASSED [ 85%]
+tests/test_phase0_hotfix.py::test_negative_fact_and_assistant_reply_filter PASSED [ 85%]
+tests/test_phase0_hotfix.py::test_subject_resolution_friend PASSED       [ 85%]
+tests/test_phase0_hotfix.py::test_measurements_sql_lookup_and_tool PASSED [ 85%]
+tests/test_phase0_hotfix.py::test_get_measurements_tool_execution PASSED [ 86%]
+tests/test_phase0_hotfix.py::test_retrieval_excludes_reminders_and_negative_facts PASSED [ 86%]
+tests/test_phase0_hotfix.py::test_end_to_end_extraction_and_dedupe PASSED [ 86%]
+tests/test_phase1_retrieval_and_loop.py::test_devanagari_and_short_name_entity_lookup PASSED [ 87%]
+tests/test_phase1_retrieval_and_loop.py::test_hybrid_retrieval_and_min_score_threshold PASSED [ 87%]
+tests/test_phase1_retrieval_and_loop.py::test_memory_block_capping PASSED [ 87%]
+tests/test_phase1_retrieval_and_loop.py::test_semantic_tool_routing PASSED [ 87%]
+tests/test_phase1_retrieval_and_loop.py::test_agent_loop_repeat_guard_and_timeout PASSED [ 88%]
+tests/test_phase2_conversation_and_versioning.py::test_memory_write_consolidation_and_versioning PASSED [ 88%]
+tests/test_phase2_conversation_and_versioning.py::test_core_vs_archival_memory_split PASSED [ 88%]
+tests/test_phase2_conversation_and_versioning.py::test_conversation_summary_persistence PASSED [ 88%]
+tests/test_phase2_conversation_and_versioning.py::test_user_memory_controls_and_forget PASSED [ 89%]
+tests/test_phase3_tools_and_verifier.py::test_ast_calculator_safe_math PASSED [ 89%]
+tests/test_phase3_tools_and_verifier.py::test_commitments_state_machine_and_nudges PASSED [ 89%]
+tests/test_phase3_tools_and_verifier.py::test_tool_execution_web_search_and_commitment PASSED [ 90%]
+tests/test_phase3_tools_and_verifier.py::test_code_level_grounding_verifier PASSED [ 90%]
+tests/test_phase4_golden_eval.py::test_phase4_golden_benchmark_thresholds FAILED [ 90%]
+tests/test_production_memory_and_grounding.py::test_project_memory_lifecycle PASSED [ 90%]
+tests/test_production_memory_and_grounding.py::test_working_context_persistence PASSED [ 91%]
+tests/test_production_memory_and_grounding.py::test_memory_consolidation_add_update_noop PASSED [ 91%]
+tests/test_production_memory_and_grounding.py::test_route_and_places_grounding_guards PASSED [ 91%]
+tests/test_production_resilience.py::test_groq_429_rate_limit_failover FAILED [ 92%]
+tests/test_production_resilience.py::test_user_level_timezone_persistence FAILED [ 92%]
+tests/test_production_resilience.py::test_active_event_context_resolution PASSED [ 92%]
+tests/test_production_resilience.py::test_strict_grounding_rule_in_prompt FAILED [ 92%]
+tests/test_smart_pillars.py::test_all_smart_pillars FAILED               [ 93%]
+tests/test_unified_memory_and_schedule.py::test_unified_schedule_detects_contact_commitment PASSED [ 93%]
+tests/test_unified_memory_and_schedule.py::test_show_range_free_query_with_commitment PASSED [ 93%]
+tests/test_unified_memory_and_schedule.py::test_show_range_free_query_when_completely_free PASSED [ 94%]
+tests/test_unified_memory_and_schedule.py::test_detect_meeting_conflicts_google_calendar PASSED [ 94%]
+tests/test_utilities.py::TestCalculator::test_addition_and_parentheses PASSED [ 94%]
+tests/test_utilities.py::TestCalculator::test_basic_arithmetic PASSED    [ 94%]
+tests/test_utilities.py::TestCalculator::test_division_by_zero PASSED    [ 95%]
+tests/test_utilities.py::TestCalculator::test_invalid_syntax PASSED      [ 95%]
+tests/test_utilities.py::TestCalculator::test_percentage_of_syntax PASSED [ 95%]
+tests/test_utilities.py::test_currency_conversion PASSED                 [ 96%]
+tests/test_utilities.py::test_market_prices PASSED                       [ 96%]
+tests/test_utilities.py::test_weather_lookup PASSED                      [ 96%]
+tests/test_utilities.py::test_agent_tools_dispatch PASSED                [ 96%]
+tests/test_utilities.py::test_tool_definitions_presence PASSED           [ 97%]
+tests/test_utilities.py::test_search_web_empty_query PASSED              [ 97%]
+tests/test_utilities.py::test_read_webpage_empty_url PASSED              [ 97%]
+tests/test_utilities.py::test_read_webpage_parser_mock PASSED            [ 98%]
+tests/test_verifier.py::test_verifier_catches_fabricated_meet_link PASSED [ 98%]
+tests/test_verifier.py::test_verifier_catches_unconfirmed_action_completion PASSED [ 98%]
+tests/test_verifier.py::test_verifier_catches_fake_github_repositories PASSED [ 98%]
+tests/test_verifier.py::test_verifier_allows_grounded_reply PASSED       [ 99%]
+tests/test_verifier.py::test_verify_and_ground_reply_full_flow PASSED    [ 99%]
+tests/test_verifier.py::test_verifier_allows_email_from_recent_history_when_query_is_yes PASSED [ 99%]
+tests/test_verifier.py::test_verifier_sanitizes_regional_script_labels PASSED [100%]
+
+================================== FAILURES ===================================
+__________________ test_scenario_not_connected_behavior[mcp] __________________
+tests\connectors\test_connector_matrix.py:87: in test_scenario_not_connected_behavior
+    disconnected_mock = mock_cls(forced_state="not_connected")
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: MCPConnector.__init__() got an unexpected keyword argument 'forced_state'
+_______________________ test_scenario_auth_expired[mcp] _______________________
+tests\connectors\test_connector_matrix.py:105: in test_scenario_auth_expired
+    expired_mock = mock_cls(forced_state="expired")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: MCPConnector.__init__() got an unexpected keyword argument 'forced_state'
+______________ test_scenario_fast_typed_variants_and_typos[mcp] _______________
+tests\connectors\test_connector_matrix.py:169: in test_scenario_fast_typed_variants_and_typos
+    assert len(variants) >= 10, f"Connector {connector.name} must have at least 10 typo/variant samples"
+E   AssertionError: Connector mcp must have at least 10 typo/variant samples
+E   assert 0 >= 10
+E    +  where 0 = len([])
+_______________ test_standalone_email_provides_google_oauth_url _______________
+tests\test_agent_v2.py:210: in test_standalone_email_provides_google_oauth_url
+    assert "https://test.com/oauth/google" in res["reply"]
+E   AssertionError: assert 'https://test.com/oauth/google' in 'Got it! Aapka koi email account abhi linked nahi hai. Kya aap is email (neeravmishrarealme1@gmail.com) ko link karna chahte hain ya ise kisi contact ke liye save karoon?'
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.43257927894592285
+Check 3 (LLM responded): 3.8108456134796143
+Check 2 (calling LLM): 4.512721061706543
+Check 3 (LLM responded): 7.705981254577637
+_______ test_send_email_confirmation_dialogue_formats_email_not_meeting _______
+tests\test_agent_v2.py:246: in test_send_email_confirmation_dialogue_formats_email_not_meeting
+    res = await run_agent_turn(chat_id, "Send a mail to aaravmishra619@gmail.com subject meeting test body mail sent")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+agent\loop.py:685: in run_agent_turn
+    "created_at": datetime.now(IST).isoformat()
+                               ^^^
+E   UnboundLocalError: cannot access local variable 'IST' where it is not associated with a value
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.43350672721862793
+Check 3 (LLM responded): 0.43366026878356934
+___ test_affirmative_yes_to_conversational_email_draft_executes_send_email ____
+tests\test_agent_v2.py:333: in test_affirmative_yes_to_conversational_email_draft_executes_send_email
+    assert "Email sent successfully" in res["reply"]
+E   AssertionError: assert 'Email sent successfully' in 'Done bhai, email send ho gaya hai!'
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.6854581832885742
+Check 3 (LLM responded): 4.2510905265808105
+Check 2 (calling LLM): 5.0125250816345215
+Check 3 (LLM responded): 8.225269794464111
+________________ test_multi_intent_execution_and_tool_catalog _________________
+tests\test_agent_v2.py:412: in test_multi_intent_execution_and_tool_catalog
+    assert "get_market_price" in captured_tools
+E   AssertionError: assert 'get_market_price' in ['execute_python_code', 'search_memory', 'get_contact', 'save_contact', 'list_contacts', 'get_commitments', ...]
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.4240703582763672
+Check 3 (LLM responded): 0.424236536026001
+Check 2 (calling LLM): 1.1389565467834473
+Check 3 (LLM responded): 1.1393275260925293
+________________________ test_search_user_emails_tool _________________________
+tests\test_connected_email_intelligence.py:321: in test_search_user_emails_tool
+    assert res["status"] == "success"
+E   AssertionError: assert 'error' == 'success'
+E     
+E     - success
+E     + error
+___________________________ test_all_elite_pillars ____________________________
+async def functions are not natively supported.
+You need to install a suitable plugin for your async framework, for example:
+  - anyio
+  - pytest-asyncio
+  - pytest-tornasync
+  - pytest-trio
+  - pytest-twisted
+______________________ test_reminder_conflict_detection _______________________
+tests\test_full_pillars.py:476: in test_reminder_conflict_detection
+    assert res2.get("status") == "success"
+E   AssertionError: assert 'conflict_detected' == 'success'
+E     
+E     - success
+E     + conflict_detected
+_________________________ test_create_meeting_success _________________________
+tests\test_google_services.py:47: in test_create_meeting_success
+    mock_req.assert_called_once()
+C:\Python313\Lib\unittest\mock.py:958: in assert_called_once
+    raise AssertionError(msg)
+E   AssertionError: Expected '_request' to have been called once. Called 2 times.
+E   Calls: [call('GET', 'https://www.googleapis.com/calendar/v3/calendars/primary', 'mock_access_token'),
+E    call('POST', 'https://www.googleapis.com/calendar/v3/calendars/primary/events', 'mock_access_token', params={'conferenceDataVersion': 1, 'sendUpdates': 'all'}, json={'summary': 'Client Discussion', 'start': {'dateTime': '2026-10-21T15:00:00+05:30', 'timeZone': 'Asia/Kolkata'}, 'end': {'dateTime': '2026-10-21T15:45:00+05:30', 'timeZone': 'Asia/Kolkata'}, 'conferenceData': {'createRequest': {'requestId': '_6WPLI0SoFjLrPo7', 'conferenceSolutionKey': {'type': 'hangoutsMeet'}}}, 'attendees': [{'email': 'client@example.com'}]})].
+________________________ test_github_link_status_query ________________________
+tests\test_integrations.py:154: in test_github_link_status_query
+    assert "check_integrations_status" in res["tool_calls_executed"]
+E   AssertionError: assert 'check_integrations_status' in []
+---------------------------- Captured stdout call -----------------------------
+Check 2 (calling LLM): 0.3726334571838379
+Check 3 (LLM responded): 3.5179741382598877
+________ test_failure_05_connected_account_does_not_shortcircuit_task _________
+tests\test_master_repairs.py:227: in test_failure_05_connected_account_does_not_shortcircuit_task
+    mock_prep.assert_called_once()
+C:\Python313\Lib\unittest\mock.py:958: in assert_called_once
+    raise AssertionError(msg)
+E   AssertionError: Expected 'prepare_google_action' to have been called once. Called 0 times.
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.39395952224731445
+Check 3 (LLM responded): 4.031553506851196
+Check 2 (calling LLM): 4.740113973617554
+Check 3 (LLM responded): 8.426734924316406
+_____________ test_create_meeting_details_does_not_trap_greetings _____________
+tests\test_master_repairs.py:247: in test_create_meeting_details_does_not_trap_greetings
+    assert "Namaste" in reply_sent or "personal assistant" in reply_sent
+E   AssertionError: assert ('Namaste' in 'Hey! Kaise ho? Kya chal raha hai?' or 'personal assistant' in 'Hey! Kaise ho? Kya chal raha hai?')
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.39094066619873047
+Check 3 (LLM responded): 3.7846343517303467
+___________ test_create_meeting_details_does_not_trap_agenda_query ____________
+tests\test_master_repairs.py:273: in test_create_meeting_details_does_not_trap_agenda_query
+    mock_show_range.assert_called_once()
+C:\Python313\Lib\unittest\mock.py:958: in assert_called_once
+    raise AssertionError(msg)
+E   AssertionError: Expected 'show_range' to have been called once. Called 0 times.
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.37203025817871094
+Check 3 (LLM responded): 4.0883402824401855
+Check 2 (calling LLM): 4.797558307647705
+Check 3 (LLM responded): 7.932803392410278
+____________ test_create_meeting_details_does_not_trap_casual_chat ____________
+tests\test_master_repairs.py:310: in test_create_meeting_details_does_not_trap_casual_chat
+    mock_chat.assert_called_once_with(chat_id, "aur bhy kesa h")
+C:\Python313\Lib\unittest\mock.py:990: in assert_called_once_with
+    raise AssertionError(msg)
+E   AssertionError: Expected 'handle_conversational_chat' to be called once. Called 0 times.
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.37954187393188477
+Check 3 (LLM responded): 5.807607889175415
+_______________ test_cancel_and_replace_meeting_compound_intent _______________
+tests\test_master_repairs.py:351: in test_cancel_and_replace_meeting_compound_intent
+    assert pending is not None
+E   assert None is not None
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.3874208927154541
+Check 3 (LLM responded): 3.6774020195007324
+Check 2 (calling LLM): 4.384875059127808
+Check 3 (LLM responded): 7.704590082168579
+______ test_new_meeting_cancel_command_interrupts_pending_google_action _______
+tests\test_master_repairs.py:419: in test_new_meeting_cancel_command_interrupts_pending_google_action
+    assert chat_id not in main.PENDING_GOOGLE_ACTIONS
+E   AssertionError: assert 888202 not in {888202: {'kind': 'delete_meeting', 'event_id': 'evt_old_1130', 'title': 'Peculiar AI Meeting', 'created_at': datetime.datetime(2026, 11, 5, 14, 28, 59, 834781, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata'))}}
+E    +  where {888202: {'kind': 'delete_meeting', 'event_id': 'evt_old_1130', 'title': 'Peculiar AI Meeting', 'created_at': datetime.datetime(2026, 11, 5, 14, 28, 59, 834781, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata'))}} = main.PENDING_GOOGLE_ACTIONS
+_______________ test_greeting_conditional_google_recommendation _______________
+tests\test_multimodal_documents.py:163: in test_greeting_conditional_google_recommendation
+    assert any("[Recommended: Please connect and link your Google account to ensure a smooth flow]" in m for m in sent_msgs)
+E   assert False
+E    +  where False = any(<generator object test_greeting_conditional_google_recommendation.<locals>.<genexpr> at 0x0000021C08ED9FF0>)
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.4172208309173584
+Check 3 (LLM responded): 3.595966339111328
+___________________ test_clean_public_base_url_sanitization ___________________
+tests\test_oauth_security.py:20: in test_clean_public_base_url_sanitization
+    assert google_auth.callback_url() == "https://peculiar-ai-backend.onrender.com/google/callback"
+E   AssertionError: assert 'https://tigh...ogle/callback' == 'https://pecu...ogle/callback'
+E     
+E     - https://peculiar-ai-backend.onrender.com/google/callback
+E     + https://tightly-barbell-creamed.ngrok-free.dev/google/callback
+___________________ test_phase4_golden_benchmark_thresholds ___________________
+tests\test_phase4_golden_eval.py:35: in test_phase4_golden_benchmark_thresholds
+    assert meas_val == 100.0, f"Expected 100% measurements routing, got {meas_val}%"
+E   AssertionError: Expected 100% measurements routing, got 75.0%
+E   assert 75.0 == 100.0
+---------------------------- Captured stdout call -----------------------------
+================================================================================\n\U0001f680 RUNNING PECULIARAI GOLDEN EVALUATION BENCHMARK (65 TEST CASES)\n================================================================================\n\n================================================================================\n\U0001f4ca PECULIARAI GOLDEN BENCHMARK SCORECARD\n================================================================================\nTotal Test Cases:            65\nMemory Retrieval Recall@3:   95.8%\nMemory Retrieval Recall@5:   95.8%\nMath AST Calculator Acc:     100.0% (All expressions computed safely)\nHallucination Rate:          0.0% (0 unverified claims slipped)\nMeasurements SQL Routing:    75.0%\nShort Entity Recognition:    83.3%\nLatency P50:                 1.2 ms\nLatency P90:                 1.91 ms\nLatency P95:                 2.01 ms\nLatency Mean:                0.84 ms\nAvg Tokens / Turn:           ~229 tokens\n================================================================================
+______________________ test_groq_429_rate_limit_failover ______________________
+tests\test_production_resilience.py:53: in test_groq_429_rate_limit_failover
+    assert "openai/gpt-oss-120b" in call_attempts or "qwen/qwen3.8-27b" in call_attempts or "llama-3.3-70b-versatile" in call_attempts
+E   AssertionError: assert ('openai/gpt-oss-120b' in ['gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview'] or 'qwen/qwen3.8-27b' in ['gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview'] or 'llama-3.3-70b-versatile' in ['gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview'])
+---------------------------- Captured stdout call -----------------------------
+Unified prompt cache error: OperationalError('(sqlite3.OperationalError) no such table: email_links')
+Check 2 (calling LLM): 0.5067939758300781
+Check 3 (LLM responded): 2.008451223373413
+____________________ test_user_level_timezone_persistence _____________________
+tests\test_production_resilience.py:73: in test_user_level_timezone_persistence
+    assert tool_res["status"] == "success"
+E   AssertionError: assert 'error' == 'success'
+E     
+E     - success
+E     + error
+____________________ test_strict_grounding_rule_in_prompt _____________________
+tests\test_production_resilience.py:105: in test_strict_grounding_rule_in_prompt
+    assert "Strict Grounding & Zero Hallucination" in RUNTIME_SYSTEM_PROMPT_TEMPLATE
+E   assert 'Strict Grounding & Zero Hallucination' in "You are **PeculiarAI**, {USER_NAME}'s smart personal AI companion.\nCurrent Time: {NOW_TIME} ({WEEKDAY}) [{USER_TIMEZONE}] | Today's Date: {TODAY_ISO} | User: {USER_NAME} | Style: {LANG_STYLE}\n{LANGUAGE_MANDATE}\n\nCORE GUIDELINES:\n1. Conversational First: For general chat, questions, concepts (e.g. ML/DL, programming, science), reply directly and informatively like ChatGPT/Gemini without tools.\n2. Casual Greetings & Persona: Greetings ('hi', 'hey', 'aur bhy', 'kya haal', 'sup') get warm, friendly, brief peer-to-peer replies ('Hey {USER_NAME}! Bas bhai, sab badhiya! Aap sunao, kya chal raha hai?'). STRICT BAN on call-center scripts ('Namaste! Main aapki kya seva kar sakta hoon?'). Keep tone conversational, calm, and peer-to-peer.\n3. Domain Awareness: In tech/code, ML=Machine Learning, DL=Deep Learning, AI=Artificial Intelligence, NLP=Natural Language Processing. Never treat as liquid volumes unless context specifies liquids.\n4. Non-Repetition: Never repeat the exact same response or forecast consecutively.\n5. Tools & Actions: Call tools directly for explicit action requests. Note: 'batao'/'dikhao' means SHOW/LIST (read-only); 'banao' means CREATE.\n- Contacts: 'contacts ba... in the Schedule block below and via list_reminders / get_schedule.\n- STRICT PROHIBITION: NEVER EVER output pre-trained generic AI refusals such as:\n  * 'I don't have access to your personal calendar or reminder list'\n  * 'I can't see what you've scheduled'\n  * 'As an AI, I don't have access to your calendar'\n  * 'Mere paas aapke reminders ya calendar ka direct access nahi hai'\n- When the user asks to see/show/list their reminders or schedule (e.g. 'mere aajke reminder btana', 'aaj kya schedule hai', 'reminders dikhao', 'what are my reminders for today'):\n  * State all items directly from the Schedule block or call list_reminders / get_schedule.\n  * If no items are scheduled for that day, say warmly: 'Bhai, aaj aapka koi reminder ya meeting scheduled nahi hai!' (or 'You have no reminders or meetings scheduled for today!'). NEVER say you lack access!\n- NEVER output fake confirmations like 'Done bhai! reminder set kar diya hai' without executing create_reminder/create_meeting.\n\nCONTEXT:\n- Memory: {MEMORY_CONTEXT_BLOCK}\n- Schedule: {SCHEDULE_CONTEXT_BLOCK}\n- Integrations: {CONNECTED_INTEGRATIONS}\n- Pending Actions: {PENDING_ACTIONS}\n- Active Context: {ACTIVE_CONTEXT}"
+___________________________ test_all_smart_pillars ____________________________
+async def functions are not natively supported.
+You need to install a suitable plugin for your async framework, for example:
+  - anyio
+  - pytest-asyncio
+  - pytest-tornasync
+  - pytest-trio
+  - pytest-twisted
+============================== warnings summary ===============================
+venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_adversarial_and_security.py: 8 warnings
+tests/test_agent_v2.py: 5 warnings
+tests/test_api_endpoints.py: 2 warnings
+tests/test_companion_api.py: 4 warnings
+tests/test_connected_email_intelligence.py: 9 warnings
+tests/test_eval_scenarios.py: 6 warnings
+tests/test_frontier_memorae.py: 5 warnings
+tests/test_full_pillars.py: 4 warnings
+tests/test_integrations.py: 3 warnings
+tests/test_live_chat_scenario.py: 6 warnings
+tests/test_master_privacy_wipe_comprehensive.py: 1 warning
+tests/test_master_repairs.py: 12 warnings
+tests/test_meeting_clash_multiturn.py: 4 warnings
+tests/test_meeting_intelligence.py: 4 warnings
+tests/test_multimodal_documents.py: 3 warnings
+tests/test_multiturn_e2e_journeys.py: 4 warnings
+tests/test_notion_advanced.py: 1 warning
+tests/test_pending_state.py: 14 warnings
+tests/test_phase1_retrieval_and_loop.py: 1 warning
+tests/test_phase4_golden_eval.py: 1 warning
+tests/test_production_resilience.py: 1 warning
+  C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Lib\site-packages\sqlalchemy\engine\default.py:1192: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+tests/test_companion_api.py::test_calendar_events_and_creation
+tests/test_companion_api.py::test_calendar_events_and_creation
+  C:\Users\neera\OneDrive\ai agent\ai-agent\venv\Lib\site-packages\sqlalchemy\engine\default.py:1192: DeprecationWarning: The default date adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/connectors/test_connector_matrix.py::test_scenario_not_connected_behavior[mcp]
+FAILED tests/connectors/test_connector_matrix.py::test_scenario_auth_expired[mcp]
+FAILED tests/connectors/test_connector_matrix.py::test_scenario_fast_typed_variants_and_typos[mcp]
+FAILED tests/test_agent_v2.py::test_standalone_email_provides_google_oauth_url
+FAILED tests/test_agent_v2.py::test_send_email_confirmation_dialogue_formats_email_not_meeting
+FAILED tests/test_agent_v2.py::test_affirmative_yes_to_conversational_email_draft_executes_send_email
+FAILED tests/test_agent_v2.py::test_multi_intent_execution_and_tool_catalog
+FAILED tests/test_connected_email_intelligence.py::test_search_user_emails_tool
+FAILED tests/test_elite_pillars.py::test_all_elite_pillars - Failed: async de...
+FAILED tests/test_full_pillars.py::test_reminder_conflict_detection - Asserti...
+FAILED tests/test_google_services.py::test_create_meeting_success - Assertion...
+FAILED tests/test_integrations.py::test_github_link_status_query - AssertionE...
+FAILED tests/test_master_repairs.py::test_failure_05_connected_account_does_not_shortcircuit_task
+FAILED tests/test_master_repairs.py::test_create_meeting_details_does_not_trap_greetings
+FAILED tests/test_master_repairs.py::test_create_meeting_details_does_not_trap_agenda_query
+FAILED tests/test_master_repairs.py::test_create_meeting_details_does_not_trap_casual_chat
+FAILED tests/test_master_repairs.py::test_cancel_and_replace_meeting_compound_intent
+FAILED tests/test_master_repairs.py::test_new_meeting_cancel_command_interrupts_pending_google_action
+FAILED tests/test_multimodal_documents.py::test_greeting_conditional_google_recommendation
+FAILED tests/test_oauth_security.py::test_clean_public_base_url_sanitization
+FAILED tests/test_phase4_golden_eval.py::test_phase4_golden_benchmark_thresholds
+FAILED tests/test_production_resilience.py::test_groq_429_rate_limit_failover
+FAILED tests/test_production_resilience.py::test_user_level_timezone_persistence
+FAILED tests/test_production_resilience.py::test_strict_grounding_rule_in_prompt
+FAILED tests/test_smart_pillars.py::test_all_smart_pillars - Failed: async de...
+===== 25 failed, 327 passed, 2 skipped, 101 warnings in 192.82s (0:03:12) =====
+

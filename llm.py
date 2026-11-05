@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from categories import CATEGORIES, DEFAULTS
+import core.timeutil as timeutil
 
 IST = ZoneInfo("Asia/Kolkata")
 SENSITIVE = re.compile(r"\b(otp|password|passcode|cvv)\b|(?:api[_\s-]?key|secret[_\s-]?token)|\b(?:\d[ -]?){13,19}\b", re.I)
@@ -180,7 +181,7 @@ def _clean_item(d, now):
 
 async def extract(text):
     """Sirf item nikalta hai (emails ke liye). Koi intent/command nahi."""
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     system = (
         "You extract important day-to-day items from a user's message. "
         + _now_text(now)
@@ -449,7 +450,7 @@ def parse_followup_time(message, now):
 
 async def understand(text):
     """Fast local rules first; use Groq only when a request needs interpretation."""
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     fast_meeting = _fast_meeting_reminder(text, now)
     if fast_meeting is not None:
         return fast_meeting

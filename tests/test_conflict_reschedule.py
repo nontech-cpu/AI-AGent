@@ -2,6 +2,8 @@ import pytest
 from datetime import date, time as dtime
 from sqlalchemy import text
 import db
+from timing import IST
+import core.timeutil as timeutil
 from agent.tools import execute_tool
 
 @pytest.fixture(autouse=True)
@@ -51,7 +53,7 @@ async def test_smart_reschedule_and_deduplication():
     db.ensure_user(chat_id)
     db.give_consent(chat_id)
     db.set_persona(chat_id, "Job")
-    today = date(2026, 10, 23)
+    today = timeutil.today(IST)
 
     # 1. Create 6 PM movie
     res1 = await execute_tool(chat_id, "create_reminder", {

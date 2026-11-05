@@ -45,6 +45,9 @@ def client():
 def init_test_db():
     from db import engine
     from sqlalchemy import text
+    if "sqlite" not in str(engine.url):
+        yield
+        return
     with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
@@ -111,6 +114,10 @@ def init_test_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        try:
+            conn.execute(text("ALTER TABLE memory_items ADD COLUMN duration_minutes INTEGER DEFAULT 30"))
+        except Exception:
+            pass
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,8 +207,66 @@ def init_test_db():
                 email TEXT,
                 birthday TEXT,
                 notes TEXT,
+                last_interacted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        try:
+            conn.execute(text("ALTER TABLE user_relationships ADD COLUMN last_interacted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+        except Exception:
+            pass
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS pending_followups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                recipient TEXT NOT NULL,
+                subject TEXT,
+                notes TEXT,
+                sent_date DATE,
+                due_date DATE,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                service_name TEXT NOT NULL,
+                amount REAL,
+                billing_cycle TEXT,
+                next_renewal_date DATE,
+                is_trial INTEGER DEFAULT 0,
+                trial_expiry_date DATE,
+                cancel_url TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, service_name)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS memory_bubbles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                slug TEXT NOT NULL,
+                name TEXT NOT NULL,
+                color_hex TEXT,
+                icon_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, slug)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS shared_bubble_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bubble_id INTEGER NOT NULL,
+                owner_user_id INTEGER NOT NULL,
+                shared_with_chat_id INTEGER NOT NULL,
+                permission TEXT DEFAULT 'read',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(bubble_id, shared_with_chat_id)
             )
         """))
         conn.execute(text("""
@@ -233,9 +298,11 @@ def init_test_db():
     main.RECENT_DOCS.clear()
     main.RECENT_CHAT_TURNS.clear()
     main.SEEN_UPDATES.clear()
+    os.environ["AGENT_CORE"] = "v1"
     yield
     main.PENDING_GOOGLE_ACTIONS.clear()
     main.PENDING_WIPE_CODES.clear()
     main.RECENT_DOCS.clear()
     main.RECENT_CHAT_TURNS.clear()
     main.SEEN_UPDATES.clear()
+    os.environ["AGENT_CORE"] = "v1"

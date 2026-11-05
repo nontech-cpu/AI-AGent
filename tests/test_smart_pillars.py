@@ -39,10 +39,14 @@ from services.shared_bubble_service import (
 from email_intelligence import analyze_incoming_email
 
 
+import pytest
+import core.timeutil as timeutil
+
 TEST_USER_A = 998877661
 TEST_USER_B = 998877662
 
 
+@pytest.mark.asyncio
 async def test_all_smart_pillars():
     print("=" * 60)
     print("SAPTIC AI - 4 SMART PILLARS VERIFICATION")

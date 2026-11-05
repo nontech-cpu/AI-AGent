@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List
 import httpx
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 from utilities import get_weather
 
@@ -339,7 +340,7 @@ async def heartbeat_loop():
     await asyncio.sleep(15)  # initial delay for startup
     while True:
         try:
-            now_ist = datetime.now(IST)
+            now_ist = timeutil.now(IST)
             await check_evening_wrapup(now_ist)
             await check_subscription_watchdog_daily(now_ist)
             await check_birthday_watchdog_daily(now_ist)

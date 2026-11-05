@@ -16,6 +16,7 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 from timing import IST
+import core.timeutil as timeutil
 import db
 from state.active_context import format_active_context, update_active_context, format_episodic_context
 
@@ -118,10 +119,10 @@ def get_unified_prompt_context(chat_id: int) -> Dict[str, Any]:
     now_ts = time.time()
     cid_can = db.canonical_chat_id(chat_id)
     cached = _UNIFIED_PROMPT_CACHE.get(cid_can)
-    if cached and (now_ts - cached.get("ts", 0) < 60.0):
+    if cached and timeutil.get_frozen_clock() is None and (now_ts - cached.get("ts", 0) < 60.0):
         return cached
 
-    now_ist = datetime.now(IST)
+    now_ist = timeutil.now(IST)
     today_d = now_ist.date()
     tomorrow_d = today_d + timedelta(days=1)
 
@@ -235,7 +236,7 @@ async def build_runtime_system_prompt(
         u_tz = IST
         user_tz_str = "Asia/Kolkata"
 
-    now_user = datetime.now(u_tz)
+    now_user = timeutil.now(u_tz)
     today_d = now_user.date()
     tomorrow_d = today_d + timedelta(days=1)
     weekday = now_user.strftime("%A")

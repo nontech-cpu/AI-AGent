@@ -12,10 +12,13 @@ class MCPConnector(Connector):
     aliases = ["mcp", "protocol", "server", "custom tool", "plugin", "remote tool"]
     display_name = "Model Context Protocol (MCP)"
 
-    def __init__(self, is_mock: bool = False):
+    def __init__(self, is_mock: bool = False, forced_state: Optional[str] = None):
         self.is_mock = is_mock
+        self.forced_state = forced_state
 
     def auth_state(self, user_or_chat_id: int) -> Literal["connected", "not_connected", "expired", "partial"]:
+        if self.forced_state:
+            return self.forced_state
         if self.is_mock:
             return "connected"
         servers = db.get_user_mcp_servers(user_or_chat_id)
@@ -50,6 +53,17 @@ class MCPConnector(Connector):
 
     async def execute(self, user_or_chat_id: int, tool_name: str, args: Dict[str, Any]) -> ToolResult:
         """Executes an MCP operation."""
+        if self.forced_state == "not_connected":
+            return ToolResult(
+                ok=False,
+                error={"type": ErrorType.NOT_CONNECTED.value, "message": "MCP server is not connected."}
+            )
+        if self.forced_state == "expired":
+            return ToolResult(
+                ok=False,
+                error={"type": ErrorType.AUTH_EXPIRED.value, "message": "MCP server authorization expired."}
+            )
+
         if self.is_mock:
             return ToolResult(ok=True, data={"mock_result": "MCP action executed successfully"})
 

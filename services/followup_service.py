@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy import text
 import db
 from timing import IST
+import core.timeutil as timeutil
 
 logger = logging.getLogger("saptic_followup")
 
@@ -29,7 +30,7 @@ def record_followup(
 ) -> Dict[str, Any]:
     """Records a critical communication to watch for reply."""
     uid = _resolve_uid(user_id_or_chat_id)
-    today = datetime.now(IST).date()
+    today = timeutil.today(IST)
     due_date = today + timedelta(days=days_ahead)
 
     try:
@@ -65,7 +66,7 @@ def record_followup(
 def get_due_followups(user_id_or_chat_id: int) -> List[Dict[str, Any]]:
     """Retrieves follow-ups where recipient hasn't replied and due_date <= today."""
     uid = _resolve_uid(user_id_or_chat_id)
-    today = datetime.now(IST).date()
+    today = timeutil.today(IST)
 
     try:
         with db.engine.connect() as conn:

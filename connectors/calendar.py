@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Literal
 
 import db
 from timing import IST
+import core.timeutil as timeutil
 from connectors.base import Connector, ToolSpec, ToolResult, HealthResult, ErrorType
 
 CALENDAR_FIXTURES = {
@@ -166,7 +167,7 @@ class CalendarConnector(Connector):
             t_date = args.get("target_date")
             try:
                 from main import get_unified_schedule
-                d_obj = date.fromisoformat(t_date) if t_date else datetime.now(IST).date()
+                d_obj = date.fromisoformat(t_date) if t_date else timeutil.today(IST)
                 sched = await get_unified_schedule(user_or_chat_id, d_obj)
                 events = sched.get("calendar_events", [])
                 rems = sched.get("reminders", [])
@@ -200,7 +201,7 @@ class CalendarConnector(Connector):
             except Exception as exc:
                 try:
                     from main import get_unified_schedule
-                    start_dt = datetime.fromisoformat(s_iso) if s_iso else datetime.now(IST)
+                    start_dt = datetime.fromisoformat(s_iso) if s_iso else timeutil.now(IST)
                     sched = await get_unified_schedule(user_or_chat_id, start_dt.date())
                     clashes = [ev.get("summary") for ev in sched.get("calendar_events", [])]
                     return ToolResult(

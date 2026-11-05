@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 import db
 from timing import IST
+import core.timeutil as timeutil
 
 logger = logging.getLogger("peculiar_state")
 
@@ -65,7 +66,7 @@ def save_pending_action(chat_id: int, action_kind: str, payload: dict, expires_m
     Previous unconfirmed actions for the user are marked as 'superseded'.
     """
     ensure_pending_table()
-    now_utc = datetime.now(timezone.utc)
+    now_utc = timeutil.now(timezone.utc)
     expires_utc = now_utc + timedelta(minutes=expires_minutes)
     dialect = db.engine.dialect.name
 
@@ -142,7 +143,7 @@ def get_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
 
         # Check expiration
         if expires_at is not None:
-            now_utc = datetime.now(timezone.utc)
+            now_utc = timeutil.now(timezone.utc)
             if isinstance(expires_at, str):
                 try:
                     exp_dt = datetime.fromisoformat(expires_at)
@@ -253,7 +254,7 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
     if kind in ("create_meeting", "meeting", "update_meeting"):
         try:
             from timing import parse_followup_time
-            parsed = parse_followup_time(clean, datetime.now(IST))
+            parsed = parse_followup_time(clean, timeutil.now(IST))
             if parsed and parsed[0] is not None:
                 return ("update_time", parsed)
         except Exception:

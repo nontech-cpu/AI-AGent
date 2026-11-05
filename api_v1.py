@@ -27,6 +27,7 @@ from db import (
 )
 from categories import CATEGORIES, DEFAULTS
 from timing import IST, build_plan, fmt_when
+import core.timeutil as timeutil
 from llm import understand, extract, answer_conversation_memory, _chat_json
 from voice import transcribe_audio_bytes
 from multimodal import (
@@ -348,7 +349,7 @@ async def _execute_user_action(chat_id: int, text_content: str, history: List[Di
     Analyzes user command, performs database writes / Google calendar creations, and returns structured result.
     """
     clean = text_content.strip()
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
 
     # 1. Classify intent via Groq LLM
     try:
@@ -689,7 +690,7 @@ async def upload_document(
         "content": text_content,
         "summary": summary,
         "chat_id": chat_id,
-        "created_at": datetime.now(IST).isoformat(),
+        "created_at": timeutil.now(IST).isoformat(),
     }
 
     return {
@@ -800,7 +801,7 @@ async def get_office_workspace(
     Mobile Home Dashboard ('The Office'):
     Returns today's agenda, weather forecast, active reminders, tasks, and Google meetings.
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     today = now.date()
 
     # 1. Fetch Today's Memory Items from Database
@@ -1042,7 +1043,7 @@ async def execute_cross_tool_query(
     then generates a unified executive answer.
     """
     query = body.query.strip()
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
 
     # 1. Fetch relevant memories from DB
     with engine.connect() as conn:
@@ -1333,7 +1334,7 @@ async def get_morning_briefing(
     Synthesizes an executive daily morning digest:
     Weather + Today's Google Calendar meetings + Active Today tasks + Motivational focus tip.
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     today = now.date()
 
     # 1. Weather with UV Index
@@ -1440,7 +1441,7 @@ async def get_weekly_briefing(chat_id: int = Depends(get_current_chat_id)):
     Weekly Strategy Digest (for Mondays):
     Analyzes upcoming 7 days workload, heaviest days, and deep work slots.
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     today = now.date()
     week_end = today + timedelta(days=7)
 
@@ -1606,7 +1607,7 @@ async def get_dashboard_overview(chat_id: int = Depends(get_current_chat_id)):
     - Today's Tasks
     - Quick Action Pills
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     hr = now.hour
     time_greeting = "Good morning" if hr < 12 else ("Good afternoon" if hr < 17 else "Good evening")
     
@@ -1770,7 +1771,7 @@ async def get_user_reminders(
     """
     Returns reminders divided into Today, Upcoming, All, or Completed.
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     target_chat = _resolve_calendar_chat_id(chat_id)
     def _fetch_rows():
         with engine.connect() as conn:
@@ -1869,7 +1870,7 @@ async def create_user_reminder(
     Creates a new reminder from the Mobile Reminders section (+ button).
     Directly schedules notifications and is instantly reflected across bot & companion app.
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     try:
         due_d = datetime.strptime(body.due_date, "%Y-%m-%d").date()
     except Exception:
@@ -2034,7 +2035,7 @@ async def get_calendar_events_route(
     """
     Fetches unified calendar schedule (Google Calendar + local reminders/meetings) with high-speed caching.
     """
-    now = datetime.now(IST)
+    now = timeutil.now(IST)
     target_d = date_str or now.strftime("%Y-%m-%d")
     target_chat_id = _resolve_calendar_chat_id(chat_id)
 
@@ -2167,10 +2168,10 @@ async def create_calendar_event_route(
         from dateutil import parser as dt_parser
         clean_dt = dt_parser.parse(body.start_iso)
     except Exception:
-        clean_dt = datetime.now(IST)
+        clean_dt = timeutil.now(IST)
 
     # 1. Immediately mirror to local database in < 0.05s
-    now_ist = datetime.now(IST)
+    now_ist = timeutil.now(IST)
     mid = save_memory(target_chat_id, "meeting", body.title, None, clean_dt.date(), clean_dt.time())
     plan = build_plan(clean_dt.date(), clean_dt.time(), now_ist)
     if plan.get("reminders") and mid:
@@ -2476,7 +2477,7 @@ async def get_activity_ledger(
     except Exception:
         # Fallback if chat_logs table doesn't exist in local test
         ledger = [
-            {"id": 1, "actor": "Assistant", "action_text": "Activity ledger active.", "timestamp": datetime.now(IST).isoformat()}
+            {"id": 1, "actor": "Assistant", "action_text": "Activity ledger active.", "timestamp": timeutil.now(IST).isoformat()}
         ]
     return {"ledger_count": len(ledger), "entries": ledger}
 
