@@ -233,7 +233,9 @@ class CheckAvailabilityArgs(BaseModel):
 
 class CreateMeetingArgs(BaseModel):
     title: Optional[str] = Field("Meeting", description="Title of the meeting.")
-    start_iso: str = Field(..., description="Meeting start datetime in ISO format (e.g. YYYY-MM-DDTHH:MM:SS with user's timezone offset or local time).")
+    summary: Optional[str] = Field(None, description="Alias for meeting title.")
+    start_iso: Optional[str] = Field(None, description="Meeting start datetime in ISO format (e.g. YYYY-MM-DDTHH:MM:SS with user's timezone offset or local time).")
+    start_time: Optional[str] = Field(None, description="Alias for meeting start datetime.")
     duration_minutes: Optional[int] = Field(30, description="Duration in minutes.")
     attendees: Optional[List[str]] = Field([], description="List of attendee email addresses.")
 
@@ -2642,7 +2644,29 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             if not is_conn:
                 return {"status": "error", "message": "Google account is not connected. User must connect Google first."}
 
-            final_title = args.title or "Meeting"
+            raw_start = args.start_iso or args.start_time
+            if not raw_start:
+                return {"status": "error", "message": "Missing start_iso datetime for meeting."}
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            cur_now = timeutil.now(u_tz)
+            try:
+                dt_start = datetime.fromisoformat(raw_start)
+                if dt_start.tzinfo is None:
+                    dt_start = dt_start.replace(tzinfo=u_tz)
+                else:
+                    dt_start = dt_start.astimezone(u_tz)
+                if dt_start < cur_now - timedelta(minutes=2):
+                    u_text = str((user_context or {}).get("user_text", "")).lower()
+                    if "tomorrow" in u_text or "kal" in u_text:
+                        target_d = cur_now.date() + timedelta(days=1)
+                    else:
+                        target_d = cur_now.date() if dt_start.time() > cur_now.time() else cur_now.date() + timedelta(days=1)
+                    dt_start = datetime.combine(target_d, dt_start.time(), tzinfo=u_tz)
+                args.start_iso = dt_start.isoformat()
+            except Exception:
+                args.start_iso = raw_start
+
+            final_title = args.summary or args.title or "Meeting"
             if final_title in ("Meeting", "meeting", "call"):
                 try:
                     from state.active_context import get_active_event

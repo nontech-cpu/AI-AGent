@@ -348,9 +348,32 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             duration_minutes = payload.get("duration_minutes") or payload.get("duration", 30)
             attendees = payload.get("attendees", [])
 
+            # Industry-grade date sanity: Ensure start_iso is not anchored to a past year due to LLM date hallucination
+            try:
+                from datetime import datetime as _dt, timedelta as _td
+                from zoneinfo import ZoneInfo
+                from timing import IST
+                user_tz_str = await google_services.get_user_calendar_timezone(chat_id)
+                try:
+                    u_tz = ZoneInfo(user_tz_str)
+                except Exception:
+                    u_tz = IST
+                cur_now = _dt.now(u_tz)
+                parsed_dt = _dt.fromisoformat(start_iso)
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=u_tz)
+                else:
+                    parsed_dt = parsed_dt.astimezone(u_tz)
+                if parsed_dt < cur_now - _td(minutes=2):
+                    target_d = cur_now.date() + _td(days=1)
+                    parsed_dt = _dt.combine(target_d, parsed_dt.time(), tzinfo=u_tz)
+                    start_iso = parsed_dt.isoformat()
+            except Exception:
+                pass
+
             result = await google_services.create_meeting(
                 chat_id=chat_id,
-                summary=title,
+                title=title,
                 start_iso=start_iso,
                 duration_minutes=duration_minutes,
                 attendees=attendees

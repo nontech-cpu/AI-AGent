@@ -130,3 +130,46 @@ async def test_create_meeting_defaults_title_when_start_iso_is_present():
         assert len(sent) == 1
         assert "Please confirm" in sent[0]
         assert "2026-10-27T17:00:00+05:30" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_execute_pending_create_meeting_robustness():
+    """
+    Verifies that execute_pending_action seamlessly handles create_meeting
+    without failing on argument names like 'summary' or 'title', and gracefully
+    normalizes past dates into upcoming dates.
+    """
+    from state.pending import execute_pending_action
+    import google_services
+
+    chat_id = 99887766
+    pending = {
+        "id": 999,
+        "action_kind": "create_meeting",
+        "payload": {
+            "kind": "create_meeting",
+            "title": "Strategy Sync",
+            "start_iso": "2025-05-15T16:00:00",  # past year to test normalization
+            "duration_minutes": 30,
+            "attendees": []
+        }
+    }
+
+    mock_meeting_result = {
+        "id": "mock_event_123",
+        "summary": "Strategy Sync",
+        "htmlLink": "https://calendar.google.com/event?eid=123",
+        "meet_url": "https://meet.google.com/abc-defg-hij"
+    }
+
+    with patch("google_services.create_meeting", new_callable=AsyncMock, return_value=mock_meeting_result) as mock_create,          patch("google_services.get_user_calendar_timezone", new_callable=AsyncMock, return_value="Asia/Kolkata"),          patch("state.pending.complete_pending_action") as mock_complete:
+
+        ok, msg = await execute_pending_action(chat_id, pending)
+        assert ok is True
+        assert "Meeting successfully scheduled" in msg
+        assert "Strategy Sync" in msg
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args.kwargs
+        assert call_kwargs["title"] == "Strategy Sync"
+        # Check start_iso was normalized to current/upcoming year (not left in 2025)
+        assert not call_kwargs["start_iso"].startswith("2025")

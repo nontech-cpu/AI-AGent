@@ -140,7 +140,12 @@ async def get_user_calendar_timezone(chat_id: int) -> str:
 
     return "Asia/Kolkata"
 
-async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=None):
+async def create_meeting(chat_id, title=None, start_iso=None, duration_minutes=30, attendees=None, **kwargs):
+    meeting_title = title or kwargs.get("summary") or "Meeting"
+    start_iso = start_iso or kwargs.get("start") or kwargs.get("start_time")
+    duration_minutes = duration_minutes if duration_minutes is not None else kwargs.get("duration", 30)
+    attendees = attendees if attendees is not None else kwargs.get("attendees", [])
+
     access, _ = await access_token_for_chat(chat_id)
     user_tz_str = await get_user_calendar_timezone(chat_id)
     try:
@@ -164,7 +169,7 @@ async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=
 
     end = start + timedelta(minutes=int(duration_minutes))
     event = {
-        'summary': title,
+        'summary': meeting_title,
         'start': {'dateTime': start.isoformat(), 'timeZone': user_tz_str},
         'end': {'dateTime': end.isoformat(), 'timeZone': user_tz_str},
         'conferenceData': {'createRequest': {'requestId': __import__('secrets').token_urlsafe(12),
