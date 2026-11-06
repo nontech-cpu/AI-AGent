@@ -375,9 +375,30 @@ async def test_ticket_email_fast_path():
             return MockTg()
         nonlocal call_count
         call_count += 1
+        req_json = kwargs.get("json", {})
+        msgs = req_json.get("messages", [])
+        sys_prompt = msgs[0].get("content", "") if msgs else ""
+        is_claim_checker = "Grounding & Truth Claim-Checker" in sys_prompt
+        is_first_turn = (call_count <= 2) and ("tool_choice" in req_json or "tools" in req_json)
+
         class MockResp:
             status_code = 200
-            def json(self): return groq_resp_1 if call_count == 1 else groq_resp_2
+            def json(self):
+                if is_claim_checker:
+                    return {
+                        "choices": [{
+                            "message": {
+                                "role": "assistant",
+                                "content": '{"claims_action_done": false, "which_action": null, "claims_external_fact": false, "claims_route_or_travel_time": false, "sourced_by_tool": true, "reason": "Ticket from search_user_emails"}',
+                                "tool_calls": None
+                            }
+                        }],
+                        "usage": {"total_tokens": 50}
+                    }
+                elif is_first_turn:
+                    return groq_resp_1
+                else:
+                    return groq_resp_2
         return MockResp()
 
     with patch("httpx.AsyncClient.post", side_effect=mock_post), \

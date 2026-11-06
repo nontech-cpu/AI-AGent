@@ -291,7 +291,7 @@ async def audit_claims_with_llm(
     # Fallback heuristic when LLM provider is offline or unreachable in unit tests:
     low = draft_reply.lower()
     has_action_phrase = any(w in low for w in (
-        "kar diya", "ho gaya", "bhej diya", "delete kar diya", "set kar diya", "laga diya",
+        "kar diya", "bhej diya", "delete kar diya", "set kar diya", "laga diya",
         "save kar diya", "update kar diya", "shift kar diya", "successfully created", "successfully sent",
         "successfully deleted", "successfully scheduled"
     ))

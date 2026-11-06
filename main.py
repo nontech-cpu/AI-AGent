@@ -1412,6 +1412,7 @@ async def connected_user_gmail_monitor_loop():
     while True:
         try:
             connected_users = await asyncio.to_thread(get_all_connected_google_users)
+            seen_mailboxes = set()
             for u in connected_users:
                 chat_id_raw = u.get("telegram_chat_id")
                 if not chat_id_raw:
@@ -1420,6 +1421,15 @@ async def connected_user_gmail_monitor_loop():
                     chat_id = int(chat_id_raw)
                 except (ValueError, TypeError):
                     continue
+
+                raw_email = (u.get("email") or "").strip().lower()
+                if raw_email:
+                    if raw_email in seen_mailboxes:
+                        continue
+                    seen_mailboxes.add(raw_email)
+
+                # Route alerts to active chat session among linked identities
+                delivery_chat_id = db.get_most_active_chat_id(chat_id)
 
                 # Determine connection timestamp
                 conn_dt = u.get("created_at") or u.get("updated_at")
@@ -1443,8 +1453,8 @@ async def connected_user_gmail_monitor_loop():
                     if not email_id:
                         continue
 
-                    # Check deduplication
-                    already_processed = await asyncio.to_thread(is_user_email_processed, chat_id, email_id)
+                    # Check deduplication across all linked identities
+                    already_processed = await asyncio.to_thread(is_user_email_processed, delivery_chat_id, email_id)
                     if already_processed:
                         continue
 
@@ -1469,7 +1479,7 @@ async def connected_user_gmail_monitor_loop():
                         if msg_ts is not None:
                             is_pre_connection = (msg_ts < (conn_ts - 30.0))
                         else:
-                            has_baseline = await asyncio.to_thread(has_user_email_baseline, chat_id)
+                            has_baseline = await asyncio.to_thread(has_user_email_baseline, delivery_chat_id)
                             is_pre_connection = (not has_baseline)
                     elif msg_ts is not None:
                         import time as _pytime
@@ -1478,7 +1488,7 @@ async def connected_user_gmail_monitor_loop():
                     if is_pre_connection:
                         await asyncio.to_thread(
                             record_processed_user_email,
-                            chat_id,
+                            delivery_chat_id,
                             email_id,
                             sender=sender,
                             subject=subject,
@@ -1496,7 +1506,7 @@ async def connected_user_gmail_monitor_loop():
                     if analysis and analysis.get("is_important") and analysis.get("alert_text"):
                         await asyncio.to_thread(
                             record_processed_user_email,
-                            chat_id,
+                            delivery_chat_id,
                             email_id,
                             sender=sender,
                             subject=subject,
@@ -1519,7 +1529,7 @@ async def connected_user_gmail_monitor_loop():
                             fact_text = f"Booking/Ticket: {carrier_str} | PNR: {pnr_str} | Route: {route_str} | Date: {dt_str} | Seats: {seats_str} | Passengers: {pax_str}"
                             try:
                                 from state.active_context import set_active_ticket
-                                set_active_ticket(chat_id, raw)
+                                set_active_ticket(delivery_chat_id, raw)
                             except Exception as sat_err:
                                 print(f"Error setting active ticket in main: {sat_err}")
 
@@ -1541,7 +1551,7 @@ async def connected_user_gmail_monitor_loop():
                                         "Prescription Medicines & First Aid",
                                         "Wallet, Cash & Cards"
                                     ]
-                                    db.create_smart_list_with_items(chat_id, list_name, category="travel", items=default_items)
+                                    db.create_smart_list_with_items(delivery_chat_id, list_name, category="travel", items=default_items)
                                     alert_text += f"\n\n🧳 **Auto-Packing List Ready:** Smart lists mein aapka '{list_name}' checklist add kar diya gaya hai!"
                             except Exception as pack_e:
                                 print(f"Auto-packing list error: {pack_e}")
@@ -1558,7 +1568,7 @@ async def connected_user_gmail_monitor_loop():
                                 from services.clash_detector import detect_schedule_clash
                                 if dt_str and dt_str != "Check email details":
                                     today_ist = timeutil.today(IST)
-                                    clash_res = await detect_schedule_clash(chat_id, today_ist, dt_str, duration_minutes=45, exclude_title=comp_str)
+                                    clash_res = await detect_schedule_clash(delivery_chat_id, today_ist, dt_str, duration_minutes=45, exclude_title=comp_str)
                                     if clash_res and clash_res.get("has_clash"):
                                         alert_text += f"\n\n⚠️ **Schedule Conflict Alert:** Is samay aapke schedule mein already '{clash_res['message']}' hai! Ek baar apna calendar zaroor review karein."
                             except Exception as cl_e:
@@ -1592,7 +1602,7 @@ async def connected_user_gmail_monitor_loop():
                                             pass
                                 await asyncio.to_thread(
                                     upsert_subscription,
-                                    chat_id,
+                                    delivery_chat_id,
                                     service_name=service_str,
                                     amount=parsed_amt,
                                     billing_cycle=b_cycle,
@@ -1602,24 +1612,24 @@ async def connected_user_gmail_monitor_loop():
                                     cancel_url=c_url,
                                 )
                             except Exception as sub_e:
-                                print(f"Error upserting subscription from email for {chat_id}: {sub_e}")
+                                print(f"Error upserting subscription from email for {delivery_chat_id}: {sub_e}")
 
                         if fact_text:
                             try:
-                                await asyncio.to_thread(save_user_fact, chat_id, fact_text, category=cat)
+                                await asyncio.to_thread(save_user_fact, delivery_chat_id, fact_text, category=cat)
                             except Exception as f_err:
-                                print(f"Error saving user fact from email for {chat_id}:", f_err)
+                                print(f"Error saving user fact from email for {delivery_chat_id}:", f_err)
 
                         try:
-                            reply_lang.set(get_language(chat_id))
-                            await say_raw(chat_id, alert_text)
+                            reply_lang.set(get_language(delivery_chat_id))
+                            await say_raw(delivery_chat_id, alert_text)
                         except Exception as send_err:
-                            print(f"Failed to send email alert to {chat_id}:", send_err)
+                            print(f"Failed to send email alert to {delivery_chat_id}:", send_err)
                     else:
                         cat = (analysis or {}).get("category", "promotional")
                         await asyncio.to_thread(
                             record_processed_user_email,
-                            chat_id,
+                            delivery_chat_id,
                             email_id,
                             sender=sender,
                             subject=subject,

@@ -64,6 +64,25 @@ def _heuristic_analyze(sender: str, subject: str, body: str) -> Dict[str, Any]:
     combined = f"From: {sender}\nSubject: {subject}\n{body}"
     combined_lower = combined.casefold()
 
+    # Routine system login / device sign-in / security notices are NOT actionable documents
+    is_routine_security_alert = any(
+        w in combined_lower
+        for w in (
+            "logged into your account", "new device logged in", "new device login",
+            "security alert", "sign-in attempt", "new sign-in", "login alert",
+            "successful login", "two-factor authentication", "verification code",
+            "one-time password", "password reset", "reset your password",
+            "a new device logged into"
+        )
+    )
+    if is_routine_security_alert and not any(k in combined_lower for k in ("interview", "pnr", "booking confirmed", "due date", "out for delivery")):
+        return {
+            "is_important": False,
+            "category": "system_notification",
+            "alert_text": None,
+            "raw_data": {"subject": subject}
+        }
+
     meet_match = MEET_LINK_REGEX.search(combined)
     meet_url = meet_match.group(0) if meet_match else None
 
@@ -446,8 +465,25 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
     subject = subject or ""
     body = body or ""
 
-    # Fast-check if obviously promotional spam with no critical indicators
+    # Fast-check if obviously promotional spam or routine system/security notice
     combined_sample = f"{sender} {subject} {body[:500]}".casefold()
+    is_routine_security_alert = any(
+        w in combined_sample
+        for w in (
+            "logged into your account", "new device logged in", "new device login",
+            "security alert", "sign-in attempt", "new sign-in", "login alert",
+            "successful login", "two-factor authentication", "verification code",
+            "one-time password", "password reset", "reset your password",
+            "a new device logged into"
+        )
+    )
+    if is_routine_security_alert and not any(k in combined_sample for k in ("interview", "pnr", "booking confirmed", "due date", "out for delivery")):
+        return {
+            "is_important": False,
+            "category": "system_notification",
+            "alert_text": None,
+            "raw_data": {"subject": subject},
+        }
     has_critical_token = any(
         k in combined_sample
         for k in ("interview", "meet.google.com", "zoom.us", "teams.microsoft.com", "pnr", "booking confirmed", "due date", "statement", "out for delivery", "attached document", "ticket.pdf", "trial", "subscription", "recurring", "renewal")
@@ -476,7 +512,7 @@ async def analyze_incoming_email(sender: str, subject: str, body: str) -> Dict[s
                 "- 'bill_payment': Credit card statement, electricity bill, mobile recharge/utility bill with total amount due and due date.\n"
                 "- 'subscription_watchdog': Free trial ending, subscription renewal notice, auto-renewal charge, SaaS/OTT recurring billing (Netflix, Spotify, AWS, Cursor, ChatGPT, Prime, etc.) with service name, amount, renewal/expiry date, is_trial flag, cancel link.\n"
                 "- 'delivery_urgent': Order out for delivery today with a delivery OTP/PIN or urgent delivery status.\n"
-                "- 'promotional': Sales, marketing, discounts, newsletters, social media digests (LinkedIn, Twitter), spam. Set is_important=false.\n\n"
+                "- 'promotional': Sales, marketing, discounts, newsletters, social media digests, or routine device/security notifications (e.g. 'A new device logged into your account', 'Security alert', 'Login from new IP', 'Verify your email', 'Password reset'). Set is_important=false! Never alert routine device logins or system notices.\n\n"
                 "Return JSON ONLY in this schema:\n"
                 "{\n"
                 '  "is_important": boolean,\n'
