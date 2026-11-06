@@ -4557,9 +4557,19 @@ async def google_callback(request: Request):
             "https://www.googleapis.com/auth/gmail.readonly",
         ])
         save_google_token(db_user_id, email, encrypted, scopes)
+        if orig_chat_id and orig_chat_id != chat_id:
+            with engine.connect() as conn:
+                orig_user_row = conn.execute(
+                    text("SELECT id FROM users WHERE telegram_chat_id = :chat_id"),
+                    {"chat_id": orig_chat_id},
+                ).first()
+            if orig_user_row:
+                save_google_token(int(orig_user_row[0]), email, encrypted, scopes)
         if chat_id:
             from google_services import clear_gmail_insufficient_scope_cache
             clear_gmail_insufficient_scope_cache(chat_id)
+            if orig_chat_id:
+                clear_gmail_insufficient_scope_cache(orig_chat_id)
 
             # Proactively baseline existing inbox emails so past emails are NEVER alerted
             async def _baseline_existing_emails(cid):
@@ -4618,6 +4628,8 @@ async def google_callback(request: Request):
         try:
             from agent.prompt import _USER_META_CACHE
             _USER_META_CACHE.pop(chat_id, None)
+            if orig_chat_id:
+                _USER_META_CACHE.pop(orig_chat_id, None)
         except Exception:
             pass
 
@@ -4733,9 +4745,14 @@ async def github_oauth_callback(request: Request):
         return _github_callback_page("Invalid request", "Missing authorization code or session state.", success=False, bot_username=bot_user)
 
     try:
-        ensure_user(chat_id)
-        if is_web and not has_consent(chat_id):
-            give_consent(chat_id)
+        from db import canonical_chat_id
+        orig_chat_id = chat_id
+        canon_chat_id = canonical_chat_id(chat_id)
+        ensure_user(canon_chat_id)
+        if orig_chat_id and orig_chat_id != canon_chat_id:
+            ensure_user(orig_chat_id)
+        if is_web and not has_consent(canon_chat_id):
+            give_consent(canon_chat_id)
 
         token_data = await exchange_github_code(code)
         access_token = token_data.get("access_token")
@@ -4752,17 +4769,19 @@ async def github_oauth_callback(request: Request):
             "public_repos": public_repos,
             "scopes": token_data.get("scope", "repo")
         })
-        save_user_integration(chat_id, "github", access_token, config_json)
+        save_user_integration(canon_chat_id, "github", access_token, config_json)
+        if orig_chat_id and orig_chat_id != canon_chat_id:
+            save_user_integration(orig_chat_id, "github", access_token, config_json)
 
         # Notify user on Telegram if initiated from TG
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        if tg_token and not is_web:
+        if tg_token and not is_web and orig_chat_id:
             try:
                 async with httpx.AsyncClient(timeout=6.0) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{tg_token}/sendMessage",
                         json={
-                            "chat_id": chat_id,
+                            "chat_id": orig_chat_id,
                             "text": (
                                 f"✅ **GitHub connected successfully!**\n\n"
                                 f"Account: @{login}\n"
@@ -4885,9 +4904,14 @@ async def notion_oauth_callback(request: Request):
         return _github_callback_page("Invalid request", "Missing authorization code or session state.", success=False, bot_username=bot_user)
 
     try:
-        ensure_user(chat_id)
-        if is_web and not has_consent(chat_id):
-            give_consent(chat_id)
+        from db import canonical_chat_id
+        orig_chat_id = chat_id
+        canon_chat_id = canonical_chat_id(chat_id)
+        ensure_user(canon_chat_id)
+        if orig_chat_id and orig_chat_id != canon_chat_id:
+            ensure_user(orig_chat_id)
+        if is_web and not has_consent(canon_chat_id):
+            give_consent(canon_chat_id)
 
         token_data = await exchange_notion_code(code)
         access_token = token_data.get("access_token")
@@ -4904,17 +4928,19 @@ async def notion_oauth_callback(request: Request):
             "workspace_icon": workspace_icon,
             "token_type": token_data.get("token_type", "bearer")
         })
-        save_user_integration(chat_id, "notion", access_token, config_json)
+        save_user_integration(canon_chat_id, "notion", access_token, config_json)
+        if orig_chat_id and orig_chat_id != canon_chat_id:
+            save_user_integration(orig_chat_id, "notion", access_token, config_json)
 
         # Notify user on Telegram if initiated from TG
         tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        if tg_token and not is_web:
+        if tg_token and not is_web and orig_chat_id:
             try:
                 async with httpx.AsyncClient(timeout=6.0) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{tg_token}/sendMessage",
                         json={
-                            "chat_id": chat_id,
+                            "chat_id": orig_chat_id,
                             "text": (
                                 f"✅ **Notion connected successfully!** 📝\n\n"
                                 f"Workspace: **{workspace_name}**\n"

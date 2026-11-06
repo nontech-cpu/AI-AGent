@@ -497,7 +497,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # Execute tool with per-tool timeout (15s) and catch-all error handling
                 try:
                     tool_result = await asyncio.wait_for(
-                        execute_tool(chat_id, fn_name, args_dict, user_context={"user_text": user_text}),
+                        execute_tool(chat_id, fn_name, args_dict, user_context={"user_text": user_text, "delivery_chat_id": delivery_chat_id, "originating_chat_id": delivery_chat_id}),
                         timeout=15.0
                     )
                 except asyncio.TimeoutError:

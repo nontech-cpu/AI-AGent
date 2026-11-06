@@ -1379,6 +1379,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
     return res
 
 async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
+    origin_chat_id = (user_context or {}).get("delivery_chat_id") or (user_context or {}).get("originating_chat_id") or chat_id
     try:
         # 1. Unified Connector Architecture Dispatch
         from connectors.registry import get_connector_by_tool
@@ -2734,7 +2735,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     frontend_connect = os.getenv("FRONTEND_CONNECT_URL", "https://bucolic-dieffenbachia-c20bd0.netlify.app/connect.html")
                     if is_notion_oauth_configured():
                         try:
-                            auth_url = build_notion_auth_url(int(chat_id), source="tg")
+                            auth_url = build_notion_auth_url(int(origin_chat_id), source="tg")
                             msg = (
                                 f"❌ Aapka Notion account abhi connect nahi hai.\n\n"
                                 f"👉 1-Click Login: Is secure official link par click karke workspace authorize karein:\n"
@@ -2898,7 +2899,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     }
                 from google_auth import build_auth_url
                 try:
-                    auth_url = build_auth_url(int(chat_id), source="tg")
+                    auth_url = build_auth_url(int(origin_chat_id), source="tg")
                     return {
                         "status": "success",
                         "service": "google",
@@ -2931,7 +2932,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
                 if is_github_oauth_configured():
                     try:
-                        auth_url = build_github_auth_url(int(chat_id), source="tg")
+                        auth_url = build_github_auth_url(int(origin_chat_id), source="tg")
                         return {
                             "status": "success",
                             "service": "github",
@@ -3024,7 +3025,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
                 if is_notion_oauth_configured():
                     try:
-                        auth_url = build_notion_auth_url(int(chat_id), source="tg")
+                        auth_url = build_notion_auth_url(int(origin_chat_id), source="tg")
                         return {
                             "status": "success",
                             "service": "notion",
@@ -3473,7 +3474,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             from main import get_valid_google_connection_by_chat_id
             from google_auth import build_auth_url
             is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
-            auth_url = build_auth_url(int(chat_id), source="tg")
+            auth_url = build_auth_url(int(origin_chat_id), source="tg")
 
             if not is_conn:
                 return {

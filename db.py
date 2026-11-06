@@ -612,6 +612,21 @@ def get_identity_links() -> dict:
 
     links = {}
     try:
+        if engine.dialect.name == "sqlite":
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS identity_links (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_chat_id INTEGER UNIQUE NOT NULL,
+                        canonical_chat_id INTEGER NOT NULL,
+                        label TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.execute(text("""
+                    INSERT OR IGNORE INTO identity_links (source_chat_id, canonical_chat_id, label)
+                    VALUES (1234828592, 1758056012, 'Neerav secondary account')
+                """))
         with engine.connect() as conn:
             rows = conn.execute(text("SELECT source_chat_id, canonical_chat_id FROM identity_links")).fetchall()
             for r in rows:
