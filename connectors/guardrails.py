@@ -38,6 +38,17 @@ def sanitize_untrusted_content(content: str) -> str:
         sanitized = pat.sub("[neutralized-untrusted-text]", sanitized)
     return sanitized
 
+def wrap_untrusted_content(content: str, source: str = "external_data") -> str:
+    """
+    OWASP LLM01 / Layer 5 Glass Tower Standard:
+    Sanitizes and wraps third-party external text (emails, attachments, docs, web results)
+    in XML boundary delimiters so the LLM treats it strictly as passive data, preventing indirect prompt injection.
+    """
+    if not content:
+        return ""
+    clean = sanitize_untrusted_content(str(content))
+    return f'<untrusted_content source="{source}">\n{clean}\n</untrusted_content>' 
+
 def safe_error_reply(error_type: str, connector_name: str = "Service", instructions: str = "", details: str = "", user_lang: str = "hinglish") -> str:
     """Standardized error reply preventing generic unhelpful fallbacks."""
     return format_connector_error(

@@ -1364,7 +1364,21 @@ TOOL_DEFINITIONS = [
 # -------------------------------------------------------------
 
 async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
-    """Executes a tool call asynchronously and returns structured JSON output."""
+    """
+    Executes a tool call asynchronously with Write Action Idempotency Shield
+    (Layer 3 Glass Tower Standard) and returns structured JSON output.
+    """
+    from core.idempotency import check_idempotency, record_idempotency
+    cached_replay = check_idempotency(chat_id, tool_name, arguments)
+    if cached_replay is not None:
+        return cached_replay
+
+    res = await _execute_tool_inner(chat_id, tool_name, arguments, user_context)
+    if isinstance(res, dict):
+        record_idempotency(chat_id, tool_name, arguments, res)
+    return res
+
+async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
     try:
         # 1. Unified Connector Architecture Dispatch
         from connectors.registry import get_connector_by_tool
@@ -3552,6 +3566,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
             results = []
             from email_intelligence import analyze_incoming_email
+            from connectors.guardrails import wrap_untrusted_content
             for m in messages:
                 analysis = await analyze_incoming_email(m.get("sender", ""), m.get("subject", ""), m.get("body", ""))
                 results.append({
@@ -3563,7 +3578,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     "category": analysis.get("category", "general"),
                     "alert_text": analysis.get("alert_text"),
                     "details": analysis.get("raw_data") or {},
-                    "body_snippet": m.get("body", "")[:1000]
+                    "body_snippet": wrap_untrusted_content(m.get("body", "")[:1000], source="gmail")
                 })
 
                 if analysis.get("is_important") and analysis.get("category") == "ticket_booking":

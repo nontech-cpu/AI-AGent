@@ -1,7 +1,6 @@
 """
 core package - Centralized domain utilities for PeculiarAI.
 """
-from core import timeutil
+from core import timeutil, idempotency
 
-__all__ = ["timeutil"]
-
+__all__ = ["timeutil", "idempotency"]
