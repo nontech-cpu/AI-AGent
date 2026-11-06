@@ -95,3 +95,4 @@ For mission-critical production with SLA guarantees:
   - Container runs 24/7 with zero spin-down.
   - Constant 0.5 CPU / 512 MB dedicated RAM.
   - Reminders, calendar checks, and background sync loops run strictly on-schedule without external ping dependencies.
+

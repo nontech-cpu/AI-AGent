@@ -3,17 +3,17 @@
   "recall_at_3": "95.8%",
   "recall_at_5": "95.8%",
   "math_accuracy": "100.0%",
-  "hallucination_rate": "0.0%",
-  "measurements_routing_accuracy": "75.0%",
+  "hallucination_rate": "20.0%",
+  "measurements_routing_accuracy": "87.5%",
   "short_entity_recognition": "83.3%",
   "latency_ms": {
-    "p50": 0.17,
-    "p90": 3.22,
-    "p95": 3.49,
-    "mean": 1.2,
+    "p50": 0.39,
+    "p90": 1509.21,
+    "p95": 1526.5,
+    "mean": 187.74,
     "min": 0.0,
-    "max": 9.13
+    "max": 1795.04
   },
-  "avg_tokens_per_turn": 265,
-  "timestamp": "2026-11-05 19:24:30"
+  "avg_tokens_per_turn": 297,
+  "timestamp": "2026-11-06 08:12:55"
 }
