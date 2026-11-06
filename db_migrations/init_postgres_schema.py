@@ -479,3 +479,4 @@ def init_postgres_schema(engine=None, schema: str = "public") -> list[str]:
 if __name__ == "__main__":
     init_postgres_schema()
     print("Postgres schema initialization complete!")
+

@@ -67,3 +67,4 @@ def test_init_postgres_schema_against_fresh_database():
         with engine.begin() as conn:
             conn.execute(text(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE;"))
         engine.dispose()
+
