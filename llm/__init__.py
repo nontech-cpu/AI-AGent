@@ -1,7 +1,9 @@
 """
 llm package root.
-Exports unified provider adapter as well as backward-compatible legacy utilities.
+Exports unified provider adapter as well as modern lightweight backward-compatibility utilities.
 """
+
+import httpx
 
 from .provider import (
     chat,
@@ -25,11 +27,20 @@ from .provider import (
     ValidationError,
 )
 
-# Re-export all legacy symbols (including underscore-prefixed utilities like _WORD_NUMBERS)
-try:
-    from . import legacy as _legacy
-    for _k, _v in _legacy.__dict__.items():
-        if not _k.startswith("__"):
-            globals()[_k] = _v
-except ImportError:
-    pass
+from timing import IST, parse_followup_time, _WORD_NUMBERS
+
+from .compat import (
+    _chat_json,
+    classify_yes_no_any_language,
+    is_sensitive,
+    SENSITIVE,
+    is_explicit_calendar_action,
+    _explicit_calendar_action,
+    _meeting_title,
+    extract,
+    understand,
+    guess_persona,
+    answer_conversation_memory,
+    INTENTS,
+    ITEM_RULES,
+)
