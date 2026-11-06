@@ -140,3 +140,31 @@ async def test_4a_structured_cognitive_relationship_extraction():
     assert rohan is not None
     assert rohan["relationship"] == "brother"
     assert str(rohan["birthday"]) == "1998-11-20"
+
+
+def test_detect_user_city_sov_ordering():
+    """Verify city detection handles natural Hindi SOV order ('Jaipur me rehta hu')."""
+    from morning_briefing import detect_user_city
+    db.save_user_fact(TEST_CHAT_ID, "Main Jaipur me rehta hu", "profile")
+    city = detect_user_city(TEST_CHAT_ID)
+    assert city == "Jaipur"
+
+
+@pytest.mark.asyncio
+async def test_search_user_emails_query_hygiene():
+    """Verify search_user_emails strips conversational noise words from Gmail query."""
+    from unittest.mock import AsyncMock
+    with patch("google_services.fetch_user_inbox_messages", new_callable=AsyncMock, return_value=[]) as mock_fetch:
+        with patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock, return_value=(True, "user@test.com")):
+            await execute_tool(
+                TEST_CHAT_ID,
+                "search_user_emails",
+                {"query": "Ashwin ko bheja hua email", "folder": "sent"}
+            )
+            mock_fetch.assert_called_once()
+            call_query = mock_fetch.call_args[1].get("query")
+            assert "in:sent" in call_query
+            assert "Ashwin" in call_query
+            # Conversational particles MUST be scrubbed so Gmail search doesn't fail
+            assert "bheja" not in call_query
+            assert "hua" not in call_query

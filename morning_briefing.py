@@ -54,6 +54,14 @@ def detect_user_city(chat_id: int) -> Optional[str]:
                 if cand.lower() not in stop_words:
                     return cand.title()
 
+            # 2b. Natural SOV expressions e.g. "Jaipur me rehta hu", "Delhi me rehti hu"
+            m_sov = re.search(r"\b([a-zA-Z]{3,20})\s+(?:me|mein|mai)\s+(?:rehta|rehti|rahta|rahti|shift|based|post)\b", txt, re.I)
+            if m_sov:
+                cand = m_sov.group(1).strip()
+                stop_words = {"home", "house", "apartment", "hostel", "flat", "pg", "hotel", "room", "office", "india", "abroad", "village", "shehar", "city"}
+                if cand.lower() not in stop_words:
+                    return cand.title()
+
             # 3. Route or Ticket origin e.g. "Route: JODHPUR JN (JU) to ABU ROAD (ABR)"
             m3 = re.search(r"Route:\s*([A-Za-z]+)\s*(?:JN|CANTT|CITY)?\s*(?:\([A-Z]+\))?\s*to", txt, re.I)
             if m3:

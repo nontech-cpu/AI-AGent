@@ -3501,7 +3501,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 if any(w in low_q for w in ("sent", "bheja", "bheji", "send", "outbox")):
                     if "in:sent" not in q_parts:
                         q_parts.append("in:sent")
-                q_parts.append(user_q)
+                clean_q_tokens = [
+                    w for w in user_q.split()
+                    if w.lower() not in {"ko", "kya", "bheja", "bheji", "bheje", "hua", "hue", "hui", "email", "mail", "tha", "thi", "the", "sent", "send", "wala", "wali", "wale", "se", "ka", "ki", "ke", "me", "mein", "par", "pe"}
+                ]
+                clean_search_q = " ".join(clean_q_tokens).strip()
+                if clean_search_q:
+                    q_parts.append(clean_search_q)
+                elif user_q and "in:sent" not in q_parts:
+                    q_parts.append(user_q)
 
             gmail_query = " ".join(q_parts) if q_parts else "in:inbox"
 
