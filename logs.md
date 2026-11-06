@@ -276,6 +276,7 @@ This document maintains the persistent, chronological log of architectural upgra
 
 ---
 
+## Phase 7: Context Assembly & Conversation History (Next Phase)
 ## Phase 7: Deployment, Keep-Alive & Resilience Overhaul
 
 **Status:** COMPLETED & VERIFIED  
@@ -317,9 +318,75 @@ This document maintains the persistent, chronological log of architectural upgra
 
 ---
 
+
+---
+
+## Phase 7b: Pre-Phase-8 Live Super Task (Live Fixes, Grounding & Verification)
+
+**Status:** Completed on Branch `fix/pre-phase8-live-fixes`  
+**Execution Date:** 2026-11-06  
+**Artifacts Directory:** `docs/verification/phase7b/`
+
+### Key Accomplishments & Deliverables:
+1. **Email Recall Diagnosis (Step 1)**:
+   - Root-caused 11:22 PM turn failures: `search_user_emails` in `agent/tools.py:3391` attempted to access `google_services` without importing it, throwing `UnboundLocalError`.
+   - Identified that `action_events` table does not exist in DB schema; past sent email on 31 Oct was never written to any memory table.
+   - Verified that user 408's Google account already possesses active `gmail.readonly` OAuth scopes.
+   - Saved full evidence to `docs/verification/phase7b/step1_email_recall_diagnosis.md`.
+
+2. **Event Memory Architecture & Dry-Run Backfill (Step 2)**:
+   - Designed schema for `memories` table rows (`memory_type='event'`) with 1-line action summaries, structured metadata, and FK source IDs for emails, calendar events, Notion pages, GitHub commits, and reminders.
+   - Authored `scripts/dry_run_event_memory_backfill.py` which generated 8 historical candidate events (1 email, 1 calendar meeting, 6 reminders) in `docs/verification/phase7b/dry_run_event_memory_backfill.json`.
+   - Strictly zero database mutations performed against production Neon DB pending explicit approval.
+
+3. **Gmail Lookup Tool & Honest Typed Errors (Step 3)**:
+   - Added `import google_services` and query routing (`in:sent`, `to:{email}`, `folder='sent'`) to `search_user_emails`.
+   - Implemented typed tool errors: `not_connected`, `auth_scope_missing`, `rate_limited`, `provider_error`, `not_found` with user-facing recovery guidance.
+   - Created test suite `tests/test_phase7b_gmail_and_event_memory.py` $\to$ **5/5 PASSED**.
+
+4. **Live Grounding Diagnosis & Guard Fixes (Step 4)**:
+   - Trace 1056 diagnosed: Jodhpur mall list came directly from live TripAdvisor search snippets in `find_nearby_places`, which indexed boutiques under mall headlines.
+   - Trace 1057 diagnosed: route and 10-15 minute claims were ungrounded parametric hallucinations.
+   - Added deterministic verifier guard in `agent/verifier.py:192-212` intercepting ungrounded routes/minutes and providing direct Google Maps directions URLs.
+   - Created live smoke test suite `tests/test_phase7b_live_llm_smoke.py` marked with `@pytest.mark.live_llm`.
+
+5. **Weekday & Date Grounding (Step 5)**:
+   - Injected `{WEEKDAY}` (`timeutil.now(IST).strftime("%A")`) into system prompt and anchored `now_user_str` with weekday.
+   - Created `tests/test_phase7b_date_and_time.py` testing 10 dates (leap years, month ends) $\to$ **20/20 PASSED**.
+
+6. **Model Order & Latency Facts (Step 6)**:
+   - Confirmed `gemini-3.1-flash-lite-preview` primary placement (100% tool-call success vs. 429 quota exhaustion on preview model observed on 2026-11-05).
+   - Measured real 20 `SELECT 1` RTT to Neon PostgreSQL: min 313.43ms, p50 314.73ms, avg 346.83ms.
+   - Analyzed 678 turns in `turn_traces` over last 7 days: p50 turn latency 8,005 ms, p95 54,480 ms. Saved to `docs/verification/phase7b/step6_latency_and_metrics.json`.
+
+7. **Deployment State & Rollback Runbook (Step 7)**:
+   - Verified Render is running commit `3c27a2e` from `main`. Documented branch topology and zero-downtime rollback runbook in `docs/verification/phase7b/deploy_state.md`.
+
+8. **Pending Approvals & Verification Summary (Step 8)**:
+   - Detailed candidate files for deletion (`llm/legacy.py`, `nlu.py`, `lang.py`, dead v1 in `main.py`) with remaining importers in `docs/verification/phase7b/pending_approvals.md`.
+   - Documented exact SQL statements for dry-run backfill.
+   - Assembled final summary in `docs/verification/phase7b/summary.md`.
+   - Executed Step 8 review feedback:
+     - Verified `get_core_profile` isolation (`importance=3`, `memory_type NOT IN ('event', 'action_event')`).
+     - Backfill logic updated to Phase 3 memory pipeline with unique `(user_id, source_type, source_id)` idempotency check.
+     - Labeled all 8 candidate events (REAL, LIKELY TEST DATA, UNSURE) with empirical justifications.
+     - Created `tests/test_phase7b_event_memory.py` testing core profile isolation, backfill idempotency, and sent-email retrieval/answering -> 3/3 PASSED.
+     - Audited Render `AGENT_CORE` resolution, added startup log and `/health` response returning `"agent_core": "v2"`.
+     - Secured token paste fast-paths in `agent/loop.py:159, 180` by masking before logging.
+     - Updated `docs/KNOWN_ISSUES.md` with file:line locations for remaining keyword/regex meaning logic.
+   - Saved comprehensive evidence report to `docs/verification/phase7b/step8_review.md`.
+
+
+
+### Final Test Suite Verification Result:
+- **Default Suite**: 428 Passed, 22 Failed, 2 Skipped, 17 Deselected, 1 XFailed (411.98s).
+- **Phase 7b Test Suites**: 100% Passed (	est_phase7b_date_and_time.py 20/20, 	est_phase7b_gmail_and_event_memory.py 5/5, 	est_agent_v2.py 13/13).
+- **All 8 Steps Completed on Branch**: ix/pre-phase8-live-fixes. Zero production database writes executed.
+
 ## Phase 8: Final End-to-End Verification & Capstone Report (Next Phase)
 
 **Status:** Awaiting User "Go Ahead"  
+*(Will be initiated once Phase 6 review is complete)*
 *(Will be initiated once Phase 7 review is complete)*
 
 

@@ -1768,6 +1768,7 @@ def get_core_profile(user_id: int) -> str:
         rows = conn.execute(text("""
             SELECT content, created_at FROM memories
             WHERE user_id = :uid AND status = 'active' AND valid_to IS NULL
+              AND memory_type NOT IN ('event', 'action_event')
               AND (importance >= 4 OR memory_type IN ('preference', 'profile'))
             ORDER BY importance DESC, created_at DESC
             LIMIT 10

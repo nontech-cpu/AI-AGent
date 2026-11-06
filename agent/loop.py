@@ -156,7 +156,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"✅ **Notion Workspace successfully connect ho gaya!** 📝\nWorkspace: **{ws_name}**\n\nAb aap mujhe summaries ya meeting notes Notion mein save karne ko bol sakte hain!"
         else:
             reply_msg = f"⚠️ Notion token validation failed: {ws_name}. Kripya check karein ki token sahi hai."
-        db.log_chat_message(chat_id, "user", user_text, channel=channel)
+        redacted_token = trimmed_text[:7] + "..." + trimmed_text[-4:]
+        db.log_chat_message(chat_id, "user", redacted_token, channel=channel)
         db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
         return {
             "reply": reply_msg,
@@ -177,7 +178,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"✅ **GitHub successfully connect ho gaya!** 🐙\nAccount: **@{gh_user}**\n\nAapke repositories aur code access ab live hain."
         else:
             reply_msg = f"⚠️ GitHub token validation failed: {gh_user}."
-        db.log_chat_message(chat_id, "user", user_text, channel=channel)
+        redacted_token = trimmed_text[:7] + "..." + trimmed_text[-4:]
+        db.log_chat_message(chat_id, "user", redacted_token, channel=channel)
         db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
         return {
             "reply": reply_msg,
@@ -194,6 +196,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     from state.pending import (
         get_pending_action,
         save_pending_action,
+        classify_confirmation_intent,
         classify_confirmation_intent_with_llm,
         execute_pending_action,
         cancel_pending_action

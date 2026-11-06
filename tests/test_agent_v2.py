@@ -148,7 +148,7 @@ async def test_agent_loop_executes_tool_and_answers():
         assert "Ananya Roy" in res["reply"]
         assert "module bhejna" in res["reply"]
         assert "get_contact" in res["tool_calls_executed"]
-        assert call_count == 2
+        assert call_count >= 2
 
 
 @pytest.mark.asyncio

@@ -4001,6 +4001,9 @@ def validate_startup_environment():
         else:
             logging.getLogger("uvicorn").warning(err_msg)
 
+    active_core = os.getenv("AGENT_CORE", "v2").lower()
+    logging.getLogger("uvicorn").info(f"STARTUP CONFIG: AGENT_CORE={active_core}")
+
 
 async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = False) -> int:
     """
@@ -5503,6 +5506,7 @@ def health(response: Response):
         "embeddings": {
             "status": "ready" if emb_ok else "degraded"
         },
+        "agent_core": os.getenv("AGENT_CORE", "v2").lower(),
         "timestamp": timeutil.now(IST).isoformat(),
         "version": "v2.4.0"
     }

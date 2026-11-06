@@ -189,7 +189,25 @@ def deterministic_verify(
                 if clean_item not in real_repos and item.lower() not in real_repos and clean_item not in allowed_tokens and len(clean_item) > 2 and not clean_item.isdigit():
                     violations.append(f"Fabricated GitHub repository: {item}")
 
-    # 4. Regional Script Sanitization
+    # 4. Route & Travel Time Grounding Check (Phase 5/7b Mandate)
+    low_query = (user_query or "").lower()
+    is_route_query = any(w in low_query for w in ("route", "rasta", "direction", "kaise ja", "distance", "dur kitna", "kitna time lagega"))
+    if is_route_query:
+        has_nav_tool = any(isinstance(tr, dict) and tr.get("tool_name") in ("google_maps", "get_directions", "navigation") for tr in tool_results)
+        if not has_nav_tool:
+            has_time_claim = bool(re.search(r'\b\d+(?:-\d+)?\s*(?:minute|min|ghante|hours?)\b', low_rep))
+            has_road_claim = any(w in low_rep for w in ("road hote hue", "highway", "bypass", "flyover", "shortest rasta"))
+            if has_time_claim or has_road_claim:
+                violations.append("Ungrounded route or travel time claimed without verified maps tool")
+                revised = (
+                    "Mere paas live GPS navigation aur real-time traffic maps ka live access nahi hai, "
+                    "isliye main exact travel time ya road route predict nahi kar sakta. "
+                    "Aap live traffic aur best route ke liye Google Maps check kar sakte hain:\n\n"
+                    "👉 https://www.google.com/maps/dir/?api=1"
+                )
+                return False, revised, violations
+
+    # 5. Regional Script Sanitization
     draft_reply = sanitize_regional_scripts(draft_reply)
 
     if violations:

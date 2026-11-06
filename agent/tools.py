@@ -303,7 +303,10 @@ class GenerateExcelArgs(BaseModel):
     data_type: Optional[str] = Field("contacts", description="Type of data to export: 'contacts' or 'reminders'.")
 
 class SearchUserEmailsArgs(BaseModel):
-    query: Optional[str] = Field("in:inbox", description="Query to filter emails or documents e.g. 'ticket', 'flight', 'train', 'interview', 'bill', or 'in:inbox'.")
+    query: Optional[str] = Field(None, description="Query to filter emails or documents e.g. 'ticket', 'flight', 'train', 'interview', 'bill', or 'in:inbox'.")
+    to: Optional[str] = Field(None, description="Recipient email address for searching sent emails (e.g. 'aaravmishra619@gmail.com').")
+    subject: Optional[str] = Field(None, description="Subject keyword to search for.")
+    folder: Optional[str] = Field(None, description="Folder to search: 'sent', 'inbox', or 'all'.")
     max_results: Optional[int] = Field(5, description="Number of recent emails to retrieve and inspect.")
 
 class CheckIntegrationsStatusArgs(BaseModel):
@@ -701,8 +704,9 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "list_reminders",
             "description": (
-                "List saved tasks, reminders, and appointments for a target date. Call this whenever the user asks about their "
+                "List saved tasks, reminders, and appointments for a target date. Call this ONLY when the user explicitly asks about their "
                 "schedule, tasks, or reminders (e.g. 'mere aajke reminder btana', 'aaj ke reminders dikhao', 'reminders check karo'). "
+                "NEVER call this for casual greetings or simple hellos (e.g. 'hi', 'hello', 'hey', 'kaise ho'). "
                 "The model must semantically convert relative temporal expressions (such as 'today', 'aaj', 'tomorrow', 'kal', day names) "
                 "into an exact ISO date YYYY-MM-DD anchored to Current Time."
             ),
@@ -721,7 +725,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_schedule",
-            "description": "Unified schedule view aggregating Google Calendar events, reminders, contact commitments, and board cards for a date.",
+            "description": "Unified schedule view aggregating Google Calendar events, reminders, contact commitments, and board cards for a date. Call ONLY when user explicitly asks for schedule/agenda. NEVER call for casual greetings.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -920,11 +924,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_user_emails",
-            "description": "Search and inspect recent emails and attached documents (train/flight tickets with PNR, booking confirmations, interview invites, bills, receipts) from the user's connected Gmail inbox.",
+            "description": "Search and inspect recent emails (inbox or sent mail) and attached documents (tickets, booking confirmations, interview invites, bills) from the user's connected Gmail account. Use this to lookup sent emails (e.g. 'what did I send to Aarav') or incoming emails.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": ["string", "null"], "description": "Search query or category e.g. 'ticket', 'train', 'flight', 'interview', 'bill', or 'in:inbox'."},
+                    "query": {"type": ["string", "null"], "description": "Search query keyword."},
+                    "to": {"type": ["string", "null"], "description": "Recipient email address for searching sent emails."},
+                    "subject": {"type": ["string", "null"], "description": "Subject line filter."},
+                    "folder": {"type": ["string", "null"], "description": "Folder filter: 'sent', 'inbox', or 'all'."},
                     "max_results": {"type": ["integer", "null"], "description": "Number of emails to inspect (default 5)."}
                 }
             }
@@ -3373,14 +3380,16 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
         elif tool_name == "search_user_emails":
             args = SearchUserEmailsArgs(**arguments)
+            import google_services
             from main import get_valid_google_connection_by_chat_id
-            is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
             from google_auth import build_auth_url
+            is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
             auth_url = build_auth_url(int(chat_id), source="tg")
 
             if not is_conn:
                 return {
-                    "status": "not_connected",
+                    "status": "error",
+                    "error_type": "not_connected",
                     "connected": False,
                     "auth_url": auth_url,
                     "message": f"Aapka Google account abhi connected nahi hai. Connect karne ke liye is link par tap karein:\n\n👉 {auth_url}"
@@ -3389,36 +3398,73 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             # Check if this chat is known to lack Gmail read scope
             if int(chat_id) in getattr(google_services, "_CHAT_GMAIL_INSUFFICIENT_SCOPES", set()):
                 return {
-                    "status": "needs_permission",
+                    "status": "error",
+                    "error_type": "auth_scope_missing",
                     "connected": True,
                     "email": g_email,
                     "auth_url": auth_url,
                     "message": (
-                        f"Aapka Google account pehle se connected hai ({g_email}), lekin **Gmail Read permission** missing hai.\n\n"
-                        f"Naye emails, tickets aur booking confirmations auto-check karne ke liye is link par tap karke allow karein:\n\n"
-                        f"👉 {auth_url}\n\n"
-                        f"Allow karte hi main aapke tickets aur incoming emails automatically read karne lagunga!"
+                        f"Google read access nahi mila. Aapka Google account connected hai ({g_email}), "
+                        f"lekin Gmail read permission missing hai. Ye link se allow karo:\n\n👉 {auth_url}"
                     )
                 }
 
+            # Build query supporting sent mail, recipient, subject, and folder filters
+            q_parts = []
+            if args.to:
+                q_parts.append(f"to:{args.to}")
+            if args.subject:
+                q_parts.append(f"subject:{args.subject}")
+            if args.folder == "sent":
+                q_parts.append("in:sent")
+            elif args.folder == "inbox":
+                q_parts.append("in:inbox")
+
             user_q = (args.query or "").strip()
-            gmail_query = user_q if user_q else "in:inbox"
-            messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query=gmail_query)
-            if not messages and gmail_query != "in:inbox":
-                messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query="in:inbox")
+            if user_q:
+                low_q = user_q.lower()
+                if any(w in low_q for w in ("sent", "bheja", "bheji", "send", "outbox")):
+                    if "in:sent" not in q_parts:
+                        q_parts.append("in:sent")
+                q_parts.append(user_q)
+
+            gmail_query = " ".join(q_parts) if q_parts else "in:inbox"
+
+            try:
+                messages = await google_services.fetch_user_inbox_messages(chat_id, max_results=args.max_results or 5, query=gmail_query)
+            except Exception as g_err:
+                err_s = str(g_err).lower()
+                if "429" in err_s or "rate" in err_s:
+                    return {
+                        "status": "error",
+                        "error_type": "rate_limited",
+                        "message": "Google API rate limit exceed ho gaya hai, please thodi der baad try karein."
+                    }
+                return {
+                    "status": "error",
+                    "error_type": "provider_error",
+                    "message": f"Google service se connect karne mein samasya aayi: {g_err}."
+                }
 
             if int(chat_id) in getattr(google_services, "_CHAT_GMAIL_INSUFFICIENT_SCOPES", set()):
                 return {
-                    "status": "needs_permission",
+                    "status": "error",
+                    "error_type": "auth_scope_missing",
                     "connected": True,
                     "email": g_email,
                     "auth_url": auth_url,
                     "message": (
-                        f"Aapka Google account connected hai ({g_email}), lekin **Gmail Read permission** missing hai.\n\n"
-                        f"Naye emails aur tickets automatically check karne ke liye is link par tap karke allow karein:\n\n"
-                        f"👉 {auth_url}\n\n"
-                        f"Allow karte hi main aapke tickets aur incoming emails automatically read karne lagunga!"
+                        f"Google read access nahi mila. Aapka Google account connected hai ({g_email}), "
+                        f"lekin Gmail read permission missing hai. Ye link se allow karo:\n\n👉 {auth_url}"
                     )
+                }
+
+            if not messages:
+                return {
+                    "status": "not_found",
+                    "count": 0,
+                    "query": gmail_query,
+                    "message": f"Koi matching email nahi mila for query '{gmail_query}'. Kya aap Sent folder ya koi dusra keyword check karna chahte hain?"
                 }
 
             results = []
@@ -3701,7 +3747,7 @@ TOOL_GROUPS = {
         "tools": {"send_email", "search_user_emails"}
     },
     "utilities_finance_weather": {
-        "description": "weather temperature forecast rain climate atmosphere currency exchange rate market price crypto gold silver calculation math",
+        "description": "weather mausam temperature forecast rain climate atmosphere currency exchange rate market price crypto gold silver sona chandi bhav daam stock calculation math",
         "tools": {"get_weather", "convert_currency", "get_market_price", "calculate"}
     },
     "organization_lists": {

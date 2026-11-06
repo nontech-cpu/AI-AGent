@@ -1,0 +1,167 @@
+{
+  "generated_at": "2026-11-06T02:58:33.168600Z",
+  "description": "DRY-RUN Backfill of connector actions into memories table (memory_type='event')",
+  "pipeline_method": "memory.store.save_memory_item(user_id, content, memory_type='event', structured=..., importance=3, valid_from=...)",
+  "total_rows_to_insert": 8,
+  "breakdown_by_source": {
+    "google_calendar": 1,
+    "gmail": 1,
+    "reminder": 6
+  },
+  "rows": [
+    {
+      "user_id": 4416,
+      "chat_id": 911,
+      "memory_type": "event",
+      "content": "Created calendar meeting 'Sprint Planning' scheduled for 2026-10-22T14:00:00+05:30",
+      "source_type": "google_calendar",
+      "structured": {
+        "action": "calendar_created",
+        "title": "Sprint Planning",
+        "start_time": "2026-10-22T14:00:00+05:30",
+        "source_type": "google_calendar",
+        "source_id": "5",
+        "pending_action_id": 5,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-10-22T07:36:34.144859+00:00",
+      "created_at": "2026-10-22T07:36:34.144859+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Sent email to aaravmishra619@gmail.com, neeravmishra1805@gmail.com with subject 'weather'",
+      "source_type": "gmail",
+      "structured": {
+        "action": "email_sent",
+        "recipient": "aaravmishra619@gmail.com, neeravmishra1805@gmail.com",
+        "subject": "weather",
+        "source_type": "gmail",
+        "source_id": "37",
+        "pending_action_id": 37,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-10-31T16:31:58.339691+00:00",
+      "created_at": "2026-10-31T16:31:58.339691+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Deleted reminder 'Test Dummy Reminder'",
+      "source_type": "reminder",
+      "structured": {
+        "action": "reminder_deleted",
+        "title": "Test Dummy Reminder",
+        "source_type": "reminder",
+        "source_id": "39",
+        "pending_action_id": 39,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T03:03:31.010774+00:00",
+      "created_at": "2026-11-05T03:03:31.010774+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Created reminder 'Movie jana hai' for 2025-01-24 at 16:30",
+      "source_type": "reminder",
+      "structured": {
+        "action": "reminder_created",
+        "title": "Movie jana hai",
+        "due_date": "2025-01-24",
+        "due_time": "16:30",
+        "source_type": "reminder",
+        "source_id": "1043",
+        "trace_id": 1043,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T08:03:30.284935+00:00",
+      "created_at": "2026-11-05T08:03:30.284935+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Created reminder 'Movie (3 hours long)' for 2025-05-15 at 13:00",
+      "source_type": "reminder",
+      "structured": {
+        "action": "reminder_created",
+        "title": "Movie (3 hours long)",
+        "due_date": "2025-05-15",
+        "due_time": "13:00",
+        "source_type": "reminder",
+        "source_id": "1058",
+        "trace_id": 1058,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T16:27:40.084676+00:00",
+      "created_at": "2026-11-05T16:27:40.084676+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Created reminder 'Flight' for 2025-05-16 at 14:00",
+      "source_type": "reminder",
+      "structured": {
+        "action": "reminder_created",
+        "title": "Flight",
+        "due_date": "2025-05-16",
+        "due_time": "14:00",
+        "source_type": "reminder",
+        "source_id": "1060",
+        "trace_id": 1060,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T16:29:04.491042+00:00",
+      "created_at": "2026-11-05T16:29:04.491042+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Deleted reminder 'Movie jana hai, Movie (3 hours long)'",
+      "source_type": "reminder",
+      "structured": {
+        "action": "reminder_deleted",
+        "title": "Movie jana hai, Movie (3 hours long)",
+        "source_type": "reminder",
+        "source_id": "1062",
+        "trace_id": 1062,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T16:31:51.389815+00:00",
+      "created_at": "2026-11-05T16:31:51.389815+00:00"
+    },
+    {
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Created reminder 'Movie' for 2026-11-06 at 13:00",
+      "source_type": "reminder",
+      "structured": {
+        "action": "reminder_created",
+        "title": "Movie",
+        "due_date": "2026-11-06",
+        "due_time": "13:00",
+        "source_type": "reminder",
+        "source_id": "1078",
+        "trace_id": 1078,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T17:08:09.287667+00:00",
+      "created_at": "2026-11-05T17:08:09.287667+00:00"
+    }
+  ]
+}
