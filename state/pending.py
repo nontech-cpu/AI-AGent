@@ -297,7 +297,7 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
     if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
 
-    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "ananya", "batao", "kya", "before", "pehle")):
+    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "batao", "kya", "before", "pehle")):
         return ("cross_question", None)
 
     kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")

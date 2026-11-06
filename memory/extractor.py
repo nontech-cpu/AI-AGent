@@ -53,6 +53,8 @@ Output valid JSON ONLY with this schema:
       "role_title": null or "Role Title",
       "email": null or "email@example.com",
       "phone": null or "phone number",
+      "relationship": null or "Relationship to user (e.g. 'brother', 'father', 'sister', 'manager', 'friend', 'wife', 'husband', 'colleague')",
+      "birthday": null or "YYYY-MM-DD",
       "notes": null or "Purpose, project, task, deliverable, or context for this contact (e.g. 'contact for designing', 'report on Tuesday')"
     }
   ],
@@ -193,7 +195,20 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
 
         # 1. Persist Entities
         entity_id_map = {}
-        EXCLUDED_ENTITIES = {"user", "assistant", "bot", "me", "myself", "friend", "neerav", "nirav", "admin", "ai", "companion"}
+        user_self_names = set()
+        try:
+            import db
+            with db.engine.connect() as conn:
+                urow = conn.execute(
+                    db.text("SELECT first_name, username FROM users WHERE id = :u"),
+                    {"u": user_id}
+                ).first()
+                if urow:
+                    if urow[0]: user_self_names.add(str(urow[0]).strip().lower())
+                    if urow[1]: user_self_names.add(str(urow[1]).strip().lower())
+        except Exception:
+            pass
+        EXCLUDED_ENTITIES = {"user", "assistant", "bot", "me", "myself", "i", "self", "friend", "admin", "ai", "companion"}.union(user_self_names)
         for ent in parsed.get("entities", []):
             name = (ent.get("name") or "").strip()
             if not name or len(name) < 2 or name.lower() in EXCLUDED_ENTITIES:
@@ -223,6 +238,19 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
                         role_title=ent.get("role_title") or "",
                         company=ent.get("company") or "",
                         context_notes=ent.get("notes") or "Saved via Cognitive Extractor"
+                    )
+                except Exception:
+                    pass
+
+            # Persist relationship / birthday into relationship knowledge graph (Item 4a)
+            if ent.get("relationship") or ent.get("birthday"):
+                try:
+                    from services.relationship_service import upsert_relationship
+                    upsert_relationship(
+                        user_id_or_chat_id=chat_id,
+                        name=name,
+                        relationship=ent.get("relationship") or "friend",
+                        birthday=ent.get("birthday")
                     )
                 except Exception:
                     pass

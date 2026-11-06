@@ -50,10 +50,21 @@ def parse_followup_time(message: str, now: datetime | None = None):
 
     # Strip explicit day-of-month phrases so e.g. "aaj 16 ko 2 baje" doesn't parse 16 as a time.
     time_text = re.sub(r"\b(?:aaj|today)\s+\d{1,2}(?:st|nd|rd|th)?\s+ko\b", " ", low)
-    match = re.search(
-        r"(?<!\d)(2[0-3]|1[0-9]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)?\s*(?:baje|bje|bajey|bajay|बजे|pr|par|pe|ko)?\b",
+
+    # Check for shift / transition expressions: "from X to Y", "X ki jagah Y", "X ke badle Y"
+    # In rescheduling, the destination (second) time is the desired target!
+    trans_match = re.search(
+        r"(?:from\s+)?\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)?)\s*(?:to|ki\s*jagah|ke\s*badle|badal\s*ke|instead\s*of)\s*(\d{1,2})(?::([0-5]\d))?\s*(am|pm)?\s*(?:baje|bje|bajey|bajay|बजे|pr|par|pe|ko)?\b",
         time_text,
+        re.I
     )
+    if trans_match:
+        match = trans_match
+    else:
+        match = re.search(
+            r"(?<!\d)(2[0-3]|1[0-9]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)?\s*(?:baje|bje|bajey|bajay|बजे|pr|par|pe|ko)?\b",
+            time_text,
+        )
 
     if not match:
         # Check if a date or broad period was provided without an exact hour (e.g. "kal shaam", "today evening")

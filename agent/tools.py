@@ -4,6 +4,7 @@ All tools validated with Pydantic models. All tool execution functions are async
 Write actions implement the Two-Phase Confirmation Gate (return needs_confirmation).
 """
 import os
+import re
 import json
 import logging
 from typing import Any, Optional, List, Dict
@@ -671,6 +672,7 @@ TOOL_DEFINITIONS = [
                     "reminder_id": {"type": ["integer", "null"], "description": "ID of the reminder if known."},
                     "due_date": {"type": ["string", "null"], "description": "Updated date in YYYY-MM-DD format if date is being changed."},
                     "due_time": {"type": ["string", "null"], "description": "Updated time in 24-hour HH:MM format if time is being changed."},
+                    "from_time": {"type": ["string", "null"], "description": "Original or previous time of the event being rescheduled, e.g. '16:00' if shifting from 4pm or '4 baje ki jagah 5 baje'."},
                     "duration_minutes": {"type": ["integer", "null"], "description": "Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins)."},
                     "force": {"type": ["boolean", "null"], "description": "Set to true to force update even if a time conflict exists."}
                 }
@@ -1577,8 +1579,17 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 alias_list = list(args.aliases or [])
                 if first_name.lower() not in [a.lower() for a in alias_list]:
                     alias_list.append(first_name)
-                if first_name.lower() == "ananya":
-                    alias_list.append("annaya")
+                # Universal phonetic / double-letter typo variations for any contact
+                for al in list(alias_list):
+                    al_low = al.lower()
+                    collapsed = re.sub(r'([a-z])\1+', r'\1', al_low)
+                    if collapsed != al_low and collapsed not in [a.lower() for a in alias_list]:
+                        alias_list.append(collapsed)
+                    # Common phonetic consonant doubling (e.g. ananya -> annaya)
+                    if len(al_low) >= 4 and al_low[1] not in "aeiou":
+                        doubled = al_low[0] + al_low[1] + al_low[1] + al_low[2:]
+                        if doubled not in [a.lower() for a in alias_list]:
+                            alias_list.append(doubled)
 
                 ent_id = save_entity(
                     user_id=uid,
@@ -1632,7 +1643,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             uid = resolve_user_id(chat_id)
 
             contacts_by_name = {}
-            EXCLUDED_NAMES = {"user", "assistant", "bot", "me", "myself", "friend", "neerav", "nirav", "admin", "ai", "companion"}
+            user_self_names = set()
+            try:
+                with db.engine.connect() as conn:
+                    urow = conn.execute(
+                        db.text("SELECT first_name, username FROM users WHERE id = :u OR telegram_chat_id = :c"),
+                        {"u": uid, "c": chat_id}
+                    ).first()
+                    if urow:
+                        if urow[0]: user_self_names.add(str(urow[0]).strip().lower())
+                        if urow[1]: user_self_names.add(str(urow[1]).strip().lower())
+            except Exception:
+                pass
+            EXCLUDED_NAMES = {"user", "assistant", "bot", "me", "myself", "i", "self", "friend", "admin", "ai", "companion"}.union(user_self_names)
 
             # Primary: fetch from dedicated contact_memories across unified identities
             raw_cms = db.get_contact_memories(chat_id)
@@ -1913,15 +1936,15 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 # 1. If from_time is provided or extractable from user message, match by original time first
                 search_from_time = getattr(args, "from_time", None)
                 if not search_from_time and user_msg:
-                    import re
-                    m_time = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?\s*(?:ke badle|se|se badal|wali|ka)\b', user_msg)
+                    # Robust transition extraction: supports 'from X to Y', 'X ki jagah Y', 'X ke badle Y'
+                    m_time = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?\s*(?:ke badle|ki jagah|se badal|se|to|from|wali|wala|ka)\b', user_msg)
                     if m_time:
                         hr = int(m_time.group(1))
                         minute = int(m_time.group(2) or 0)
                         ampm = (m_time.group(3) or "").lower()
                         if ampm == "pm" and hr < 12: hr += 12
                         elif ampm == "am" and hr == 12: hr = 0
-                        elif ampm == "baje" and hr < 12 and hr >= 1 and hr <= 6: hr += 12
+                        elif ampm in ("baje", "") and 1 <= hr <= 6: hr += 12
                         search_from_time = f"{hr:02d}:{minute:02d}"
 
                 if search_from_time:

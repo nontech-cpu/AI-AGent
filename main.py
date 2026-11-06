@@ -1061,14 +1061,19 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
         return
 
     prompt = (
-        "Extract any permanent personal facts, future plans, travel, habits, preferences, or life events "
-        "mentioned by the user in this message.\n\n"
+        "Extract any permanent personal facts, future plans, travel, habits, preferences, life events, "
+        "or people/relationships/birthdays mentioned by the user in this message.\n\n"
         f"User message: \"{text}\"\n\n"
         "Guidelines:\n"
         "- If user mentions going somewhere, an event, or plan (e.g. 'going to Jaipur today for model event', 'going movie today'): extract as a plan.\n"
         "- If user mentions preferences, work info, people they know, projects: extract as a fact.\n"
-        "- If message is just a casual greeting or command with no personal facts/plans, return empty list.\n\n"
-        "Return strictly JSON: {\"facts\": [{\"fact\": \"...\", \"category\": \"plan|preference|profile|work\"}]}"
+        "- If user mentions a relationship or family member (e.g. 'my brother Rahul', 'Ananya is my manager', 'papa ka naam Ramesh hai'), or birthday (e.g. 'Rahul birthday on 14 Nov'): extract under relationships.\n"
+        "- If message is just a casual greeting or command with no personal facts/plans, return empty lists.\n\n"
+        "Return strictly JSON:\n"
+        "{\n"
+        "  \"facts\": [{\"fact\": \"...\", \"category\": \"plan|preference|profile|work\"}],\n"
+        "  \"relationships\": [{\"name\": \"...\", \"relationship\": \"...\", \"birthday\": \"YYYY-MM-DD or MM-DD or null\"}]\n"
+        "}"
     )
     try:
         data = (await _chat_json(prompt, text)) or {}
@@ -1079,39 +1084,50 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
             if f_text and len(f_text) > 3:
                 save_user_fact(chat_id, f_text, cat)
 
-        # Auto-extract People CRM / Relationships & Birthdays
+        # Structured People CRM / Relationships & Birthdays Extraction (Item 4a)
         try:
             from services.relationship_service import upsert_relationship
-            rel_m = re.search(
-                r"(?:mera|mere|my)\s+(papa|father|dad|mom|mummy|mother|bhai|brother|behan|sister|wife|husband|patni|pati|boss|manager|friend|dost)\s+(?:ka\s+naam\s+|h\s+|hai\s+|is\s+|named\s+)?([A-Za-z\s]+?)(?:\s+hai|\s+h|\.|$)",
-                text,
-                re.I
-            )
-            if not rel_m:
-                rel_m2 = re.search(
-                    r"([A-Za-z\s]+?)\s+(?:is\s+my|mera|mere)\s+(papa|father|dad|mom|mummy|mother|bhai|brother|behan|sister|wife|husband|boss|manager)",
+            saved_rel_names = set()
+            for r_item in data.get("relationships", []):
+                r_name = (r_item.get("name") or "").strip()
+                r_rel = (r_item.get("relationship") or "friend").strip()
+                r_bday = r_item.get("birthday")
+                if r_name and len(r_name) > 1 and r_name.lower() not in ("user", "bot", "assistant"):
+                    upsert_relationship(chat_id, name=r_name, relationship=r_rel, birthday=r_bday)
+                    saved_rel_names.add(r_name.lower())
+
+            # Fallback regex parsing if LLM did not return structured relationships
+            if not saved_rel_names:
+                rel_m = re.search(
+                    r"(?:mera|mere|my)\s+(papa|father|dad|mom|mummy|mother|bhai|brother|behan|sister|wife|husband|patni|pati|boss|manager|friend|dost)\s+(?:ka\s+naam\s+|h\s+|hai\s+|is\s+|named\s+)?([A-Za-z\s]+?)(?:\s+hai|\s+h|\.|$)",
                     text,
                     re.I
                 )
-                if rel_m2:
-                    r_name = rel_m2.group(1).strip()
-                    r_rel = rel_m2.group(2).strip()
-                    upsert_relationship(chat_id, name=r_name, relationship=r_rel)
-            else:
-                r_rel = rel_m.group(1).strip()
-                r_name = rel_m.group(2).strip()
-                if r_name and len(r_name) > 1 and r_name.lower() not in ("hai", "h", "ka", "ki", "naam"):
-                    upsert_relationship(chat_id, name=r_name, relationship=r_rel)
+                if not rel_m:
+                    rel_m2 = re.search(
+                        r"([A-Za-z\s]+?)\s+(?:is\s+my|mera|mere)\s+(papa|father|dad|mom|mummy|mother|bhai|brother|behan|sister|wife|husband|boss|manager)",
+                        text,
+                        re.I
+                    )
+                    if rel_m2:
+                        r_name = rel_m2.group(1).strip()
+                        r_rel = rel_m2.group(2).strip()
+                        upsert_relationship(chat_id, name=r_name, relationship=r_rel)
+                else:
+                    r_rel = rel_m.group(1).strip()
+                    r_name = rel_m.group(2).strip()
+                    if r_name and len(r_name) > 1 and r_name.lower() not in ("hai", "h", "ka", "ki", "naam"):
+                        upsert_relationship(chat_id, name=r_name, relationship=r_rel)
 
-            bday_m = re.search(
-                r"([A-Za-z\s]+?)(?:'s|\s+ka|\s+ki)\s+birthday\s+(?:is\s+on\s+|h\s+|hai\s+|on\s+)?([0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+|[A-Za-z]+\s+[0-9]{1,2}|[0-9]{4}-[0-9]{2}-[0-9]{2})",
-                text,
-                re.I
-            )
-            if bday_m:
-                target_entity = bday_m.group(1).strip()
-                bday_val = bday_m.group(2).strip()
-                upsert_relationship(chat_id, name=target_entity, relationship="Family/Friend", birthday=bday_val)
+                bday_m = re.search(
+                    r"([A-Za-z\s]+?)(?:'s|\s+ka|\s+ki)\s+birthday\s+(?:is\s+on\s+|h\s+|hai\s+|on\s+)?([0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+|[A-Za-z]+\s+[0-9]{1,2}|[0-9]{4}-[0-9]{2}-[0-9]{2})",
+                    text,
+                    re.I
+                )
+                if bday_m:
+                    target_entity = bday_m.group(1).strip()
+                    bday_val = bday_m.group(2).strip()
+                    upsert_relationship(chat_id, name=target_entity, relationship="Family/Friend", birthday=bday_val)
 
             # Record interaction date for warmth radar
             from services.relationship_service import record_relationship_interaction
@@ -1775,12 +1791,12 @@ def format_event_time_ist(dt_str: str | None, user_tz=None) -> str:
 
 
 CONFIRM_PREFIX_RE = re.compile(
-    r'^\s*(haan\s*ji|haan\s*bhai|haan|han|haa|ha|yes\s*please|yes|yep|yeah|yup|sure|ok\s*kardo|ok\s*kar\s*do|ok|okay|theek\s*hai|thik\s*hai|sahi\s*hai|kar\s*do|kardo|kr\s*do|krdo|karo|kro|delete\s*kar\s*do|delete\s*kr\s*do|delete\s*kardo|delete\s*krdo|delete\s*karo|delete\s*kr|hata\s*do|hata\s*de|हाँ\s*जी|हाँ|हां|हाँजी|जी\s*हाँ|जी|बिल्कुल|सही|ठीक|कर\s*दो|हटा\s*दो)\b\s*(?:aur|and|lekin|or|,|-)?\s*',
+    r'^\s*(haan(?:\s*ji|\s*bhai)?|han|haa|ha|yes(?:\s*please)?|yep|yeah|yup|sure|ok(?:\s*kardo|\s*kar\s*do)?|okay|theek\s*hai|thik\s*hai|sahi\s*hai|kar\s*do|kardo|kr\s*do|krdo|karo|kro|delete\s*(?:kar\s*do|kr\s*do|kardo|krdo|karo|kr)?|hata\s*(?:do|de)|हाँ(?:\s*जी)?|हां|हाँजी|जी(?:\s*हाँ)?|बिल्कुल|सही|ठीक|कर\s*दो|हटा\s*दो)\b\s*(?:aur|and|lekin|or|,|-)?\s*',
     re.I
 )
 
 REJECT_PREFIX_RE = re.compile(
-    r'^\s*(nahi\s*bhai|nahi|nahin|na|no|nope|cancel|mat\s*karo|mat\s*kr|rehne\s*do|rahne\s*do|chhoro|नहीं|ना|मत\s*करो|रहने\s*दो|रद्द)\b\s*(?:aur|and|lekin|or|,|-)?\s*',
+    r'^\s*(nahi(?:\s*bhai)?|nahin|na|no|nope|cancel|mat\s*(?:karo|kr)|rehne\s*do|rahne\s*do|chhoro|नहीं|ना|मत\s*करो|रहने\s*दो|रद्द)\b\s*(?:aur|and|lekin|or|,|-)?\s*',
     re.I
 )
 
@@ -2139,24 +2155,15 @@ def _deletion_time(text):
 
 async def _begin_meeting_deletion(chat_id, clean):
     low = clean.casefold()
-    deletion_verb = bool(re.search(
-        r"(delete|remove|clear|cancel|hata|htaa|hatao|hata do|hata de|nikal|nikaal|mitao|mita do|रद्द|हटा|हटाओ|हटाएं|हटाए|मिटा|डिलीट|डिलिट|elimina|borrar|supprimer|löschen|删除|削除)",
-        low
-    ))
-    meeting_scope = bool(re.search(
-        r"(meeting|meetings|metting|meetting|meetng|appointment|appointments|reminder|reminders|yaad|मीटिंग|मिटिंग|बैठक|isse|ise|isko|use|usko|wo|yeh|ye|ऊपर|upar)",
-        low
-    ))
+    # Standard intent detection without 25 foreign dictionary translations
+    deletion_verb = any(w in low for w in ("delete", "remove", "clear", "cancel", "hata", "htaa", "mita", "रद्द", "हटा", "मिटा", "डिलीट"))
+    meeting_scope = any(w in low for w in ("meeting", "appointment", "reminder", "event", "call", "मीटिंग", "बैठक", "ise", "isko", "usko", "ye", "yeh", "upar"))
     if not (deletion_verb and meeting_scope):
         return False
 
-    # If the user is asking to reschedule, move, change time/title, or create/schedule a replacement,
-    # DO NOT intercept as a pure deletion! Let the intent router handle it as update_meeting or compound action.
-    reschedule_or_replacement = bool(re.search(
-        r"(rakh|rkh|shift|move|reschedule|badal|change|nayi\b|nayee\b|new\b|create\b|jagah\b|badle\b|bana|banao|cancel\s+(krkr|karke)|delete\s+(krkr|karke)|baje\s+(kar|rakh|bana)|pm\s+(kar|rakh|bana)|am\s+(kar|rakh|bana)|and\s+name|title|naam)",
-        low
-    ))
-    if reschedule_or_replacement:
+    # If the user is asking to reschedule, move, or replace, delegate to the agent core
+    is_reschedule = any(w in low for w in ("shift", "move", "reschedule", "badal", "change", "nayi", "new", "create", "jagah", "badle", "bana"))
+    if is_reschedule:
         return False
 
     # 1. Check if there is an active pending Google action awaiting confirmation

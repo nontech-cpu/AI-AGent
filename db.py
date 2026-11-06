@@ -874,24 +874,29 @@ def delete_memory_items(chat_id, item_ids):
 
 def find_meetings_at_times(chat_id, due_date, times, source_text=None):
     """Return this user's meeting reminders at exact local clock times on a date."""
-    time_labels = [f"{int(hour):02d}:{int(minute):02d}" for hour, minute in times]
+    chat_id = canonical_chat_id(chat_id)
+    time_labels = {f"{int(hour):02d}:{int(minute):02d}" for hour, minute in times}
     if not time_labels:
         return []
     with engine.connect() as conn:
-        return conn.execute(
+        rows = conn.execute(
             text(
                 "SELECT m.id, m.title, m.due_date, m.due_time "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.category = 'appointments' "
                 "AND m.due_date = :d AND m.due_time IS NOT NULL "
-                "AND to_char(m.due_time, 'HH24:MI') = ANY(:times) "
-                "AND (m.title ILIKE '%meeting%' OR m.title ILIKE '%metting%' "
-                "OR m.title ILIKE '%meetting%' OR m.title ILIKE '%meetng%' "
-                "OR m.title ILIKE '%call%' OR m.title ILIKE '%appointment%') "
                 "ORDER BY m.due_time, m.id"
             ),
-            {"c": chat_id, "d": due_date, "times": time_labels},
+            {"c": chat_id, "d": due_date},
         ).fetchall()
+    matched = []
+    meeting_kws = ("meeting", "appointment", "call", "session", "sync")
+    for r in rows:
+        r_tm = str(r[3])[:5] if r[3] else ""
+        r_title = (r[1] or "").lower()
+        if r_tm in time_labels and any(kw in r_title for kw in meeting_kws):
+            matched.append(r)
+    return matched
 
 
 def find_recent_meetings(chat_id, limit=3):
