@@ -547,7 +547,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "request_master_privacy_wipe",
-            "description": "Initiate permanent master privacy wipe to delete all user memories, facts, notes, contacts, and reminders across all platforms with secure OTP confirmation. Use this whenever the user asks to delete all memory or wipe saved data.",
+            "description": "Initiate permanent master privacy wipe to delete all user memories, facts, notes, saved contacts, reminders, locations, and chat history with secure OTP confirmation. Call this tool immediately whenever the user expresses any desire to delete/wipe/erase all memory, clear personal data, wipe account, forget everything, or start completely fresh (e.g. 'delete entire memory', 'wipe my data', 'mera saara data uda do', 'sab bhool jao', 'clean slate', 'dlete entire memory'). Do not call read tools before this.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3816,7 +3816,7 @@ TOOL_GROUPS = {
         "tools": {"check_availability", "get_meet_link", "create_meeting"}
     },
     "privacy_data": {
-        "description": "permanently erase delete all user data master wipe privacy purge account reset",
+        "description": "permanently erase delete all user data master wipe privacy purge account reset forget everything dlete wipe clean slate saara data uda do",
         "tools": {"request_master_privacy_wipe", "clear_chat_history"}
     }
 }

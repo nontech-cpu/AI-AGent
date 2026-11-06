@@ -16,12 +16,24 @@ logger = logging.getLogger("peculiar_verifier")
 MEET_URL_PATTERN = re.compile(r'https?://meet\.google\.com/[a-z0-9-]+', re.IGNORECASE)
 EMAIL_PATTERN = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
+READ_ONLY_TOOL_NAMES = {
+    "list_contacts", "get_contact", "list_reminders", "get_schedule",
+    "search_memory", "get_measurements", "get_memory_health_radar",
+    "check_integrations_status", "find_nearby_places", "search_web",
+    "web_search", "fetch_url", "read_webpage", "get_current_time",
+    "calculate", "search_user_emails", "list_github_repos",
+    "get_github_file", "list_github_issues", "list_notion_pages",
+    "get_notion_page_content", "get_weather", "convert_currency",
+    "get_market_price", "get_movie_showtimes", "check_availability",
+    "get_meet_link", "get_commitments", "execute_python_code"
+}
+
 CLAIM_CHECKER_SYSTEM_PROMPT = """You are the Grounding & Truth Claim-Checker for PeculiarAI personal assistant.
 Your job is to audit the Draft Reply against the Evidence (Tool Results, Memory Context, User Query).
 
 You must output a single JSON object with these EXACT keys:
-1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, or sent (e.g. reminder created/deleted/updated, meeting scheduled, email sent, note/file saved, list updated). False if the assistant is merely asking confirmation, refusing, explaining, asking a question, or greeting.
-2. "which_action": string or null. The canonical tool name if an action is claimed (e.g. "create_reminder", "delete_reminder", "update_reminder", "send_email", "create_meeting", "save_note_or_fact", "manage_list"), or null if no action is claimed.
+1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, wiped, or sent (e.g. reminder created/deleted/updated, meeting scheduled, email sent, note/file saved, list updated, memory/data wiped or deleted, contacts deleted). False if the assistant is merely asking confirmation, refusing, explaining, asking a question, or greeting.
+2. "which_action": string or null. The canonical tool name if an action is claimed (e.g. "create_reminder", "delete_reminder", "update_reminder", "send_email", "create_meeting", "save_note_or_fact", "manage_list", "request_master_privacy_wipe", "clear_chat_history"), or null if no action is claimed.
 3. "claims_external_fact": boolean. True if the Draft Reply asserts specific real-world live facts (e.g. local business/mall names, transit routes/highways/distances, order/receipt details, market prices, live weather, availability). False for general domain knowledge (e.g. ML, coding concepts, science, history), pure language translations, greetings, or conversational remarks.
 4. "claims_route_or_travel_time": boolean. True if the Draft Reply asserts, describes, or predicts a physical travel route, road directions (e.g. via specific roads, highways, bypasses), transit path, or travel time/duration (e.g. '10-15 minute lagenge') between locations. False otherwise.
 5. "sourced_by_tool": boolean. True if ALL external facts, routes, or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact, route, or action is NOT found in the Evidence.
@@ -124,7 +136,7 @@ def deterministic_verify(
     # 2. Tool Result Status & Pending Confirmation Check
     # If any tool returned 'needs_confirmation', draft must ask for confirmation rather than claim execution
     has_pending_confirm = any(
-        isinstance(tr, dict) and tr.get("status") == "needs_confirmation"
+        isinstance(tr, dict) and tr.get("status") in ("needs_confirmation", "confirmation_required")
         for tr in tool_results
     )
     if has_pending_confirm:
@@ -142,22 +154,34 @@ def deterministic_verify(
         isinstance(tr, dict) and tr.get("status") == "error"
         for tr in tool_results
     )
-    has_tool_success = any(
-        isinstance(tr, dict) and (tr.get("status") in ("success", "ok") or tr.get("ok") is True)
+    has_action_tool_success = any(
+        isinstance(tr, dict)
+        and (tr.get("status") in ("success", "ok") or tr.get("ok") is True)
+        and str(tr.get("tool_name") or tr.get("action") or "").lower() not in READ_ONLY_TOOL_NAMES
         for tr in tool_results
     )
     low_rep = draft_reply.lower()
 
-    if not has_tool_success and not has_pending_confirm:
+    if not has_action_tool_success and not has_pending_confirm:
         # Strip question clauses so questions like "Aaj Tuesday hai — bhej diya?" are not flagged as completion claims
         clean_rep = re.sub(r'[^.!?\n]*\?', '', low_rep)
         action_claim_tokens = (
             "set kar diya", "kar diya hai", "kar di hai", "email bhej diya", "mail bhej diya", "send kar diya",
-            "schedule kar diya", "schedule kar di", "delete kar diya", "save kar diya",
-            "update kar diya", "shift kar diya", "successfully created", "successfully sent",
-            "successfully scheduled", "successfully deleted"
+            "schedule kar diya", "schedule kar di", "delete kar diya", "delete kar di", "delete kar diye",
+            "save kar diya", "update kar diya", "shift kar diya", "successfully created", "successfully sent",
+            "successfully scheduled", "successfully deleted", "hata di gayi", "hata diya", "clear kar diya", "wipe kar diya"
         )
         if any(tok in clean_rep for tok in action_claim_tokens):
+            is_wipe_claim = any(w in clean_rep for w in ("delete kar di", "delete kar diye", "clear kar diya", "hata di gayi", "wipe kar diya")) and any(w in clean_rep for w in ("memory", "data", "contacts", "reminders", "account", "location"))
+            if is_wipe_claim:
+                violations.append("Claimed data/memory wipe completed without verified deletion tool execution")
+                revised = (
+                    "⚠️ **Security & Privacy Warning**:\n\n"
+                    "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
+                    "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
+                    "Reply **yes/haan** to confirm ya **no/cancel** to abort."
+                )
+                return False, revised, violations
             violations.append("Claimed action completed without success: No successful tool execution in evidence")
             return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
 
@@ -330,25 +354,37 @@ async def verify_and_ground_reply(
 
     # Check 2A: Action Claimed Without Successful Tool Result
     if audit.get("claims_action_done"):
-        which_act = audit.get("which_action") or ""
-        # Look for matching successful tool execution in tool_results
+        which_act = (audit.get("which_action") or "").lower()
+        # Look for matching successful mutating tool execution in tool_results
         has_tool_success = False
         for tr in tool_results:
             if not isinstance(tr, dict):
                 continue
             status = tr.get("status")
             ok = tr.get("ok", False)
-            if status in ("success", "ok", "needs_confirmation", "conflict_detected") or ok is True:
-                # If specific action was named, match it; else any success
+            if status in ("success", "ok", "needs_confirmation", "confirmation_required", "conflict_detected") or ok is True:
                 tr_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
+                # Read-only tools CANNOT satisfy a mutation/deletion action claim!
+                if tr_name in READ_ONLY_TOOL_NAMES:
+                    continue
+                # If specific action was named, match it; else any mutating success
                 if not which_act or not tr_name or which_act in tr_name or tr_name in which_act:
                     has_tool_success = True
                     break
-                has_tool_success = True
-                break
 
         if not has_tool_success:
             act_label = which_act or "action"
+            combined_text = (user_query + " " + draft_reply).lower()
+            is_wipe_act = any(w in act_label for w in ("wipe", "delete", "clear", "purge", "erase")) and any(w in combined_text for w in ("memory", "data", "account", "everything", "history", "contacts", "reminders"))
+            if is_wipe_act:
+                violations.append(f"Claimed data/memory wipe '{act_label}' completed without verified deletion tool execution")
+                revised = (
+                    "⚠️ **Security & Privacy Warning**:\n\n"
+                    "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
+                    "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
+                    "Reply **yes/haan** to confirm ya **no/cancel** to abort."
+                )
+                return False, revised, violations
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
             revised = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
             return False, revised, violations

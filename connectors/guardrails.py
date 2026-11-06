@@ -17,9 +17,10 @@ ACTION_COMPLETION_PATTERNS = [
     re.compile(r"\b(?:email|mail)\s+(?:send|bhej)\s+(?:diya|di|ho gaya|kar diya)\b", re.I),
     re.compile(r"\b(?:file|doc)\s+(?:upload|save)\s+(?:ho gayi|kar diya|ho gaya)\b", re.I),
     re.compile(r"\b(?:issue|pr|pull request|repo)\s+(?:create|close|merge)\s+(?:ho gaya|kar diya)\b", re.I),
-    re.compile(r"\b(?:create kar diya|schedule kar diya|send kar diya|upload kar diya|delete kar diya)\b", re.I),
+    re.compile(r"\b(?:create|schedule|send|upload|delete|clear|wipe)\s+(?:kar diya|kar di|kar diye|ho gaya|ho gayi|kiye gaye|diye gaye)\b", re.I),
+    re.compile(r"\b(?:hata diya|hata di|hata diye|hata di gayi)\b", re.I),
     re.compile(r"\b(?:successfully (?:created|sent|updated|deleted|scheduled|uploaded|create))\b", re.I),
-    re.compile(r"\b(?:created|sent|deleted|scheduled)\b.{0,20}\b(?:event|meeting|email|mail|issue|page|file)\b", re.I)
+    re.compile(r"\b(?:created|sent|deleted|scheduled)\b.{0,20}\b(?:event|meeting|email|mail|issue|page|file|reminder|contact|data|memory)\b", re.I)
 ]
 
 # Untrusted content injection patterns
@@ -53,8 +54,12 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
     Returns (passed, error_reason).
     """
     low = draft_reply.lower()
-    # Confirmation dialogues, question prompts, auth URL invitations, and cancellations are never fake success claims
-    if any(q in low for q in ["please confirm", "reply yes", "options:", "kya main", "kya aap", "auth/google", "oauth", "secure link", "?"]):
+    # Confirmation dialogues, options, auth URL invitations, and action approval questions
+    # Closing courtesy questions (e.g. "kya main kisi aur tarah madad karun?") do NOT exempt action claims
+    is_confirm_dialogue = any(q in low for q in ["please confirm", "reply yes", "reply haan", "options:", "auth/google", "oauth", "secure link"]) or (
+        any(q in low for q in ["kya main ise", "kya aap confirm", "kya main proceed", "confirm karein"]) and "?" in low
+    )
+    if is_confirm_dialogue:
         return True, None
 
     # Status statements about accounts / integrations being connected or not are informational queries, not write actions
@@ -73,14 +78,17 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
         status = tr.get("status")
         ok = tr.get("ok", False)
         # Check success status
-        if status in ("success", "needs_confirmation") or ok is True:
+        if status in ("success", "needs_confirmation", "confirmation_required") or ok is True:
+            t_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
+            from agent.verifier import READ_ONLY_TOOL_NAMES
+            if t_name in READ_ONLY_TOOL_NAMES:
+                continue
             # Must have an ID, event/message ID, commit/issue URL, auth_url, or confirmed payload
             if (tr.get("id") or tr.get("ids") or tr.get("url") or tr.get("urls") or 
                 tr.get("commit_url") or tr.get("commit_html") or tr.get("html_url") or 
                 tr.get("webViewLink") or tr.get("meet_url") or tr.get("message_id") or 
                 tr.get("file_id") or tr.get("auth_url") or tr.get("saved_fact") or 
-                tr.get("name") or tr.get("title") or tr.get("action") or
-                tr.get("deleted_titles") or tr.get("deleted_count")):
+                tr.get("action") or tr.get("deleted_titles") or tr.get("deleted_count")):
                 has_confirmed_success = True
                 break
 

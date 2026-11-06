@@ -313,7 +313,8 @@ def wipe_all_user_memories(chat_id: int):
         ("DELETE FROM pending_actions WHERE chat_id = :c", {"c": chat_id}),
         ("DELETE FROM processed_user_emails WHERE chat_id = :c", {"c": chat_id}),
         ("DELETE FROM oauth_states WHERE chat_id = :c", {"c": chat_id}),
-        ("UPDATE users SET state = NULL, state_data = NULL WHERE id = :u", {"u": uid}),
+        ("DELETE FROM turn_traces WHERE chat_id = :c", {"c": chat_id}),
+        ("UPDATE users SET state = NULL, state_data = NULL, persona = NULL, consented_at = NULL WHERE id = :u", {"u": uid}),
     ]
 
     for sql, params in deletions:
@@ -330,8 +331,10 @@ def wipe_all_user_memories(chat_id: int):
         pass
 
     try:
-        from agent.prompt import _USER_META_CACHE
+        from agent.prompt import _USER_META_CACHE, _UNIFIED_PROMPT_CACHE
         _USER_META_CACHE.pop(chat_id, None)
+        _UNIFIED_PROMPT_CACHE.pop(canonical_chat_id(chat_id), None)
+        _UNIFIED_PROMPT_CACHE.pop(chat_id, None)
     except Exception:
         pass
 
