@@ -131,3 +131,4 @@ tests/test_phase7c_route_checker.py .. [100%]
    - Follow instructions in [`docs/verification/phase7c/staging_deploy.md`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/docs/verification/phase7c/staging_deploy.md) to launch the staging bot on Render and run the 25 live acceptance tests in [`docs/live_acceptance.md`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/docs/live_acceptance.md).
 4. **Phase 8 Readiness**:
    - The codebase is clean, statically hardened, and resilient. Phase 8 will start only when you give the command.
+

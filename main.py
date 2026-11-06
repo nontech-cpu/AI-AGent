@@ -2321,11 +2321,13 @@ def _get_chat_lock(cid: int) -> asyncio.Lock:
 async def handle_active(chat_id, text):
     """Pure Native Tool-Calling Agent Loop with typing action & error fallback."""
     async with _get_chat_lock(chat_id):
-        # Typing chat action if turn exceeds 2.0s (Phase 7c Item 9)
+        # Typing chat action if turn exceeds 2.0s; repeats every 4.5s for long turns (Phase 7c Item 9)
         async def _send_typing_after_delay():
             try:
                 await asyncio.sleep(2.0)
-                await tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+                while True:
+                    await tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+                    await asyncio.sleep(4.5)
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -3530,6 +3532,24 @@ def validate_startup_environment():
             raise RuntimeError("CRITICAL STARTUP ERROR: DATABASE_URL is not set in production!")
         if "sqlite" in db_url.lower():
             raise RuntimeError("CRITICAL STARTUP ERROR: SQLite database is forbidden in production! Provide a PostgreSQL connection.")
+
+    is_staging = (
+        os.getenv("ENV", "").lower() == "staging"
+        or os.getenv("APP_ENV", "").lower() == "staging"
+        or os.getenv("ENVIRONMENT", "").lower() == "staging"
+        or os.getenv("STAGING_MODE", "").strip() == "1"
+    )
+    if is_staging:
+        prod_fp = os.getenv("PROD_DB_FINGERPRINT", "").strip()
+        if prod_fp and db_url:
+            import urllib.parse
+            parsed_db = urllib.parse.urlparse(db_url)
+            host_or_path = f"{parsed_db.hostname or ''}/{parsed_db.path or ''}"
+            if prod_fp in host_or_path or prod_fp in db_url:
+                raise RuntimeError(
+                    f"CRITICAL STAGING GUARD: Staging is configured to use production database ({prod_fp})! "
+                    "Refusing to start. Staging must use its own isolated, empty database."
+                )
 
     has_gemini = bool(os.getenv("GEMINI_API_KEY"))
     has_groq = bool(os.getenv("GROQ_API_KEY"))

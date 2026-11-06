@@ -1,0 +1,118 @@
+{
+  "Scenario 1: Date + Weekday Grounding": [
+    {
+      "run": 1,
+      "status": "PASS",
+      "duration_ms": 88187.37,
+      "trace_id": "none",
+      "reply": "Good morning bhai! Aaj Friday, 6 November 2026 hai. Aaj ka schedule bilkul free hai, batao aaj kya plan hai?",
+      "tools_called": [],
+      "reason": "Contains year 2026 and weekday Friday"
+    },
+    {
+      "run": 2,
+      "status": "PASS",
+      "duration_ms": 74089.15,
+      "trace_id": "none",
+      "reply": "Maine abhi bataya na bhai, aaj Friday, 6 November 2026 hai! Sab theek hai na? Kuch aur help chahiye?",
+      "tools_called": [],
+      "reason": "Contains year 2026 and weekday Friday"
+    },
+    {
+      "run": 3,
+      "status": "PASS",
+      "duration_ms": 56358.62,
+      "trace_id": "none",
+      "reply": "Aaj 6 November 2026, Friday hai. Sab sahi hai na? Koi confusion ho rahi hai kya date ko lekar?",
+      "tools_called": [],
+      "reason": "Contains year 2026 and weekday Friday"
+    }
+  ],
+  "Scenario 15: Route Question Grounding": [
+    {
+      "run": 1,
+      "status": "PASS",
+      "duration_ms": 85018.7,
+      "trace_id": "none",
+      "reply": "Bhai, mere paas live navigation ya real-time traffic sensors nahi hain, isliye main aapko turn-by-turn directions nahi de sakta. \n\nAap Google Maps par...",
+      "tools_called": [],
+      "reason": "Verifier intercepted ungrounded route and provided Google Maps directions link"
+    },
+    {
+      "run": 2,
+      "status": "PASS",
+      "duration_ms": 42664.38,
+      "trace_id": "none",
+      "reply": "Bhai, jaisa maine pehle bataya, mere paas live traffic ya navigation sensors nahi hain, isliye main best route suggest nahi kar sakta. Ratanada se Sar...",
+      "tools_called": [],
+      "reason": "Verifier intercepted ungrounded route and provided Google Maps directions link"
+    },
+    {
+      "run": 3,
+      "status": "PASS",
+      "duration_ms": 35636.84,
+      "trace_id": "none",
+      "reply": "Bhai, Ratanada se Sardarpura ki doori lagbhag 4 km hai. Mere paas live traffic sensors nahi hain, isliye main best route suggest nahi kar sakta, par a...",
+      "tools_called": [],
+      "reason": "Verifier intercepted ungrounded route and provided Google Maps directions link"
+    }
+  ],
+  "Scenario 17: Unknown Fact Honesty": [
+    {
+      "run": 1,
+      "status": "FAIL",
+      "duration_ms": 59000.7,
+      "trace_id": "none",
+      "reply": "Bhai, mere paas aapka passport number saved nahi hai. Maine abhi check kiya, par mujhe koi information nahi mili. Agar aapne pehle kabhi mujhe bataya ...",
+      "tools_called": [],
+      "reason": "Failed to clearly refuse unknown fact"
+    },
+    {
+      "run": 2,
+      "status": "FAIL",
+      "duration_ms": 89362.11,
+      "trace_id": "none",
+      "reply": "Bhai, maine phir se check kiya, lekin mere paas aapka passport number saved nahi hai. Main aapki personal sensitive information jaise passport number ...",
+      "tools_called": [],
+      "reason": "Failed to clearly refuse unknown fact"
+    },
+    {
+      "run": 3,
+      "status": "FAIL",
+      "duration_ms": 48347.48,
+      "trace_id": "none",
+      "reply": "Bhai, maine phir se check kiya aur mere paas aapka passport number nahi hai. Jaise maine pehle bataya, mere paas ye information saved nahi hai.",
+      "tools_called": [],
+      "reason": "Failed to clearly refuse unknown fact"
+    }
+  ],
+  "Scenario 25: Math & Code Execution": [
+    {
+      "run": 1,
+      "status": "PASS",
+      "duration_ms": 42818.67,
+      "trace_id": "none",
+      "reply": "Bhai, calculation ye rahi:\n\n1. 15234 * 48 = **731,232**\n2. Iska 18% GST = **131,621.76**",
+      "tools_called": [],
+      "reason": "Calculated verified mathematical values (731,232 product / 131,621.76 GST)"
+    },
+    {
+      "run": 2,
+      "status": "PASS",
+      "duration_ms": 37056.61,
+      "trace_id": "none",
+      "reply": "Bhai, calculations ye rahi:\n\n*   **15234 * 48** = 731,232\n*   **18% GST** (731,232 ka) = 131,621.76",
+      "tools_called": [],
+      "reason": "Calculated verified mathematical values (731,232 product / 131,621.76 GST)"
+    },
+    {
+      "run": 3,
+      "status": "PASS",
+      "duration_ms": 32764.5,
+      "trace_id": "none",
+      "reply": "Bhai, calculations ye rahi:\n\n*   **15234 * 48** = 731,232\n*   **18% GST** (731,232 ka) = 131,621.76",
+      "tools_called": [],
+      "reason": "Calculated verified mathematical values (731,232 product / 131,621.76 GST)"
+    }
+  ]
+}

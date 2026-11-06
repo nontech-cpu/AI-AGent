@@ -944,6 +944,15 @@ async def chat(
         primary_provider_name = all_providers[0].name
 
         for p_idx, prov in enumerate(all_providers):
+            # Staging Mode provider failover simulation
+            staging_mode = os.getenv("STAGING_MODE", "").strip() == "1"
+            force_fail = os.getenv("FORCE_PROVIDER_FAIL", "").strip().lower()
+            if staging_mode and force_fail and (force_fail == prov.name.lower() or force_fail == "all"):
+                logger.warning(f"FORCE_PROVIDER_FAIL active: Simulating failure for {prov.name}")
+                fallback_reasons.append(f"FORCE_PROVIDER_FAIL: {prov.name} simulated failure")
+                last_error = RateLimitedError(f"Simulated failure for {prov.name}", provider=prov.name)
+                continue
+
             candidate_models = [model] if model else prov.get_models()
             is_fallback_provider = (p_idx > 0)
             if is_fallback_provider:

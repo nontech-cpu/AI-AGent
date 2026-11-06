@@ -51,3 +51,4 @@ async def test_route_claim_allowed_when_sourced_by_nav_tool():
         assert passed is True
         assert len(violations) == 0
         assert "12 minute" in reply
+

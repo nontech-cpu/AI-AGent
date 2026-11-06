@@ -19,3 +19,4 @@ def test_static_checks_no_unbound_or_undefined_variables():
     res = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
     
     assert res.returncode == 0, f"Static check failed with errors:\n{res.stdout}\n{res.stderr}"
+

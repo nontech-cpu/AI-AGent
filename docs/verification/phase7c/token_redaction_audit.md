@@ -62,3 +62,4 @@ WHERE message ~ '(secret_|ntn_|ghp_|github_pat_|gsk_|AIza)[a-zA-Z0-9_\-]+';
    redacted_token = f"{prefix}[REDACTED]"
    ```
 3. Stored tokens in `user_integrations` remain securely encrypted/stored for authorized backend API execution, while all conversational logs, traces, and echoes are redacted before disk persistence.
+
