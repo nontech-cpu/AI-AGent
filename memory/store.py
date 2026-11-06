@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple, Union
 from sqlalchemy import text
 import db
+import core.timeutil as timeutil
+from timing import IST
 
 logger = logging.getLogger("peculiar_memory")
 
@@ -549,7 +551,7 @@ def save_entity(
         "brother": ["bhai", "bro"],
         "bhai": ["brother", "bro"],
         "sister": ["behen", "didi"],
-        "sister": ["behen", "didi"]
+        "behen": ["sister", "didi"]
     }
     cn_low = clean_name.lower()
     if cn_low in RELATION_SYNONYMS:
@@ -646,7 +648,7 @@ def find_entity(user_id: int, query: str, threshold: float = 0.22) -> Optional[D
         "bhai": ["brother", "bro"],
         "brother": ["bhai", "bro"],
         "sister": ["behen", "didi"],
-        "sister": ["behen", "didi"]
+        "behen": ["sister", "didi"]
     }
     candidate_queries = [q_clean] + RELATION_SYNONYMS.get(q_clean, [])
 
@@ -1171,15 +1173,7 @@ def get_commitments_for_user(user_id: int, entity_id: Optional[int] = None) -> L
         return commitments
 
 
-def update_commitment_status(commitment_id: int, new_status: str = "completed"):
-    """Marks a commitment as completed or archived."""
-    _init_sqlite_if_needed()
-    with db.engine.connect() as conn:
-        conn.execute(
-            text("UPDATE memories SET status = :status WHERE id = :id"),
-            {"status": new_status, "id": commitment_id}
-        )
-        conn.commit()
+# (Legacy duplicate update_commitment_status removed)
 
 
 # ---------------------------------------------------------------------------
@@ -1397,13 +1391,17 @@ def record_action_event(
     action_type: str,
     summary: str,
     details: Optional[Dict[str, Any]] = None,
-    subject_name: Optional[str] = None
+    subject_name: Optional[str] = None,
+    source_type: str = "action_ledger",
+    source_id: Optional[str] = None,
+    importance: int = 3
 ) -> int:
     """
     Enterprise Action-Ledger:
     Permanently records an action performed by the bot (e.g. sent email, meeting scheduled, file generated)
     into the cognitive memory ledger linked to the recipient/entity.
     Zero token bloat: Compact, structured, and indexed for instantaneous retrieval.
+    Idempotent by (user_id, source_type, source_id).
     """
     _init_sqlite_if_needed()
     user_id = resolve_user_id(chat_id_or_user_id)
@@ -1416,14 +1414,48 @@ def record_action_event(
         except Exception:
             pass
 
+    struct_payload = {"action": action_type, **(details or {})}
+    if source_id:
+        struct_payload["source_id"] = str(source_id)
+
+    # Idempotency check if source_id is provided
+    if source_id:
+        try:
+            with db.engine.connect() as conn:
+                is_pg = db.engine.dialect.name == "postgresql"
+                if is_pg:
+                    existing = conn.execute(
+                        text("""
+                            SELECT id FROM memories
+                            WHERE user_id = :uid AND source_type = :stype
+                              AND structured->>'source_id' = :sid
+                            LIMIT 1
+                        """),
+                        {"uid": user_id, "stype": source_type, "sid": str(source_id)}
+                    ).fetchone()
+                else:
+                    existing = conn.execute(
+                        text("""
+                            SELECT id FROM memories
+                            WHERE user_id = :uid AND source_type = :stype
+                              AND json_extract(structured, '$.source_id') = :sid
+                            LIMIT 1
+                        """),
+                        {"uid": user_id, "stype": source_type, "sid": str(source_id)}
+                    ).fetchone()
+                if existing:
+                    return existing[0]
+        except Exception:
+            pass
+
     return save_memory_item(
         user_id=user_id,
         content=summary,
-        memory_type="action_event",
+        memory_type="event",
         subject_entity_id=entity_id,
-        structured={"action": action_type, **(details or {})},
-        importance=4,
-        source_type="action_ledger"
+        structured=struct_payload,
+        importance=importance,
+        source_type=source_type
     )
 
 
@@ -1441,7 +1473,7 @@ def get_recent_actions_for_user(
             SELECT m.id, m.content, m.structured, m.created_at, e.name as subject_name
             FROM memories m
             LEFT JOIN entities e ON m.subject_entity_id = e.id
-            WHERE m.user_id = :uid AND m.memory_type = 'action_event' AND m.status = 'active'
+            WHERE m.user_id = :uid AND m.memory_type IN ('event', 'action_event') AND m.status = 'active'
         """
         params = {"uid": user_id, "lim": limit}
         if entity_id:

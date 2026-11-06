@@ -1,0 +1,62 @@
+{
+  "generated_at": "2026-11-06T03:46:42.732053Z",
+  "description": "BACKFILL DRY-RUN V2: Strictly real candidate events with valid 2026 dates",
+  "exclusion_audit": {
+    "#1": "Excluded: chat_id 911 synthetic test fixture from 22 Oct ('Sprint Planning')",
+    "#3": "Excluded: 'Test Dummy Reminder' created during live debugging",
+    "#4": "Excluded: 'Movie jana hai' dated 2025-01-24 (cutoff poisoned date)",
+    "#5": "Excluded: 'Movie (3 hours long)' dated 2025-05-15 (must NOT backfill 2025 date)",
+    "#6": "Excluded: 'Flight' dated 2025-05-16 (must NOT backfill 2025 date; propose SQL update to 2026-11-06 instead)",
+    "#7": "Excluded: 'Movie jana hai, Movie (3 hours long)' comma-joined multi-delete artifact"
+  },
+  "recipient_verification": {
+    "pending_action_37": "Verified in DB: payload contains 'aaravmishra619@gmail.com, neeravmishra1805@gmail.com' (both recipients preserved)"
+  },
+  "total_approved_candidates": 2,
+  "rows": [
+    {
+      "candidate_index": 2,
+      "label": "REAL",
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Sent email to aaravmishra619@gmail.com, neeravmishra1805@gmail.com with subject 'weather'",
+      "source_type": "email",
+      "structured": {
+        "action": "send_email",
+        "recipient": "aaravmishra619@gmail.com, neeravmishra1805@gmail.com",
+        "subject": "weather",
+        "body_preview": "hot in jodhpur",
+        "source_type": "email",
+        "source_id": "pa_37",
+        "pending_action_id": 37,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-10-31T16:31:58.339691+00:00",
+      "created_at": "2026-10-31T16:31:58.339691+00:00"
+    },
+    {
+      "candidate_index": 8,
+      "label": "REAL",
+      "user_id": 408,
+      "chat_id": 1758056012,
+      "memory_type": "event",
+      "content": "Created reminder 'Movie' for 2026-11-06 at 13:00",
+      "source_type": "reminder",
+      "structured": {
+        "action": "create_reminder",
+        "title": "Movie",
+        "due_date": "2026-11-06",
+        "due_time": "13:00",
+        "source_type": "reminder",
+        "source_id": "trace_1078_Movie",
+        "trace_id": 1078,
+        "confidence": 1.0
+      },
+      "importance": 3,
+      "valid_from": "2026-11-05T17:08:09.287667+00:00",
+      "created_at": "2026-11-05T17:08:09.287667+00:00"
+    }
+  ]
+}

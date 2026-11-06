@@ -274,6 +274,7 @@ async def check_interval_availability(
     free_slots = find_free_slots(busy_intervals, target_d) if not is_free else []
 
     return {
+        "status": "success",
         "is_free": is_free,
         "target_date": str(target_d),
         "proposed_start": proposed_start.strftime("%I:%M %p"),
@@ -368,6 +369,7 @@ async def get_unified_daily_schedule(chat_id: int, target_date: Optional[date] =
         })
 
     return {
+        "status": "success",
         "date": str(target_d),
         "weekday": target_d.strftime("%A"),
         "total_items": len(timeline),

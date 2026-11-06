@@ -3,7 +3,7 @@ All write operations are called only after explicit user confirmation in main.py
 """
 import re
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, date as d_date, timedelta
 from email.message import EmailMessage
 import httpx
 import logging
@@ -184,6 +184,19 @@ async def create_meeting(chat_id, title, start_iso, duration_minutes, attendees=
     meet = (result.get('conferenceData') or {}).get('entryPoints') or []
     meet_url = next((x.get('uri') for x in meet if x.get('entryPointType') == 'video'), '')
     invalidate_calendar_cache(chat_id)
+    try:
+        from memory.store import record_action_event
+        record_action_event(
+            chat_id,
+            action_type="create_meeting",
+            summary=f"Created Google Calendar meeting '{result.get('summary') or title}'",
+            details={"id": result.get('id'), "summary": result.get('summary') or title},
+            source_type="calendar",
+            source_id=f"cal_{result.get('id')}",
+            importance=3
+        )
+    except Exception:
+        pass
     return {
         'id': result.get('id'),
         'summary': result.get('summary', title),
@@ -399,6 +412,20 @@ async def update_meeting(chat_id, event_id, new_start_iso=None, duration_minutes
         meet_url = next((x.get('uri') for x in old_meet if x.get('entryPointType') == 'video'), '')
 
     invalidate_calendar_cache(chat_id)
+    try:
+        import time as _t
+        from memory.store import record_action_event
+        record_action_event(
+            chat_id,
+            action_type="update_meeting",
+            summary=f"Updated Google Calendar meeting '{result.get('summary') or event_id}'",
+            details={"id": event_id, "summary": result.get('summary')},
+            source_type="calendar",
+            source_id=f"cal_{event_id}_update_{int(_t.time())}",
+            importance=3
+        )
+    except Exception:
+        pass
     return {
         'id': result.get('id'),
         'htmlLink': result.get('htmlLink'),
@@ -416,6 +443,19 @@ async def delete_calendar_event(chat_id, event_id):
     access, _ = await access_token_for_chat(chat_id)
     await _request('DELETE', f'{GOOGLE}/calendar/v3/calendars/primary/events/{event_id}', access)
     invalidate_calendar_cache(chat_id)
+    try:
+        from memory.store import record_action_event
+        record_action_event(
+            chat_id,
+            action_type="delete_meeting",
+            summary=f"Deleted Google Calendar meeting '{event_id}'",
+            details={"id": event_id},
+            source_type="calendar",
+            source_id=f"cal_{event_id}_delete",
+            importance=2
+        )
+    except Exception:
+        pass
     return {'id': event_id, 'status': 'deleted'}
 
 

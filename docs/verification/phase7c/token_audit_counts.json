@@ -1,0 +1,34 @@
+{
+  "chat_logs": {
+    "secret_": 0,
+    "ntn_": 0,
+    "ghp_": 0,
+    "github_pat_": 0,
+    "gsk_": 0,
+    "AIza": 0
+  },
+  "turn_traces": {
+    "secret_": 1,
+    "ntn_": 1,
+    "ghp_": 0,
+    "github_pat_": 0,
+    "gsk_": 0,
+    "AIza": 0
+  },
+  "memories": {
+    "secret_": 0,
+    "ntn_": 0,
+    "ghp_": 0,
+    "github_pat_": 0,
+    "gsk_": 0,
+    "AIza": 0
+  },
+  "pending_actions": {
+    "secret_": 0,
+    "ntn_": 0,
+    "ghp_": 0,
+    "github_pat_": 0,
+    "gsk_": 0,
+    "AIza": 0
+  }
+}

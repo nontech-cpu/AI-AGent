@@ -311,6 +311,20 @@ class GitHubConnector(Connector):
                         "retryable": True
                     }
                 )
+            try:
+                import time as _t
+                from memory.store import record_action_event
+                record_action_event(
+                    user_or_chat_id,
+                    action_type="github_commit",
+                    summary=f"Committed changes to GitHub file '{path}' in '{repo_arg}': {commit_msg}",
+                    details={"repo": repo_arg, "path": path, "commit_url": commit_url, "commit_msg": commit_msg},
+                    source_type="github",
+                    source_id=f"github_{repo_arg}_{path}_{int(_t.time())}",
+                    importance=3
+                )
+            except Exception:
+                pass
             return ToolResult(
                 ok=True,
                 data={"status": "success", "repo": repo_arg, "path": path, "message": msg, "commit_url": commit_url},

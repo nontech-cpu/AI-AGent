@@ -383,11 +383,70 @@ This document maintains the persistent, chronological log of architectural upgra
 - **Phase 7b Test Suites**: 100% Passed (	est_phase7b_date_and_time.py 20/20, 	est_phase7b_gmail_and_event_memory.py 5/5, 	est_agent_v2.py 13/13).
 - **All 8 Steps Completed on Branch**: ix/pre-phase8-live-fixes. Zero production database writes executed.
 
+---
+
+## Phase 7c: Pre-Phase-8 Live Fixes, Static Hardening & Verification Cleanup
+
+**Date:** 2026-11-06  
+**Status:** Completed on branch `fix/pre-phase8-live-fixes` (Zero production mutations; zero pushes to `main`).
+
+### Key Achievements & Completed Actions:
+
+1. **Git State & Atomic Commit History (Item 1)**:
+   - Synchronized documentation for Phase 7 (`27fcdf9`) and Phase 7b (`d5c5256`).
+   - Executed Commit 1 (`e56299f`): Excised dead v1 routing branch from `main.py` (-518 lines) and wired typing action.
+   - Executed Commit 2 (`be8c717`): Excised monolith `llm/legacy.py` (-593 lines) and provided modern provider-backed shims in `llm/__init__.py` and `llm/compat.py`.
+
+2. **Telegram Routing & Render State Verification (Item 2)**:
+   - Webhook URL confirmed: `https://peculiar-ai-backend.onrender.com/telegram/webhook` (pending updates: 0).
+   - Render production confirmed on commit `3c27a2e` from `main` (`AGENT_CORE=v2`).
+
+3. **Static Analysis, All-Tools Smoke Test & Error Policy (Item 3)**:
+   - Fixed 11 latent bugs (`UnboundLocalError`, duplicate keys, undefined names) across the repository.
+   - Created `tests/test_static_checks.py`: asserts ruff F821/F822/F823/F811/F601 passes 100% (0.41s).
+   - Enforced tool error policy in `agent/tools.py:3735-3771`: returns typed `{status: "error", error_type, retryable, user_message, trace_id}`.
+   - Created `tests/test_all_tools_smoke.py`: all 55 tools in `TOOL_DEFINITIONS` smoke tested with minimal valid arguments -> **55/55 PASSED** in 34.64s.
+
+4. **Event Memory Write Path (Item 4)**:
+   - Verified `action_events` table does NOT exist in PostgreSQL; removed all dead legacy references.
+   - Standardized `record_action_event` in `memory/store.py` (`memory_type='event'`, `importance=3`, idempotent on `(user_id, source_type, source_id)`).
+   - Integrated event writing hooks across all 5 action classes: Gmail sent, Google Calendar create/update/delete, Notion create/update, GitHub commit/PR, and reminders create/update/delete.
+   - Created `tests/test_phase7c_event_hooks.py` -> **3/3 PASSED** in 5.64s.
+
+5. **Backfill Dry-Run V2 & Year < 2026 Audit (Item 5)**:
+   - Read-only audit identified 1 corrupt 2025 row in production `memory_items` (ID 233).
+   - Generated `docs/verification/phase7c/backfill_dry_run_v2.json`: excludes synthetic fixtures, poisoned cutoff dates (#5, #6), and preserves verified real events (#2 email sent, #8 movie reminder).
+   - Prepared proposed UPDATE SQL; zero writes executed against production database.
+
+6. **Regex Audit Honesty & Active Semantic Router (Item 6)**:
+   - Removed hardcoded contact `'ananya'` from `state/pending.py:243`.
+   - Excised dead keyword router `is_action_or_tool_intent` and duplicate `_cosine_similarity` from `agent/tools.py`.
+   - Created `tests/test_semantic_routing.py`: proves `route_tools` routes semantically via embeddings against `TOOL_GROUPS` -> **4/4 PASSED** in 21.33s.
+   - Strengthened `scripts/audit_regex_meaning.py` to catch membership checks over NL words.
+
+7. **Route Guard in Structured Claim Checker (Item 7)**:
+   - Added `claims_route_or_travel_time` key to `CLAIM_CHECKER_SYSTEM_PROMPT` in `agent/verifier.py`.
+   - Model evaluates route claims; ungrounded driving directions or travel times are intercepted and replaced with Google Maps directions link.
+   - Created `tests/test_phase7c_route_checker.py` -> **2/2 PASSED** in 0.13s.
+
+8. **Token Safety & Prefix Redaction (Item 8)**:
+   - Enforced prefix-only redaction in `agent/loop.py:159, 182`.
+   - Read-only audit via `scripts/count_token_prefixes.py`: 0 live tokens in chat_logs, memories, pending_actions; 1 in turn_traces.
+   - Documented in `docs/verification/phase7c/token_redaction_audit.md`.
+
+9. **Staging Deploy Spec & Real Latency Typing (Item 9)**:
+   - Documented dedicated Render staging web service in `docs/verification/phase7c/staging_deploy.md`.
+   - Implemented real-latency typing chat action in `main.py:2430` (fires if turn latency exceeds 2.0s; auto-cancels if fast).
+
+10. **Live Acceptance Checklist (Item 10)**:
+    - Generated `docs/live_acceptance.md` containing 25 hand-test scenarios with blank Pass/Fail check columns.
+
+11. **Phase 7c Verification Summary (Item 12)**:
+    - Compiled exhaustive matrix in `docs/verification/phase7c/summary.md`.
+
+---
+
 ## Phase 8: Final End-to-End Verification & Capstone Report (Next Phase)
 
 **Status:** Awaiting User "Go Ahead"  
-*(Will be initiated once Phase 6 review is complete)*
-*(Will be initiated once Phase 7 review is complete)*
-
-
-
+*(Will be initiated once Phase 7c review is complete)*

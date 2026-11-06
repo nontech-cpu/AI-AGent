@@ -23,8 +23,9 @@ You must output a single JSON object with these EXACT keys:
 1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, or sent (e.g. reminder created/deleted/updated, meeting scheduled, email sent, note/file saved, list updated). False if the assistant is merely asking confirmation, refusing, explaining, asking a question, or greeting.
 2. "which_action": string or null. The canonical tool name if an action is claimed (e.g. "create_reminder", "delete_reminder", "update_reminder", "send_email", "create_meeting", "save_note_or_fact", "manage_list"), or null if no action is claimed.
 3. "claims_external_fact": boolean. True if the Draft Reply asserts specific real-world live facts (e.g. local business/mall names, transit routes/highways/distances, order/receipt details, market prices, live weather, availability). False for general domain knowledge (e.g. ML, coding concepts, science, history), pure language translations, greetings, or conversational remarks.
-4. "sourced_by_tool": boolean. True if ALL external facts or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact or action is NOT found in the Evidence.
-5. "reason": string. Short 1-sentence explanation of your assessment.
+4. "claims_route_or_travel_time": boolean. True if the Draft Reply asserts, describes, or predicts a physical travel route, road directions (e.g. via specific roads, highways, bypasses), transit path, or travel time/duration (e.g. '10-15 minute lagenge') between locations. False otherwise.
+5. "sourced_by_tool": boolean. True if ALL external facts, routes, or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact, route, or action is NOT found in the Evidence.
+6. "reason": string. Short 1-sentence explanation of your assessment.
 
 Respond ONLY with valid JSON. Do not wrap in markdown or backticks."""
 
@@ -189,23 +190,7 @@ def deterministic_verify(
                 if clean_item not in real_repos and item.lower() not in real_repos and clean_item not in allowed_tokens and len(clean_item) > 2 and not clean_item.isdigit():
                     violations.append(f"Fabricated GitHub repository: {item}")
 
-    # 4. Route & Travel Time Grounding Check (Phase 5/7b Mandate)
-    low_query = (user_query or "").lower()
-    is_route_query = any(w in low_query for w in ("route", "rasta", "direction", "kaise ja", "distance", "dur kitna", "kitna time lagega"))
-    if is_route_query:
-        has_nav_tool = any(isinstance(tr, dict) and tr.get("tool_name") in ("google_maps", "get_directions", "navigation") for tr in tool_results)
-        if not has_nav_tool:
-            has_time_claim = bool(re.search(r'\b\d+(?:-\d+)?\s*(?:minute|min|ghante|hours?)\b', low_rep))
-            has_road_claim = any(w in low_rep for w in ("road hote hue", "highway", "bypass", "flyover", "shortest rasta"))
-            if has_time_claim or has_road_claim:
-                violations.append("Ungrounded route or travel time claimed without verified maps tool")
-                revised = (
-                    "Mere paas live GPS navigation aur real-time traffic maps ka live access nahi hai, "
-                    "isliye main exact travel time ya road route predict nahi kar sakta. "
-                    "Aap live traffic aur best route ke liye Google Maps check kar sakte hain:\n\n"
-                    "👉 https://www.google.com/maps/dir/?api=1"
-                )
-                return False, revised, violations
+    # 4. Route & Travel Time Grounding: handled structurally in audit_claims_with_llm (claims_route_or_travel_time)
 
     # 5. Regional Script Sanitization
     draft_reply = sanitize_regional_scripts(draft_reply)
@@ -263,6 +248,7 @@ async def audit_claims_with_llm(
                 "claims_action_done": bool(parsed.get("claims_action_done", False)),
                 "which_action": parsed.get("which_action"),
                 "claims_external_fact": bool(parsed.get("claims_external_fact", False)),
+                "claims_route_or_travel_time": bool(parsed.get("claims_route_or_travel_time", False)),
                 "sourced_by_tool": bool(parsed.get("sourced_by_tool", False)),
                 "reason": str(parsed.get("reason", ""))
             }
@@ -282,14 +268,16 @@ async def audit_claims_with_llm(
     elif "email" in low or "mail" in low:
         which_act = "send_email"
 
-    has_ext_fact = any(w in low for w in ("mall", "malls", "km", "minute lagenge", "order tha:", "order", "rupees", "₹"))
+    claims_route = any(w in low for w in ("road", "rasta", "route", "hote hue", "highway", "bypass", "flyover", "shortest rasta")) or bool(re.search(r'\b\d+(?:-\d+)?\s*(?:minute|min|ghante|hours?)\b', low))
+    has_ext_fact = any(w in low for w in ("mall", "malls", "km", "order tha:", "order", "rupees", "₹"))
     has_evidence = bool(evidence_str and ("status" in evidence_str or "Tool 1" in evidence_str))
 
     return {
         "claims_action_done": has_action_phrase,
         "which_action": which_act,
         "claims_external_fact": has_ext_fact,
-        "sourced_by_tool": has_evidence if (has_action_phrase or has_ext_fact) else True,
+        "claims_route_or_travel_time": claims_route,
+        "sourced_by_tool": has_evidence if (has_action_phrase or has_ext_fact or claims_route) else True,
         "reason": "Fallback heuristic evaluation"
     }
 
@@ -365,7 +353,19 @@ async def verify_and_ground_reply(
             revised = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
             return False, revised, violations
 
-    # Check 2B: External Facts Claimed Without Tool Source
+    # Check 2B: Route / Travel Time Claimed Without Verified Navigation Tool
+    has_nav_tool = any(isinstance(tr, dict) and tr.get("tool_name") in ("google_maps", "get_directions", "navigation") for tr in tool_results)
+    if audit.get("claims_route_or_travel_time") and not has_nav_tool:
+        violations.append("Ungrounded route or travel time claimed without verified maps tool")
+        revised = (
+            "Mere paas live GPS navigation aur real-time traffic maps ka live access nahi hai, "
+            "isliye main exact travel time ya road route predict nahi kar sakta. "
+            "Aap live traffic aur best route ke liye Google Maps check kar sakte hain:\n\n"
+            "👉 https://www.google.com/maps/dir/?api=1"
+        )
+        return False, revised, violations
+
+    # Check 2C: General External Facts Claimed Without Tool Source
     if audit.get("claims_external_fact") and not audit.get("sourced_by_tool"):
         # If evidence contains the exact numbers/facts, allow
         violations.append("Unsubstantiated external fact claimed without verified tool source")

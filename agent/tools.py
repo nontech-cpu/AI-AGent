@@ -171,12 +171,6 @@ class DeleteNoteOrFactArgs(BaseModel):
 class SetUserTimezoneArgs(BaseModel):
     timezone: str = Field(..., description="Valid IANA timezone identifier e.g. 'America/New_York', 'Europe/London', 'Asia/Kolkata'.")
 
-class UpdateGitHubFileArgs(BaseModel):
-    repo: str = Field(..., description="Repository in 'owner/repo' format or repo name e.g. 'ml-project' or 'username/ml-project'.")
-    path: Optional[str] = Field("README.md", description="File path within the repository e.g. 'README.md'.")
-    content: str = Field(..., description="New or updated content for the file.")
-    commit_message: Optional[str] = Field("Update file via PeculiarAI", description="Git commit message.")
-
 class ManageSmartListArgs(BaseModel):
     action: str = Field(..., description="Action to perform: 'create', 'add_items', 'get', 'list_all', 'delete'.")
     list_name: Optional[str] = Field(None, description="Name of the checklist/smart list e.g. 'Groceries', 'Packing', 'Work Deliverables'.")
@@ -1397,6 +1391,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 except Exception:
                     pass
             if isinstance(tool_res.data, dict):
+                if "status" not in tool_res.data:
+                    tool_res.data["status"] = "success"
                 return tool_res.data
             return {"status": "success", "result": tool_res.data}
 
@@ -1434,6 +1430,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             facts = db.get_user_facts(chat_id, limit=20)
             matched_facts = [f for f in facts if args.query.lower() in f.get("fact", "").lower()]
             return {
+                "status": "success",
                 "query": args.query,
                 "hybrid_memories": [f"[{h['memory_type']}] {h['content']}" for h in hybrid_res],
                 "chat_matches": [f"{l['role']}: {l['text']}" for l in logs],
@@ -1553,6 +1550,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 commitments = "; ".join(filter(None, [m_comm, c_comm])) if (m_comm != c_comm) else m_comm
 
                 return {
+                    "status": "success",
                     "found": True,
                     "name": name,
                     "company": company,
@@ -1562,7 +1560,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     "commitments": commitments,
                     "context_notes": (match.get("context_notes") if match else "") or cognitive_data.get("context_notes", "")
                 }
-            return {"found": False, "message": f"Contact '{args.name_or_alias}' not found in saved memories."}
+            return {"status": "not_found", "found": False, "message": f"Contact '{args.name_or_alias}' not found in saved memories."}
 
         elif tool_name == "save_contact":
             args = SaveContactArgs(**arguments)
@@ -1698,7 +1696,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 logger.warning(f"Cognitive list_entities fallback: {exc}")
 
             final_contacts = list(contacts_by_name.values())
-            return {"count": len(final_contacts), "contacts": final_contacts}
+            return {"status": "success", "count": len(final_contacts), "contacts": final_contacts}
 
         elif tool_name == "update_contact_commitment":
             args = UpdateContactCommitmentArgs(**arguments)
@@ -1730,7 +1728,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                         eid = ent["id"]
                 all_comms = get_commitments_for_user(uid, entity_id=eid)
                 if all_comms:
-                    return {"commitments": [{"name": c["contact_name"], "commitment": c["commitment"]} for c in all_comms]}
+                    return {"status": "success", "commitments": [{"name": c["contact_name"], "commitment": c["commitment"]} for c in all_comms]}
             except Exception as exc:
                 print("Cognitive get_commitments fallback:", exc)
 
@@ -1739,10 +1737,10 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 from main import find_matching_contact
                 match = find_matching_contact(args.contact, contacts)
                 if match:
-                    return {"contact": match["name"], "commitment": match.get("commitments", "")}
-                return {"contact": args.contact, "commitment": "No record found"}
+                    return {"status": "success", "contact": match["name"], "commitment": match.get("commitments", "")}
+                return {"status": "not_found", "contact": args.contact, "commitment": "No record found"}
             comms = [{"name": c["name"], "company": c.get("company"), "commitment": c["commitments"]} for c in contacts if c.get("commitments")]
-            return {"commitments": comms}
+            return {"status": "success", "commitments": comms}
 
         elif tool_name == "save_note_or_fact":
             args = SaveNoteOrFactArgs(**arguments)
@@ -2087,6 +2085,20 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
             time_str = new_time.strftime("%I:%M %p") if new_time else "specified time"
             date_str = new_date.strftime("%d %b %Y") if new_date else "specified date"
+            try:
+                import time as _t
+                from memory.store import record_action_event
+                record_action_event(
+                    chat_id,
+                    action_type="update_reminder",
+                    summary=f"Updated reminder {row_id}: '{new_title}' for {date_str} at {time_str}",
+                    details={"title": new_title, "item_id": row_id, "due_date": new_date.isoformat(), "due_time": new_time.strftime("%H:%M") if new_time else None},
+                    source_type="reminder",
+                    source_id=f"rem_upd_{row_id}_{int(_t.time())}",
+                    importance=3
+                )
+            except Exception:
+                pass
             return {
                 "action": "update_reminder",
                 "tool_name": "update_reminder",
@@ -2291,6 +2303,19 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
             date_str = d_val.strftime("%d %b %Y") if d_val else "specified date"
             action_word = "shift" if rescheduled else "set"
+            try:
+                from memory.store import record_action_event
+                record_action_event(
+                    chat_id,
+                    action_type="create_reminder",
+                    summary=f"Set reminder: '{clean_title}' for {date_str} at {time_str}",
+                    details={"title": clean_title, "due_date": args.due_date, "due_time": args.due_time, "item_id": item_id},
+                    source_type="reminder",
+                    source_id=f"rem_{item_id}",
+                    importance=3
+                )
+            except Exception:
+                pass
             return {
                 "action": "create_reminder",
                 "tool_name": "create_reminder",
@@ -2362,6 +2387,21 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 pass
 
             if deleted_titles:
+                try:
+                    import time as _t
+                    from memory.store import record_action_event
+                    for d_title in deleted_titles:
+                        record_action_event(
+                            chat_id,
+                            action_type="delete_reminder",
+                            summary=f"Deleted reminder '{d_title}'",
+                            details={"title": d_title},
+                            source_type="reminder",
+                            source_id=f"rem_del_{chat_id}_{d_title}_{int(_t.time())}",
+                            importance=2
+                        )
+                except Exception:
+                    pass
                 return {
                     "status": "success",
                     "action": "delete_reminder",
@@ -2441,6 +2481,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 })
             date_meta = timeutil.date_metadata(target_d, today_d)
             return {
+                "status": "success",
                 "date": date_meta["date"],
                 "today": date_meta["today"],
                 "is_today": date_meta["is_today"],
@@ -2467,6 +2508,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             try:
                 from schedule.intervals import get_unified_daily_schedule
                 daily = await get_unified_daily_schedule(chat_id, target_d)
+                if isinstance(daily, dict) and "status" not in daily:
+                    daily["status"] = "success"
                 return daily
             except Exception as exc:
                 print("Interval get_schedule fallback:", exc)
@@ -2484,6 +2527,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             comms = [f"{c['name']} ({c.get('company', '')}): {c['commitment']}" for c in sched.get("commitments", [])]
             rems = [f"{it[0]}: {it[1]}" for it in sched.get("reminders", [])]
             return {
+                "status": "success",
                 "date": target_d.isoformat(),
                 "calendar_events": evs,
                 "commitments": comms,
@@ -2502,6 +2546,8 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                     activity_type=args.activity_type,
                     travel_buffer_minutes=15
                 )
+                if isinstance(res, dict) and "status" not in res:
+                    res["status"] = "success"
                 return res
             except Exception as exc:
                 print("Interval availability check fallback:", exc)
@@ -2543,6 +2589,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
             is_free = len(conflicts) == 0
             return {
+                "status": "success",
                 "is_free": is_free,
                 "queried_slot": f"{h:02d}:{m:02d} - {activity_end_mins//60:02d}:{activity_end_mins%60:02d} ({args.activity_type})",
                 "conflicts": conflicts,
@@ -2603,12 +2650,13 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             if meet_evs:
                 ev = meet_evs[0]
                 return {
+                    "status": "success",
                     "found": True,
                     "title": ev.get("summary", "Meeting"),
                     "meet_url": ev["meet_url"],
                     "start": ev.get("start", {}).get("dateTime", "")
                 }
-            return {"found": False, "message": "No upcoming meeting with Google Meet link found."}
+            return {"status": "not_found", "found": False, "message": "No upcoming meeting with Google Meet link found."}
 
         elif tool_name == "send_email":
             args = SendEmailArgs(**arguments)
@@ -3164,7 +3212,11 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
                 success, repos, resolved_user = await integrations.list_github_repos(token=None, username=req_username)
 
             if not success:
-                return {"status": "error", "message": "Could not fetch repositories from GitHub."}
+                return {
+                    "status": "error",
+                    "error_type": "github_api_error",
+                    "message": "Could not fetch repositories from GitHub. Please check token permissions or username."
+                }
 
             repo_names = [r.get("name") for r in repos if isinstance(r, dict)]
             return {
@@ -3380,7 +3432,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 
         elif tool_name == "search_user_emails":
             args = SearchUserEmailsArgs(**arguments)
-            import google_services
+            # google_services is already imported at module level
             from main import get_valid_google_connection_by_chat_id
             from google_auth import build_auth_url
             is_conn, g_email = await get_valid_google_connection_by_chat_id(chat_id)
@@ -3681,9 +3733,42 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
             return {"status": "error", "message": f"Unknown tool: '{tool_name}'"}
 
     except ValidationError as val_err:
-        return {"status": "error", "error": "validation_error", "type": "ValidationError", "details": val_err.errors(), "message": str(val_err)}
+        import uuid
+        trace_id = f"tool_val_{uuid.uuid4().hex[:8]}"
+        logger.warning(f"Tool validation error [{trace_id}] in {tool_name}: {val_err}")
+        return {
+            "status": "error",
+            "error_type": "validation_error",
+            "retryable": False,
+            "user_message": f"Tool '{tool_name}' parameters are invalid. Please check the requested inputs.",
+            "trace_id": trace_id
+        }
     except Exception as exc:
-        return {"status": "error", "error": "tool_execution_error", "type": type(exc).__name__, "message": str(exc)}
+        import uuid, traceback
+        trace_id = f"tool_err_{uuid.uuid4().hex[:8]}"
+        logger.error(f"Tool execution exception [{trace_id}] in {tool_name}:\n{traceback.format_exc()}")
+        exc_type = type(exc).__name__
+        is_retryable = exc_type in ("TimeoutError", "NetworkError", "ConnectTimeout", "ReadTimeout", "OperationalError")
+        if "Authentication" in exc_type or "Unauthorized" in exc_type:
+            user_msg = f"Authentication issue encountered while accessing '{tool_name}'."
+            err_type = "auth_error"
+        elif "Permission" in exc_type or "Forbidden" in exc_type:
+            user_msg = f"Permission denied while accessing '{tool_name}'."
+            err_type = "permission_denied"
+        elif is_retryable:
+            user_msg = f"Network or timeout issue while calling '{tool_name}'. Please try again."
+            err_type = "network_timeout"
+        else:
+            user_msg = f"An unexpected error occurred while processing '{tool_name}'."
+            err_type = "internal_tool_error"
+
+        return {
+            "status": "error",
+            "error_type": err_type,
+            "retryable": is_retryable,
+            "user_message": user_msg,
+            "trace_id": trace_id
+        }
 
 
 CORE_TOOL_NAMES = {
@@ -3694,43 +3779,7 @@ CORE_TOOL_NAMES = {
     "search_web", "find_nearby_places"
 }
 
-_DOMAIN_TOOL_EMBED_CACHE: Dict[str, List[float]] = {}
-
-def _cosine_similarity(a: Optional[List[float]], b: Optional[List[float]]) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-def is_action_or_tool_intent(user_text: str) -> bool:
-    """
-    Returns True ONLY if the user is asking the assistant to take an action,
-    execute an external integration, check live schedule/calendar, or query tools.
-    For general chat, learning, explanations, questions, coding, or chit-chat, returns False.
-    """
-    low = user_text.lower().strip()
-    service_keywords = (
-        'weather', 'github', 'repo', 'notion', 'email', 'gmail', 'inbox', 'pdf', 'excel',
-        'remind', 'reminder', 'meeting', 'calendar', 'schedule', 'contact', 'packing list',
-        'delete', 'cancel', 'hatao', 'hata do', 'save', 'store', 'likh lo', 'glucose', 'sugar',
-        'blood', 'reading', 'smart list', 'checklist', 'wipe', 'memory', 'dlt'
-    )
-    if any(sk in low for sk in service_keywords):
-        return True
-
-    edu_indicators = (
-        'difference', 'diffrnc', 'difrnc', 'farq', 'kya farq', 'kya antar', 'explain', 'samjhao', 'smjhao',
-        'detail m', 'detail mein', 'kya hota hai', 'kya h', 'what is', 'what are',
-        'how does', 'why is', 'code', 'python', 'script', 'meaning', 'define', 'concept', 'batao'
-    )
-    if any(e in low for e in edu_indicators):
-        return False
-
-    return False
+# Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
 
 
 TOOL_GROUPS = {

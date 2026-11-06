@@ -115,7 +115,10 @@ class GmailConnector(Connector):
                         action_type="send_email",
                         summary=f"Sent email to {to} with Subject: '{subject}'",
                         details={"to": to, "subject": subject, "body_preview": (body or "")[:200]},
-                        subject_name=to
+                        subject_name=to,
+                        source_type="email",
+                        source_id=f"email_{msg_id}",
+                        importance=3
                     )
                 except Exception:
                     pass

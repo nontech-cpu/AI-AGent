@@ -240,7 +240,7 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
         return ("cancel", None)
 
     # 2. Structural Question Detection
-    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "ananya", "batao", "kya", "before", "pehle")):
+    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "batao", "kya", "before", "pehle")):
         return ("cross_question", None)
 
     # 3. Time update for meetings (structural ISO/time parsing)
@@ -362,11 +362,16 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
 
             try:
                 from memory.store import record_action_event
+                import time as _t
+                cal_src_id = f"cal_{result.get('id') or action_id or int(_t.time())}"
                 record_action_event(
                     chat_id,
                     action_type="create_meeting",
                     summary=f"Scheduled Google Calendar meeting '{title}' for {clock_str} ({duration_minutes} mins)",
-                    details={"title": title, "start": start_iso, "duration": duration_minutes, "meet_url": meet_url}
+                    details={"title": title, "start": start_iso, "duration": duration_minutes, "meet_url": meet_url},
+                    source_type="calendar",
+                    source_id=cal_src_id,
+                    importance=3
                 )
             except Exception:
                 pass
@@ -395,12 +400,17 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             reply = f"✅ **Email sent successfully!**\n\n📤 **To:** {to}\n📝 **Subject:** {subject}"
             try:
                 from memory.store import record_action_event
+                import time as _t
+                email_src_id = f"email_{action_id or msg_id or int(_t.time())}"
                 record_action_event(
                     chat_id,
                     action_type="send_email",
                     summary=f"Sent email to {to} with Subject: '{subject}'",
                     details={"to": to, "subject": subject, "body_preview": (body or "")[:200]},
-                    subject_name=to
+                    subject_name=to,
+                    source_type="email",
+                    source_id=email_src_id,
+                    importance=3
                 )
             except Exception:
                 pass

@@ -152,6 +152,20 @@ class NotionConnector(Connector):
                 formatting=formatting
             )
             if ok:
+                try:
+                    import time as _t
+                    from memory.store import record_action_event
+                    record_action_event(
+                        user_or_chat_id,
+                        action_type="create_notion_page",
+                        summary=f"Created Notion page '{title}' ({pg_url or ''})",
+                        details={"title": title, "url": pg_url or ""},
+                        source_type="notion",
+                        source_id=f"notion_{title}_{int(_t.time())}",
+                        importance=3
+                    )
+                except Exception:
+                    pass
                 return ToolResult(
                     ok=True,
                     data={"status": "success", "title": title, "url": pg_url or "", "message": msg},
@@ -197,6 +211,20 @@ class NotionConnector(Connector):
                 formatting=formatting
             )
             if ok:
+                try:
+                    import time as _t
+                    from memory.store import record_action_event
+                    record_action_event(
+                        user_or_chat_id,
+                        action_type="update_notion_page",
+                        summary=f"Updated Notion page '{page_title_or_id}'",
+                        details={"page": str(page_title_or_id), "url": pg_url or ""},
+                        source_type="notion",
+                        source_id=f"notion_{page_title_or_id}_{int(_t.time())}",
+                        importance=3
+                    )
+                except Exception:
+                    pass
                 return ToolResult(
                     ok=True,
                     data={"status": "success", "url": pg_url or "", "message": msg},

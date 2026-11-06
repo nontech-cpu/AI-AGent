@@ -153,7 +153,7 @@ async def test_multiturn_action_ledger_sent_email_subject_recall():
        instantly retrieves the subject and recipient from the action ledger.
     3. Token consumption is minimal (< 60 tokens).
     """
-    from memory.store import record_action_event, save_entity
+    from memory.store import record_action_event
     from memory.retrieval import assemble_memory_context, _MEM_CTX_CACHE
 
     _MEM_CTX_CACHE.clear()
@@ -321,7 +321,7 @@ async def test_multiturn_meeting_conflict_and_transit_buffer_detection():
     from agent.tools import execute_tool, CreateReminderArgs, TOOL_DEFINITIONS
     import db
     from timing import IST
-    from datetime import datetime, date, timedelta, time as dtime
+    from datetime import date, timedelta, time as dtime
 
     # 1. Verify schema: due_date is optional and defaults to today
     rem_def = [t for t in TOOL_DEFINITIONS if t.get("function", {}).get("name") == "create_reminder"][0]

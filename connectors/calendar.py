@@ -221,6 +221,21 @@ class CalendarConnector(Connector):
                     attendees=args.get("attendees", [])
                 )
                 meet_url = res.get("meet_url") or ""
+                try:
+                    import time as _t
+                    from memory.store import record_action_event
+                    cal_src_id = f"cal_{res.get('id') or int(_t.time())}"
+                    record_action_event(
+                        user_or_chat_id,
+                        action_type="create_meeting",
+                        summary=f"Created Google Calendar meeting '{args.get('title', 'Meeting')}' for {args.get('start_iso')}",
+                        details={"title": args.get("title"), "start": args.get("start_iso"), "duration": args.get("duration_minutes", 30), "meet_url": meet_url},
+                        source_type="calendar",
+                        source_id=cal_src_id,
+                        importance=3
+                    )
+                except Exception:
+                    pass
                 return ToolResult(
                     ok=True,
                     data={"status": "success", "event": res, "meet_url": meet_url},

@@ -156,7 +156,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"✅ **Notion Workspace successfully connect ho gaya!** 📝\nWorkspace: **{ws_name}**\n\nAb aap mujhe summaries ya meeting notes Notion mein save karne ko bol sakte hain!"
         else:
             reply_msg = f"⚠️ Notion token validation failed: {ws_name}. Kripya check karein ki token sahi hai."
-        redacted_token = trimmed_text[:7] + "..." + trimmed_text[-4:]
+        prefix = "secret_" if trimmed_text.startswith("secret_") else "ntn_"
+        redacted_token = f"{prefix}[REDACTED]"
         db.log_chat_message(chat_id, "user", redacted_token, channel=channel)
         db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
         return {
@@ -178,7 +179,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"✅ **GitHub successfully connect ho gaya!** 🐙\nAccount: **@{gh_user}**\n\nAapke repositories aur code access ab live hain."
         else:
             reply_msg = f"⚠️ GitHub token validation failed: {gh_user}."
-        redacted_token = trimmed_text[:7] + "..." + trimmed_text[-4:]
+        prefix = "ghp_" if trimmed_text.startswith("ghp_") else "github_pat_"
+        redacted_token = f"{prefix}[REDACTED]"
         db.log_chat_message(chat_id, "user", redacted_token, channel=channel)
         db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
         return {
@@ -278,7 +280,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         pass
 
     # 4. Context assembly: Ground Truth System Prompt & Chat History
-    from memory.retrieval import assemble_memory_context
     mem_ctx = await asyncio.to_thread(assemble_memory_context, chat_id, user_text)
 
     from agent.prompt import build_runtime_system_prompt

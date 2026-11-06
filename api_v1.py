@@ -23,7 +23,7 @@ from db import (
     get_user_rules, add_user_rule, delete_user_rule,
     get_serendipity_memories, delete_memory_items,
     get_contact_memories, save_contact_memory, delete_contact_memory,
-    wipe_all_user_memories
+    wipe_all_user_memories, update_memory_time
 )
 from categories import CATEGORIES, DEFAULTS
 from timing import IST, build_plan, fmt_when

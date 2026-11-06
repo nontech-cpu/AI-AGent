@@ -354,7 +354,8 @@ async def build_morning_briefing_message(
         for sp in spans:
             s_st = sp.get("start_dt")
             s_en = sp.get("end_dt")
-            if s_st and s_en and s_st.date() <= target_d <= s_en.date():
+            t_curr = target_date.date() if hasattr(target_date, 'date') else target_date
+            if s_st and s_en and s_st.date() <= t_curr <= s_en.date():
                 t_title = sp.get("title") or "Trip"
                 lines.append(f"\n✈️ **Travel Day:** {t_title} (Safe travels!)")
     except Exception as radar_err:
