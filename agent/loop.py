@@ -73,6 +73,9 @@ GROUNDING & TRUTH CONTRACT:
    - When the user asks to add content, format code into code blocks, or update an existing Notion page (e.g. 'python code code block me add karna tha', 'is page me ye add karo'):
      NEVER claim or apologize that you cannot edit or update existing pages! You HAVE the tool `update_notion_page(content=..., page_title_or_id=...)`!
      Format code blocks using triple backticks (```python ... ```) — the system converts them into native Notion syntax-highlighted code blocks!
+   - When the user asks to delete, trash, or remove pages from Notion (e.g. 'dlete all the fast api series', 'notion se ye page delete kardo', 'trash notion page'):
+     ALWAYS call the official tool `delete_notion_page(page_id_or_title=...)`!
+     NEVER call `execute_python_code` or print text pretending to delete. You have the native `delete_notion_page` tool!
    - Casual plans, everyday events, trip updates, appointments, tasks, or time statements (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor ke jana h', 'gym jana h', 'shaam ko movie dekhna hai') are SCHEDULE / REMINDER items, NEVER Notion pages!
    - When a user states a plan with a time (e.g. '4:30 trip h dost k sth'): check schedule for conflicts, alert them if there is a clash, and offer or create a reminder / calendar event (`create_reminder` or `create_meeting`). NEVER create a Notion page for it!
 13. DELETING REMINDERS & MEETINGS (CRITICAL MANDATE - ZERO REFUSAL):
@@ -88,6 +91,12 @@ GROUNDING & TRUTH CONTRACT:
      * State all items directly from the Schedule block or call `list_reminders`.
      * If no items are scheduled for today, state warmly: "Bhai, aaj aapka koi reminder ya meeting scheduled nahi hai!" (or "You have no reminders or meetings scheduled for today!"). NEVER say you lack access!
    - TIME EXTRACTION: When user mentions any time ('11pm', '10:30pm', '3 baje', 'at 11'), ALWAYS pass `due_time` in 24h format ('23:00', '22:30', '15:00') to `create_reminder`. NEVER leave `due_time` null when user specified a time!
+
+15. PYTHON SANDBOX ISOLATION & HONEST CAPABILITY CONTRACT:
+   - `execute_python_code` is STRICTLY an isolated sandbox for math, calculations, and data processing.
+   - It runs in an isolated container without network access, credentials, or SaaS API access.
+   - NEVER EVER use `execute_python_code` to simulate, mock, or print dummy logs (e.g. print("Deleting page...")) claiming to interact with external services (Notion, Google, GitHub, Email, etc.).
+   - If the user asks to perform an action on any external service and you do not have a dedicated tool in your definitions for it, you must plainly tell the user: "Mere paas abhi is action ka direct tool available nahi hai."
 
 CURRENT TEMPORAL CONTEXT:
 - Current Time: {current_time_ist} (India Time / IST)
@@ -387,7 +396,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     "read_webpage", "check_integrations_status", "create_reminder", "update_reminder", "add_reminder",
                     "delete_reminder", "create_meeting", "save_note_or_fact", "save_contact",
                     "manage_smart_list", "create_packing_list", "send_email", "execute_python_code",
-                    "list_notion_pages", "get_notion_page_content", "create_notion_page", "update_notion_page",
+                    "list_notion_pages", "get_notion_page_content", "create_notion_page", "update_notion_page", "delete_notion_page",
                     "list_github_repos", "get_github_file", "update_github_file", "list_github_issues"
                 }
             )

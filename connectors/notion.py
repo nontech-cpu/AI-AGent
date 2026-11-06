@@ -88,6 +88,20 @@ class NotionConnector(Connector):
                 },
                 kind="read",
                 needs_confirmation=False
+            ),
+            ToolSpec(
+                name="delete_notion_page",
+                description="Deletes (moves to Trash / archives) one or more Notion pages matching the page_id or title query from the connected Notion workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "page_id_or_title": {"type": "string", "description": "Title, query keyword, or page ID to delete/trash from Notion."},
+                        "confirm": {"type": "boolean", "description": "Whether user confirmed deletion."}
+                    },
+                    "required": ["page_id_or_title"]
+                },
+                kind="write",
+                needs_confirmation=False
             )
         ]
 
@@ -236,6 +250,43 @@ class NotionConnector(Connector):
                     error={"type": ErrorType.API_ERROR.value, "message": msg}
                 )
 
+        if tool_name == "delete_notion_page":
+            page_id_or_title = args.get("page_id_or_title") or args.get("title")
+            if not page_id_or_title:
+                return ToolResult(
+                    ok=False,
+                    error={"type": ErrorType.INVALID_ARGS.value, "message": "Missing 'page_id_or_title' to delete from Notion."}
+                )
+
+            token_row = db.get_user_integration(user_or_chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            ok, msg, deleted_pages = await integrations.delete_notion_page(
+                token=api_key,
+                page_id_or_title=page_id_or_title
+            )
+            if ok:
+                return ToolResult(
+                    ok=True,
+                    data={
+                        "status": "success",
+                        "action": "delete_notion_page",
+                        "deleted_count": len(deleted_pages),
+                        "deleted_titles": [p["title"] for p in deleted_pages],
+                        "pages": deleted_pages,
+                        "message": msg
+                    },
+                    ids=[p["id"] for p in deleted_pages],
+                    urls=[p["url"] for p in deleted_pages if p.get("url")]
+                )
+            else:
+                return ToolResult(
+                    ok=False,
+                    error={"type": ErrorType.API_ERROR.value, "message": msg}
+                )
+
         return ToolResult(ok=False, error={"type": ErrorType.INVALID_ARGS.value, "message": f"Unknown tool '{tool_name}'"})
 
     async def health_check(self, user_or_chat_id: int) -> HealthResult:
@@ -288,6 +339,21 @@ class MockNotionConnector(NotionConnector):
                 ids=[pg["id"]],
                 urls=[pg["url"]]
             )
+        if tool_name == "delete_notion_page":
+            target = args.get("page_id_or_title", "Mock Page")
+            return ToolResult(
+                ok=True,
+                data={
+                    "status": "success",
+                    "action": "delete_notion_page",
+                    "deleted_count": 1,
+                    "deleted_titles": [target],
+                    "message": f"Successfully deleted '{target}' from Notion."
+                },
+                ids=["mock_deleted_id"],
+                urls=["https://notion.so/mock_deleted"]
+            )
+
         return ToolResult(ok=False, error={"type": ErrorType.INVALID_ARGS.value, "message": "Unknown mock tool"})
 
     async def health_check(self, user_or_chat_id: int) -> HealthResult:

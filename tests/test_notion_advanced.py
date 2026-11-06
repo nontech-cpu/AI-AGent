@@ -476,3 +476,114 @@ async def test_append_to_notion_page_with_code_block():
         assert any(b["type"] == "code" for b in patch_payload["children"])
 
 
+
+
+@pytest.mark.asyncio
+async def test_delete_notion_page_success():
+    """Verify delete_notion_page finds matching pages and archives them via PATCH."""
+    from integrations import delete_notion_page
+
+    mock_pages = [
+        {"id": "p-fastapi-1", "title": "FastAPI Quick Start", "url": "https://notion.so/p-fastapi-1"},
+        {"id": "p-fastapi-2", "title": "FastAPI Architecture & Guide", "url": "https://notion.so/p-fastapi-2"},
+        {"id": "p-other", "title": "DSA Notes", "url": "https://notion.so/dsa"}
+    ]
+
+    with patch("integrations.list_notion_pages", new_callable=AsyncMock) as mock_list,          patch("httpx.AsyncClient.patch") as mock_patch:
+
+        mock_list.return_value = mock_pages
+        patch_resp = MagicMock()
+        patch_resp.status_code = 200
+        patch_resp.json.return_value = {"id": "p-fastapi-1", "archived": True}
+        mock_patch.return_value = patch_resp
+
+        ok, msg, deleted = await delete_notion_page(
+            token="secret_token",
+            page_id_or_title="FastAPI"
+        )
+
+        assert ok is True
+        assert len(deleted) == 2
+        deleted_ids = [d["id"] for d in deleted]
+        assert "p-fastapi-1" in deleted_ids
+        assert "p-fastapi-2" in deleted_ids
+        assert mock_patch.call_count == 2
+        # Verify PATCH payload had archived: True
+        assert mock_patch.call_args_list[0][1]["json"] == {"archived": True}
+
+
+@pytest.mark.asyncio
+async def test_delete_notion_page_not_found():
+    """Verify delete_notion_page returns False when page title is not found."""
+    from integrations import delete_notion_page
+
+    with patch("integrations.list_notion_pages", new_callable=AsyncMock) as mock_list:
+        mock_list.return_value = [{"id": "p-1", "title": "DSA Notes", "url": "https://notion.so/dsa"}]
+
+        ok, msg, deleted = await delete_notion_page(
+            token="secret_token",
+            page_id_or_title="Nonexistent Page"
+        )
+
+        assert ok is False
+        assert "Could not find any Notion page" in msg
+        assert len(deleted) == 0
+
+
+@pytest.mark.asyncio
+async def test_notion_connector_delete_page_contract():
+    """Verify NotionConnector handles delete_notion_page tool."""
+    from connectors.registry import get_connector
+    conn = get_connector("notion")
+
+    with patch("integrations.delete_notion_page", new_callable=AsyncMock) as mock_del:
+        mock_del.return_value = (True, "Deleted 1 page", [{"id": "p-1", "title": "FastAPI Notes", "url": "https://notion.so/p-1"}])
+        with patch.object(conn, "auth_state", return_value="connected"):
+            res = await conn.execute(1234828592, "delete_notion_page", {"page_id_or_title": "FastAPI Notes"})
+
+        assert res.ok is True
+        assert res.data["deleted_count"] == 1
+        assert "p-1" in res.ids
+
+
+def test_sandbox_python_cannot_fake_notion_deletion():
+    """
+    REGRESSION TEST: The exact turn 1135 bug!
+    When draft claims deletion but tool was only execute_python_code printing text,
+    check_fake_success_guard MUST intercept and return False!
+    """
+    from connectors.guardrails import check_fake_success_guard
+
+    draft_reply = "Done! Maine aapke workspace se ye teeno pages delete (trash) kar diye hain:\n\n1. FastAPI Quick Start"
+    tool_results = [
+        {
+            "action": "execute_python_code",
+            "tool_name": "execute_python_code",
+            "status": "success",
+            "stdout": "Deleting the following pages from Notion:\n- FastAPI Quick Start"
+        }
+    ]
+
+    is_ok, err = check_fake_success_guard(draft_reply, tool_results)
+    assert is_ok is False
+    assert "Claimed real-world action completion" in err
+
+
+def test_delete_notion_page_satisfies_fake_success_guard():
+    """Verify check_fake_success_guard passes when real delete_notion_page executed with deleted_titles."""
+    from connectors.guardrails import check_fake_success_guard
+
+    draft_reply = "Done! Maine aapke workspace se ye teeno pages delete (trash) kar diye hain:\n\n1. FastAPI Quick Start"
+    tool_results = [
+        {
+            "action": "delete_notion_page",
+            "tool_name": "delete_notion_page",
+            "status": "success",
+            "deleted_count": 3,
+            "deleted_titles": ["FastAPI Quick Start", "FastAPI Architecture & Guide", "FastAPI Quick Notes"]
+        }
+    ]
+
+    is_ok, err = check_fake_success_guard(draft_reply, tool_results)
+    assert is_ok is True
+    assert err is None

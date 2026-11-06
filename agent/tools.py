@@ -1008,6 +1008,21 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "delete_notion_page",
+            "description": "Delete (move to Trash / archive) one or more pages from the user's connected Notion workspace by title, search query, or page ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page_id_or_title": {"type": "string", "description": "The title, search keyword (e.g. 'FastAPI', 'FastAPI Quick Start'), or page ID of the Notion page(s) to delete/trash."},
+                    "confirm": {"type": "boolean", "description": "Whether the user explicitly confirmed deletion."}
+                },
+                "required": ["page_id_or_title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
             "description": "Ask the user a single structured question when a required parameter is missing or ambiguous.",
             "parameters": {
@@ -3236,6 +3251,32 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             else:
                 return {"status": "error", "message": content}
 
+        elif tool_name == "delete_notion_page":
+            page_id_or_title = arguments.get("page_id_or_title") or arguments.get("title") or arguments.get("page")
+            token_row = db.get_user_integration(chat_id, "notion")
+            api_key = token_row.get("api_key") if isinstance(token_row, dict) else (token_row if isinstance(token_row, str) else None)
+            if not api_key:
+                api_key = os.getenv("NOTION_API_KEY")
+
+            if not api_key:
+                return {
+                    "status": "error",
+                    "message": "Notion account is not connected. Type 'connect notion' to connect your workspace."
+                }
+
+            ok, msg, deleted_pages = await integrations.delete_notion_page(api_key, page_id_or_title)
+            if ok:
+                return {
+                    "status": "success",
+                    "action": "delete_notion_page",
+                    "deleted_count": len(deleted_pages),
+                    "deleted_titles": [p["title"] for p in deleted_pages],
+                    "pages": deleted_pages,
+                    "message": f"✅ {msg}"
+                }
+            else:
+                return {"status": "error", "message": msg}
+
         elif tool_name == "list_github_repos":
             args = ListGitHubReposArgs(**arguments)
             req_username = args.username
@@ -3859,8 +3900,8 @@ TOOL_GROUPS = {
         "tools": {"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"}
     },
     "workspace_notion": {
-        "description": "notion notes documentation page workspace markdown code block heading article",
-        "tools": {"create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content"}
+        "description": "notion notes documentation page workspace markdown code block heading article delete trash remove",
+        "tools": {"create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content", "delete_notion_page"}
     },
     "communication_email": {
         "description": "email mail gmail inbox draft send message subject recipient correspondence",

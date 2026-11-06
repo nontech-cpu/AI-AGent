@@ -47,6 +47,7 @@ MINIMAL_VALID_ARGS = {
     "disconnect_integration": {"service": "github"},
     "list_notion_pages": {"query": "notes"},
     "get_notion_page_content": {"page_id_or_title": "Project Notes"},
+    "delete_notion_page": {"page_id_or_title": "Project Notes"},
     "ask_user": {"question": "Do you agree?", "options": ["Yes", "No"]},
     "get_weather": {"city": "Jodhpur"},
     "convert_currency": {"amount": 100, "from_currency": "USD", "to_currency": "INR"},

@@ -887,6 +887,88 @@ async def get_notion_page_content(token: str, page_id_or_title: str) -> Tuple[bo
         return False, f"Error reading Notion page: {repr(exc)}", page_url
 
 
+async def delete_notion_page(token: str, page_id_or_title: str) -> Tuple[bool, str, List[Dict[str, Any]]]:
+    """
+    Deletes (moves to Trash / archives) one or more Notion pages matching the page_id or title query.
+    Uses official Notion API: PATCH https://api.notion.com/v1/pages/{page_id} with {"archived": True}.
+    Returns (success, message, list_of_deleted_pages).
+    """
+    clean_token = (token or "").strip()
+    if not clean_token:
+        clean_token = os.getenv("NOTION_API_KEY", "").strip()
+    if not clean_token:
+        return False, "Notion token is missing. Please connect Notion first.", []
+
+    target = (page_id_or_title or "").strip()
+    if not target:
+        return False, "Missing page title or ID to delete.", []
+
+    headers = {
+        "Authorization": f"Bearer {clean_token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+
+    # 1. Resolve matching page IDs
+    uuid_pattern = r'[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}'
+    match = re.search(uuid_pattern, target)
+    matching_pages: List[Dict[str, Any]] = []
+
+    if match:
+        raw_uuid = match.group(0).replace("-", "")
+        clean_id = f"{raw_uuid[0:8]}-{raw_uuid[8:12]}-{raw_uuid[12:16]}-{raw_uuid[16:20]}-{raw_uuid[20:32]}"
+        matching_pages.append({"id": clean_id, "title": target, "url": f"https://notion.so/{raw_uuid}"})
+    else:
+        all_pages = await list_notion_pages(clean_token)
+        target_lower = target.lower().strip()
+        clean_query = target_lower.replace("series", "").replace("notes", "").strip()
+
+        # Check exact matches first
+        for p in all_pages:
+            t = p.get("title", "").lower().strip()
+            if target_lower == t or (clean_query and clean_query == t):
+                matching_pages.append(p)
+
+        # If no exact match, check fuzzy/substring matches
+        if not matching_pages:
+            for p in all_pages:
+                t = p.get("title", "").lower()
+                if (target_lower in t) or (clean_query and len(clean_query) >= 3 and clean_query in t):
+                    matching_pages.append(p)
+
+    if not matching_pages:
+        return False, f"Could not find any Notion page matching '{target}'.", []
+
+    # 2. Archive / Trash each matching page via official Notion PATCH endpoint
+    deleted = []
+    failed = []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for p in matching_pages:
+            pid = p["id"]
+            title = p.get("title") or pid
+            try:
+                res = await client.patch(
+                    f"https://api.notion.com/v1/pages/{pid}",
+                    headers=headers,
+                    json={"archived": True}
+                )
+                if 200 <= res.status_code < 300:
+                    deleted.append({"id": pid, "title": title, "url": p.get("url")})
+                else:
+                    failed.append(f"{title} (Status {res.status_code})")
+            except Exception as e:
+                failed.append(f"{title} (Error: {e})")
+
+    if not deleted:
+        return False, f"Failed to delete page(s): {', '.join(failed)}", []
+
+    page_names = ", ".join([f"'{d['title']}'" for d in deleted])
+    msg = f"Successfully deleted (moved to trash) {len(deleted)} Notion page(s): {page_names}."
+    if failed:
+        msg += f" (Some pages failed: {', '.join(failed)})"
+    return True, msg, deleted
+
+
 
 # ==============================================================================
 # GITHUB INTEGRATION

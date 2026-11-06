@@ -39,6 +39,10 @@ You must output a single JSON object with these EXACT keys:
 5. "sourced_by_tool": boolean. True if ALL external facts, routes, or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact, route, or action is NOT found in the Evidence.
 6. "reason": string. Short 1-sentence explanation of your assessment.
 
+CRITICAL GROUNDING RULES FOR EXTERNAL SAAS / WORKSPACE ACTIONS:
+- `execute_python_code` is STRICTLY a local Python sandbox for mathematical calculations and data processing. It CANNOT create, update, delete, or modify external pages, emails, calendar events, Notion notes, or GitHub files. Any claim in Draft Reply that an external SaaS action occurred (e.g. Notion page created/deleted/updated, email sent, reminder/calendar event modified) CANNOT be sourced by `execute_python_code`!
+- If Draft Reply claims an external action was completed (e.g. Notion page deleted/created/updated, email sent, reminder deleted) but no corresponding dedicated integration tool succeeded in Evidence, you MUST return "claims_action_done": true, "sourced_by_tool": false!
+
 Respond ONLY with valid JSON. Do not wrap in markdown or backticks."""
 
 REGIONAL_LABEL_REPLACEMENTS = {
@@ -171,7 +175,12 @@ def deterministic_verify(
             "save kar diya", "update kar diya", "shift kar diya", "successfully created", "successfully sent",
             "successfully scheduled", "successfully deleted", "hata di gayi", "hata diya", "clear kar diya", "wipe kar diya"
         )
-        if any(tok in clean_rep for tok in action_claim_tokens):
+        has_claim_token = any(tok in clean_rep for tok in action_claim_tokens)
+        has_verb_and_done = (
+            any(v in clean_rep for v in ("delete", "trash", "hata", "remove", "clear", "wipe", "create", "bana", "schedule", "send", "bhej", "update", "save")) and
+            any(d in clean_rep for d in ("kar diya", "kar diye", "kar di", "ho gaya", "ho gaye", "done!", "done:", "done.", "successfully", "kiye gaye", "diye gaye"))
+        )
+        if has_claim_token or has_verb_and_done:
             is_wipe_claim = any(w in clean_rep for w in ("delete kar di", "delete kar diye", "clear kar diya", "hata di gayi", "wipe kar diya")) and any(w in clean_rep for w in ("memory", "data", "contacts", "reminders", "account", "location"))
             if is_wipe_claim:
                 violations.append("Claimed data/memory wipe completed without verified deletion tool execution")

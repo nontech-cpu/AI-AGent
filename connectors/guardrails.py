@@ -79,7 +79,13 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
 
     has_completion_claim = any(pat.search(draft_reply) for pat in ACTION_COMPLETION_PATTERNS)
     if not has_completion_claim:
-        return True, None
+        # Catch parenthetical and word-order variations e.g. 'delete (trash) kar diye', 'trash kar diya'
+        has_verb = any(v in low for v in ("delete", "trash", "hata", "remove", "clear", "wipe", "create", "bana", "schedule", "send", "bhej", "update", "save"))
+        has_done = any(d in low for d in ("kar diya", "kar diye", "kar di", "ho gaya", "ho gaye", "done!", "done:", "done.", "successfully", "kiye gaye", "diye gaye"))
+        if has_verb and has_done:
+            has_completion_claim = True
+        else:
+            return True, None
 
     # Verify if any write/destructive tool succeeded with concrete ID/URL evidence
     has_confirmed_success = False
@@ -99,7 +105,7 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
                 tr.get("commit_url") or tr.get("commit_html") or tr.get("html_url") or 
                 tr.get("webViewLink") or tr.get("meet_url") or tr.get("message_id") or 
                 tr.get("file_id") or tr.get("auth_url") or tr.get("saved_fact") or 
-                tr.get("action") or tr.get("deleted_titles") or tr.get("deleted_count")):
+                tr.get("deleted_titles") or tr.get("deleted_count")):
                 has_confirmed_success = True
                 break
 
