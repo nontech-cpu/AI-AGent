@@ -20,6 +20,7 @@ import smtplib
 from email.message import EmailMessage
 
 import difflib
+import db
 from db import (give_consent, has_consent, set_persona, get_persona,
                 set_categories, get_categories, save_memory, list_memories,
                 items_between, items_for_date, get_board_cards, delete_user, export_data, add_reminders,
@@ -1258,7 +1259,7 @@ async def handle_mail(m):
         try:
             with engine.connect() as conn:
                 rows = conn.execute(
-                    text("SELECT telegram_chat_id, state_data FROM users WHERE state IN ('awaiting_wipe_verification', 'awaiting_wipe_email_verification', 'awaiting_wipe_chat_otp')")
+                    db.text("SELECT telegram_chat_id, state_data FROM users WHERE state IN ('awaiting_wipe_verification', 'awaiting_wipe_email_verification', 'awaiting_wipe_chat_otp')")
                 ).fetchall()
                 for r in rows:
                     c_id = r[0]
@@ -1349,15 +1350,15 @@ async def handle_mail(m):
 
     if not has_consent(chat_id):
         return
-    text = (m["subject"] + "\n" + m["body"]).strip()
-    if not text:
+    mail_content_str = (m["subject"] + "\n" + m["body"]).strip()
+    if not mail_content_str:
         return
 
     # Check if incoming email is a travel ticket, flight booking, hotel reservation, or medium ticket
-    is_ticket = bool(re.search(r'\b(flight|ticket|boarding\s*pass|pnr|reservation|hotel|airline|indigo|air\s*india|vistara|spicejet|train|irctc|medium\s*ticket)\b', text, re.I))
+    is_ticket = bool(re.search(r'\b(flight|ticket|boarding\s*pass|pnr|reservation|hotel|airline|indigo|air\s*india|vistara|spicejet|train|irctc|medium\s*ticket)\b', mail_content_str, re.I))
     if is_ticket:
         # Save ticket in persistent user facts
-        ticket_fact = f"Booking/Ticket: {m.get('subject', 'Ticket')} - {text[:300]}"
+        ticket_fact = f"Booking/Ticket: {m.get('subject', 'Ticket')} - {mail_content_str[:300]}"
         save_user_fact(chat_id, ticket_fact, category="booking")
         ticket_msg = (
             f"✈️ **Booking / Flight Ticket receive ho gayi hai!** 🎫\n"
@@ -1370,7 +1371,7 @@ async def handle_mail(m):
         await say(chat_id, ticket_msg)
     else:
         await say(chat_id, f"📧 Email received: {m['subject'][:60] or '(no subject)'}")
-        await handle_memory_text(chat_id, text)
+        await handle_memory_text(chat_id, mail_content_str)
 
 
 async def mailbox_loop():
@@ -2305,115 +2306,8 @@ async def _handle_delete_meetings_confirmation(chat_id, clean, data, raw_text=""
 
 
 async def handle_conversational_chat(chat_id, user_text):
-    clean = user_text.strip().lower()
-    if clean in {"help", "/help", "kya kar sakte ho", "commands", "menu"}:
-        await say(chat_id, HELP_TEXT)
-        return
-
-    # Check if asking for an Excel / CSV / document file
-    if re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean) or ("file" in clean and any(w in clean for w in ("bhej", "bhejo", "bana", "banao", "de", "dede", "export", "send", "download", "tayyar", "taiyar", "do"))):
-        await send_contacts_excel(chat_id)
-        return
-
-    if is_recent_document_query(chat_id, user_text):
-        doc = RECENT_DOCS[chat_id]
-        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
-        reply = await answer_document_query(doc["filename"], doc["content"], user_text, history, get_language(chat_id))
-        record_chat_turn(chat_id, "user", user_text)
-        record_chat_turn(chat_id, "assistant", reply)
-        await say_raw(chat_id, reply)
-        return
-
-    # Check if asking for PDF document
-    if re.search(r"\b(pdf)\b", clean) and any(w in clean for w in ("bhej", "bhejo", "bana", "banao", "de", "dede", "export", "send", "download", "tayyar", "taiyar", "do", "karo", "kr")):
-        await send_smart_pdf(chat_id, user_text)
-        return
-
-    # Check if asking to schedule, host, or set up a meeting:
-    if any(w in clean for w in ("meeting", "schedule", "meet link", "google meet", "calendar")) and any(w in clean for w in ("set", "rakh", "rkh", "bana", "kar", "kr", "host", "karo", "do", "bhejo", "arrange")):
-        await handle_active(chat_id, user_text)
-        return
-
-    # Load persistent chat history from PostgreSQL
-    history_turns = get_recent_chat_history(chat_id, limit=8)
-    history_context = ""
-    if history_turns:
-        history_context = "RECENT CONVERSATION HISTORY (From PostgreSQL Database):\n" + "\n".join([
-            f"- {t['role']}: {t['text'][:120]}" for t in history_turns[-5:]
-        ]) + "\n\n"
-
-    # Load user life context facts & plans (ChatGPT style memory)
-    user_facts = get_user_facts(chat_id, limit=20)
-    facts_context = ""
-    if user_facts:
-        facts_context = "USER'S PERMANENT LIFE CONTEXT, PLANS & HABITS (ChatGPT-style Memory):\n" + "\n".join([
-            f"- [{f['category'].upper()}] {f['fact']}" for f in user_facts
-        ]) + "\n\n"
-
-    doc_context = ""
-    if chat_id in RECENT_DOCS:
-        doc = RECENT_DOCS[chat_id]
-        doc_context = f"User recently uploaded document: '{doc['filename']}'.\n\n"
-
-    # Load permanent contacts and items from PostgreSQL
-    contacts = get_contact_memories(chat_id)
-    contacts_context = ""
-    if contacts:
-        contacts_context = "USER'S PERMANENT SAVED CONTACTS & NETWORKING MEMORY (NEVER FORGET THESE):\n" + "\n".join([
-            f"- {c['name']} (Company: {c['company']}, Role: {c['role_title']}): Email: {c['email']}, Phone: {c['phone']}, Met At: {c['met_at']}, Commitments/Action Items: '{c['commitments']}', Notes: '{c['context_notes']}'"
-            for c in contacts
-        ]) + "\n\n"
-
-    # Episodic past conversation search if user mentions any contact
-    matched_c = find_matching_contact(user_text, contacts) if contacts else None
-    episodic_context = ""
-    if matched_c:
-        first_n = matched_c["name"].split()[0]
-        past_turns = get_chat_turns_mentioning_keyword(chat_id, first_n, limit=8)
-        if past_turns:
-            episodic_context = f"RELEVANT PAST CONVERSATIONS ABOUT {matched_c['name'].upper()}:\n" + "\n".join([
-                f"- {pt['role']}: {pt['text']}" for pt in past_turns
-            ]) + "\n\n"
-
-    saved_items = list_memories(chat_id)
-    items_context = ""
-    if saved_items:
-        items_context = "USER'S SAVED ITEMS & REMINDERS:\n" + "\n".join([
-            f"- {CATEGORIES.get(it[0], it[0])}: {it[1]}" + (f" (Due: {it[3]})" if it[3] else "")
-            for it in saved_items[:8]
-        ]) + "\n\n"
-
-    system = (
-        "You are PeculiarAI, an empathetic, hyper-competent personal AI assistant on Telegram with persistent memory.\n\n"
-        + facts_context
-        + contacts_context
-        + episodic_context
-        + items_context
-        + doc_context
-        + history_context
-        + "COGNITIVE MEMORY & CONTINUITY GUIDELINES (Like ChatGPT Memory):\n"
-        "1. Proactively connect context between different messages and conversations! For example, if the user previously mentioned going to a movie today or meeting someone, and now says they are traveling to Jaipur or doing something else, intelligently observe and ask: 'Aap Jaipur ja rahe ho? To kya movie ka plan cancel ho gaya?'\n"
-        "2. If user mentions a contact (Rahul, Ananya, etc.), remember all commitments, phone, company, and networking history.\n"
-        "3. NEVER hallucinate that you cannot perform an action or that you will 'send in 1-2 minutes'. If user asks for an action or file, execute it.\n"
-        "4. Always reply in natural, friendly Hinglish (Roman English script, e.g. 'Haan bhai, bilkul note kar liya!'). Never use Devanagari script unless user explicitly types in Devanagari.\n"
-        "5. Keep responses concise (1-3 sentences) unless an in-depth breakdown was requested.\n"
-        "6. STRICT ZERO-HALLUCINATION RULE FOR INTEGRATIONS: NEVER fabricate, invent, or guess GitHub repositories (e.g. 'awesome-python', 'crypto-tracker', 'web-scraper'), Notion pages, or files. If the user asks for repositories or tools data, fetch them via official integrations or ask for their username. NEVER make up fake project names.\n"
-        "7. TEMPORAL & SCHEDULE REASONING: When the user asks about their schedule, plans, or whether they are free on a specific day (e.g. 'kya main Tuesday ko free hu?'), ALWAYS inspect the user's saved contacts commitments, items, and facts! If there is a commitment (e.g. 'Ananya ko model/module bhejna hai Tuesday ko'), tell the user clearly: 'Aap Tuesday ko poori tarah free nahi ho, aapka Ananya Roy (Elevate Ventures) ko module bhejna hai. Baaki time aapka free hai.' NEVER say 'mere ko nahi pata' when the information is present in the context!\n"
-        "8. STRICT ZERO-HALLUCINATION FOR MEETINGS & CALENDAR: NEVER claim that a meeting has been scheduled, created, or emailed ('meeting set kar diya hai', 'invite email pe bhej diya hai') in casual chat! Meetings and Google Meet links can ONLY be created when the Google Calendar tool runs and confirms. If the user asks to schedule, change time, or create a link, you must NOT pretend it was completed. Instead, ask for missing details or tell them to confirm the schedule.\n"
-        "9. CONTACT COMMITMENTS & DELIVERABLES: If the user asks what they need to send, give, or do for a contact (e.g. 'Ananya ko kya bhejna tha?'), NEVER hallucinate or draft an apology message! Answer directly from the contact's commitments and past notes in the context (e.g. 'Aapko Ananya Roy (Elevate Ventures) ko module bhejna tha!')."
-    )
-    try:
-        data = await _chat_json(system + ' Return JSON only: {"reply": "<concise natural reply>"}', user_text)
-        reply = (data.get("reply") or "").strip()
-        if reply:
-            record_chat_turn(chat_id, "assistant", reply)
-            await say(chat_id, reply)
-            return
-    except Exception as exc:
-        print("conversational chat error:", repr(exc))
-    fallback_reply = "Main aapki reminders, meetings, documents, aur contacts track karne me madad karta hu. Aap bataiye kya karna hai?"
-    record_chat_turn(chat_id, "assistant", fallback_reply)
-    await say(chat_id, fallback_reply)
+    """Shim routing legacy conversational chat calls to handle_active."""
+    return await handle_active(chat_id, user_text)
 
 
 _CHAT_LOCKS = {}
@@ -2425,414 +2319,59 @@ def _get_chat_lock(cid: int) -> asyncio.Lock:
 
 
 async def handle_active(chat_id, text):
-    # Feature Flag: AGENT_CORE=v2 (Pure Native Tool-Calling Agent Loop)
-    if os.getenv("AGENT_CORE", "v2").lower() == "v2":
-        async with _get_chat_lock(chat_id):
+    """Pure Native Tool-Calling Agent Loop with typing action & error fallback."""
+    async with _get_chat_lock(chat_id):
+        # Typing chat action if turn exceeds 2.0s (Phase 7c Item 9)
+        async def _send_typing_after_delay():
             try:
-                from agent.loop import run_agent_turn
-                res = await run_agent_turn(chat_id, text, channel="telegram")
-                await say(chat_id, res["reply"])
-                return
-            except Exception as exc:
-                import traceback, uuid
-                trace_id = f"trace_{uuid.uuid4().hex[:8]}"
-                tb_str = traceback.format_exc()
-                logging.getLogger("uvicorn").error(f"Agent turn error [{trace_id}] for {chat_id}: {repr(exc)}\n{tb_str}")
-                clean_l = (text or "").strip().lower()
-                if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
-                    from db import get_user_display_name
-                    u_name = get_user_display_name(chat_id)
-                    prefix = f"Hey {u_name}!" if u_name else "Hey!"
-                    fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
-                else:
-                    from llm.provider import (
-                        ProviderTimeoutError,
-                        RateLimitedError,
-                        ToolExecutionError,
-                        DatabaseUnavailableError,
-                        ValidationError,
-                    )
-                    if isinstance(exc, ProviderTimeoutError):
-                        fallback_msg = f"AI model response timed out. Please try sending your message again in a moment. [Ref: {trace_id}]"
-                    elif isinstance(exc, RateLimitedError):
-                        fallback_msg = f"AI service is currently experiencing high demand. Please wait a few seconds and try again. [Ref: {trace_id}]"
-                    elif isinstance(exc, ToolExecutionError):
-                        fallback_msg = f"An issue occurred while executing the requested action. Please verify details and retry. [Ref: {trace_id}]"
-                    elif isinstance(exc, DatabaseUnavailableError):
-                        fallback_msg = f"Database connection is temporarily slow or unavailable. Your data is safe. Please retry shortly. [Ref: {trace_id}]"
-                    elif isinstance(exc, ValidationError):
-                        fallback_msg = f"Invalid parameters provided. Please check the details and retry. [Ref: {trace_id}]"
-                    else:
-                        fallback_msg = f"Something went wrong while processing your request. Please try again. [Ref: {trace_id}]"
-                await say(chat_id, fallback_msg)
-                return
-
-    clean_low = text.lower()
-    trimmed = text.strip()
-
-    # 0. Check if user sent a raw Notion or GitHub token to link
-    if (trimmed.startswith("secret_") or trimmed.startswith("ntn_")) and len(trimmed) > 20:
-        is_valid, name = await validate_notion_token(trimmed)
-        if is_valid:
-            save_user_integration(chat_id, "notion", trimmed)
-            msg = (
-                f"✅ **Notion Workspace successfully connect ho gaya!** 📝\n"
-                f"Workspace: **{name}**\n\n"
-                f"Ab aap mujhe kabhi bhi bol sakte ho:\n"
-                f"• *'ye summary mere Notion mein add kar de'*\n"
-                f"• *'meeting notes Notion par bhej de'*"
-            )
-            await say_raw(chat_id, msg)
-            log_chat_message(chat_id, "assistant", msg)
-            return
-        else:
-            await say_raw(chat_id, f"⚠️ Notion token validation failed: {name}. Kripya check karein ki token sahi hai.")
-            return
-
-    if (trimmed.startswith("ghp_") or trimmed.startswith("github_pat_")) and len(trimmed) > 20:
-        is_valid, login = await validate_github_token(trimmed)
-        if is_valid:
-            save_user_integration(chat_id, "github", trimmed)
-            msg = (
-                f"✅ **GitHub successfully connect ho gaya!** 🐙\n"
-                f"User: **@{login}**\n\n"
-                f"Ab aap mujhe kabhi bhi bol sakte ho:\n"
-                f"• *'mere GitHub issues check kar'*\n"
-                f"• *'open PRs dikha'*"
-            )
-            await say_raw(chat_id, msg)
-            log_chat_message(chat_id, "assistant", msg)
-            return
-        else:
-            await say_raw(chat_id, f"⚠️ GitHub token validation failed: {login}. Kripya check karein ki token sahi hai.")
-            return
-
-    # Notion Actions Trigger
-    if "notion" in clean_low and any(w in clean_low for w in ("add", "daal", "dal", "save", "note", "notes", "page", "write", "bana", "bna", "bnaa", "banao", "create", "sync", "send", "kr", "karo", "kar", "me", "mein")):
-        await execute_notion_action(chat_id, text)
-        return
-
-    # GitHub Actions Trigger (Catches github, girhub, repo, repositories, github.com links)
-    is_github_query = (
-        any(w in clean_low for w in ("github", "girhub", "githun", "guthub", "git hub", "github.com"))
-        or any(w in clean_low for w in ("repository", "repositories", "repo", "repos"))
-        or "github.com/" in clean_low
-    )
-    if is_github_query:
-        await execute_github_action(chat_id, text)
-        return
-
-    # Meeting Link Request Trigger (e.g. "meeting ka link ya de", "yhaa bhjdo link", "google meet link bhejo")
-    is_link_query = bool(
-        re.search(r"\b(link|meet\s*link|google\s*meet)\b", clean_low)
-        and any(w in clean_low for w in ("bhej", "bhj", "bhjdo", "bhejo", "de", "dede", "dedo", "send", "give", "share", "yha", "yhaa", "kaha", "kahan", "do", "bhai", "bhy"))
-    )
-    if is_link_query:
-        is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
-        if is_conn:
-            from google_services import get_user_calendar_timezone
-            user_tz_str = await get_user_calendar_timezone(chat_id)
-            try:
-                from zoneinfo import ZoneInfo
-                u_tz = ZoneInfo(user_tz_str)
+                await asyncio.sleep(2.0)
+                await tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            except asyncio.CancelledError:
+                pass
             except Exception:
-                u_tz = IST
-            now_iso = timeutil.now(u_tz).isoformat()
-            try:
-                events = await google_list_calendar_events(chat_id, time_min_iso=now_iso, max_results=5)
-                meet_events = [ev for ev in events if ev.get('meet_url')]
-                if meet_events:
-                    ev = meet_events[0]
-                    start_fmt = format_event_time_ist(ev.get('start', {}).get('dateTime') or '', user_tz=u_tz)
-                    msg = f"Aapki upcoming meeting '{ev.get('summary', 'Meeting')}' ({start_fmt}) ka Google Meet link yeh raha:\n🔗 {ev['meet_url']}"
-                    await say(chat_id, msg)
-                    return
-                else:
-                    await say(chat_id, "Aapke Google Calendar mein abhi koi upcoming meeting with Google Meet link nahi mili. Agar aap chahein toh mujhe boliye: 'Monday shaam 5 baje meeting schedule kar do', aur main instant Google Meet link generate kar dunga!")
-                    return
-            except Exception as exc:
-                print("Error fetching meet link from calendar:", repr(exc))
-        else:
-            await say(chat_id, "Google Meet link fetch karne ke liye aapka Google account connect hona zaroori hai. Type karein 'connect google' ya connect.html portal par login karein.")
-            return
+                pass
 
-    # Check if this message is a meeting follow-up like "monday 5 bje" or "tuesday 5pm" when recent context was about a meeting
-    parsed_time_active = parse_followup_time(text, timeutil.now(IST))
-    if parsed_time_active and parsed_time_active[0] is not None:
-        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
-        last_bot_turn = next((t["content"] for t in reversed(history) if t["role"] == "assistant"), "").lower()
-        if any(w in last_bot_turn for w in ("meeting", "google meet", "calendar", "schedule", "details confirm", "kis din")):
-            due_time, due_date = parsed_time_active
-            start_dt = datetime.combine(due_date, due_time, tzinfo=IST)
-            await prepare_google_action(chat_id, {
-                "intent": "create_meeting",
-                "title": "Meeting",
-                "start_iso": start_dt.isoformat(),
-                "duration_minutes": 30,
-                "attendees": []
-            })
-            return
-
-    # 1. PDF Generation Trigger
-    pdf_request = bool(
-        re.search(r"\b(pdf)\b", clean_low) and any(w in clean_low for w in ("bhej", "bhejo", "bana", "bna", "bnaa", "banao", "de", "dede", "export", "send", "download", "give", "karo", "kr"))
-    )
-    if pdf_request:
-        await send_smart_pdf(chat_id, text)
-        return
-
-    # 2. Excel / CSV Export Trigger
-    excel_request = bool(
-        re.search(r"\b(excel|csv|sheet|spreadsheet)\b", clean_low) or
-        re.search(r"\b(file|document)\b.*\b(bhej|bhejo|bana|bna|bnaa|banao|de|dede|export|send|download|give)\b", clean_low) or
-        re.search(r"\b(bhej|bhejo|bana|bna|bnaa|banao|de|dede|export|send|download|give)\b.*\b(file|document|excel|csv)\b", clean_low)
-    )
-    if excel_request:
-        # Check if user also wanted to save a reminder in the same message
-        if any(k in clean_low for k in ("remind", "reminder", "yaad", "save", "bhejna hai", "bhejna h", "module", "send kar")):
-            try:
-                r_item = await understand(text)
-                if r_item.get("intent") == "save_item" and r_item.get("item"):
-                    await save_item_flow(chat_id, r_item["item"])
-                else:
-                    now_ist = timeutil.now(IST)
-                    ex_prompt = (
-                        f"Today is {now_ist.strftime('%A, %Y-%m-%d')}. "
-                        "The user message may combine a file request with a reminder/task/commitment. "
-                        "Extract any reminder or task to remember into JSON: "
-                        '{"title": "short task title", "due_date": "YYYY-MM-DD", "due_time": "HH:MM or null", "category": "appointments"}. '
-                        'If no reminder or task is mentioned, return {"title": null}.'
-                    )
-                    ex_data = await _chat_json(ex_prompt, text)
-                    if ex_data and ex_data.get("title") and ex_data.get("due_date"):
-                        await save_item_flow(chat_id, {
-                            "category": ex_data.get("category") or "appointments",
-                            "title": ex_data["title"],
-                            "amount": None,
-                            "due_date": ex_data.get("due_date"),
-                            "due_time": ex_data.get("due_time")
-                        })
-            except Exception as e:
-                print("dual intent parse error:", repr(e))
-
-        # Check if user mentions commitment for an existing contact (e.g. Rahul, Ananya)
+        typing_task = asyncio.create_task(_send_typing_after_delay())
         try:
-            contacts_list = get_contact_memories(chat_id)
-            for c in contacts_list:
-                first_name = c["name"].split()[0].lower()
-                if len(first_name) >= 3 and first_name in clean_low:
-                    clean_comm = text
-                    try:
-                        c_json = await _chat_json(
-                            f"Extract the specific commitment or action item for {c['name']} from this message into a short clean sentence (e.g. '{c['name']} ko module bhejna hai Tuesday ko'). "
-                            'Return JSON: {"commitment": "..."}. If none, return {"commitment": null}.',
-                            text
-                        )
-                        if c_json and c_json.get("commitment"):
-                            clean_comm = c_json["commitment"]
-                    except Exception:
-                        pass
-                    update_contact_commitment(chat_id, first_name, commitments=clean_comm, context_notes="From Telegram")
+            from agent.loop import run_agent_turn
+            res = await run_agent_turn(chat_id, text, channel="telegram")
+            await say(chat_id, res["reply"])
+            return
         except Exception as exc:
-            print("contact commitment update error:", repr(exc))
-
-        await send_contacts_excel(chat_id)
-        return
-
-    # 2. Check if text is pasted business card info
-    if any(k in clean_low for k in ("company name:", "person's name:", "contact person:", "contact information:")):
-        try:
-            card_json = await _chat_json(
-                'Extract business card contact details strictly into JSON: '
-                '{"name": "...", "company": "...", "role_title": "...", "email": "...", "phone": "...", "location": "..."}. '
-                'If no person name is found, return {"name": null}.',
-                text
-            )
-            if card_json and card_json.get("name"):
-                c_name = card_json.get("name").strip()
-                save_contact_memory(
-                    chat_id=chat_id,
-                    name=c_name,
-                    company=(card_json.get("company") or "").strip(),
-                    role_title=(card_json.get("role_title") or "").strip(),
-                    email=(card_json.get("email") or "").strip(),
-                    phone=(card_json.get("phone") or "").strip(),
-                    met_at=(card_json.get("location") or "").strip(),
-                    context_notes="Pasted contact details",
-                    commitments=""
+            import traceback, uuid
+            trace_id = f"trace_{uuid.uuid4().hex[:8]}"
+            tb_str = traceback.format_exc()
+            logging.getLogger("uvicorn").error(f"Agent turn error [{trace_id}] for {chat_id}: {repr(exc)}\n{tb_str}")
+            clean_l = (text or "").strip().lower()
+            if clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste"):
+                from db import get_user_display_name
+                u_name = get_user_display_name(chat_id)
+                prefix = f"Hey {u_name}!" if u_name else "Hey!"
+                fallback_msg = f"{prefix} Kaise ho? Batao aaj kya schedule ya check karna hai?"
+            else:
+                from llm.provider import (
+                    ProviderTimeoutError,
+                    RateLimitedError,
+                    ToolExecutionError,
+                    DatabaseUnavailableError,
+                    ValidationError,
                 )
-                await say(chat_id, f"✅ Contact permanently saved in memory: {c_name} ({card_json.get('company') or 'Business Contact'})")
-        except Exception as exc:
-            print("text card parse error:", repr(exc))
-
-    # 3. Contact Commitment / Deliverable Query Handler (e.g. "bhy annaya ko mujhe ky bhjna th", "ananya jo h contact m usko ky bhjna th", "kya bhejna tha")
-    is_commitment_q = bool(
-        re.search(r"\b(kya|ky|kisko|kisse|what|kaunsa|konsa|yaad|yad|bata|btao|batao)\b", clean_low)
-        and any(w in clean_low for w in ("bhejna", "bhjna", "bheje", "bhje", "dena", "dna", "karna", "krna", "commitment", "task", "deliverable", "share", "send"))
-    )
-    if is_commitment_q:
-        contacts_list = get_contact_memories(chat_id)
-        matched_c = find_matching_contact(clean_low, contacts_list) if contacts_list else None
-        if matched_c:
-            comm = matched_c.get("commitments")
-            first_n = matched_c["name"].split()[0]
-            if not comm:
-                # Episodic search in chat_logs
-                past_turns = get_chat_turns_mentioning_keyword(chat_id, first_n, limit=10)
-                for pt in reversed(past_turns):
-                    if pt["role"] == "user":
-                        match_item = re.search(r"\b(module|deck|pitch deck|pitch|presentation|report|file|document|design|code|draft|summary|notes|proposal|bill|invoice)\b", pt["text"], re.I)
-                        if match_item or any(w in pt["text"].lower() for w in ("bhejna", "bhjna", "dena", "send", "give", "share")):
-                            item_name = match_item.group(1) if match_item else "deliverable"
-                            comm = f"{matched_c['name']} ko {item_name} bhejna hai"
-                            update_contact_commitment(chat_id, first_n, commitments=comm)
-                            break
-            if comm:
-                reply = f"Bhai, **{matched_c['name']}** ({matched_c.get('company', 'Contact')}) ko aapko: **{comm}**!"
-                await say(chat_id, reply)
-                record_chat_turn(chat_id, "user", text)
-                record_chat_turn(chat_id, "assistant", reply)
-                log_chat_message(chat_id, "assistant", reply)
-                return
-            else:
-                reply = f"Bhai, {matched_c['name']} ({matched_c.get('company', 'Contact')}) ke sath koi specific commitment ya deliverable record nahi hai. Kya unhe kuch bhejna tha jo main yaad rakhun?"
-                await say(chat_id, reply)
-                record_chat_turn(chat_id, "user", text)
-                record_chat_turn(chat_id, "assistant", reply)
-                log_chat_message(chat_id, "assistant", reply)
-                return
-        elif any(w in clean_low for w in ("contact", "contacts", "kisko", "kisse", "all", "sab")):
-            active_comms = [c for c in contacts_list if c.get("commitments")]
-            if active_comms:
-                lines = [f"• **{c['name']}** ({c.get('company', '')}): {c['commitments']}" for c in active_comms]
-                reply = "Aapke contacts ke sath yeh commitments saved hain:\n\n" + "\n".join(lines)
-                await say(chat_id, reply)
-                record_chat_turn(chat_id, "user", text)
-                record_chat_turn(chat_id, "assistant", reply)
-                log_chat_message(chat_id, "assistant", reply)
-                return
-
-    # 4. Check if user states/establishes a commitment for a contact (e.g. "Ananya ko module bhejna hai Tuesday ko")
-    is_q = bool(re.search(r"\b(kya|ky|what|kisko|kisse|kaunsa|konsa|\?)\b", clean_low))
-    if not is_q:
-        try:
-            contacts_list = get_contact_memories(chat_id)
-            matched_c = find_matching_contact(clean_low, contacts_list) if contacts_list else None
-            has_action = any(w in clean_low for w in ("bhejna", "bhjna", "dena", "dna", "karna", "krna", "module", "deck", "pitch", "report", "call", "send", "give", "share"))
-            if matched_c and has_action:
-                first_name = matched_c["name"].split()[0].lower()
-                clean_comm = text
-                try:
-                    c_json = await _chat_json(
-                        f"Extract the specific commitment, deliverable, or action item for {matched_c['name']} from this message into a short clean sentence (e.g. '{matched_c['name']} ko module bhejna hai Tuesday ko'). "
-                        'Return JSON: {"commitment": "..."}. If none, return {"commitment": null}.',
-                        text
-                    )
-                    if c_json and c_json.get("commitment"):
-                        clean_comm = c_json["commitment"]
-                except Exception:
-                    pass
-                update_contact_commitment(chat_id, first_name, commitments=clean_comm, context_notes="From Telegram")
-        except Exception as exc:
-            print("contact commitment update error:", repr(exc))
-
-    # Check if user is asking about recently sent document
-    if is_recent_document_query(chat_id, text):
-        doc = RECENT_DOCS[chat_id]
-        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
-        reply = await answer_document_query(doc["filename"], doc["content"], text, history, get_language(chat_id))
-        record_chat_turn(chat_id, "user", text)
-        record_chat_turn(chat_id, "assistant", reply)
-        await say_raw(chat_id, reply)
-        return
-
-    # Natural-language trigger: no slash command is required, but must not intercept task requests
-    if GOOGLE_CONNECT_RE.search(text) and not is_explicit_calendar_action(text) and not any(w in text.lower() for w in ("meeting", "schedule", "calendar", "email", "send", "draft", "file", "upload")):
-        await start_google_connection(chat_id)
-        return
-
-    if is_sensitive(text):
-        await say(chat_id, "That looks sensitive (OTP, password or card number). "
-                           "I never store those, so I ignored it.")
-        return
-    if await _begin_meeting_deletion(chat_id, text):
-        return
-    try:
-        r = await understand(text)
-    except Exception as e:
-        print("understand error:", e)
-        await say(chat_id, "Sorry, something went wrong. Please try again.")
-        return
-
-    intent = r["intent"]
-    if intent == "link_google":
-        await start_google_connection(chat_id)
-    elif intent == "unlink_google":
-        from sqlalchemy import text as sql_text
-        with engine.connect() as conn:
-            row = conn.execute(sql_text("SELECT id FROM users WHERE telegram_chat_id=:c"), {"c": chat_id}).first()
-        if row:
-            delete_google_token(int(row[0]))
-        await say(chat_id, "Google account disconnected from this assistant. You can connect it again anytime.")
-    elif intent in {"send_email", "upload_file", "create_meeting", "update_meeting", "cancel_meeting"}:
-        try:
-            await prepare_google_action(chat_id, r)
-        except Exception as exc:
-            print("Google prepare error:", repr(exc))
-            await say(chat_id, "I couldn't prepare that Google action. Please make sure Google is connected and try again.")
-    elif intent == "info_query":
-        history = list(RECENT_CHAT_TURNS.get(chat_id, []))
-        reply = await answer_conversation_memory(text, history, get_language(chat_id))
-        record_chat_turn(chat_id, "assistant", reply)
-        await say_raw(chat_id, reply)
-    elif intent == "offer_meeting_reminder":
-
-        item = r.get("item")
-        payload = {"title": (item or {}).get("title") or "Meeting", "item": item}
-        set_state(chat_id, "meeting_offer", json.dumps(payload, default=str))
-        await say(chat_id, "Would you like me to set a reminder for this meeting? Reply yes or no. Nothing has been saved yet.")
-    elif intent == "ask_meeting_time":
-        payload = {"title": r.get("title") or "Meeting"}
-        set_state(chat_id, "meeting_time", json.dumps(payload))
-        await say(chat_id, "What date and time is the meeting? For example: today at 2:30 PM or tomorrow at 11:00. Nothing has been saved yet.")
-    elif intent == "save_item":
-        await save_item_flow(chat_id, r["item"])
-    elif intent == "not_important":
-        await say(chat_id, "I only remember important things like bills, payments, "
-                           "bookings, orders, meetings and appointments. "
-                           "This one wasn't saved.")
-    elif intent == "show_agenda":
-        await show_range(chat_id, r["start"], r["end"], meeting_only=bool(r.get("meeting_only")), query_text=text)
-    elif intent == "show_saved":
-        await show_memories(chat_id)
-    elif intent == "change_categories":
-        await change_categories(chat_id, r["on"], r["off"])
-    elif intent == "change_persona":
-        await apply_persona(chat_id, r["persona"])
-    elif intent == "link_email":
-        linked = get_linked_email(chat_id)
-        if linked and linked[1]:
-            bot_email = BOT_EMAIL or "bot771347@gmail.com"
-            await say(chat_id, f"✅ Your email is already linked: {linked[0]}. You can now forward or CC your bills, bookings and tickets to {bot_email}.")
-        else:
-            m = EMAIL_FIND.search(text)
-            if m:
-                await start_email_link(chat_id, m.group(0).strip(".,;").lower())
-            else:
-                set_state(chat_id, "email")
-                await say(chat_id, "Sure. Which email address do you want to link?")
-    elif intent == "unlink_email":
-        remove_email_link(chat_id)
-        await say(chat_id, "Done, your email has been unlinked.")
-    elif intent == "export_data":
-        await send_export(chat_id)
-    elif intent == "delete_data":
-        set_state(chat_id, "forget_confirm")
-        await say(chat_id, "This will permanently delete everything I know about you "
-                           "(settings, linked email and all saved items). "
-                           "Type DELETE to confirm, or anything else to cancel.")
-    else:
-        await handle_conversational_chat(chat_id, text)
+                if isinstance(exc, ProviderTimeoutError):
+                    fallback_msg = f"AI model response timed out. Please try sending your message again in a moment. [Ref: {trace_id}]"
+                elif isinstance(exc, RateLimitedError):
+                    fallback_msg = f"AI service is currently experiencing high demand. Please wait a few seconds and try again. [Ref: {trace_id}]"
+                elif isinstance(exc, ToolExecutionError):
+                    fallback_msg = f"An issue occurred while executing the requested action. Please verify details and retry. [Ref: {trace_id}]"
+                elif isinstance(exc, DatabaseUnavailableError):
+                    fallback_msg = f"Database connection is temporarily slow or unavailable. Your data is safe. Please retry shortly. [Ref: {trace_id}]"
+                elif isinstance(exc, ValidationError):
+                    fallback_msg = f"Invalid parameters provided. Please check the details and retry. [Ref: {trace_id}]"
+                else:
+                    fallback_msg = f"Something went wrong while processing your request. Please try again. [Ref: {trace_id}]"
+            await say(chat_id, fallback_msg)
+            return
+        finally:
+            typing_task.cancel()
 
 
 async def handle_user_text(chat_id, text, lang_hint=None):
@@ -4011,7 +3550,7 @@ async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = Fa
     Claims rows atomically via SKIP LOCKED to prevent duplicate dispatches across instances.
     """
     now = timeutil.now(IST)
-    from db import claim_pending_reminders, mark_sent
+    from db import claim_pending_reminders
 
     claimed = claim_pending_reminders(worker_id=worker_id, now=now)
     if not claimed:
