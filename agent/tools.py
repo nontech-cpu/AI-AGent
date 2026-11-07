@@ -522,7 +522,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "save_note_or_fact",
-            "description": "Explicitly save a personal life fact, preference, health metric, credential, or note stated by the user (e.g., 'mera roll number 42 hai', 'blood pressure 120/80', 'I prefer dark mode'). STRICTLY FORBIDDEN on casual chit-chat, greetings, check-ins, or questions (e.g. 'hi', 'ho', 'kaisa hai', 'aur bhai', 'good', 'thanks'). NEVER save user greetings or small-talk as facts!",
+            "description": "Explicitly save a life fact, preference, or detail the user wants remembered permanently (e.g. 'I like 5 PM movies'). Do NOT call on casual feedback, greetings, or acknowledgements like 'Good', 'Thanks', 'Ok'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3884,51 +3884,33 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
 
 CORE_TOOL_NAMES = {
-    "ask_user", "check_integrations_status", "connect_integration", "disconnect_integration",
-    "set_user_timezone", "learn_user_correction"
+    'calculate',
+    "execute_python_code", "create_reminder", "update_reminder", "delete_reminder", "list_reminders", "get_schedule",
+    "save_note_or_fact", "delete_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
+    "update_contact_commitment", "manage_relationship", "set_user_timezone", "ask_user", "learn_user_correction",
+    "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting",
+    "search_web", "find_nearby_places"
 }
+
+# Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
 
 
 TOOL_GROUPS = {
-    "calendar_scheduling": {
-        "description": "schedule reminders calendar meetings appointments alarms timetable upcoming events agenda deadlines reminders list meeting slot availability clash",
-        "tools": {"create_reminder", "update_reminder", "delete_reminder", "list_reminders", "get_schedule", "check_availability", "get_meet_link", "create_meeting"}
-    },
-    "personal_memory": {
-        "description": "explicitly save record remember personal facts preferences roll number bio health vitals credentials search personal memory notes",
-        "tools": {"save_note_or_fact", "delete_note_or_fact", "search_memory"}
-    },
-    "contacts_networking": {
-        "description": "address book contacts phone number email commitments promises networking people directory look up person",
-        "tools": {"save_contact", "get_contact", "list_contacts", "update_contact_commitment", "get_commitments", "manage_relationship"}
-    },
-    "web_research": {
-        "description": "live web search deep research browse internet articles fetch url read webpage online links scraping places nearby stores restaurants",
-        "tools": {"search_web", "find_nearby_places", "web_search", "read_webpage", "fetch_url", "deep_research"}
-    },
-    "code_interpreter": {
-        "description": "run python code interpreter execute script generate pdf reports documents excel csv spreadsheets charts data analysis calculations",
-        "tools": {"execute_python_code", "calculate"}
-    },
-    "workspace_notion": {
-        "description": "notion workspace notes documentation pages articles series delete notion page update create list trash remove",
-        "tools": {"create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content", "delete_notion_page"}
-    },
     "developer_github": {
         "description": "git github repository commit pull request source code file branch issue readme programming",
         "tools": {"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"}
     },
+    "workspace_notion": {
+        "description": "notion notes documentation page workspace markdown code block heading article delete trash remove",
+        "tools": {"create_notion_page", "update_notion_page", "list_notion_pages", "get_notion_page_content", "delete_notion_page"}
+    },
     "communication_email": {
-        "description": "send email mail gmail inbox draft send message subject recipient correspondence bhejo email compose search emails",
+        "description": "email mail gmail inbox draft send message subject recipient correspondence",
         "tools": {"send_email", "search_user_emails"}
     },
     "utilities_finance_weather": {
-        "description": "check live weather forecast mausam temperature climate rain or convert currency exchange rate check crypto stocks gold silver commodity prices",
+        "description": "weather mausam temperature forecast rain climate atmosphere currency exchange rate market price crypto gold silver sona chandi bhav daam stock calculation math",
         "tools": {"get_weather", "convert_currency", "get_market_price", "calculate"}
-    },
-    "privacy_data": {
-        "description": "permanently erase delete wipe all user data and memories account reset clear history uda do clean slate",
-        "tools": {"request_master_privacy_wipe", "clear_chat_history"}
     },
     "organization_lists": {
         "description": "list smart list grocery packing luggage items checklist task",
@@ -3941,6 +3923,22 @@ TOOL_GROUPS = {
     "media_entertainment": {
         "description": "movie cinema theatre showtimes film tickets screening",
         "tools": {"get_movie_showtimes"}
+    },
+    "calendar_advanced": {
+        "description": "meeting calendar schedule appointment slot zoom google meet availability clash",
+        "tools": {"check_availability", "get_meet_link", "create_meeting"}
+    },
+    "privacy_data": {
+        "description": "permanently erase delete wipe all user data and memories account reset clear history uda do clean slate",
+        "tools": {"request_master_privacy_wipe", "clear_chat_history"}
+    },
+    "web_research": {
+        "description": "live web search deep research browse internet articles fetch url read webpage online links scraping",
+        "tools": {"search_web", "web_search", "read_webpage", "fetch_url", "deep_research"}
+    },
+    "document_generation": {
+        "description": "generate pdf documents create excel spreadsheet export files reports download pdf xlsx",
+        "tools": {"generate_pdf", "generate_excel"}
     },
     "subscriptions_finance": {
         "description": "manage subscriptions recurring bills renewals free trial watchdog cancel subscription audit services",
@@ -4024,21 +4022,17 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
         if sorted_domains:
             top_name, top_sim = sorted_domains[0]
             second_sim = sorted_domains[1][1] if len(sorted_domains) > 1 else 0.0
-            if top_sim >= 0.68 and (top_sim - second_sim >= 0.03 or top_sim >= 0.72):
+            if top_sim >= 0.66 and (top_sim - second_sim >= 0.05 or top_sim >= 0.70):
                 activated_tools.update(TOOL_GROUPS[top_name]["tools"])
 
         for g_name, sim in domain_sims.items():
-            if sim >= 0.70:
+            if sim >= 0.68:
                 activated_tools.update(TOOL_GROUPS[g_name]["tools"])
     else:
         # Safe default when embeddings are unavailable (offline test suite):
         # Return core + all domain tools so test assertions with FakeLLM never fail
         domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
         return core_tools + domain_tools
-
-    # If no action domain was semantically activated, turn is purely conversational:
-    if not activated_tools:
-        return []
 
     extra_tools = [
         t for t in TOOL_DEFINITIONS

@@ -375,9 +375,24 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         pass
     context_hint = " ".join(context_hint_parts).strip()
 
-    # Principled semantic tool routing: attaches domain tools via vector similarity
+    # Check if user message is pure conversational sentiment / acknowledgement
+    _low_u = (user_text or "").strip().lower()
+    _cleaned_u = "".join(c for c in _low_u if c.isalnum() or c.isspace()).strip()
+    _sentiment_words = {
+        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
+        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
+        "cool", "superb", "perfect", "done"
+    }
+    _words = _cleaned_u.split()
+    _has_task_words = any(w in _words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
+    _is_pure_sentiment = (not _has_task_words) and (
+        _cleaned_u in _sentiment_words or
+        (len(_words) <= 2 and any(w in _sentiment_words for w in _words))
+    )
+
     from agent.tools import route_tools
-    effective_tools = route_tools(user_text, context_text=context_hint)
+    # For pure feedback, suppress unnecessary tool calling to save ~2,500 tokens and avoid false tool invocations
+    effective_tools = [] if _is_pure_sentiment else route_tools(user_text, context_text=context_hint)
 
     MAX_TOOL_ITERATIONS = 6
     current_model = model
@@ -395,9 +410,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # Dynamic Token Budget:
-            # - Conversational turns (no action tools routed): 256 max_tokens.
-            # - Action requests & in-depth explanations: 1024 max_tokens.
-            turn_max_tokens = 256 if not effective_tools else 1024
+            # - Pure acknowledgments/feedback ('Good', 'Thanks', 'Ok'): 150 max_tokens (saves ~85% generation tokens).
+            # - Real queries & detailed explanations: 1024 max_tokens (ensures zero premature truncation).
+            turn_max_tokens = 150 if _is_pure_sentiment else 1024
 
             payload = {
                 "model": current_model,

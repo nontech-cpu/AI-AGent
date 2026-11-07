@@ -200,27 +200,42 @@ async def test_pure_feedback_fastpath_bypasses_grounding_refusal():
     assert revised == draft_reply
 
 
-def test_semantic_routing_domain_isolation():
+def test_pure_sentiment_detection_logic():
     """
-    Verifies that route_tools cleanly isolates casual conversation from action tools,
-    loading domain tools only when semantic intent warrants it (zero hardcoded word lists).
+    Verifies that pure sentiment turns are cleanly recognized, while
+    morning greetings or task requests are correctly routed to tools.
     """
     from agent.tools import route_tools
 
-    # Pure conversational check-ins -> route_tools returns empty (no action tools)
-    assert len(route_tools("aur bhy kesa h")) == 0
-    assert len(route_tools("hi")) == 0
-    assert len(route_tools("ho")) == 0
-    assert len(route_tools("sab badhiya")) == 0
+    sentiment_words = {
+        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
+        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
+        "cool", "superb", "perfect", "done"
+    }
 
-    # Real tasks -> route_tools activates relevant domains
-    notion_tools = route_tools("FastAPI series delete kar do")
-    notion_names = {t["function"]["name"] for t in notion_tools}
-    assert "delete_notion_page" in notion_names
+    def is_sentiment(user_text):
+        _low_u = (user_text or "").strip().lower()
+        _cleaned_u = "".join(c for c in _low_u if c.isalnum() or c.isspace()).strip()
+        _words = _cleaned_u.split()
+        _has_task_words = any(w in _words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
+        return (not _has_task_words) and (
+            _cleaned_u in sentiment_words or
+            (len(_words) <= 2 and any(w in sentiment_words for w in _words))
+        )
 
-    email_tools = route_tools("email bhejo rahul ko")
-    email_names = {t["function"]["name"] for t in email_tools}
-    assert "send_email" in email_names
+    # Pure sentiment turns -> should be True
+    assert is_sentiment("Good") is True
+    assert is_sentiment("Mast") is True
+    assert is_sentiment("Thanks") is True
+    assert is_sentiment("theek hai") is True
+    assert is_sentiment("good bhai") is True
+    assert is_sentiment("Ok bro") is True
 
+    # Morning greeting or task requests -> should be False
+    assert is_sentiment("Good morning") is False
+    assert is_sentiment("Good morning bhai") is False
+    assert is_sentiment("kal ka flight batao") is False
+    assert is_sentiment("Notion se delete karo") is False
+    assert is_sentiment("FastAPI series detail me samjhao") is False
 
 

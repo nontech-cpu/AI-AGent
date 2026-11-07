@@ -344,13 +344,24 @@ async def verify_and_ground_reply(
 
     # Fast-path for non-claiming conversational phrases (0ms overhead)
     low_reply = draft_reply.strip().lower()
-    is_greeting = any(low_reply.startswith(g) for g in ("hi", "hello", "hey", "bas bhai", "namaste", "aur bhai", "main ekdum", "main badhiya", "ekdum badhiya"))
+    low_query = (user_query or "").strip().lower()
+    cleaned_q = "".join(c for c in low_query if c.isalnum() or c.isspace()).strip()
+    q_words = cleaned_q.split()
+    sentiment_words = {
+        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
+        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
+        "cool", "superb", "perfect", "done"
+    }
+    has_task_words = any(w in q_words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
+    is_pure_feedback = (not has_task_words) and (
+        cleaned_q in sentiment_words or
+        (len(q_words) <= 2 and any(w in sentiment_words for w in q_words))
+    )
+    is_greeting = any(low_reply.startswith(g) for g in ("hi", "hello", "hey", "bas bhai", "namaste", "aur bhai"))
     is_clarifying_question = draft_reply.strip().endswith("?") and not any(w in low_reply for w in ("kar diya", "bhej diya", "saved", "created"))
     is_explicit_refusal = any(w in low_reply for w in ("mere paas iski koi saved information nahi", "mere paas yeh information nahi hai", "i don't have access", "verified information nahi hai"))
-    # When no tool was executed and draft makes no real-world mutation/action claims, it is pure conversational dialogue:
-    is_pure_dialogue = not tool_results and not any(w in low_reply for w in ("kar diya", "bhej diya", "delete kar diya", "successfully created", "successfully deleted"))
 
-    if is_greeting or is_clarifying_question or is_explicit_refusal or is_pure_dialogue:
+    if is_greeting or is_clarifying_question or is_explicit_refusal or is_pure_feedback:
         return True, sanitize_regional_scripts(draft_reply), []
 
     # If user instruction is to save/add/update/create and model is merely repeating/acknowledging input text
