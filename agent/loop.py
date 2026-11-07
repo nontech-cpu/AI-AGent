@@ -1034,7 +1034,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             is_suspect = (not is_grounded) or (not is_fake_ok)
             suspect_reason = "; ".join(violations) if violations else None
             log_turn_trace(
-                chat_id=chat_id,
+                chat_id=delivery_chat_id,
                 message=user_text,
                 tools_called=tool_calls_executed,
                 tool_results=tool_results_list,

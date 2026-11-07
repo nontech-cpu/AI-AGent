@@ -214,7 +214,7 @@ async def build_morning_briefing_message(
     Constructs the formatted morning briefing text.
     Returns: (briefing_text, trigger_kind)
     """
-    name = (user_info.get("first_name") or "").strip()
+    name = db.get_user_display_name(chat_id) or (user_info.get("first_name") or "").strip()
     greeting_name = f" {name}" if name else ""
     date_human = target_date.strftime("%A, %d %B %Y")
 
