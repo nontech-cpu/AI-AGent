@@ -182,7 +182,8 @@ def deterministic_verify(
         )
         if has_claim_token or has_verb_and_done:
             is_wipe_claim = any(w in clean_rep for w in ("delete kar di", "delete kar diye", "clear kar diya", "hata di gayi", "wipe kar diya")) and any(w in clean_rep for w in ("memory", "data", "contacts", "reminders", "account", "location"))
-            if is_wipe_claim:
+            is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean"))
+            if is_wipe_claim and is_user_wipe_request:
                 violations.append("Claimed data/memory wipe completed without verified deletion tool execution")
                 revised = (
                     "⚠️ **Security & Privacy Warning**:\n\n"
@@ -385,7 +386,8 @@ async def verify_and_ground_reply(
             act_label = which_act or "action"
             combined_text = (user_query + " " + draft_reply).lower()
             is_wipe_act = any(w in act_label for w in ("wipe", "delete", "clear", "purge", "erase")) and any(w in combined_text for w in ("memory", "data", "account", "everything", "history", "contacts", "reminders"))
-            if is_wipe_act:
+            is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean"))
+            if is_wipe_act and is_user_wipe_request:
                 violations.append(f"Claimed data/memory wipe '{act_label}' completed without verified deletion tool execution")
                 revised = (
                     "⚠️ **Security & Privacy Warning**:\n\n"

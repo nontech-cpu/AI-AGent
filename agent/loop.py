@@ -1007,12 +1007,17 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         f"tools={tool_calls_executed} retrieved={retrieved_summary}"
     )
 
-    # Mark morning briefing as sent if this is an early morning interaction
+    # Mark morning briefing as sent ONLY if the reply actually delivered the morning briefing to user (no phantom ack)
     try:
         now_ist = timeutil.now(IST)
         today_str = now_ist.strftime("%Y-%m-%d")
         if 5 <= now_ist.hour < 11 and not db.is_morning_briefing_sent(chat_id, today_str):
-            db.record_morning_briefing_sent(chat_id, today_str, trigger_kind="early_user_interaction")
+            low_final = (final_reply or "").lower()
+            is_morning_delivered = any(g in low_final for g in ("good morning", "shubh prabhat", "subah bakhair")) or (
+                "morning" in low_final and any(k in low_final for k in ("schedule", "agenda", "meetings", "reminders", "free hai", "din kaisa"))
+            )
+            if is_morning_delivered and is_grounded:
+                db.record_morning_briefing_sent(chat_id, today_str, trigger_kind="morning_piggyback")
     except Exception as emb_err:
         logger.warning(f"Early morning briefing record error: {emb_err}")
 

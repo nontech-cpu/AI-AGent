@@ -384,6 +384,14 @@ def parse_ticket_datetime(dt_str: Optional[str]) -> Optional[datetime]:
                 return d.replace(tzinfo=IST)
             except Exception:
                 pass
+    try:
+        from dateutil import parser as dt_parser
+        parsed = dt_parser.parse(clean)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=IST)
+        return parsed.astimezone(IST)
+    except Exception:
+        pass
     return None
 
 

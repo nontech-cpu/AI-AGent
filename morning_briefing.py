@@ -83,69 +83,72 @@ def detect_user_city(chat_id: int) -> Optional[str]:
 def detect_early_morning_event(chat_id: int, target_date: date, unified_sched: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """
     Detects if the user has an early morning activity (e.g. flight, train journey, meeting)
-    scheduled before 08:30 AM IST on target_date.
+    scheduled before 08:30 AM IST on target_date across all linked identity sessions.
     Returns event info and adaptive wake-up trigger time.
     """
     now_ist = timeutil.now(IST)
+    linked_cids = list(db.get_all_linked_chat_ids(chat_id))
 
-    # 1. Check Active Travel Ticket (e.g. PNR / Flight / Train)
-    try:
-        tkt = get_active_ticket(chat_id)
-        if tkt:
-            tkt_dt = parse_ticket_datetime(tkt.get("datetime_str"))
-            if tkt_dt and tkt_dt.date() == target_date:
-                # Early departure check (before 08:30 AM)
-                if tkt_dt.time() < dtime(8, 30):
-                    # For flights: wake up 2 hours before; for trains: 1.5 hours before
-                    is_flight = any(k in (tkt.get("carrier", "") + tkt.get("summary", "")).lower() for k in ("flight", "airline", "air india", "indigo", "vistara", "spicejet", "akasa"))
-                    lead_hours = 2.0 if is_flight else 1.5
-                    trigger_dt = tkt_dt - timedelta(hours=lead_hours)
-                    return {
-                        "is_travel": True,
-                        "is_flight": is_flight,
-                        "kind": "flight" if is_flight else "train",
-                        "title": f"{tkt.get('carrier', 'Travel Provider')} ({tkt.get('route', 'Journey')})",
-                        "event_time": tkt_dt,
-                        "trigger_time": trigger_dt,
-                        "ticket_data": tkt
-                    }
-    except Exception as exc:
-        print("[morning_briefing.ticket_check] error:", repr(exc))
+    # 1. Check Active Travel Ticket (e.g. PNR / Flight / Train) across linked identities
+    for cid in linked_cids:
+        try:
+            tkt = get_active_ticket(cid)
+            if tkt:
+                tkt_dt = parse_ticket_datetime(tkt.get("datetime_str"))
+                if tkt_dt and tkt_dt.date() == target_date:
+                    # Early departure check (before 08:30 AM)
+                    if tkt_dt.time() < dtime(8, 30):
+                        # For flights: wake up 2 hours before; for trains: 1.5 hours before
+                        is_flight = any(k in (tkt.get("carrier", "") + tkt.get("summary", "")).lower() for k in ("flight", "airline", "air india", "indigo", "vistara", "spicejet", "akasa"))
+                        lead_hours = 2.0 if is_flight else 1.5
+                        trigger_dt = tkt_dt - timedelta(hours=lead_hours)
+                        return {
+                            "is_travel": True,
+                            "is_flight": is_flight,
+                            "kind": "flight" if is_flight else "train",
+                            "title": f"{tkt.get('carrier', 'Travel Provider')} ({tkt.get('route', 'Journey')})",
+                            "event_time": tkt_dt,
+                            "trigger_time": trigger_dt,
+                            "ticket_data": tkt
+                        }
+        except Exception as exc:
+            print("[morning_briefing.ticket_check] error:", repr(exc))
 
-    # 2. Check Saved Booking Facts for early travel on target_date
-    try:
-        facts = db.get_user_facts(chat_id, limit=30) or []
-        for f in facts:
-            f_text = f.get("fact", "")
-            if any(k in f_text.lower() for k in ("booking/ticket", "flight", "train", "pnr")):
-                date_m = re.search(r"date\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                if date_m:
-                    dt_parsed = parse_ticket_datetime(date_m.group(1).strip())
-                    if dt_parsed and dt_parsed.date() == target_date:
-                        if dt_parsed.time() < dtime(8, 30):
-                            is_flight = "flight" in f_text.lower() or "air" in f_text.lower()
-                            lead_hours = 2.0 if is_flight else 1.5
-                            trigger_dt = dt_parsed - timedelta(hours=lead_hours)
-                            carrier_m = re.search(r"(?:booking/ticket|ticket|provider)\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                            route_m = re.search(r"route\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                            pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]+)", f_text, re.I)
-                            return {
-                                "is_travel": True,
-                                "is_flight": is_flight,
-                                "kind": "flight" if is_flight else "train",
-                                "title": carrier_m.group(1).strip() if carrier_m else "Travel Booking",
-                                "event_time": dt_parsed,
-                                "trigger_time": trigger_dt,
-                                "ticket_data": {
-                                    "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
-                                    "route": route_m.group(1).strip() if route_m else "Journey Route",
-                                    "pnr": pnr_m.group(1).strip() if pnr_m else "",
-                                    "datetime_str": dt_parsed.strftime("%d %b %Y, %I:%M %p"),
-                                    "summary": f_text
+    # 2. Check Saved Booking Facts for early travel on target_date across linked identities
+    for cid in linked_cids:
+        try:
+            facts = db.get_user_facts(cid, limit=30) or []
+            for f in facts:
+                f_text = f.get("fact", "")
+                if any(k in f_text.lower() for k in ("booking/ticket", "flight", "train", "pnr")):
+                    date_m = re.search(r"date\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                    if date_m:
+                        dt_parsed = parse_ticket_datetime(date_m.group(1).strip())
+                        if dt_parsed and dt_parsed.date() == target_date:
+                            if dt_parsed.time() < dtime(8, 30):
+                                is_flight = "flight" in f_text.lower() or "air" in f_text.lower()
+                                lead_hours = 2.0 if is_flight else 1.5
+                                trigger_dt = dt_parsed - timedelta(hours=lead_hours)
+                                carrier_m = re.search(r"(?:booking/ticket|ticket|provider)\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                                route_m = re.search(r"route\s*[:\-#]?\s*([^|]+)", f_text, re.I)
+                                pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]+)", f_text, re.I)
+                                return {
+                                    "is_travel": True,
+                                    "is_flight": is_flight,
+                                    "kind": "flight" if is_flight else "train",
+                                    "title": carrier_m.group(1).strip() if carrier_m else "Travel Booking",
+                                    "event_time": dt_parsed,
+                                    "trigger_time": trigger_dt,
+                                    "ticket_data": {
+                                        "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
+                                        "route": route_m.group(1).strip() if route_m else "Journey Route",
+                                        "pnr": pnr_m.group(1).strip() if pnr_m else "",
+                                        "datetime_str": dt_parsed.strftime("%d %b %Y, %I:%M %p"),
+                                        "summary": f_text
+                                    }
                                 }
-                            }
-    except Exception as exc:
-        print("[morning_briefing.fact_ticket_check] error:", repr(exc))
+        except Exception as exc:
+            print("[morning_briefing.fact_ticket_check] error:", repr(exc))
 
     # 3. Check Google Calendar Events (Unified Schedule)
     if unified_sched:
@@ -240,12 +243,32 @@ async def build_morning_briefing_message(
             if seats:
                 lines.append(f"• **Seat / Berth:** {seats}")
 
-            lines.append("\n🧳 **Departure & Boarding Checklist:**")
-            lines.append("• 🪪 **Govt Photo ID / Aadhaar Card:** Entry ke liye zaroori hai.")
-            lines.append("• 🎟️ **Boarding Pass / E-Ticket:** Ready rakhein (web check-in done).")
-            lines.append("• 📱 **Essentials:** Phone charger, power bank & travel documents.")
+            lines.append("\n🧳 **Departure & Required Documents Checklist:**")
+            req_docs = t_data.get("required_documents") or t_data.get("docs")
+            if req_docs and isinstance(req_docs, list):
+                for doc in req_docs:
+                    lines.append(f"• 📋 **{doc}**")
+            elif req_docs and isinstance(req_docs, str):
+                lines.append(f"• 📋 **Required Document:** {req_docs}")
+            else:
+                lines.append("• 🪪 **Govt Photo ID:** Aadhaar Card, Passport, ya Voter ID (Airport/Station entry ke liye zaroori).")
+                lines.append("• 🎟️ **Boarding Pass / E-Ticket:** Digital copy / Web check-in ready rakhein.")
+                lines.append("• 📱 **Essentials:** Phone charger, power bank & tickets.")
             if early_event.get("is_flight"):
-                lines.append("• ⏰ **Airport Timing:** Domestic flight ke liye 2 ghante pehle airport pahunchna recommended hota hai.")
+                lines.append("• ⏰ **Airport Timing:** Domestic flight ke liye departure se 2 ghante pehle airport pahunchna zaroori hai.")
+            elif early_event.get("is_travel"):
+                lines.append("• ⏰ **Station Timing:** Train departure se kam se kam 30–45 minute pehle station pahunchein.")
+
+            try:
+                travel_lists = db.get_smart_lists(chat_id, category="travel")
+                if travel_lists:
+                    list_items = db.get_smart_list_items(chat_id, travel_lists[0]["id"])
+                    if list_items:
+                        lines.append(f"\n📦 **Packing Checklist ({travel_lists[0]['name']}):**")
+                        for item in list_items[:5]:
+                            lines.append(f"• {item['text']}")
+            except Exception:
+                pass
             lines.append("")
         else:
             lines.append(f"🌅 **Good Morning{greeting_name}! Aaj aapka early schedule hai:**\n")
@@ -398,24 +421,26 @@ async def send_telegram_message(chat_id: int, text_content: str) -> bool:
 async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: datetime) -> bool:
     """
     Evaluates timing and triggers morning briefing if eligible.
+    Routes to the active session among linked identities.
     """
     today_str = now_ist.strftime("%Y-%m-%d")
+    target_chat_id = db.get_most_active_chat_id(chat_id)
 
     # 1. Check if already dispatched for today
-    if db.is_morning_briefing_sent(chat_id, today_str):
+    if db.is_morning_briefing_sent(target_chat_id, today_str):
         return False
 
     # 2. Gather unified schedule for today
     from main import get_unified_schedule
     unified_sched = None
     try:
-        unified_sched = await get_unified_schedule(chat_id, now_ist.date())
+        unified_sched = await get_unified_schedule(target_chat_id, now_ist.date())
     except Exception as exc:
         print("[morning_briefing.sched_fetch] fallback:", repr(exc))
         unified_sched = {"calendar_events": [], "reminders": [], "commitments": []}
 
     # 3. Check for early morning event (flight/train/early meeting)
-    early_event = detect_early_morning_event(chat_id, now_ist.date(), unified_sched)
+    early_event = detect_early_morning_event(target_chat_id, now_ist.date(), unified_sched)
 
     should_send = False
     active_early = None
@@ -423,7 +448,7 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
         # If early event: trigger between trigger_time and event_time + 30 mins
         trig_time = early_event["trigger_time"]
         ev_time = early_event["event_time"]
-        if now_ist >= trig_time and now_ist <= ev_time + timedelta(minutes=30):
+        if trig_time <= now_ist <= ev_time + timedelta(minutes=30):
             should_send = True
             active_early = early_event
         elif 8 <= now_ist.hour < 11:
@@ -437,19 +462,19 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
 
     if should_send:
         # Atomic check-and-set to prevent duplicate dispatch across concurrent instances
-        if db.is_morning_briefing_sent(chat_id, today_str):
+        if db.is_morning_briefing_sent(target_chat_id, today_str):
             return False
-        db.record_morning_briefing_sent(chat_id, today_str, "standard_morning")
 
         msg_text, trigger_kind = await build_morning_briefing_message(
-            chat_id, user_info, now_ist.date(), early_event=active_early, unified_sched=unified_sched
+            target_chat_id, user_info, now_ist.date(), early_event=active_early, unified_sched=unified_sched
         )
+        db.record_morning_briefing_sent(target_chat_id, today_str, trigger_kind=trigger_kind)
         try:
-            await send_telegram_message(chat_id, msg_text)
+            await send_telegram_message(target_chat_id, msg_text)
         except Exception:
             pass
         try:
-            db.log_chat_message(db.canonical_chat_id(chat_id), "assistant", msg_text)
+            db.log_chat_message(target_chat_id, "assistant", msg_text)
         except Exception:
             pass
         return True
