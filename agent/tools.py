@@ -522,7 +522,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "save_note_or_fact",
-            "description": "Explicitly save a life fact, preference, or detail the user wants remembered permanently (e.g. 'I like 5 PM movies').",
+            "description": "Explicitly save a life fact, preference, or detail the user wants remembered permanently (e.g. 'I like 5 PM movies'). Do NOT call on casual feedback, greetings, or acknowledgements like 'Good', 'Thanks', 'Ok'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3929,7 +3929,7 @@ TOOL_GROUPS = {
         "tools": {"check_availability", "get_meet_link", "create_meeting"}
     },
     "privacy_data": {
-        "description": "permanently erase reset entire account and wipe all memories factory reset profile clear history",
+        "description": "permanently erase delete wipe all user data and memories account reset clear history uda do clean slate",
         "tools": {"request_master_privacy_wipe", "clear_chat_history"}
     },
     "web_research": {
@@ -4026,10 +4026,7 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
                 activated_tools.update(TOOL_GROUPS[top_name]["tools"])
 
         for g_name, sim in domain_sims.items():
-            if g_name == "privacy_data":
-                if sim >= 0.74:
-                    activated_tools.update(TOOL_GROUPS[g_name]["tools"])
-            elif sim >= 0.68:
+            if sim >= 0.68:
                 activated_tools.update(TOOL_GROUPS[g_name]["tools"])
     else:
         # Safe default when embeddings are unavailable (offline test suite):

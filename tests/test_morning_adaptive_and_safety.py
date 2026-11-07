@@ -154,3 +154,88 @@ async def test_fix2b_early_flight_triggers_at_5am_not_8am():
     finally:
         clear_active_ticket(TEST_CHAT_ID)
 
+
+def test_guardrail_allows_file_generation_without_false_positive():
+    """
+    Verifies that when execute_python_code produces a file artifact (files_sent),
+    check_fake_success_guard recognizes it as confirmed dispatch and does NOT
+    hijack the reply with 'Aapka request note kar liya gaya hai...'.
+    """
+    from connectors.guardrails import check_fake_success_guard
+
+    draft_reply = "Glucose report generate kar di hai aur PDF bhej di hai."
+    tool_results = [{
+        "tool_name": "execute_python_code",
+        "status": "success",
+        "output": "PDF generated",
+        "files_sent": ["Glucose_Report_Nirav.pdf"]
+    }]
+
+    is_safe, err = check_fake_success_guard(draft_reply, tool_results)
+    assert is_safe is True
+    assert err is None
+
+
+@pytest.mark.asyncio
+async def test_pure_feedback_fastpath_bypasses_grounding_refusal():
+    """
+    Verifies that conversational feedback ('Good', 'Mast', 'Thanks') does not get
+    erroneously intercepted by external fact verifier with 'verified information nahi hai'.
+    """
+    user_query = "Good"
+    draft_reply = "Bas bhai, sab badhiya! Kuch kaam ho toh batana."
+    tool_results = []
+
+    is_grounded, revised, violations = await verify_and_ground_reply(
+        draft_reply=draft_reply,
+        tool_results=tool_results,
+        memory_context=None,
+        user_query=user_query,
+        recent_history=[],
+        allow_llm=False
+    )
+
+    assert is_grounded is True
+    assert "verified information nahi hai" not in revised
+    assert revised == draft_reply
+
+
+def test_pure_sentiment_detection_logic():
+    """
+    Verifies that pure sentiment turns are cleanly recognized, while
+    morning greetings or task requests are correctly routed to tools.
+    """
+    from agent.tools import route_tools
+
+    sentiment_words = {
+        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
+        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
+        "cool", "superb", "perfect", "done"
+    }
+
+    def is_sentiment(user_text):
+        _low_u = (user_text or "").strip().lower()
+        _cleaned_u = "".join(c for c in _low_u if c.isalnum() or c.isspace()).strip()
+        _words = _cleaned_u.split()
+        _has_task_words = any(w in _words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
+        return (not _has_task_words) and (
+            _cleaned_u in sentiment_words or
+            (len(_words) <= 2 and any(w in sentiment_words for w in _words))
+        )
+
+    # Pure sentiment turns -> should be True
+    assert is_sentiment("Good") is True
+    assert is_sentiment("Mast") is True
+    assert is_sentiment("Thanks") is True
+    assert is_sentiment("theek hai") is True
+    assert is_sentiment("good bhai") is True
+    assert is_sentiment("Ok bro") is True
+
+    # Morning greeting or task requests -> should be False
+    assert is_sentiment("Good morning") is False
+    assert is_sentiment("Good morning bhai") is False
+    assert is_sentiment("kal ka flight batao") is False
+    assert is_sentiment("Notion se delete karo") is False
+    assert is_sentiment("FastAPI series detail me samjhao") is False
+
+

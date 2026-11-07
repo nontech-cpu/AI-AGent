@@ -40,7 +40,7 @@ You must output a single JSON object with these EXACT keys:
 6. "reason": string. Short 1-sentence explanation of your assessment.
 
 CRITICAL GROUNDING RULES FOR EXTERNAL SAAS / WORKSPACE ACTIONS:
-- `execute_python_code` is STRICTLY a local Python sandbox for mathematical calculations and data processing. It CANNOT create, update, delete, or modify external pages, emails, calendar events, Notion notes, or GitHub files. Any claim in Draft Reply that an external SaaS action occurred (e.g. Notion page created/deleted/updated, email sent, reminder/calendar event modified) CANNOT be sourced by `execute_python_code`!
+- `execute_python_code` is a local Python sandbox for calculations, data processing, and document creation. It CANNOT modify external SaaS pages, emails, calendar events, Notion notes, or GitHub files. However, when it generates and delivers file artifacts (`files_sent`), document/PDF/report creation claims ARE fully verified and sourced by it!
 - If Draft Reply claims an external action was completed (e.g. Notion page deleted/created/updated, email sent, reminder deleted) but no corresponding dedicated integration tool succeeded in Evidence, you MUST return "claims_action_done": true, "sourced_by_tool": false!
 
 Respond ONLY with valid JSON. Do not wrap in markdown or backticks."""
@@ -182,7 +182,7 @@ def deterministic_verify(
         )
         if has_claim_token or has_verb_and_done:
             is_wipe_claim = any(w in clean_rep for w in ("delete kar di", "delete kar diye", "clear kar diya", "hata di gayi", "wipe kar diya")) and any(w in clean_rep for w in ("memory", "data", "contacts", "reminders", "account", "location"))
-            is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean"))
+            is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "dlete", "delte", "delet", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean", "entire memory", "saari memory", "all data", "poora data"))
             if is_wipe_claim and is_user_wipe_request:
                 violations.append("Claimed data/memory wipe completed without verified deletion tool execution")
                 revised = (
@@ -344,11 +344,24 @@ async def verify_and_ground_reply(
 
     # Fast-path for non-claiming conversational phrases (0ms overhead)
     low_reply = draft_reply.strip().lower()
+    low_query = (user_query or "").strip().lower()
+    cleaned_q = "".join(c for c in low_query if c.isalnum() or c.isspace()).strip()
+    q_words = cleaned_q.split()
+    sentiment_words = {
+        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
+        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
+        "cool", "superb", "perfect", "done"
+    }
+    has_task_words = any(w in q_words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
+    is_pure_feedback = (not has_task_words) and (
+        cleaned_q in sentiment_words or
+        (len(q_words) <= 2 and any(w in sentiment_words for w in q_words))
+    )
     is_greeting = any(low_reply.startswith(g) for g in ("hi", "hello", "hey", "bas bhai", "namaste", "aur bhai"))
     is_clarifying_question = draft_reply.strip().endswith("?") and not any(w in low_reply for w in ("kar diya", "bhej diya", "saved", "created"))
     is_explicit_refusal = any(w in low_reply for w in ("mere paas iski koi saved information nahi", "mere paas yeh information nahi hai", "i don't have access", "verified information nahi hai"))
 
-    if is_greeting or is_clarifying_question or is_explicit_refusal:
+    if is_greeting or is_clarifying_question or is_explicit_refusal or is_pure_feedback:
         return True, sanitize_regional_scripts(draft_reply), []
 
     # If user instruction is to save/add/update/create and model is merely repeating/acknowledging input text
@@ -374,9 +387,12 @@ async def verify_and_ground_reply(
             ok = tr.get("ok", False)
             if status in ("success", "ok", "needs_confirmation", "confirmation_required", "conflict_detected") or ok is True:
                 tr_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
-                # Read-only tools CANNOT satisfy a mutation/deletion action claim!
-                if tr_name in READ_ONLY_TOOL_NAMES:
+                # Read-only tools CANNOT satisfy a mutation/deletion action claim (unless file artifacts were produced)!
+                if tr_name in READ_ONLY_TOOL_NAMES and not (tr.get("files_sent") or tr.get("filename")):
                     continue
+                if tr.get("files_sent") or tr.get("filename"):
+                    has_tool_success = True
+                    break
                 # If specific action was named, match it; else any mutating success
                 if not which_act or not tr_name or which_act in tr_name or tr_name in which_act:
                     has_tool_success = True
@@ -386,7 +402,7 @@ async def verify_and_ground_reply(
             act_label = which_act or "action"
             combined_text = (user_query + " " + draft_reply).lower()
             is_wipe_act = any(w in act_label for w in ("wipe", "delete", "clear", "purge", "erase")) and any(w in combined_text for w in ("memory", "data", "account", "everything", "history", "contacts", "reminders"))
-            is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean"))
+            is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "dlete", "delte", "delet", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean", "entire memory", "saari memory", "all data", "poora data"))
             if is_wipe_act and is_user_wipe_request:
                 violations.append(f"Claimed data/memory wipe '{act_label}' completed without verified deletion tool execution")
                 revised = (
