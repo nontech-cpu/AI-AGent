@@ -550,7 +550,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "request_master_privacy_wipe",
-            "description": "Initiate permanent master privacy wipe to delete all user memories, facts, notes, saved contacts, reminders, locations, and chat history with secure OTP confirmation. Call this tool immediately whenever the user expresses any desire to delete/wipe/erase all memory, clear personal data, wipe account, forget everything, or start completely fresh (e.g. 'delete entire memory', 'wipe my data', 'mera saara data uda do', 'sab bhool jao', 'clean slate', 'dlete entire memory'). Do not call read tools before this.",
+            "description": "Initiate permanent master privacy wipe to reset the entire user account, all stored memories, chat logs, contacts, and personal profile data. Call this ONLY when user explicitly asks for a complete account wipe, total memory reset, or fresh profile reset (e.g. 'delete entire account', 'wipe my profile', 'sab kuch bhool jao factory reset'). NEVER use this when user asks to delete a specific item, specific document, Notion page, individual note, travel ticket, or reminder.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -577,7 +577,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "delete_note_or_fact",
-            "description": "Delete a specific note, memory fact, flight ticket, or booking when user asks to remove it (e.g. 'is ticket ko memory se hata do').",
+            "description": "Delete a specific note, memory fact, travel ticket, or saved booking from memory by keyword or query (e.g. 'delete the dr verma appointment', 'remove flight ticket', 'is fact ko memory se hata do'). Use whenever user wants to remove a specific fact or note, NOT the entire account.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1009,7 +1009,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "delete_notion_page",
-            "description": "Delete (move to Trash / archive) one or more pages from the user's connected Notion workspace by title, search query, or page ID.",
+            "description": "Delete (move to Trash / archive) one or more pages, documents, or series from the user's connected Notion workspace by title, search query, or page ID. Use whenever user wants to delete, trash, or remove Notion pages, notes, or series.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3886,7 +3886,8 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 CORE_TOOL_NAMES = {
     'calculate',
     "execute_python_code", "create_reminder", "update_reminder", "delete_reminder", "list_reminders", "get_schedule",
-    "save_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
+    "save_note_or_fact", "delete_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
+    "update_contact_commitment", "manage_relationship", "set_user_timezone", "ask_user", "learn_user_correction",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting",
     "search_web", "find_nearby_places"
 }
@@ -3928,8 +3929,20 @@ TOOL_GROUPS = {
         "tools": {"check_availability", "get_meet_link", "create_meeting"}
     },
     "privacy_data": {
-        "description": "permanently erase delete all user data master wipe privacy purge account reset forget everything dlete wipe clean slate saara data uda do",
+        "description": "permanently erase reset entire account and wipe all memories factory reset profile clear history",
         "tools": {"request_master_privacy_wipe", "clear_chat_history"}
+    },
+    "web_research": {
+        "description": "live web search deep research browse internet articles fetch url read webpage online links scraping",
+        "tools": {"search_web", "web_search", "read_webpage", "fetch_url", "deep_research"}
+    },
+    "document_generation": {
+        "description": "generate pdf documents create excel spreadsheet export files reports download pdf xlsx",
+        "tools": {"generate_pdf", "generate_excel"}
+    },
+    "subscriptions_finance": {
+        "description": "manage subscriptions recurring bills renewals free trial watchdog cancel subscription audit services",
+        "tools": {"manage_subscription"}
     }
 }
 
@@ -3975,15 +3988,15 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
     core_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CORE_TOOL_NAMES]
     low = (user_text or "").strip()
     ctx_clean = (context_text or "").strip()
-    combined = f"{low} {ctx_clean}".strip()
+    combined = f"{low} (Context: {ctx_clean[:200]})".strip() if ctx_clean else low
 
     if not combined:
         return core_tools
 
     activated_tools = set()
 
-    # 1. Multi-turn context hint activation (e.g. pending drafts or previous assistant actions)
-    if ctx_clean:
+    # 1. Multi-turn context hint activation for direct follow-ups or confirmations
+    if ctx_clean and len(low.split()) <= 3:
         ctx_lower = ctx_clean.lower()
         for g_name, g_info in TOOL_GROUPS.items():
             parts = g_name.split("_")
@@ -4013,7 +4026,10 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
                 activated_tools.update(TOOL_GROUPS[top_name]["tools"])
 
         for g_name, sim in domain_sims.items():
-            if sim >= 0.68:
+            if g_name == "privacy_data":
+                if sim >= 0.74:
+                    activated_tools.update(TOOL_GROUPS[g_name]["tools"])
+            elif sim >= 0.68:
                 activated_tools.update(TOOL_GROUPS[g_name]["tools"])
     else:
         # Safe default when embeddings are unavailable (offline test suite):

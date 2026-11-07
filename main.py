@@ -2686,7 +2686,13 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 )
                 return
         else:
-            await say(chat_id, "Please reply **yes** to proceed with master memory deletion or **cancel** to abort.")
+            # User did not confirm master wipe; they asked a question or gave another command (e.g. "notion pe jo mene tumh kha vo krne h bs yh kyu?")
+            # Master wipe is an irreversible nuclear action: any hesitation or diversion safely exits the wipe state
+            # so the user is NEVER trapped in a confirmation loop.
+            set_state(chat_id, None)
+            PENDING_WIPE_CODES.pop(chat_id, None)
+            logger.info(f"User {chat_id} did not confirm master wipe (message: '{clean[:50]}'); auto-clearing wipe state and falling through to agent loop.")
+            await handle_active(chat_id, clean)
             return
 
     if state in ("awaiting_wipe_email_verification", "awaiting_wipe_chat_otp", "awaiting_wipe_verification"):

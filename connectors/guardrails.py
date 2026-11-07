@@ -105,7 +105,7 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
                 tr.get("commit_url") or tr.get("commit_html") or tr.get("html_url") or 
                 tr.get("webViewLink") or tr.get("meet_url") or tr.get("message_id") or 
                 tr.get("file_id") or tr.get("auth_url") or tr.get("saved_fact") or 
-                tr.get("deleted_titles") or tr.get("deleted_count")):
+                tr.get("deleted_titles") or tr.get("deleted_count") or tr.get("due_date") or tr.get("reminder_id")):
                 has_confirmed_success = True
                 break
 

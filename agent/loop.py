@@ -351,15 +351,29 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     total_tokens = 0
 
     # 5. Semantic Context-Aware Tool Suite (Embedding similarity between message and tool descriptions, no hardcoded regex gates)
-    context_hint = ""
-    low_u = (user_text or "").strip().lower()
-    is_short_followup = len(low_u.split()) <= 4
-    if is_short_followup and prior_turns:
+    context_hint_parts = []
+    if prior_turns:
         for pt in reversed(prior_turns):
             if pt.get("role") == "assistant":
-                context_hint = (pt.get("text") or pt.get("content") or "").strip()
-                if context_hint:
+                a_txt = (pt.get("text") or pt.get("content") or "").strip()
+                if a_txt:
+                    context_hint_parts.append(a_txt[:300])
                     break
+    try:
+        from state.active_context import get_active_context
+        act_ctx = get_active_context(chat_id)
+        if act_ctx:
+            conn_name = act_ctx.get("connector", "")
+            top_name = act_ctx.get("topic", "")
+            focus_top = act_ctx.get("focus_topic", "")
+            objs = act_ctx.get("objects", [])
+            objs_str = " ".join(objs[:5]) if isinstance(objs, list) else ""
+            ctx_items = [c for c in [conn_name, top_name, focus_top, objs_str] if c]
+            if ctx_items:
+                context_hint_parts.append(" ".join(ctx_items))
+    except Exception:
+        pass
+    context_hint = " ".join(context_hint_parts).strip()
 
     from agent.tools import route_tools
     effective_tools = route_tools(user_text, context_text=context_hint)

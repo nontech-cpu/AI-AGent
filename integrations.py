@@ -936,6 +936,25 @@ async def delete_notion_page(token: str, page_id_or_title: str) -> Tuple[bool, s
                 if (target_lower in t) or (clean_query and len(clean_query) >= 3 and clean_query in t):
                     matching_pages.append(p)
 
+        # If still no match, check word token fuzzy similarity (handles minor spelling variants like 'fasst api' -> 'fastapi')
+        if not matching_pages and clean_query:
+            import difflib
+            for p in all_pages:
+                t = p.get("title", "").lower()
+                matched = False
+                for t_word in t.split():
+                    for q_word in clean_query.split():
+                        if len(q_word) >= 3 and len(t_word) >= 3:
+                            sim = difflib.SequenceMatcher(None, q_word, t_word[:len(q_word)]).ratio()
+                            full_sim = difflib.SequenceMatcher(None, q_word, t_word).ratio()
+                            if sim >= 0.8 or full_sim >= 0.75:
+                                matched = True
+                                break
+                    if matched:
+                        break
+                if matched:
+                    matching_pages.append(p)
+
     if not matching_pages:
         return False, f"Could not find any Notion page matching '{target}'.", []
 
