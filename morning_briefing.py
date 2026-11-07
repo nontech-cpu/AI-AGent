@@ -398,24 +398,26 @@ async def build_morning_briefing_message(
 
 
 async def send_telegram_message(chat_id: int, text_content: str) -> bool:
-    """Dispatches message to Telegram chat using official bot token."""
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token or not chat_id:
+    """Dispatches message to Telegram chat using project's resilient send_telegram_text."""
+    if not chat_id or not text_content:
         return False
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": text_content,
-                    "parse_mode": "Markdown"
-                }
-            )
-            return resp.status_code == 200
+        from main import send_telegram_text
+        await send_telegram_text(chat_id, text_content)
+        return True
     except Exception as exc:
-        print(f"[morning_briefing.send_telegram_message] error for {chat_id}:", repr(exc))
-        return False
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if not token:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": text_content}
+                )
+                return resp.status_code == 200
+        except Exception:
+            return False
 
 
 async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: datetime) -> bool:
