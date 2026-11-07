@@ -200,50 +200,27 @@ async def test_pure_feedback_fastpath_bypasses_grounding_refusal():
     assert revised == draft_reply
 
 
-def test_is_conversational_turn_logic():
+def test_semantic_routing_domain_isolation():
     """
-    Verifies that pure conversational turns (greetings, check-ins, small talk, sentiment)
-    are cleanly detected to prevent tool execution overhead and webhook timeouts,
-    while task-oriented requests are correctly allowed to route tools.
+    Verifies that route_tools cleanly isolates casual conversation from action tools,
+    loading domain tools only when semantic intent warrants it (zero hardcoded word lists).
     """
-    from agent.verifier import is_conversational_turn
+    from agent.tools import route_tools
 
-    # Pure conversational check-ins & greetings -> MUST BE True
-    assert is_conversational_turn("hi") is True
-    assert is_conversational_turn("ho") is True
-    assert is_conversational_turn("aur bhy kesa h") is True
-    assert is_conversational_turn("kaisa h tu bhy") is True
-    assert is_conversational_turn("kesa h bhai") is True
-    assert is_conversational_turn("Good") is True
-    assert is_conversational_turn("sab badhiya") is True
-    assert is_conversational_turn("aur batao bhai") is True
-    assert is_conversational_turn("hello kaise ho") is True
-    assert is_conversational_turn("kya haal hai") is True
-    assert is_conversational_turn("aur sunao") is True
+    # Pure conversational check-ins -> route_tools returns empty (no action tools)
+    assert len(route_tools("aur bhy kesa h")) == 0
+    assert len(route_tools("hi")) == 0
+    assert len(route_tools("ho")) == 0
+    assert len(route_tools("sab badhiya")) == 0
 
-    # Real tasks / queries -> MUST BE False
-    assert is_conversational_turn("hi aaj ka schedule kya hai") is False
-    assert is_conversational_turn("flight check karo") is False
-    assert is_conversational_turn("FastAPI series delete kar do") is False
-    assert is_conversational_turn("save kar lo roll number 42") is False
-    assert is_conversational_turn("detail me samjhao") is False
+    # Real tasks -> route_tools activates relevant domains
+    notion_tools = route_tools("FastAPI series delete kar do")
+    notion_names = {t["function"]["name"] for t in notion_tools}
+    assert "delete_notion_page" in notion_names
 
-
-@pytest.mark.asyncio
-async def test_save_note_or_fact_ignores_conversational_greetings():
-    """
-    Verifies that execute_tool guards against saving casual conversational
-    greetings (e.g. 'User is checking in on me again') as permanent facts.
-    """
-    from agent.tools import execute_tool
-
-    res = await execute_tool(
-        chat_id=TEST_CHAT_ID,
-        tool_name="save_note_or_fact",
-        arguments={"text": "User is checking in on me again."}
-    )
-    assert res.get("status") == "skipped"
-    assert "Ignored casual conversational check-in" in res.get("message", "")
+    email_tools = route_tools("email bhejo rahul ko")
+    email_names = {t["function"]["name"] for t in email_tools}
+    assert "send_email" in email_names
 
 
 

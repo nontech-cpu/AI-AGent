@@ -375,16 +375,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         pass
     context_hint = " ".join(context_hint_parts).strip()
 
-    # Check if user message is pure conversational (greeting, check-in, small-talk, or sentiment feedback)
-    from agent.verifier import is_conversational_turn
-    _is_casual = is_conversational_turn(user_text)
-
+    # Principled semantic tool routing: attaches domain tools via vector similarity
     from agent.tools import route_tools
-    # For pure conversational chat, suppress tool calling completely:
-    # 1. Saves ~2,500 tokens per turn
-    # 2. Reduces latency from 45s to < 1s (prevents webhook timeouts & Telegram retry duplicates)
-    # 3. Prevents unwanted tool execution (e.g. LLM erroneously saving greetings as facts)
-    effective_tools = [] if _is_casual else route_tools(user_text, context_text=context_hint)
+    effective_tools = route_tools(user_text, context_text=context_hint)
 
     MAX_TOOL_ITERATIONS = 6
     current_model = model
@@ -402,9 +395,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # Dynamic Token Budget:
-            # - Pure conversational/acknowledgments: 150 max_tokens (saves ~85% generation tokens).
-            # - Real queries & detailed explanations: 1024 max_tokens (ensures zero premature truncation).
-            turn_max_tokens = 150 if _is_casual else 1024
+            # - Conversational turns (no action tools routed): 256 max_tokens.
+            # - Action requests & in-depth explanations: 1024 max_tokens.
+            turn_max_tokens = 256 if not effective_tools else 1024
 
             payload = {
                 "model": current_model,
