@@ -28,6 +28,41 @@ READ_ONLY_TOOL_NAMES = {
     "get_meet_link", "get_commitments", "execute_python_code"
 }
 
+def is_conversational_turn(text: str) -> bool:
+    """
+    Identifies pure conversational turns (greetings, check-ins, small-talk, sentiment feedback)
+    that must bypass tools, run on crisp token budgets, and avoid factual verifier overhead.
+    """
+    low = (text or "").strip().lower()
+    cleaned = "".join(c for c in low if c.isalnum() or c.isspace()).strip()
+    words = cleaned.split()
+    if not words:
+        return True
+
+    task_words = {
+        "reminder", "meeting", "calendar", "flight", "schedule", "notion", "email", "mail",
+        "delete", "remove", "hata", "uda", "clear", "wipe", "cancel", "save", "note", "yaad",
+        "search", "weather", "mausam", "price", "bhav", "rate", "crypto", "gold", "calculate",
+        "pdf", "excel", "code", "file", "commit", "repo", "ticket", "pnr", "morning", "gm",
+        "detail", "samjhao", "explain", "guide", "difference", "tutorial", "batao kaise"
+    }
+    if any(w in task_words for w in words):
+        return False
+
+    conversational_tokens = {
+        "hi", "hello", "hey", "hlo", "sup", "yo", "ho", "salam", "namaste", "pranam",
+        "good", "great", "nice", "awesome", "mast", "badhiya", "theek", "ok", "okay",
+        "thanks", "thank", "dhanyawad", "shukriya", "sahi", "cool", "superb", "perfect", "done",
+        "thik", "kaise", "kaisa", "kesa", "kese", "haal", "chaal", "bhai", "bhy", "bro", "yaar",
+        "aur", "batao", "sunao", "sab", "how", "are", "you", "whats", "up", "wassup",
+        "bolo", "sun", "tu", "aap", "kya", "ji", "h", "hai", "he", "hoon", "hun"
+    }
+    if len(words) <= 6 and all(w in conversational_tokens for w in words):
+        return True
+
+    return False
+
+
 CLAIM_CHECKER_SYSTEM_PROMPT = """You are the Grounding & Truth Claim-Checker for PeculiarAI personal assistant.
 Your job is to audit the Draft Reply against the Evidence (Tool Results, Memory Context, User Query).
 
@@ -344,24 +379,12 @@ async def verify_and_ground_reply(
 
     # Fast-path for non-claiming conversational phrases (0ms overhead)
     low_reply = draft_reply.strip().lower()
-    low_query = (user_query or "").strip().lower()
-    cleaned_q = "".join(c for c in low_query if c.isalnum() or c.isspace()).strip()
-    q_words = cleaned_q.split()
-    sentiment_words = {
-        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
-        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
-        "cool", "superb", "perfect", "done"
-    }
-    has_task_words = any(w in q_words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
-    is_pure_feedback = (not has_task_words) and (
-        cleaned_q in sentiment_words or
-        (len(q_words) <= 2 and any(w in sentiment_words for w in q_words))
-    )
-    is_greeting = any(low_reply.startswith(g) for g in ("hi", "hello", "hey", "bas bhai", "namaste", "aur bhai"))
+    is_greeting = any(low_reply.startswith(g) for g in ("hi", "hello", "hey", "bas bhai", "namaste", "aur bhai", "main ekdum", "main badhiya", "ekdum badhiya"))
     is_clarifying_question = draft_reply.strip().endswith("?") and not any(w in low_reply for w in ("kar diya", "bhej diya", "saved", "created"))
     is_explicit_refusal = any(w in low_reply for w in ("mere paas iski koi saved information nahi", "mere paas yeh information nahi hai", "i don't have access", "verified information nahi hai"))
+    is_casual = is_conversational_turn(user_query)
 
-    if is_greeting or is_clarifying_question or is_explicit_refusal or is_pure_feedback:
+    if is_greeting or is_clarifying_question or is_explicit_refusal or is_casual:
         return True, sanitize_regional_scripts(draft_reply), []
 
     # If user instruction is to save/add/update/create and model is merely repeating/acknowledging input text

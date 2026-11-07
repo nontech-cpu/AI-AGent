@@ -200,42 +200,50 @@ async def test_pure_feedback_fastpath_bypasses_grounding_refusal():
     assert revised == draft_reply
 
 
-def test_pure_sentiment_detection_logic():
+def test_is_conversational_turn_logic():
     """
-    Verifies that pure sentiment turns are cleanly recognized, while
-    morning greetings or task requests are correctly routed to tools.
+    Verifies that pure conversational turns (greetings, check-ins, small talk, sentiment)
+    are cleanly detected to prevent tool execution overhead and webhook timeouts,
+    while task-oriented requests are correctly allowed to route tools.
     """
-    from agent.tools import route_tools
+    from agent.verifier import is_conversational_turn
 
-    sentiment_words = {
-        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
-        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
-        "cool", "superb", "perfect", "done"
-    }
+    # Pure conversational check-ins & greetings -> MUST BE True
+    assert is_conversational_turn("hi") is True
+    assert is_conversational_turn("ho") is True
+    assert is_conversational_turn("aur bhy kesa h") is True
+    assert is_conversational_turn("kaisa h tu bhy") is True
+    assert is_conversational_turn("kesa h bhai") is True
+    assert is_conversational_turn("Good") is True
+    assert is_conversational_turn("sab badhiya") is True
+    assert is_conversational_turn("aur batao bhai") is True
+    assert is_conversational_turn("hello kaise ho") is True
+    assert is_conversational_turn("kya haal hai") is True
+    assert is_conversational_turn("aur sunao") is True
 
-    def is_sentiment(user_text):
-        _low_u = (user_text or "").strip().lower()
-        _cleaned_u = "".join(c for c in _low_u if c.isalnum() or c.isspace()).strip()
-        _words = _cleaned_u.split()
-        _has_task_words = any(w in _words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
-        return (not _has_task_words) and (
-            _cleaned_u in sentiment_words or
-            (len(_words) <= 2 and any(w in sentiment_words for w in _words))
-        )
+    # Real tasks / queries -> MUST BE False
+    assert is_conversational_turn("hi aaj ka schedule kya hai") is False
+    assert is_conversational_turn("flight check karo") is False
+    assert is_conversational_turn("FastAPI series delete kar do") is False
+    assert is_conversational_turn("save kar lo roll number 42") is False
+    assert is_conversational_turn("detail me samjhao") is False
 
-    # Pure sentiment turns -> should be True
-    assert is_sentiment("Good") is True
-    assert is_sentiment("Mast") is True
-    assert is_sentiment("Thanks") is True
-    assert is_sentiment("theek hai") is True
-    assert is_sentiment("good bhai") is True
-    assert is_sentiment("Ok bro") is True
 
-    # Morning greeting or task requests -> should be False
-    assert is_sentiment("Good morning") is False
-    assert is_sentiment("Good morning bhai") is False
-    assert is_sentiment("kal ka flight batao") is False
-    assert is_sentiment("Notion se delete karo") is False
-    assert is_sentiment("FastAPI series detail me samjhao") is False
+@pytest.mark.asyncio
+async def test_save_note_or_fact_ignores_conversational_greetings():
+    """
+    Verifies that execute_tool guards against saving casual conversational
+    greetings (e.g. 'User is checking in on me again') as permanent facts.
+    """
+    from agent.tools import execute_tool
+
+    res = await execute_tool(
+        chat_id=TEST_CHAT_ID,
+        tool_name="save_note_or_fact",
+        arguments={"text": "User is checking in on me again."}
+    )
+    assert res.get("status") == "skipped"
+    assert "Ignored casual conversational check-in" in res.get("message", "")
+
 
 

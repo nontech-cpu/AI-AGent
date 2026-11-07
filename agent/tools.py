@@ -522,7 +522,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "save_note_or_fact",
-            "description": "Explicitly save a life fact, preference, or detail the user wants remembered permanently (e.g. 'I like 5 PM movies'). Do NOT call on casual feedback, greetings, or acknowledgements like 'Good', 'Thanks', 'Ok'.",
+            "description": "Explicitly save a personal life fact, preference, health metric, credential, or note stated by the user (e.g., 'mera roll number 42 hai', 'blood pressure 120/80', 'I prefer dark mode'). STRICTLY FORBIDDEN on casual chit-chat, greetings, check-ins, or questions (e.g. 'hi', 'ho', 'kaisa hai', 'aur bhai', 'good', 'thanks'). NEVER save user greetings or small-talk as facts!",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1799,6 +1799,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
         elif tool_name == "save_note_or_fact":
             args = SaveNoteOrFactArgs(**arguments)
+            # Guard against saving casual greetings or check-ins as facts
+            _fact_low = (args.text or "").strip().lower()
+            _is_greeting_fact = any(g in _fact_low for g in ("user asked", "user said", "checking in", "how are you", "kaisa h", "kesa h", "hello", "greeting", "said 'hi'", "said 'ho'"))
+            if _is_greeting_fact and len(_fact_low.split()) < 12:
+                return {"status": "skipped", "message": "Ignored casual conversational check-in."}
+
             try:
                 from memory.store import resolve_user_id, save_user_semantic_fact
                 uid = resolve_user_id(chat_id)
