@@ -239,3 +239,60 @@ def test_pure_sentiment_detection_logic():
     assert is_sentiment("FastAPI series detail me samjhao") is False
 
 
+@pytest.mark.asyncio
+async def test_morning_briefing_broadcasts_to_all_linked_identities():
+    """
+    Verifies that when morning briefing executes, it broadcasts simultaneously
+    to all linked device accounts for the user (e.g. desktop + iPhone).
+    """
+    canon_id = 77112233
+    secondary_id = 77112234
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+
+    # Link secondary to canon
+    db.link_user_identities(secondary_id, canon_id, "Test Secondary Mobile")
+
+    now_8am = datetime.now(IST).replace(hour=8, minute=15)
+    user_info = {"first_name": "Neerav", "chat_id": canon_id}
+
+    sent_targets = []
+    async def mock_send(cid, text):
+        sent_targets.append(cid)
+        return True
+
+    with patch("morning_briefing.send_telegram_message", side_effect=mock_send), \
+         patch("morning_briefing.detect_early_morning_event", return_value=None), \
+         patch("main.get_unified_schedule", AsyncMock(return_value={"calendar_events": [], "reminders": [], "commitments": []})):
+
+        res = await process_user_morning_briefing(canon_id, user_info, now_8am)
+        assert res is True
+        # Both canon_id and secondary_id must receive the briefing!
+        assert canon_id in sent_targets
+        assert secondary_id in sent_targets
+        assert db.is_morning_briefing_sent(canon_id, today_str) is True
+        assert db.is_morning_briefing_sent(secondary_id, today_str) is True
+
+
+@pytest.mark.asyncio
+async def test_early_morning_first_interaction_kickoff_mandate_injected():
+    """
+    Verifies that during the early morning window (5am - 11am) before the daily
+    briefing is sent, the runtime system prompt injects both the First Morning
+    Kickoff instruction and the Zero Query-Dropping Mandate.
+    """
+    from agent.prompt import build_runtime_system_prompt
+    import core.timeutil as timeutil
+
+    chat_id = 99883344
+    morning_6am = datetime(2026, 11, 15, 6, 30, tzinfo=IST)
+
+    with patch.object(timeutil, "now", return_value=morning_6am):
+        prompt = await build_runtime_system_prompt(chat_id, "bhy kal meeting ka reminder laga do")
+
+        # First morning interaction mandate must be active
+        assert "FIRST MORNING INTERACTION MANDATE" in prompt
+        assert "ZERO QUERY-DROPPING MANDATE" in prompt
+        assert "Good morning" in prompt
+
+
+

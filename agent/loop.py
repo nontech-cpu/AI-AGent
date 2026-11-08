@@ -1052,7 +1052,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "morning" in low_final and any(k in low_final for k in ("schedule", "agenda", "meetings", "reminders", "free hai", "din kaisa"))
             )
             if is_morning_delivered and is_grounded:
-                db.record_morning_briefing_sent(chat_id, today_str, trigger_kind="morning_piggyback")
+                linked_targets = db.get_all_linked_chat_ids(chat_id)
+                for l_cid in linked_targets:
+                    db.record_morning_briefing_sent(l_cid, today_str, trigger_kind="early_wake_kickoff")
     except Exception as emb_err:
         logger.warning(f"Early morning briefing record error: {emb_err}")
 
