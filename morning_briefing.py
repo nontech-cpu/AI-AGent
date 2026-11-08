@@ -251,7 +251,7 @@ async def build_morning_briefing_message(
             elif req_docs and isinstance(req_docs, str):
                 lines.append(f"• 📋 **Required Document:** {req_docs}")
             else:
-                lines.append("• 🪪 **Govt Photo ID:** Aadhaar Card, Passport, ya Voter ID (Airport/Station entry ke liye zaroori).")
+                lines.append("• 🪪 **Govt Photo ID / Aadhaar Card:** Aadhaar Card, Passport, ya Voter ID (Airport/Station entry ke liye zaroori).")
                 lines.append("• 🎟️ **Boarding Pass / E-Ticket:** Digital copy / Web check-in ready rakhein.")
                 lines.append("• 📱 **Essentials:** Phone charger, power bank & tickets.")
             if early_event.get("is_flight"):
