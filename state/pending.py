@@ -207,7 +207,7 @@ def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
     return pending
 
 
-# Deterministic structural commands (Telegram callback buttons & slash commands)
+# Deterministic structural commands (Telegram callback buttons & slash commands & explicit affirmative/negative)
 STRUCTURAL_CONFIRM_COMMANDS = {
     "confirm", "action_confirm", "cb:confirm", "/confirm", "yes", "haan",
     "kar do", "kardo", "bilkul", "create it", "haanji", "sure", "proceed",
@@ -228,7 +228,7 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
         ("cancel", None)            -> User cancelled action
         ("update_time", parsed_res) -> User requested a new time for the meeting
         ("cross_question", None)    -> User asked a cross-question (preserves pending state)
-        ("unrelated", None)         -> Unrelated command or fresh task
+        ("unrelated", None)         -> Unrelated command, greeting or fresh task
     """
     clean = user_text.strip()
     low = clean.lower()
@@ -265,7 +265,7 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
             "- 'confirm': User agrees, approves, confirms, or wants to proceed.\n"
             "- 'cancel': User rejects, declines, cancels, or aborts.\n"
             "- 'cross_question': User asks an informational question or schedule query before deciding.\n"
-            "- 'unrelated': Completely unrelated task or conversation.\n\n"
+            "- 'unrelated': Completely unrelated task, greeting (e.g. 'hi', 'hello', 'hey'), or fresh query.\n\n"
             "Return JSON only: {\"intent\": \"confirm\"|\"cancel\"|\"cross_question\"|\"unrelated\"}"
         )
 
@@ -557,17 +557,29 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             return True, reply
 
         elif kind in ("delete_reminder", "reminder_delete"):
-            title = payload.get("title", "")
-            rem_id = payload.get("reminder_id")
+            target_ids = payload.get("target_ids")
+            if not target_ids and payload.get("reminder_id"):
+                target_ids = [payload.get("reminder_id")]
             from agent.tools import execute_tool
-            res = await execute_tool(chat_id, "delete_reminder", {"title": title, "reminder_id": rem_id})
+            res = await execute_tool(chat_id, "delete_reminder", {
+                "target_ids": target_ids,
+                "confirmed": True
+            })
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
+            user_lang = db.get_user_language(chat_id)
             if res.get("status") == "success":
-                msg = res.get("message") or f"✅ Done! '{title}' reminder delete kar diya hai."
+                del_count = res.get("facts", {}).get("deleted_count", len(target_ids) if target_ids else 1)
+                if user_lang == "english":
+                    msg = f"✅ Successfully deleted {del_count} reminder(s)."
+                else:
+                    msg = f"✅ {del_count} reminder(s) delete kar diye gaye hain."
                 return True, msg
             else:
-                msg = res.get("message") or f"'{title}' reminder delete nahi ho saka."
+                if user_lang == "english":
+                    msg = "Reminder(s) could not be deleted."
+                else:
+                    msg = "Reminder delete nahi ho saka."
                 return False, msg
 
         elif kind in ("create_reminder", "reminder_create"):

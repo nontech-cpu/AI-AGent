@@ -239,9 +239,14 @@ class ListRemindersArgs(BaseModel):
 
 class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
-    reminder_id: Optional[int] = Field(None, description="The ID of the reminder to delete if known.")
+    reminder_id: Optional[int] = Field(None, description="The exact database ID of the reminder to delete if known.")
+    target_ids: Optional[List[int]] = Field(None, description="List of exact database IDs of reminders to delete.")
+    confirmed: Optional[bool] = Field(False, description="Set to true only after explicit user confirmation of the target IDs.")
     request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting deletion.")
-    confirm: Optional[bool] = Field(False, description="Confirmation flag.")
+    confirm: Optional[bool] = Field(False, description="Alias for confirmed.")
+
+class RestoreReminderArgs(BaseModel):
+    reminder_id: int = Field(..., description="The exact database ID of the soft-deleted reminder to restore.")
 
 class GetScheduleArgs(BaseModel):
     target_date: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. Defaults to today IST.")
@@ -771,14 +776,29 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "delete_reminder",
-            "description": "Delete or cancel a saved reminder, meeting, or task by title keyword or ID. Use ONLY when explicitly asked to delete/cancel.",
+            "description": "Delete or cancel a saved reminder, meeting, or task by title keyword or ID. If multiple rows match, returns ambiguous; if 1 row matches, returns needs_confirmation. Deletes only when confirmed=True with exact target_ids.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Title or keyword of the reminder/event to delete."},
-                    "reminder_id": {"type": ["integer", "null"], "description": "Optional specific reminder ID to delete."}
+                    "reminder_id": {"type": ["integer", "null"], "description": "Optional specific reminder ID to delete."},
+                    "target_ids": {"type": ["array", "null"], "items": {"type": "integer"}, "description": "List of exact database IDs to delete."},
+                    "confirmed": {"type": ["boolean", "null"], "description": "Set to true only after explicit user confirmation of the target IDs."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "restore_reminder",
+            "description": "Restore a soft-deleted reminder back to active status by exact ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {"type": "integer", "description": "The exact database ID of the deleted reminder to restore."}
                 },
-                "required": ["title"]
+                "required": ["reminder_id"]
             }
         }
     },
@@ -2702,14 +2722,104 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             }
 
         elif tool_name == "delete_reminder":
-            kw = str(arguments.get("title", "")).strip().lower()
+            kw = str(arguments.get("title") or "").strip().lower()
             rem_id = arguments.get("reminder_id")
-            from db import canonical_chat_id, engine, text, items_for_date
+            target_ids = arguments.get("target_ids")
+            confirmed = bool(arguments.get("confirmed") or arguments.get("confirm", False))
+            from db import canonical_chat_id, engine, text
             can_cid = canonical_chat_id(chat_id)
 
             clean_kw = kw.replace("*", "").replace("'", "").replace('"', "").strip()
 
-            if not clean_kw and not rem_id:
+            # Normalize target IDs list
+            ids_to_act = []
+            if target_ids and isinstance(target_ids, list):
+                ids_to_act = [int(v) for v in target_ids if isinstance(v, int) or (isinstance(v, str) and v.isdigit())]
+            elif rem_id is not None:
+                try:
+                    ids_to_act = [int(rem_id)]
+                except (ValueError, TypeError):
+                    pass
+
+            if confirmed:
+                # Execution phase: ONLY on exact IDs
+                if not ids_to_act and clean_kw:
+                    with engine.connect() as conn:
+                        rows = conn.execute(
+                            text("SELECT m.id, m.title FROM memory_items m JOIN users u ON u.id = m.user_id "
+                                 "WHERE u.telegram_chat_id = :c AND LOWER(m.title) LIKE :pat AND (m.status IS NULL OR m.status != 'deleted')"),
+                            {"c": can_cid, "pat": f"%{clean_kw}%"}
+                        ).fetchall()
+                        if len(rows) == 1:
+                            ids_to_act = [rows[0][0]]
+                        elif len(rows) > 1:
+                            return {
+                                "status": "ambiguous",
+                                "action": "delete_reminder",
+                                "tool_name": "delete_reminder",
+                                "facts": {
+                                    "matching_items": [{"id": r[0], "title": r[1]} for r in rows],
+                                    "reason": "Multiple matching reminders found. User must specify which ID to delete."
+                                },
+                                "next_options": ["specify_target_id", "list_reminders"]
+                            }
+
+                if not ids_to_act:
+                    return {
+                        "status": "error",
+                        "error": "missing_delete_target",
+                        "action": "delete_reminder",
+                        "tool_name": "delete_reminder",
+                        "facts": {"reason": "Exact reminder ID(s) required for confirmed deletion."},
+                        "next_options": ["list_reminders"]
+                    }
+
+                deleted = db.soft_delete_reminders(chat_id, ids_to_act)
+                if deleted:
+                    try:
+                        from api_v1 import _invalidate_all_app_caches
+                        _invalidate_all_app_caches()
+                        from agent.prompt import invalidate_prompt_schedule_cache
+                        invalidate_prompt_schedule_cache(chat_id)
+                    except Exception:
+                        pass
+                    try:
+                        import time as _t
+                        from memory.store import record_action_event
+                        for d_id, d_title in deleted:
+                            record_action_event(
+                                chat_id,
+                                action_type="delete_reminder",
+                                summary=f"Soft-deleted reminder '{d_title}' [ID {d_id}]",
+                                details={"id": d_id, "title": d_title},
+                                source_type="reminder",
+                                source_id=f"rem_del_{chat_id}_{d_id}_{int(_t.time())}",
+                                importance=2
+                            )
+                    except Exception:
+                        pass
+                    return {
+                        "status": "success",
+                        "action": "delete_reminder",
+                        "tool_name": "delete_reminder",
+                        "facts": {
+                            "deleted_ids": [r[0] for r in deleted],
+                            "deleted_titles": [r[1] for r in deleted],
+                            "deleted_count": len(deleted)
+                        },
+                        "next_options": ["restore_reminder", "list_reminders"]
+                    }
+                else:
+                    return {
+                        "status": "not_found",
+                        "action": "delete_reminder",
+                        "tool_name": "delete_reminder",
+                        "facts": {"target_ids": ids_to_act, "found": False},
+                        "next_options": ["list_reminders"]
+                    }
+
+            # Phase 1: Unconfirmed request -> Discovery & Confirmation gate
+            if not clean_kw and not ids_to_act:
                 return {
                     "status": "error",
                     "error": "missing_delete_target",
@@ -2718,89 +2828,111 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "next_options": ["list_reminders", "specify_target_to_delete"]
                 }
 
-            deleted_titles = []
-            with engine.begin() as conn:
-                if rem_id:
-                    matched_rows = conn.execute(
-                        text("SELECT id, title FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
-                        {"id": rem_id, "c": can_cid}
-                    ).fetchall()
+            matched_rows = []
+            with engine.connect() as conn:
+                is_pg = engine.dialect.name == "postgresql"
+                if ids_to_act:
+                    if is_pg:
+                        matched_rows = conn.execute(
+                            text("SELECT m.id, m.title, m.due_date, m.due_time FROM memory_items m JOIN users u ON u.id = m.user_id "
+                                 "WHERE u.telegram_chat_id = :c AND m.id = ANY(:ids) AND (m.status IS NULL OR m.status != 'deleted')"),
+                            {"c": can_cid, "ids": ids_to_act}
+                        ).fetchall()
+                    else:
+                        placeholders = ", ".join([f":id_{i}" for i in range(len(ids_to_act))])
+                        p_dict = {f"id_{i}": v for i, v in enumerate(ids_to_act)}
+                        p_dict["c"] = can_cid
+                        matched_rows = conn.execute(
+                            text(f"SELECT m.id, m.title, m.due_date, m.due_time FROM memory_items m JOIN users u ON u.id = m.user_id "
+                                 f"WHERE u.telegram_chat_id = :c AND m.id IN ({placeholders}) AND (m.status IS NULL OR m.status != 'deleted')"),
+                            p_dict
+                        ).fetchall()
                 elif clean_kw:
                     matched_rows = conn.execute(
-                        text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
+                        text("SELECT m.id, m.title, m.due_date, m.due_time FROM memory_items m JOIN users u ON u.id = m.user_id "
+                             "WHERE u.telegram_chat_id = :c AND LOWER(m.title) LIKE :pat AND (m.status IS NULL OR m.status != 'deleted')"),
                         {"pat": f"%{clean_kw}%", "c": can_cid}
                     ).fetchall()
-                    # Fallback token match if exact substring not found
-                    if not matched_rows:
-                        tokens = [t for t in clean_kw.split() if len(t) >= 3]
-                        for tk in tokens:
-                            rows = conn.execute(
-                                text("SELECT id, title FROM memory_items WHERE LOWER(title) LIKE :pat AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
-                                {"pat": f"%{tk}%", "c": can_cid}
-                            ).fetchall()
-                            if rows:
-                                matched_rows = rows
-                                break
-                else:
-                    matched_rows = []
 
-                for r_id, r_title in matched_rows:
-                    conn.execute(text("DELETE FROM reminders WHERE item_id = :id"), {"id": r_id})
-                    conn.execute(text("DELETE FROM memory_items WHERE id = :id"), {"id": r_id})
-                    deleted_titles.append(r_title)
+            if not matched_rows:
+                return {
+                    "status": "not_found",
+                    "action": "delete_reminder",
+                    "tool_name": "delete_reminder",
+                    "facts": {"target": clean_kw or str(ids_to_act), "found": False},
+                    "next_options": ["list_reminders"]
+                }
 
-            try:
-                rules = db.get_user_rules(can_cid)
-                for r in rules:
-                    r_text = (r.get("rule") or "").lower()
-                    if clean_kw in r_text or any(tk in r_text for tk in clean_kw.split() if len(tk) >= 3):
-                        db.delete_user_rule(can_cid, r.get("id"))
-            except Exception:
-                pass
+            if len(matched_rows) > 1 and not ids_to_act:
+                # Ambiguous title -> do NOT delete! Ask which ID!
+                return {
+                    "status": "ambiguous",
+                    "action": "delete_reminder",
+                    "tool_name": "delete_reminder",
+                    "facts": {
+                        "reason": "Multiple matching reminders found. User must specify which ID to delete.",
+                        "matching_items": [
+                            {"id": r[0], "title": r[1], "due_date": str(r[2]), "due_time": str(r[3])}
+                            for r in matched_rows
+                        ]
+                    },
+                    "next_options": ["specify_target_id", "list_reminders"]
+                }
 
-            try:
-                from api_v1 import _invalidate_all_app_caches
-                _invalidate_all_app_caches()
-                from agent.prompt import invalidate_prompt_schedule_cache
-                invalidate_prompt_schedule_cache(chat_id)
-            except Exception:
-                pass
+            # Exactly 1 match (or explicit target_ids) -> needs confirmation before soft deleting!
+            target_ids_list = [r[0] for r in matched_rows]
+            items_list = [
+                {"id": r[0], "title": r[1], "due_date": str(r[2]), "due_time": str(r[3])}
+                for r in matched_rows
+            ]
+            return {
+                "status": "needs_confirmation",
+                "action": "delete_reminder",
+                "tool_name": "delete_reminder",
+                "target_ids": target_ids_list,
+                "facts": {
+                    "target_ids": target_ids_list,
+                    "items": items_list,
+                    "requires_explicit_confirmation": True
+                },
+                "next_options": ["confirm", "cancel"]
+            }
 
-            if deleted_titles:
+        elif tool_name == "restore_reminder":
+            rem_id = arguments.get("reminder_id")
+            if rem_id is None:
+                return {
+                    "status": "error",
+                    "error_type": "missing_required_argument",
+                    "action": "restore_reminder",
+                    "facts": {"reason": "Reminder ID is required to restore."},
+                    "next_options": ["list_reminders"]
+                }
+            restored = db.restore_reminder(chat_id, int(rem_id))
+            if restored:
                 try:
-                    import time as _t
-                    from memory.store import record_action_event
-                    for d_title in deleted_titles:
-                        record_action_event(
-                            chat_id,
-                            action_type="delete_reminder",
-                            summary=f"Deleted reminder '{d_title}'",
-                            details={"title": d_title},
-                            source_type="reminder",
-                            source_id=f"rem_del_{chat_id}_{d_title}_{int(_t.time())}",
-                            importance=2
-                        )
+                    from api_v1 import _invalidate_all_app_caches
+                    _invalidate_all_app_caches()
+                    from agent.prompt import invalidate_prompt_schedule_cache
+                    invalidate_prompt_schedule_cache(chat_id)
                 except Exception:
                     pass
                 return {
                     "status": "success",
-                    "action": "delete_reminder",
-                    "tool_name": "delete_reminder",
+                    "action": "restore_reminder",
+                    "tool_name": "restore_reminder",
                     "facts": {
-                        "deleted_titles": deleted_titles,
-                        "deleted_count": len(deleted_titles)
+                        "restored_id": restored["id"],
+                        "title": restored["title"]
                     },
                     "next_options": ["list_reminders"]
                 }
             else:
                 return {
                     "status": "not_found",
-                    "action": "delete_reminder",
-                    "tool_name": "delete_reminder",
-                    "facts": {
-                        "target": clean_kw or str(rem_id),
-                        "found": False
-                    },
+                    "action": "restore_reminder",
+                    "tool_name": "restore_reminder",
+                    "facts": {"target_id": rem_id, "found": False},
                     "next_options": ["list_reminders"]
                 }
 

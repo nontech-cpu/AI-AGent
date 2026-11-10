@@ -169,6 +169,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         redacted_token = f"{prefix}[REDACTED]"
         db.log_chat_message(chat_id, "user", redacted_token, channel=channel)
         db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
+        try:
+            from connectors.trace import log_turn_trace
+            log_turn_trace(
+                chat_id=chat_id,
+                message=trimmed_text,
+                tools_called=["connect_integration"],
+                tool_results=[{"integration": "notion", "status": "connected" if is_valid else "failed"}],
+                guard_results={},
+                latency_ms=int((time.time() - start_ts) * 1000),
+                tokens=0,
+                reply_path="fast_path_notion",
+                llm_calls=0
+            )
+        except Exception:
+            pass
         return {
             "reply": reply_msg,
             "tool_calls_executed": ["connect_integration"],
@@ -192,6 +207,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         redacted_token = f"{prefix}[REDACTED]"
         db.log_chat_message(chat_id, "user", redacted_token, channel=channel)
         db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
+        try:
+            from connectors.trace import log_turn_trace
+            log_turn_trace(
+                chat_id=chat_id,
+                message=trimmed_text,
+                tools_called=["connect_integration"],
+                tool_results=[{"integration": "github", "status": "connected" if is_valid else "failed"}],
+                guard_results={},
+                latency_ms=int((time.time() - start_ts) * 1000),
+                tokens=0,
+                reply_path="fast_path_github",
+                llm_calls=0
+            )
+        except Exception:
+            pass
         return {
             "reply": reply_msg,
             "tool_calls_executed": ["connect_integration"],
@@ -220,6 +250,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             success, reply_msg = await execute_pending_action(chat_id, active_pending)
             db.log_chat_message(chat_id, "user", user_text, channel=channel)
             db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
+            try:
+                from connectors.trace import log_turn_trace
+                log_turn_trace(
+                    chat_id=chat_id,
+                    message=user_text,
+                    tools_called=[active_pending.get("action_kind", "pending_action")],
+                    tool_results=[{"success": success, "reply": reply_msg}],
+                    guard_results={},
+                    latency_ms=int((time.time() - start_ts) * 1000),
+                    tokens=0,
+                    reply_path="pending_confirmation",
+                    llm_calls=1
+                )
+            except Exception:
+                pass
             return {
                 "reply": reply_msg,
                 "tool_calls_executed": [],
@@ -243,6 +288,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 reply_msg = get_i18n_string("action_cancelled", lang=user_lang)
                 db.log_chat_message(chat_id, "user", user_text, channel=channel)
                 db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
+                try:
+                    from connectors.trace import log_turn_trace
+                    log_turn_trace(
+                        chat_id=chat_id,
+                        message=user_text,
+                        tools_called=["cancel_pending_action"],
+                        tool_results=[{"status": "cancelled"}],
+                        guard_results={},
+                        latency_ms=int((time.time() - start_ts) * 1000),
+                        tokens=0,
+                        reply_path="pending_cancelled",
+                        llm_calls=1
+                    )
+                except Exception:
+                    pass
                 return {
                     "reply": reply_msg,
                     "tool_calls_executed": [],
@@ -280,6 +340,21 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             reply_msg = f"Meeting time updated: **{clock_str}**.\n\n{conf_dialogue}"
             db.log_chat_message(chat_id, "user", user_text, channel=channel)
             db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
+            try:
+                from connectors.trace import log_turn_trace
+                log_turn_trace(
+                    chat_id=chat_id,
+                    message=user_text,
+                    tools_called=["update_meeting_time"],
+                    tool_results=[{"start_iso": payload.get("start_iso")}],
+                    guard_results={},
+                    latency_ms=int((time.time() - start_ts) * 1000),
+                    tokens=0,
+                    reply_path="pending_update_time",
+                    llm_calls=1
+                )
+            except Exception:
+                pass
             return {
                 "reply": reply_msg,
                 "tool_calls_executed": [],
@@ -719,6 +794,34 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             f"Please confirm — delete '{payload.get('title')}' from your Google Calendar?\n\n"
                             f"Reply yes to delete or no to cancel."
                         )
+                        break
+
+                    elif act in ("delete_reminder", "reminder_delete"):
+                        target_ids = tool_result.get("target_ids") or tool_result.get("facts", {}).get("target_ids", [])
+                        items = tool_result.get("items") or tool_result.get("facts", {}).get("items", [])
+                        payload = {
+                            "kind": "delete_reminder",
+                            "action": "delete_reminder",
+                            "target_ids": target_ids,
+                            "items": items,
+                            "created_at": timeutil.now(IST).isoformat()
+                        }
+                        pending_action = payload
+                        save_pending_action(chat_id, "delete_reminder", payload)
+                        items_str = "\n".join([f"• `[ID {it.get('id')}]` {it.get('title')} ({it.get('due_date')} {it.get('due_time')})" for it in items])
+                        user_lang = db.get_user_language(chat_id)
+                        if user_lang == "english":
+                            final_reply = (
+                                f"Please confirm deletion of the following reminder(s):\n\n"
+                                f"{items_str}\n\n"
+                                f"Reply 'confirm' to delete or 'cancel' to keep them."
+                            )
+                        else:
+                            final_reply = (
+                                f"Kripya confirmation dein — kya aap ye reminder(s) delete karna chahte hain?\n\n"
+                                f"{items_str}\n\n"
+                                f"Reply karein 'confirm' delete karne ke liye ya 'cancel' cancel karne ke liye."
+                            )
                         break
 
                     else:

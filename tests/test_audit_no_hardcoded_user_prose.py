@@ -122,12 +122,28 @@ async def test_delete_reminder_returns_structured_data_no_prose():
     db.ensure_user(chat_id)
     item_id = db.save_memory(chat_id, "appointments", "Yoga Class", None, date(2026, 11, 10), dtime(9, 0), 30)
 
-    res = await execute_tool(
+    # 1. Unconfirmed request returns needs_confirmation (pure structured data, zero prose)
+    res_unconf = await execute_tool(
         chat_id,
         "delete_reminder",
         {
             "reminder_id": item_id,
             "title": "Yoga Class",
+            "request_quote": "delete yoga class"
+        },
+        user_context={"user_text": "delete yoga class", "bypass_quote_check": True}
+    )
+    assert res_unconf.get("status") == "needs_confirmation"
+    assert "facts" in res_unconf
+    assert "next_options" in res_unconf
+
+    # 2. Confirmed request returns success with soft-deleted records
+    res = await execute_tool(
+        chat_id,
+        "delete_reminder",
+        {
+            "target_ids": [item_id],
+            "confirmed": True,
             "request_quote": "delete yoga class"
         },
         user_context={"user_text": "delete yoga class", "bypass_quote_check": True}

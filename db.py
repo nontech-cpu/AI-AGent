@@ -197,6 +197,25 @@ def get_user_preference(chat_id):
 
 
 _MEMORY_ITEMS_RECURRENCE_INITIALIZED = False
+_MEMORY_ITEMS_STATUS_INITIALIZED = False
+
+def _init_memory_items_status_column():
+    global _MEMORY_ITEMS_STATUS_INITIALIZED
+    if _MEMORY_ITEMS_STATUS_INITIALIZED:
+        return
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';"))
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE memory_items ADD COLUMN status TEXT DEFAULT 'active';"))
+                except Exception:
+                    pass
+        _MEMORY_ITEMS_STATUS_INITIALIZED = True
+    except Exception as exc:
+        print("_init_memory_items_status_column error:", exc)
 
 def _init_memory_items_recurrence_column():
     global _MEMORY_ITEMS_RECURRENCE_INITIALIZED
@@ -262,6 +281,7 @@ def list_memories(chat_id):
 def items_for_date(chat_id, d):
     chat_id = canonical_chat_id(chat_id)
     _init_memory_items_recurrence_column()
+    _init_memory_items_status_column()
     d_val = d.isoformat() if hasattr(d, "isoformat") and engine.dialect.name == "sqlite" else d
     with engine.connect() as conn:
         rows = conn.execute(
@@ -269,6 +289,7 @@ def items_for_date(chat_id, d):
                 "SELECT m.category, m.title, m.amount, m.due_time, m.id, COALESCE(m.duration_minutes, 30) AS duration_minutes, m.due_date, COALESCE(m.recurrence, 'none') AS recurrence "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c "
+                "  AND (m.status IS NULL OR m.status != 'deleted') "
                 "  AND (m.due_date = :d OR (m.recurrence IS NOT NULL AND m.recurrence != 'none' AND m.due_date <= :d)) "
                 "ORDER BY m.due_time NULLS FIRST, m.id"
             ),
@@ -327,6 +348,7 @@ def items_for_date(chat_id, d):
 def items_for_date_range(chat_id, start_d, end_d):
     chat_id = canonical_chat_id(chat_id)
     _init_memory_items_recurrence_column()
+    _init_memory_items_status_column()
     s_val = start_d.isoformat() if hasattr(start_d, "isoformat") and engine.dialect.name == "sqlite" else start_d
     e_val = end_d.isoformat() if hasattr(end_d, "isoformat") and engine.dialect.name == "sqlite" else end_d
     with engine.connect() as conn:
@@ -335,6 +357,7 @@ def items_for_date_range(chat_id, start_d, end_d):
                 "SELECT m.category, m.title, m.amount, m.due_time, m.due_date, m.id, COALESCE(m.duration_minutes, 30) AS duration_minutes, COALESCE(m.recurrence, 'none') AS recurrence "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c "
+                "  AND (m.status IS NULL OR m.status != 'deleted') "
                 "  AND ((m.due_date >= :s AND m.due_date <= :e) OR (m.recurrence IS NOT NULL AND m.recurrence != 'none' AND m.due_date <= :e)) "
                 "ORDER BY m.due_date ASC, m.due_time NULLS FIRST, m.id"
             ),
@@ -1056,6 +1079,98 @@ def find_meetings_before(chat_id, due_date, before_time):
             ),
             {"c": chat_id, "d": due_date, "t": before_time},
         ).fetchall()
+
+
+def soft_delete_reminders(chat_id, item_ids):
+    """Soft delete reminders (status='deleted') strictly by exact IDs owned by this user."""
+    _init_memory_items_status_column()
+    chat_id = canonical_chat_id(chat_id)
+    ids = [int(v) for v in item_ids if isinstance(v, int) or (isinstance(v, str) and v.isdigit())]
+    if not ids:
+        return []
+
+    with engine.begin() as conn:
+        is_pg = engine.dialect.name == "postgresql"
+        if is_pg:
+            owned = conn.execute(
+                text(
+                    "SELECT m.id, m.title FROM memory_items m JOIN users u ON u.id = m.user_id "
+                    "WHERE u.telegram_chat_id = :c AND m.id = ANY(:ids) AND (m.status IS NULL OR m.status != 'deleted')"
+                ),
+                {"c": chat_id, "ids": ids},
+            ).fetchall()
+        else:
+            placeholders = ", ".join([f":id_{i}" for i in range(len(ids))])
+            param_dict = {f"id_{i}": val for i, val in enumerate(ids)}
+            param_dict["c"] = chat_id
+            owned = conn.execute(
+                text(
+                    f"SELECT m.id, m.title FROM memory_items m JOIN users u ON u.id = m.user_id "
+                    f"WHERE u.telegram_chat_id = :c AND m.id IN ({placeholders}) AND (m.status IS NULL OR m.status != 'deleted')"
+                ),
+                param_dict,
+            ).fetchall()
+
+        if not owned:
+            return []
+
+        safe_ids = [int(r[0]) for r in owned]
+        if is_pg:
+            conn.execute(
+                text("UPDATE memory_items SET status = 'deleted' WHERE id = ANY(:ids)"),
+                {"ids": safe_ids},
+            )
+            try:
+                conn.execute(
+                    text("UPDATE reminders SET status = 'deleted' WHERE item_id = ANY(:ids)"),
+                    {"ids": safe_ids},
+                )
+            except Exception:
+                pass
+        else:
+            placeholders = ", ".join([f":id_{i}" for i in range(len(safe_ids))])
+            param_dict = {f"id_{i}": val for i, val in enumerate(safe_ids)}
+            conn.execute(
+                text(f"UPDATE memory_items SET status = 'deleted' WHERE id IN ({placeholders})"),
+                param_dict,
+            )
+            try:
+                conn.execute(
+                    text(f"UPDATE reminders SET status = 'deleted' WHERE item_id IN ({placeholders})"),
+                    param_dict,
+                )
+            except Exception:
+                pass
+
+        return [(r[0], r[1]) for r in owned]
+
+
+def restore_reminder(chat_id, rem_id: int):
+    """Restores a soft-deleted reminder back to active status by exact ID."""
+    _init_memory_items_status_column()
+    chat_id = canonical_chat_id(chat_id)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT m.id, m.title FROM memory_items m JOIN users u ON u.id = m.user_id "
+                "WHERE u.telegram_chat_id = :c AND m.id = :id AND m.status = 'deleted'"
+            ),
+            {"c": chat_id, "id": int(rem_id)},
+        ).first()
+        if not row:
+            return None
+        conn.execute(
+            text("UPDATE memory_items SET status = 'active' WHERE id = :id"),
+            {"id": int(rem_id)},
+        )
+        try:
+            conn.execute(
+                text("UPDATE reminders SET status = 'active' WHERE item_id = :id"),
+                {"id": int(rem_id)},
+            )
+        except Exception:
+            pass
+        return {"id": row[0], "title": row[1]}
 
 
 def delete_memory_items(chat_id, item_ids):

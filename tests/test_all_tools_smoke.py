@@ -27,6 +27,7 @@ MINIMAL_VALID_ARGS = {
     "create_reminder": {"title": "Doctor Appointment", "due_date": "2026-11-10", "due_time": "10:00"},
     "update_reminder": {"title": "Doctor Appointment", "due_date": "2026-11-11", "due_time": "11:00"},
     "delete_reminder": {"title": "Doctor Appointment"},
+    "restore_reminder": {"reminder_id": 1},
     "list_reminders": {"date_str": "2026-11-10"},
     "get_schedule": {"target_date": "2026-11-10"},
     "check_availability": {"target_date": "2026-11-10", "start_time": "14:00", "duration_minutes": 30},

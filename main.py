@@ -2421,6 +2421,24 @@ async def handle_active(chat_id, text):
             typing_task.cancel()
 
 
+def _log_slash_or_early_trace(chat_id: int, message: str, reply_path: str, reply_text: str, tool_name: str = None):
+    try:
+        from connectors.trace import log_turn_trace
+        log_turn_trace(
+            chat_id=chat_id,
+            message=message,
+            tools_called=[tool_name] if tool_name else [],
+            tool_results=[{"reply": reply_text}],
+            guard_results={},
+            latency_ms=10,
+            tokens=0,
+            reply_path=reply_path,
+            llm_calls=0
+        )
+    except Exception:
+        pass
+
+
 async def handle_user_text(chat_id, text, lang_hint=None):
     clean = text.strip()
     if not clean:
@@ -2434,7 +2452,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         ensure_user(chat_id)
         if not has_consent(chat_id):
             set_state(chat_id, "consent")
-            await say(chat_id, await get_welcome_consent_text(chat_id))
+            w_text = await get_welcome_consent_text(chat_id)
+            await say(chat_id, w_text)
+            _log_slash_or_early_trace(chat_id, clean, "onboarding_prompt", w_text)
             return
         st = (None, None)
     state, data = st
@@ -2453,36 +2473,50 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 set_state(chat_id, "persona")
                 await say(chat_id, "Thank you!")
                 await ask_persona(chat_id)
+                _log_slash_or_early_trace(chat_id, clean, "onboarding_consent_given", "Thank you!")
                 return
             elif yn is False:
                 delete_user(chat_id)
-                await say(chat_id, "Okay, nothing has been saved. Message me anytime if you change your mind.")
+                rep = "Okay, nothing has been saved. Message me anytime if you change your mind."
+                await say(chat_id, rep)
+                _log_slash_or_early_trace(chat_id, clean, "onboarding_consent_declined", rep)
                 return
             elif cmd_token in {"/start", "start"}:
-                await say(chat_id, await get_welcome_consent_text(chat_id))
+                w_text = await get_welcome_consent_text(chat_id)
+                await say(chat_id, w_text)
+                _log_slash_or_early_trace(chat_id, clean, "onboarding_start", w_text)
                 return
             else:
-                await say(chat_id, "Shall we continue? Please reply yes or no.")
+                rep = "Shall we continue? Please reply yes or no."
+                await say(chat_id, rep)
+                _log_slash_or_early_trace(chat_id, clean, "onboarding_ask_retry", rep)
                 return
         else:
             set_state(chat_id, "consent")
-            await say(chat_id, await get_welcome_consent_text(chat_id))
+            w_text = await get_welcome_consent_text(chat_id)
+            await say(chat_id, w_text)
+            _log_slash_or_early_trace(chat_id, clean, "onboarding_prompt", w_text)
             return
 
     # Top-level command interruptions should ALWAYS be respected and immediately reset state and pending actions!
     if cmd_token in {"/start", "start"}:
         set_state(chat_id, None)
         PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-        await say(chat_id, "Welcome back!\n\n" + HELP_TEXT)
+        rep = "Welcome back!\n\n" + HELP_TEXT
+        await say(chat_id, rep)
+        _log_slash_or_early_trace(chat_id, clean, "slash_start", rep, "/start")
         return
     if cmd_token in {"/cancel", "cancel"} or clean_lower in {"/cancel", "cancel", "rehne do", "chhoro", "radd karo", "cancel karo", "stop", "रद्द", "मत करो"}:
         set_state(chat_id, None)
         PENDING_GOOGLE_ACTIONS.pop(chat_id, None)
-        await say(chat_id, "Cancelled. Kuch save ya schedule nahi hua.")
+        rep = "Cancelled. Kuch save ya schedule nahi hua."
+        await say(chat_id, rep)
+        _log_slash_or_early_trace(chat_id, clean, "slash_cancel", rep, "/cancel")
         return
     if cmd_token in {"/help", "help", "/menu", "menu"}:
         set_state(chat_id, None)
         await say(chat_id, HELP_TEXT)
+        _log_slash_or_early_trace(chat_id, clean, "slash_help", HELP_TEXT, "/help")
         return
 
     # User Memory Controls (Phase 2)
@@ -2491,7 +2525,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         uid = resolve_user_id(chat_id)
         mems = get_active_memories(uid)
         if not mems:
-            await say(chat_id, "Mere paas abhi aapki koi active memory saved nahi hai.")
+            rep = "Mere paas abhi aapki koi active memory saved nahi hai."
+            await say(chat_id, rep)
+            _log_slash_or_early_trace(chat_id, clean, "slash_memories", rep, "/memories")
             return
         grouped = {}
         for m in mems:
@@ -2504,7 +2540,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 lines.append(f"• `[ID {item['id']}]` {item['content']} (saved {item['created_at']})")
             lines.append("")
         lines.append("Kisi memory ko delete karne ke liye: `/forget <ID>` ya `/forget <keyword>`")
-        await say(chat_id, "\n".join(lines).strip())
+        rep = "\n".join(lines).strip()
+        await say(chat_id, rep)
+        _log_slash_or_early_trace(chat_id, clean, "slash_memories", rep, "/memories")
         return
 
     if cmd_token == "/forget" or clean_lower.startswith("/forget "):
@@ -2512,14 +2550,18 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         uid = resolve_user_id(chat_id)
         parts = clean.split(maxsplit=1)
         if len(parts) < 2:
-            await say(chat_id, "Kaunsi memory delete karni hai? Type: `/forget <ID>` ya `/forget <keyword>`")
+            rep = "Kaunsi memory delete karni hai? Type: `/forget <ID>` ya `/forget <keyword>`"
+            await say(chat_id, rep)
+            _log_slash_or_early_trace(chat_id, clean, "slash_forget", rep, "/forget")
             return
         target = parts[1].strip()
         success = forget_memory(uid, target)
         if success:
-            await say(chat_id, f"✅ Memory '{target}' successfully delete kar di gayi hai (archived).")
+            rep = f"✅ Memory '{target}' successfully delete kar di gayi hai (archived)."
         else:
-            await say(chat_id, f"⚠️ '{target}' se matching koi active memory nahi mili.")
+            rep = f"⚠️ '{target}' se matching koi active memory nahi mili."
+        await say(chat_id, rep)
+        _log_slash_or_early_trace(chat_id, clean, "slash_forget", rep, "/forget")
         return
 
     # 1. Cognitive Health Score & Memory Decay Radar
