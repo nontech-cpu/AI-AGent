@@ -30,7 +30,7 @@
   ```json
   {
     "id": 1082,
-    "chat_id": 1758056012,
+    "chat_id": [REDACTED_CHAT_SECONDARY],
     "user_message": "mene aaravmishra ko ek mail send kra rh tum bta skte ho vo",
     "tools_called": ["search_user_emails"],
     "tool_results": [{"status": "error", "error": "cannot access local variable 'google_services' where it is not associated with a value"}],
@@ -115,13 +115,13 @@
 | # | Chat ID | Summary | Source ID | Label | Empirical Justification |
 |---|---|---|---|---|---|
 | **1** | `911` | Created calendar meeting 'Sprint Planning' (2026-10-22) | `pending_action:5` | **LIKELY TEST DATA** | Chat ID 911 is the hardcoded synthetic fixture used in automated test scripts on Oct 22. |
-| **2** | `1758056012` | Sent email to `aaravmishra619@gmail.com` with subject 'weather' (2026-10-31) | `pending_action:37` | **REAL** | Live user interaction from Oct 31, 2026. This is the exact sent email the user asked about at 11:22 PM. |
-| **3** | `1758056012` | Deleted reminder 'Test Dummy Reminder' (2026-11-05) | `pending_action:39` | **LIKELY TEST DATA** | Created during live debugging at 03:03 AM explicitly titled 'Test Dummy Reminder'. |
-| **4** | `1758056012` | Created reminder 'Movie jana hai' for 2025-01-24 at 16:30 | `trace:1043` | **LIKELY TEST DATA / POISONED CUTOFF** | Created prior to Phase 1 temporal fix; model defaulted to training cutoff year 2025. |
-| **5** | `1758056012` | Created reminder 'Movie (3 hours long)' for 2025-05-15 at 13:00 | `trace:1058` | **REAL (Live turn with cutoff year)** | Live Telegram turn from Nov 5 at 9:57 PM (*"bhy mere toh kl 1 pm movie reminder set krdena"*). |
-| **6** | `1758056012` | Created reminder 'Flight' for 2025-05-16 at 14:00 | `trace:1060` | **REAL (Live turn with cutoff year)** | Live Telegram turn from Nov 5 at 9:58 PM (*"kl 2pm m ko meri flight b h"*). |
-| **7** | `1758056012` | Deleted reminder 'Movie jana hai, Movie (3 hours long)' | `trace:1062` | **UNSURE / MULTI-DELETE ARTIFACT** | Title is a comma-joined string artifact created when a bulk reminder delete tool executed. |
-| **8** | `1758056012` | Created reminder 'Movie' for 2026-11-06 at 13:00 | `trace:1078` | **REAL** | Live Telegram turn from Nov 5 at 10:10 PM after Phase 7 temporal fix correctly resolving to 2026. |
+| **2** | `[REDACTED_CHAT_SECONDARY]` | Sent email to `aaravmishra619@gmail.com` with subject 'weather' (2026-10-31) | `pending_action:37` | **REAL** | Live user interaction from Oct 31, 2026. This is the exact sent email the user asked about at 11:22 PM. |
+| **3** | `[REDACTED_CHAT_SECONDARY]` | Deleted reminder 'Test Dummy Reminder' (2026-11-05) | `pending_action:39` | **LIKELY TEST DATA** | Created during live debugging at 03:03 AM explicitly titled 'Test Dummy Reminder'. |
+| **4** | `[REDACTED_CHAT_SECONDARY]` | Created reminder 'Movie jana hai' for 2025-01-24 at 16:30 | `trace:1043` | **LIKELY TEST DATA / POISONED CUTOFF** | Created prior to Phase 1 temporal fix; model defaulted to training cutoff year 2025. |
+| **5** | `[REDACTED_CHAT_SECONDARY]` | Created reminder 'Movie (3 hours long)' for 2025-05-15 at 13:00 | `trace:1058` | **REAL (Live turn with cutoff year)** | Live Telegram turn from Nov 5 at 9:57 PM (*"bhy mere toh kl 1 pm movie reminder set krdena"*). |
+| **6** | `[REDACTED_CHAT_SECONDARY]` | Created reminder 'Flight' for 2025-05-16 at 14:00 | `trace:1060` | **REAL (Live turn with cutoff year)** | Live Telegram turn from Nov 5 at 9:58 PM (*"kl 2pm m ko meri flight b h"*). |
+| **7** | `[REDACTED_CHAT_SECONDARY]` | Deleted reminder 'Movie jana hai, Movie (3 hours long)' | `trace:1062` | **UNSURE / MULTI-DELETE ARTIFACT** | Title is a comma-joined string artifact created when a bulk reminder delete tool executed. |
+| **8** | `[REDACTED_CHAT_SECONDARY]` | Created reminder 'Movie' for 2026-11-06 at 13:00 | `trace:1078` | **REAL** | Live Telegram turn from Nov 5 at 10:10 PM after Phase 7 temporal fix correctly resolving to 2026. |
 
 ### E. Test Suite Verification & Raw Output
 - **Test File**: [`tests/test_phase7b_event_memory.py`](file:///c:/Users/neera/OneDrive/ai%20agent/ai-agent/tests/test_phase7b_event_memory.py)

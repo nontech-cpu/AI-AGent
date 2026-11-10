@@ -1,7 +1,7 @@
 # Phase 7e: Step 7 - Production Database Duplicate Rows Cleanup Proposal
 
 ## Background & Trace Evidence
-During live testing on 10 Nov 2026, two duplicate 5:00 PM reminders were created for user `1234828592` (db `user_id=306`):
+During live testing on 10 Nov 2026, two duplicate 5:00 PM reminders were created for user `[REDACTED_CHAT_PRIMARY]` (db `user_id=306`):
 
 1. **Row 1 (`title="Meeting"`, 17:00 IST)**:
    - **Trace ID**: `1206` (`tr_a35f18ed4b66`)

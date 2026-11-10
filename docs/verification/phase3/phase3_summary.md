@@ -13,7 +13,7 @@ Phase 3 establishes the **`memories` table as the cognitive single source of tru
 
 ### Key Architectural Upgrades:
 1. **Dynamic Database-Backed Identity Linking**:
-   - Replaced hardcoded `CANONICAL_CHAT_ID_MAP = {1234828592: 1758056012}` in `db.py` with dynamic `identity_links` table lookup (`get_identity_links()`) featuring 60-second in-memory TTL caching and cache invalidation on link/unlink.
+   - Replaced hardcoded `CANONICAL_CHAT_ID_MAP = {[REDACTED_CHAT_PRIMARY]: [REDACTED_CHAT_SECONDARY]}` in `db.py` with dynamic `identity_links` table lookup (`get_identity_links()`) featuring 60-second in-memory TTL caching and cache invalidation on link/unlink.
    - Retained `_CanonicalMapProxy` for 100% backward compatibility with legacy dictionary callers.
 2. **Embedding Retry Queue & Background Worker**:
    - Built `embedding_retry_queue` table and asynchronous retry worker `process_embedding_retry_queue(batch_size=10)`.
@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_identity_links_canonical ON identity_links(canoni
 
 -- Seed default mapping
 INSERT INTO identity_links (source_chat_id, canonical_chat_id, label, created_at)
-VALUES (1234828592, 1758056012, 'Neerav secondary account', CURRENT_TIMESTAMP)
+VALUES ([REDACTED_CHAT_PRIMARY], [REDACTED_CHAT_SECONDARY], 'Neerav secondary account', CURRENT_TIMESTAMP)
 ON CONFLICT (source_chat_id) DO NOTHING;
 
 -- 2. Create embedding retry queue table

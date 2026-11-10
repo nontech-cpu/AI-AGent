@@ -551,9 +551,10 @@ def _init_reminders_scheduler_columns():
                     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
                     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_by VARCHAR(64);
                     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';
                 """))
             else:
-                for col, c_type in [("due_at", "TIMESTAMP"), ("sent_at", "TIMESTAMP"), ("claimed_by", "TEXT"), ("claimed_at", "TIMESTAMP")]:
+                for col, c_type in [("due_at", "TIMESTAMP"), ("sent_at", "TIMESTAMP"), ("claimed_by", "TEXT"), ("claimed_at", "TIMESTAMP"), ("status", "TEXT DEFAULT 'active'")]:
                     try:
                         conn.execute(text(f"ALTER TABLE reminders ADD COLUMN {col} {c_type}"))
                     except Exception:
@@ -602,6 +603,8 @@ def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int 
                 JOIN memory_items m ON m.id = r.item_id
                 JOIN users u ON u.id = m.user_id
                 WHERE (r.sent IS NOT TRUE)
+                  AND (m.status IS NULL OR m.status != 'deleted')
+                  AND (r.status IS NULL OR r.status != 'deleted')
                   AND (r.claimed_at IS NULL OR r.claimed_at < :stale_cutoff)
                   AND COALESCE(r.due_at, r.remind_at) <= :now
                 ORDER BY COALESCE(r.due_at, r.remind_at)
@@ -624,6 +627,8 @@ def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int 
                 JOIN memory_items m ON m.id = r.item_id
                 JOIN users u ON u.id = m.user_id
                 WHERE (r.sent IS NOT TRUE OR r.sent = 0)
+                  AND (m.status IS NULL OR m.status != 'deleted')
+                  AND (r.status IS NULL OR r.status != 'deleted')
                   AND (r.claimed_at IS NULL OR r.claimed_at < :stale_cutoff)
                   AND COALESCE(r.due_at, r.remind_at) <= :now
                 ORDER BY COALESCE(r.due_at, r.remind_at)
@@ -652,6 +657,8 @@ def get_pending_reminders(now):
                 "JOIN memory_items m ON m.id = r.item_id "
                 "JOIN users u ON u.id = m.user_id "
                 "WHERE (r.sent IS NOT TRUE OR r.sent = 0) "
+                "AND (m.status IS NULL OR m.status != 'deleted') "
+                "AND (r.status IS NULL OR r.status != 'deleted') "
                 "AND COALESCE(r.due_at, r.remind_at) <= :now "
                 "ORDER BY COALESCE(r.due_at, r.remind_at)"
             ),
@@ -1065,12 +1072,14 @@ def delete_google_token(user_id: int):
 
 def find_meetings_before(chat_id, due_date, before_time):
     """Return only this user's saved appointment meetings before the requested time."""
+    chat_id = canonical_chat_id(chat_id)
     with engine.connect() as conn:
         return conn.execute(
             text(
                 "SELECT m.id, m.title, m.due_date, m.due_time "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.category = 'appointments' "
+                "AND (m.status IS NULL OR m.status != 'deleted') "
                 "AND m.due_date = :d AND m.due_time IS NOT NULL AND m.due_time < :t "
                 "AND (m.title ILIKE '%meeting%' OR m.title ILIKE '%metting%' "
                 "OR m.title ILIKE '%meetting%' OR m.title ILIKE '%meetng%' "
@@ -1175,6 +1184,7 @@ def restore_reminder(chat_id, rem_id: int):
 
 def delete_memory_items(chat_id, item_ids):
     """Delete only previewed items owned by this chat, plus their reminder rows."""
+    chat_id = canonical_chat_id(chat_id)
     ids = [int(value) for value in item_ids if isinstance(value, int) or (isinstance(value, str) and value.isdigit())]
     if not ids:
         return 0
@@ -1213,6 +1223,7 @@ def find_meetings_at_times(chat_id, due_date, times, source_text=None):
                 "SELECT m.id, m.title, m.due_date, m.due_time "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.category = 'appointments' "
+                "AND (m.status IS NULL OR m.status != 'deleted') "
                 "AND m.due_date = :d AND m.due_time IS NOT NULL "
                 "ORDER BY m.due_time, m.id"
             ),
@@ -1230,12 +1241,14 @@ def find_meetings_at_times(chat_id, due_date, times, source_text=None):
 
 def find_recent_meetings(chat_id, limit=3):
     """Return this user's most recently created or upcoming meeting reminders."""
+    chat_id = canonical_chat_id(chat_id)
     with engine.connect() as conn:
         return conn.execute(
             text(
                 "SELECT m.id, m.title, m.due_date, m.due_time "
                 "FROM memory_items m JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c AND m.category = 'appointments' "
+                "AND (m.status IS NULL OR m.status != 'deleted') "
                 "ORDER BY m.id DESC LIMIT :lim"
             ),
             {"c": chat_id, "lim": limit},
@@ -1787,7 +1800,11 @@ def log_chat_message(chat_id, role, message, channel="telegram"):
     if not message or not str(message).strip():
         return
     _ensure_chat_logs_channel_column()
-    clean_msg = str(message).strip()
+    try:
+        from connectors.trace import redact_secrets
+        clean_msg = redact_secrets(str(message).strip())
+    except Exception:
+        clean_msg = str(message).strip()
     chan = (channel or "telegram").strip().lower()
     # Never poison chat history with emergency fallback error messages
     if 'Bataiye, main aapki kya madad karun' in clean_msg:
@@ -3416,6 +3433,95 @@ def delete_user_mcp_server(chat_id, server_name: str) -> bool:
     except Exception as exc:
         logger.error(f"delete_user_mcp_server error: {exc}")
         return False
+
+
+# ---------- Final Hardening: Retention Purge & Calendar Event ID Scoping ----------
+
+SOFT_DELETE_RETENTION_DAYS = int(os.getenv("SOFT_DELETE_RETENTION_DAYS", "30"))
+
+def purge_expired_soft_deleted(days: Optional[int] = None) -> int:
+    """
+    Retention policy: physically purges soft-deleted memory items and reminders older than N days.
+    Hard deletes (e.g. /forget and wipe) bypass soft-delete and purge immediately.
+    """
+    if days is None:
+        days = SOFT_DELETE_RETENTION_DAYS
+    from datetime import timedelta
+    import core.timeutil as timeutil
+    from timing import IST
+    cutoff = timeutil.now(IST) - timedelta(days=days)
+    is_pg = engine.dialect.name == "postgresql"
+    total_purged = 0
+
+    with engine.begin() as conn:
+        if is_pg:
+            # Delete associated reminder rows first
+            conn.execute(
+                text("""
+                    DELETE FROM reminders 
+                    WHERE item_id IN (
+                        SELECT id FROM memory_items 
+                        WHERE status = 'deleted' AND created_at < :cutoff
+                    )
+                """),
+                {"cutoff": cutoff}
+            )
+            res = conn.execute(
+                text("DELETE FROM memory_items WHERE status = 'deleted' AND created_at < :cutoff"),
+                {"cutoff": cutoff}
+            )
+            total_purged = res.rowcount or 0
+        else:
+            conn.execute(
+                text("""
+                    DELETE FROM reminders 
+                    WHERE item_id IN (
+                        SELECT id FROM memory_items 
+                        WHERE status = 'deleted' AND created_at < :cutoff
+                    )
+                """),
+                {"cutoff": cutoff.strftime("%Y-%m-%d %H:%M:%S")}
+            )
+            res = conn.execute(
+                text("DELETE FROM memory_items WHERE status = 'deleted' AND created_at < :cutoff"),
+                {"cutoff": cutoff.strftime("%Y-%m-%d %H:%M:%S")}
+            )
+            total_purged = res.rowcount or 0
+
+    return total_purged
+
+
+_MEMORY_ITEMS_CAL_ID_INITIALIZED = False
+
+def _init_memory_items_calendar_id_column():
+    global _MEMORY_ITEMS_CAL_ID_INITIALIZED
+    if _MEMORY_ITEMS_CAL_ID_INITIALIZED:
+        return
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS google_calendar_event_id VARCHAR(128);"))
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE memory_items ADD COLUMN google_calendar_event_id TEXT;"))
+                except Exception:
+                    pass
+        _MEMORY_ITEMS_CAL_ID_INITIALIZED = True
+    except Exception as exc:
+        print("_init_memory_items_calendar_id_column error:", exc)
+
+
+def update_memory_calendar_id(chat_id, item_id: int, cal_event_id: str):
+    """Store synced Google Calendar event ID on memory item."""
+    _init_memory_items_calendar_id_column()
+    chat_id = canonical_chat_id(chat_id)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE memory_items SET google_calendar_event_id = :cid WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
+            {"cid": cal_event_id, "id": int(item_id), "c": chat_id}
+        )
+
 
 
 

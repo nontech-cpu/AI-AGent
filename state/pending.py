@@ -561,10 +561,12 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             if not target_ids and payload.get("reminder_id"):
                 target_ids = [payload.get("reminder_id")]
             from agent.tools import execute_tool
-            res = await execute_tool(chat_id, "delete_reminder", {
-                "target_ids": target_ids,
-                "confirmed": True
-            })
+            res = await execute_tool(
+                chat_id,
+                "delete_reminder",
+                {"target_ids": target_ids},
+                user_context={"_from_pending_executor": True}
+            )
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
             user_lang = db.get_user_language(chat_id)

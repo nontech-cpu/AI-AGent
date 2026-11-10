@@ -241,9 +241,7 @@ class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
     reminder_id: Optional[int] = Field(None, description="The exact database ID of the reminder to delete if known.")
     target_ids: Optional[List[int]] = Field(None, description="List of exact database IDs of reminders to delete.")
-    confirmed: Optional[bool] = Field(False, description="Set to true only after explicit user confirmation of the target IDs.")
     request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting deletion.")
-    confirm: Optional[bool] = Field(False, description="Alias for confirmed.")
 
 class RestoreReminderArgs(BaseModel):
     reminder_id: int = Field(..., description="The exact database ID of the soft-deleted reminder to restore.")
@@ -776,14 +774,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "delete_reminder",
-            "description": "Delete or cancel a saved reminder, meeting, or task by title keyword or ID. If multiple rows match, returns ambiguous; if 1 row matches, returns needs_confirmation. Deletes only when confirmed=True with exact target_ids.",
+            "description": "Delete or cancel a saved reminder, meeting, or task by title keyword or ID. If multiple rows match, returns ambiguous; if 1 row matches, stages deletion requiring user confirmation. Confirmation is managed by the system state machine; model must never supply confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Title or keyword of the reminder/event to delete."},
                     "reminder_id": {"type": ["integer", "null"], "description": "Optional specific reminder ID to delete."},
-                    "target_ids": {"type": ["array", "null"], "items": {"type": "integer"}, "description": "List of exact database IDs to delete."},
-                    "confirmed": {"type": ["boolean", "null"], "description": "Set to true only after explicit user confirmation of the target IDs."}
+                    "target_ids": {"type": ["array", "null"], "items": {"type": "integer"}, "description": "List of exact database IDs to delete."}
                 }
             }
         }
@@ -2199,7 +2196,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             if rem_id:
                 with db.engine.connect() as conn:
                     row = conn.execute(
-                        db.text("SELECT id, title, due_date, due_time, COALESCE(duration_minutes, 30) AS duration_minutes FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c)"),
+                        db.text("SELECT id, title, due_date, due_time, COALESCE(duration_minutes, 30) AS duration_minutes FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c) AND (status IS NULL OR status != 'deleted')"),
                         {"id": rem_id, "c": chat_id}
                     ).mappings().first()
                     if row:
@@ -2667,7 +2664,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     ev_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
                     ev_end_dt = ev_start_dt + timedelta(minutes=dur_mins)
                     g_rec = ["RRULE:FREQ=DAILY"] if recurrence == "daily" else (["RRULE:FREQ=WEEKLY"] if recurrence == "weekly" else None)
-                    await google_services.create_calendar_event(
+                    cal_res = await google_services.create_calendar_event(
                         chat_id,
                         summary=f"🔔 {clean_title}",
                         start_time=ev_start_dt.isoformat(),
@@ -2675,6 +2672,11 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         description=f"Auto-synced reminder from PeculiarAI ({dur_mins} mins, recurrence={recurrence})",
                         recurrence=g_rec,
                     )
+                    if cal_res and isinstance(cal_res, dict) and cal_res.get("id"):
+                        try:
+                            db.update_memory_calendar_id(chat_id, item_id, cal_res["id"])
+                        except Exception:
+                            pass
             except Exception as cal_err:
                 logger.warning(f"Google Calendar auto-sync error: {cal_err}")
 
@@ -2725,7 +2727,8 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             kw = str(arguments.get("title") or "").strip().lower()
             rem_id = arguments.get("reminder_id")
             target_ids = arguments.get("target_ids")
-            confirmed = bool(arguments.get("confirmed") or arguments.get("confirm", False))
+            has_model_confirm = bool(arguments.get("confirmed") or arguments.get("confirm", False))
+            is_from_pending = bool(user_context and user_context.get("_from_pending_executor"))
             from db import canonical_chat_id, engine, text
             can_cid = canonical_chat_id(chat_id)
 
@@ -2741,8 +2744,22 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 except (ValueError, TypeError):
                     pass
 
-            if confirmed:
-                # Execution phase: ONLY on exact IDs
+            # A5.1: Model cannot supply confirmation. Reject model-supplied confirmation.
+            if has_model_confirm and not is_from_pending:
+                return {
+                    "status": "error",
+                    "error_type": "model_confirmation_rejected",
+                    "action": "delete_reminder",
+                    "tool_name": "delete_reminder",
+                    "facts": {
+                        "reason": "Model cannot self-confirm destructive actions. User confirmation via pending action state machine is required.",
+                        "attempted_ids": ids_to_act
+                    },
+                    "next_options": ["stage_pending_delete", "list_reminders"]
+                }
+
+            if is_from_pending:
+                # Execution phase: ONLY on exact IDs via pending action handler
                 if not ids_to_act and clean_kw:
                     with engine.connect() as conn:
                         rows = conn.execute(
@@ -2783,6 +2800,28 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         invalidate_prompt_schedule_cache(chat_id)
                     except Exception:
                         pass
+                    # If synced to Google Calendar, remove Google Calendar event as well
+                    try:
+                        for d_id, d_title in deleted:
+                            cal_ev_id = None
+                            with engine.connect() as conn:
+                                try:
+                                    cal_row = conn.execute(
+                                        text("SELECT google_calendar_event_id FROM memory_items WHERE id = :id"),
+                                        {"id": d_id}
+                                    ).fetchone()
+                                    if cal_row and cal_row[0]:
+                                        cal_ev_id = cal_row[0]
+                                except Exception:
+                                    pass
+                            if cal_ev_id:
+                                try:
+                                    import google_services
+                                    await google_services.delete_calendar_event(chat_id, cal_ev_id)
+                                except Exception as cal_err:
+                                    logger.warning(f"Could not delete synced calendar event {cal_ev_id}: {cal_err}")
+                    except Exception:
+                        pass
                     try:
                         import time as _t
                         from memory.store import record_action_event
@@ -2814,7 +2853,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         "status": "not_found",
                         "action": "delete_reminder",
                         "tool_name": "delete_reminder",
-                        "facts": {"target_ids": ids_to_act, "found": False},
+                        "facts": {"target_ids": ids_to_act, "found": False, "reason": "Target IDs not found or not owned by user."},
                         "next_options": ["list_reminders"]
                     }
 

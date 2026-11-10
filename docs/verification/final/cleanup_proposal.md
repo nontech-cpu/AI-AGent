@@ -6,7 +6,7 @@
 
 ## 1. Safety Incident Forensic Background (Trace 1233)
 
-On **10 Nov 2026 at 08:17:31 UTC** (1:47 PM IST), during live Telegram testing with user `Nirav` (`telegram_chat_id = 1234828592`, internal `user_id = 306`), an unauthorized deletion occurred in **Trace 1233** (`tr_29e766296ff8`).
+On **10 Nov 2026 at 08:17:31 UTC** (1:47 PM IST), during live Telegram testing with user `Nirav` (`telegram_chat_id = [REDACTED_CHAT_ID_PRIMARY]`, internal `user_id = 306`), an unauthorized deletion occurred in **Trace 1233** (`tr_29e766296ff8`).
 
 ### Sequence of Events:
 1. **Prior Turn (Trace 1232 / chat_log [4468] at 07:48:41 UTC)**:
@@ -93,3 +93,33 @@ VALUES
 -- Commit only upon explicit user instruction
 ROLLBACK;
 ```
+
+---
+
+## 5. Row 257 & Devender Meeting Forensic Investigation (A5.8)
+
+### Forensic Findings:
+- **Row Details**: `memory_items.id = 257`, `user_id = 306`, `category = 'appointments'`, `title = 'Meeting with Devender'`, `due_date = 2026-11-11`, `due_time = 09:00:00`, `created_at = 2026-11-10 08:46:48 GMT`.
+- **Linked Google Calendar Event**: Event ID `r704lglg3t37seu596q8rqfm4o` (`'🔔 Meeting with Devender'`), logged in `memories.id = 445` at `08:46:50 GMT`.
+- **Trigger Turn (Trace 1243 / `tr_1d5118f088c0`)**:
+  - **User Prompt**: `"tommorow i the have meeting with devender remind me for that"`
+  - **Model Arguments Emitted**: `create_reminder(title='Meeting with Devender', due_date='2026-11-11', due_time='09:00')`
+  - **Root Cause**: **Ungrounded Value Invention**. The user never provided a time for the meeting. Instead of asking the user for the time, the model hallucinated `09:00` out of thin air and executed `create_reminder`, which simultaneously auto-synced the event to Google Calendar.
+
+### Proposed Cleanup SQL for Row 257 (Read-Only):
+```sql
+BEGIN;
+
+-- Preview row 257
+SELECT id, user_id, title, due_date, due_time, status 
+FROM memory_items 
+WHERE id = 257 AND user_id = 306;
+
+-- Soft-delete in memory_items (if user confirms removal):
+-- UPDATE memory_items SET status = 'deleted' WHERE id = 257 AND user_id = 306;
+
+-- Associated Google Calendar event to delete via API: 'r704lglg3t37seu596q8rqfm4o'
+
+ROLLBACK; -- Safe default in proposal
+```
+

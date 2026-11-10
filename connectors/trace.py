@@ -2,9 +2,11 @@
 PeculiarAI — Turn Trace & Observability Engine (Part 5 & Part 6)
 Stores structured execution traces in DB with secret redaction and suspect-turn tracking for auto-regression promotion.
 """
+import os
 import re
 import json
 import uuid
+import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy import text
@@ -239,11 +241,32 @@ def log_turn_trace(
                     }
                 )
     except Exception as exc:
-        print(f"log_turn_trace error (Trace {trace_id}):", repr(exc))
+        dead_letter_path = os.getenv("DEAD_LETTER_TRACE_PATH", "logs/dead_letter_traces.jsonl")
+        logger = logging.getLogger("trace_health")
+        logger.warning(f"HEALTH WARNING: Failed to insert turn_trace {trace_id} into DB: {repr(exc)}. Writing to dead-letter file.")
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(dead_letter_path)), exist_ok=True)
+            dead_letter_entry = {
+                "trace_id": trace_id,
+                "chat_id": chat_id,
+                "timestamp": timeutil.now(IST).isoformat(),
+                "error": repr(exc),
+                "message": clean_msg,
+                "reply_path": reply_path,
+                "tools_called": clean_tools,
+                "tool_results": clean_results,
+                "provider": provider,
+                "model": model,
+                "llm_calls": llm_calls,
+                "error_type": error_type,
+            }
+            with open(dead_letter_path, "a", encoding="utf-8") as f_dl:
+                f_dl.write(json.dumps(dead_letter_entry) + "\n")
+        except Exception as dl_err:
+            logger.error(f"Failed writing to dead-letter file: {dl_err}")
 
     # Structured console log line for Render log aggregation without secrets
     try:
-        import logging
         turn_logger = logging.getLogger("turn_trace")
         structured_payload = {
             "event": "turn_completed",

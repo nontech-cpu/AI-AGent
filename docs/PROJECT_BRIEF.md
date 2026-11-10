@@ -261,7 +261,7 @@ Current Time: 01:48 PM, 05 November 2026 (Thursday) [Asia/Kolkata] | Today's Dat
 
 ### 2.4 Token Size Measurements (Real Turn Benchmark)
 
-*Measured on live conversation for `chat_id=1758056012` using Hugging Face `tokenizers` and BPE character ratios:*
+*Measured on live conversation for `chat_id=[REDACTED_CHAT_SECONDARY]` using Hugging Face `tokenizers` and BPE character ratios:*
 
 | Component | Character Count | Estimated Tokens | Percentage of Context Window |
 | :--- | :--- | :--- | :--- |
@@ -478,7 +478,7 @@ agent/tools.py:2063 `elif tool_name in ("create_reminder", "add_reminder"):`
 
 #### Forensic Live DB Row Evidence
 ```python
-# Query: db.items_for_date(1758056012, datetime.date(2025, 1, 24))
+# Query: db.items_for_date([REDACTED_CHAT_SECONDARY], datetime.date(2025, 1, 24))
 (
     'appointments',
     'Movie jana hai',
@@ -674,7 +674,7 @@ Six background loops are launched in `main.py:4105-4112` via FastAPI's `lifespan
 4. **Hardcoded User IDs Violation**: **YES (CRITICAL)**. Hardcoded Telegram IDs exist in source code at `db.py:495`:
    ```python
    CANONICAL_CHAT_ID_MAP = {
-       1234828592: 1758056012,  # Hardcoded Telegram User ID mapping
+       [REDACTED_CHAT_PRIMARY]: [REDACTED_CHAT_SECONDARY],  # Hardcoded Telegram User ID mapping
    }
    ```
 
@@ -686,7 +686,7 @@ Six background loops are launched in `main.py:4105-4112` via FastAPI's `lifespan
 | :---: | :--- | :--- | :--- | :--- |
 | **1. CRITICAL** | **Model Cutoff Hallucination & Blind Date Trust** | `agent/tools.py:2073`<br>`agent/loop.py:484`<br>`agent/prompt.py:214` | When user gives a time without a full date, model sends training cutoff (`2025-01-24`), which code accepts blindly, creating reminders in the past and causing 100% collision misses and empty schedule listings. | DB row `('appointments', 'Movie jana hai', None, 16:30, 202, 30, 2025-01-24)` created today; collision simulation against 2025 returned `conflicts=[]`. |
 | **2. CRITICAL** | **Generic Exception Trap Silencing Real Errors** | `main.py:2460-2469` | Any model timeout, 429 quota exhaustion, or agent error is caught by blanket `except Exception` and masked with `"Haanji, network mein thoda fluctuation ho gaya tha"`, hiding root causes from user. | Matches exact repeated text in user's Telegram screenshots at 12:06 PM. |
-| **3. CRITICAL** | **Hardcoded User Telegram IDs in Source Code** | `db.py:495` | Multi-tenant privacy violation and security anti-pattern; user account IDs are hardcoded directly into repository version control. | `CANONICAL_CHAT_ID_MAP = {1234828592: 1758056012}` hardcoded in `db.py:495`. |
+| **3. CRITICAL** | **Hardcoded User Telegram IDs in Source Code** | `db.py:495` | Multi-tenant privacy violation and security anti-pattern; user account IDs are hardcoded directly into repository version control. | `CANONICAL_CHAT_ID_MAP = {[REDACTED_CHAT_PRIMARY]: [REDACTED_CHAT_SECONDARY]}` hardcoded in `db.py:495`. |
 | **4. HIGH** | **Ephemeral Render Free Tier Losing In-Memory State** | `render.yaml:8`<br>`main.py:270, 321`<br>`agent/prompt.py:115` | Container spin-down wipes pending action confirmations (`PENDING_GOOGLE_ACTIONS`), locks, and working memory buffers. | `render.yaml: plan: free`. `PENDING_GOOGLE_ACTIONS = {}` defined as bare in-memory dict. |
 | **5. HIGH** | **Background Scheduled Workers Freeze When Service Sleeps** | `main.py:4105-4112`<br>`morning_briefing.py:35` | When Render free tier spins down after 15 min, Python event loop stops; 8:00 AM morning briefings and reminders never fire. | Lifespan starts in-process asyncio tasks without external trigger or cron service. |
 | **6. HIGH** | **No Distributed Locking for Multi-Instance Deployments** | `main.py:4035`<br>`morning_briefing.py:35` | If scaled to 2 instances or during rolling deployments, duplicate reminder and briefing messages are delivered to Telegram. | In-process sleep `await asyncio.sleep(30)` used without PostgreSQL advisory locks. |

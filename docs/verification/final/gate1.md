@@ -9,7 +9,7 @@
 
 ## 1. Forensic Report: Safety Incident (Trace 1233)
 
-On **10 Nov 2026 at 08:17:31 UTC** (1:47 PM IST), during Telegram testing with user `Nirav` (`telegram_chat_id = 1234828592`), an unauthorized mass deletion occurred in **Trace 1233** (`tr_29e766296ff8`).
+On **10 Nov 2026 at 08:17:31 UTC** (1:47 PM IST), during Telegram testing (`user_id = 306`), an unauthorized mass deletion occurred in **Trace 1233** (`tr_29e766296ff8`).
 
 ### A. Incident Turn Breakdown
 - **User Message**: `"hi"`
@@ -30,9 +30,9 @@ On **10 Nov 2026 at 08:17:31 UTC** (1:47 PM IST), during Telegram testing with u
 - **Code Path Executed**:
   `agent/loop.py` tool calling loop -> `agent/tools.py:execute_tool("delete_reminder")` lines 2735-2743 token fallback `tokens = [t for t in clean_kw.split() if len(t) >= 3]` matched `'%meeting%'`, matched all 6 rows for user 306 across different dates, and executed hard SQL `DELETE`.
 - **User Mapping Verification**:
-  - `telegram_chat_id: 1234828592` maps to database `user_id = 306` (Nirav, @Niirav18).
-  - `telegram_chat_id: 1758056012` maps to database `user_id = 408` (Neerav).
-  - The Phase 7e cleanup SQL targeted `user_id = 306`, which was the correct user for chat `1234828592`. However, by the time Phase 7e ran, the rows had already been hard-deleted by Trace 1233.
+  - `telegram_chat_id: [REDACTED_CHAT_PRIMARY]` maps to database `user_id = 306`.
+  - `telegram_chat_id: [REDACTED_CHAT_SECONDARY]` maps to database `user_id = 408`.
+  - The Phase 7e cleanup SQL targeted `user_id = 306`, which was the correct user for the primary chat. However, by the time Phase 7e ran, the rows had already been hard-deleted by Trace 1233.
 
 ---
 
@@ -136,3 +136,4 @@ Changes ready on branch `fix/final-hardening`:
 ---
 
 > **GATE 1 REACHED**: Stopping now as required by the Global Rules. Waiting for user's explicit "go ahead" before proceeding to Part B.
+

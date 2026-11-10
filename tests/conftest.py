@@ -11,6 +11,15 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
+# A5.10 TEST-SUITE ENVIRONMENT GUARD: tests must never touch the live Neon DB.
+PROD_DB_FINGERPRINT = os.getenv("PROD_DB_FINGERPRINT", "ep-steep-dawn-b4f6w0un")
+_raw_incoming_db = os.environ.get("DATABASE_URL", "")
+if PROD_DB_FINGERPRINT in _raw_incoming_db:
+    raise RuntimeError(
+        "FATAL ENVIRONMENT GUARD: pytest detected DATABASE_URL pointing to production Neon DB! "
+        "Tests must NEVER touch the production database. Execution aborted."
+    )
+
 # Ensure test environment variables are set before importing application modules
 os.environ["TELEGRAM_BOT_TOKEN"] = "123456:TEST_TELEGRAM_BOT_TOKEN"
 os.environ["WEBHOOK_SECRET"] = "test_webhook_secret_key_12345678"
@@ -45,6 +54,8 @@ def client():
 def init_test_db():
     from db import engine
     from sqlalchemy import text
+    if PROD_DB_FINGERPRINT in str(engine.url):
+        raise RuntimeError("FATAL: Test suite engine connected to production Neon DB! Aborting immediately.")
     if "sqlite" not in str(engine.url):
         yield
         return

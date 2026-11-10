@@ -3,7 +3,7 @@
 ## 1. Trace Evidence for the Reported Live Turns
 
 ### A. Turn 1: "jodhpur m kosne mall h" (Trace ID: 1056 & Trace ID: 1076)
-- **Chat ID**: `1758056012`
+- **Chat ID**: `[REDACTED_CHAT_SECONDARY]`
 - **User Message**: `jodhpur m kosne mall h`
 - **Tools Called**: `['find_nearby_places']`
 - **Tool Result (Redacted / Extracted)**:
@@ -27,7 +27,7 @@
 ---
 
 ### B. Turn 2: "ratanada se sardarpura best route" (Trace ID: 1057)
-- **Chat ID**: `1758056012`
+- **Chat ID**: `[REDACTED_CHAT_SECONDARY]`
 - **User Message**: `bhy jdhpur m ratanada se sardarpura jana ka sbse best route kya h`
 - **Tools Called**: `['search_web']`
 - **Tool Result**:

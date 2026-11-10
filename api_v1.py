@@ -1046,6 +1046,7 @@ async def execute_cross_tool_query(
             text(
                 "SELECT category, title, amount, due_date, due_time FROM memory_items m "
                 "JOIN users u ON u.id = m.user_id WHERE u.telegram_chat_id = :cid "
+                "AND (m.status IS NULL OR m.status != 'deleted') "
                 "ORDER BY m.id DESC LIMIT 15"
             ),
             {"cid": chat_id}
@@ -2480,6 +2481,7 @@ async def get_emergency_vault(chat_id: int = Depends(get_current_chat_id)):
             text(
                 "SELECT id, title, amount, due_date FROM memory_items "
                 "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :c) "
+                "AND (status IS NULL OR status != 'deleted') "
                 "AND category = 'emergency' ORDER BY id DESC"
             ),
             {"c": chat_id}

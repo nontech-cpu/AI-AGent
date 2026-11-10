@@ -178,7 +178,7 @@ We queried PostgreSQL `information_schema.columns` for `turn_traces`. The actual
 > The claim that Gemini specifically threw an HTTP 429 error and caused a fallback to Groq on that turn is **UNPROVEN by database logs**.
 
 ### What IS Proven by Database Evidence:
-1. `turn_traces` row 1037 (user `1758056012` at `2026-11-05 07:34:20 GMT` / `1:04 PM IST`, matching the user's screenshot):
+1. `turn_traces` row 1037 (user `[REDACTED_CHAT_SECONDARY]` at `2026-11-05 07:34:20 GMT` / `1:04 PM IST`, matching the user's screenshot):
    - `message`: `"bhy mere reminder toh btana aajke"`
    - `tools_called`: `['list_reminders']`
    - `tool_results`: `[{'date': '2025-01-24', 'count': 0, 'action': 'list_reminders', 'reminders': [], 'tool_name': 'list_reminders'}]`

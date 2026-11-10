@@ -9,7 +9,7 @@ This document provides exact, file:line verified evidence addressing every singl
 ### The Observed Failure (Telegram Turn)
 - **User Message**: `"bhy mere reminder toh btana aajke"`
 - **Bot Reply**: `"Dekhiye, maine check kiya hai aur mere paas aaj (24 January) ke liye koi bhi reminder save nahi hai..."`
-- **Database Trace**: Trace ID `tr_2dcbc62f7419` (`chat_id: 1758056012`, `created_at: 2026-11-05 07:34:20 UTC` / `13:04 IST`).
+- **Database Trace**: Trace ID `tr_2dcbc62f7419` (`chat_id: [REDACTED_CHAT_SECONDARY]`, `created_at: 2026-11-05 07:34:20 UTC` / `13:04 IST`).
 - **Tool Result Logged**: `[{'date': '2025-01-24', 'count': 0, 'action': 'list_reminders', 'reminders': [], 'tool_name': 'list_reminders'}]`
 
 ### Why Did This Happen?

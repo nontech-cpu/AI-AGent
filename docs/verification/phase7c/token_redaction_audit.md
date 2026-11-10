@@ -26,7 +26,7 @@ The audit was executed via `scripts/count_token_prefixes.py` against Neon Postgr
 
 ### Finding on `turn_traces` Row 126:
 - **Trace ID**: `tr_079953251578`
-- **Chat ID**: `1234828592` (Synthetic test user fixture)
+- **Chat ID**: `[REDACTED_CHAT_PRIMARY]` (Synthetic test user fixture)
 - **Created At**: `2026-10-24 07:41:21 UTC`
 - **Location**: Inside `tool_results` payload where the Notion connector returned user instructions describing valid token prefixes (`"Token must start with secret_ or ntn_"`). It does NOT contain a real user token.
 
