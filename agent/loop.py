@@ -378,6 +378,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # 4. Context assembly: Ground Truth System Prompt & Chat History
     mem_ctx = await asyncio.to_thread(assemble_memory_context, chat_id, user_text)
+    pref = db.get_user_preference(chat_id)
+    user_pref_lang = (pref.get("reply_language") or "english").strip().lower()
 
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
@@ -569,7 +571,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     tool_results=tool_results_list,
                     memory_context=mem_ctx,
                     user_query=user_text,
-                    recent_history=recent_turns
+                    recent_history=recent_turns,
+                    user_lang=user_pref_lang
                 )
                 if not is_cand_ok and iteration == 0 and trace_llm_calls < 2 and effective_tools:
                     # Model claimed an unverified action or external fact without tools; re-run with tool_choice='required'
@@ -1137,7 +1140,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         tool_results=tool_results_list,
         memory_context=mem_ctx,
         user_query=user_text,
-        recent_history=recent_turns
+        recent_history=recent_turns,
+        user_lang=user_pref_lang
     )
     if not is_grounded:
         logger.info(f"Grounding Verifier intercepted unsupported claims: {violations}")

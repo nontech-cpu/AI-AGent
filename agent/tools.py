@@ -1522,15 +1522,10 @@ def validate_request_quote(chat_id: int, quote: Optional[str], user_context: Opt
             return False
         # Headless testing with no user_context
         try:
-            from db import engine, text, canonical_chat_id
-            can_cid = canonical_chat_id(chat_id)
-            with engine.begin() as conn:
-                count = conn.execute(
-                    text("SELECT COUNT(*) FROM chat_logs WHERE chat_id = :cid AND role = 'user'"),
-                    {"cid": can_cid}
-                ).scalar() or 0
-                if count > 0:
-                    return False
+            import db
+            recent = db.get_recent_chat_history(chat_id, limit=3)
+            if any(r.get("role") == "user" for r in (recent or [])):
+                return False
         except Exception:
             pass
         return True
@@ -1539,24 +1534,37 @@ def validate_request_quote(chat_id: int, quote: Optional[str], user_context: Opt
 
     # 1. Check current turn user_text
     curr_text = " ".join(str((user_context or {}).get("user_text", "")).strip().lower().split())
-    if curr_text and q_clean in curr_text:
+    if curr_text and (q_clean in curr_text or curr_text in q_clean):
         return True
 
-    # 2. Check recent user turns from chat_logs
+    # 2. Check recent user turns from chat_history (database agnostic across PostgreSQL & SQLite)
     try:
-        from db import engine, text, canonical_chat_id
-        can_cid = canonical_chat_id(chat_id)
-        with engine.begin() as conn:
-            rows = conn.execute(
-                text("SELECT message_text FROM chat_logs WHERE chat_id = :cid AND role = 'user' ORDER BY created_at DESC LIMIT 3"),
-                {"cid": can_cid}
-            ).fetchall()
-            for r in rows:
-                txt = " ".join(str(r[0] or "").strip().lower().split())
-                if txt and q_clean in txt:
-                    return True
-    except Exception:
-        pass
+        import db
+        recent_turns = db.get_recent_chat_history(chat_id, limit=6)
+        user_msgs = [
+            " ".join(str(r.get("text") or r.get("message") or "").strip().lower().split())
+            for r in (recent_turns or [])
+            if r.get("role") == "user"
+        ]
+        if curr_text and curr_text not in user_msgs:
+            user_msgs.append(curr_text)
+
+        # Check containment in any individual user message
+        for msg in user_msgs:
+            if msg and (q_clean in msg or msg in q_clean):
+                return True
+
+        # Check across combined recent user conversation (multi-turn context)
+        combined = " ".join(user_msgs)
+        if combined and (q_clean in combined or combined in q_clean):
+            return True
+
+        # Check word containment for multi-turn quote fragments
+        q_words = [w for w in q_clean.split() if len(w) > 2]
+        if q_words and all(w in combined for w in q_words):
+            return True
+    except Exception as exc:
+        logger.warning(f"validate_request_quote history check error: {exc}")
 
     # If headless unit test with no chat logs at all, allow
     if not curr_text:

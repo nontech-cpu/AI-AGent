@@ -124,3 +124,27 @@ async def test_explicit_language_switch_request():
     # Verify updated in DB
     pref = db.get_user_preference(chat_id)
     assert pref["reply_language"] == "hinglish"
+
+
+def test_multiturn_quote_validation_across_recent_turns():
+    chat_id = 998877993
+    db.ensure_user(chat_id)
+
+    # Simulate Turn 1: user asked to set reminder
+    db.log_chat_message(chat_id, "user", "set up a remidner for me at 2pm today")
+    db.log_chat_message(chat_id, "assistant", "What would you like the reminder to be about?")
+
+    from agent.tools import validate_request_quote
+
+    # Turn 2 user text: "it should the be about meeting"
+    turn2_ctx = {"user_text": "it should the be about meeting"}
+
+    # Model provides quote from Turn 1
+    assert validate_request_quote(chat_id, "set up a remidner for me at 2pm today", user_context=turn2_ctx) is True
+
+    # Model provides quote from Turn 2
+    assert validate_request_quote(chat_id, "it should the be about meeting", user_context=turn2_ctx) is True
+
+    # Model provides combined multi-turn quote
+    assert validate_request_quote(chat_id, "set up a remidner for me at 2pm today it should the be about meeting", user_context=turn2_ctx) is True
+

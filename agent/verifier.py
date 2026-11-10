@@ -33,8 +33,9 @@ Your job is to audit the Draft Reply against the Evidence (Tool Results, Memory 
 
 You must output a single JSON object with these EXACT keys:
 1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, wiped, or sent in the CURRENT turn.
-CRITICAL INQUIRY EXCEPTION:
+CRITICAL INQUIRY & ERROR EXCEPTION:
 - If the User Query is an inquiry or status question about whether something was done in the past, or asking about current state/reminders/calendar (e.g. "ky tumn firecraker wala reminder htaa diya caldner se bhi?", "is my meeting cancelled?", "kya delete ho gaya?"), answering the question or reporting status is an INFORMATIONAL ANSWER, NOT an action claim. Return "claims_action_done": false!
+- If Tool Results contains an error, conflict, or parameter request (e.g. 'time_already_passed', 'needs_info', 'conflict_detected', 'error', 'no_user_request_for_write') and the Draft Reply explains this situation or asks the user how to proceed, return "claims_action_done": false!
 - Return "claims_action_done": false if the assistant is merely asking confirmation, refusing, explaining, answering a status check, or greeting.
 2. "which_action": string or null. The canonical tool name if an action is claimed (e.g. "create_reminder", "delete_reminder", "update_reminder", "send_email", "create_meeting", "save_note_or_fact", "manage_list", "request_master_privacy_wipe", "clear_chat_history"), or null if no action is claimed.
 3. "claims_external_fact": boolean. True if the Draft Reply asserts specific real-world live facts (e.g. local business/mall names, transit routes/highways/distances, order/receipt details, market prices, live weather, availability). False for general domain knowledge (e.g. ML, coding concepts, science, history), pure language translations, greetings, conversational remarks, festival wishes, food/celebration commentary, or acknowledging the user's casual personal plans.
@@ -326,7 +327,8 @@ async def verify_and_ground_reply(
     memory_context: Optional[Dict[str, Any]] = None,
     user_query: str = "",
     recent_history: Optional[List[Dict[str, Any]]] = None,
-    allow_llm: bool = True
+    allow_llm: bool = True,
+    user_lang: str = "english"
 ) -> Tuple[bool, str, List[str]]:
     """
     Phase 5 Unified Verification & Grounding:
@@ -348,7 +350,7 @@ async def verify_and_ground_reply(
 
     # Fast-path for questions or trivial short acknowledgements (0ms overhead, zero keyword sets)
     clean_reply_stripped = draft_reply.strip()
-    if clean_reply_stripped.endswith("?") or len(clean_reply_stripped.split()) <= 3:
+    if "?" in clean_reply_stripped or len(clean_reply_stripped.split()) <= 3:
         return True, sanitize_regional_scripts(draft_reply), []
 
     evidence_text = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
@@ -396,7 +398,8 @@ async def verify_and_ground_reply(
                 return False, revised, violations
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
             from core.i18n import get_i18n_string
-            revised = get_i18n_string("request_noted_confirm_details", "english")
+            lang = user_lang or "english"
+            revised = get_i18n_string("request_noted_confirm_details", lang)
             return False, revised, violations
 
     # Check 2B: Route / Travel Time Claimed Without Verified Navigation Tool
