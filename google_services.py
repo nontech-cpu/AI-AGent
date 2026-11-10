@@ -119,25 +119,27 @@ async def get_user_calendar_timezone(chat_id: int) -> str:
             # Query user's primary calendar metadata from Google Calendar API
             res = await _request('GET', f'{GOOGLE}/calendar/v3/calendars/primary', access)
             tz = res.get('timeZone')
-            if tz:
+            if tz and tz not in ("UTC", "Etc/UTC", "GMT", "Universal"):
                 _USER_TZ_CACHE[chat_id] = {"tz": tz, "exp": now_ts + 86400}
                 return tz
-            else:
-                _USER_TZ_CACHE[chat_id] = {"tz": "Asia/Kolkata", "exp": now_ts + 3600}
     except Exception as exc:
         logger.debug("get_user_calendar_timezone error: %s", exc)
-        _USER_TZ_CACHE[chat_id] = {"tz": "Asia/Kolkata", "exp": now_ts + 3600}
 
-    # Check database profile timezone if Google is not connected
+    # Check database profile timezone or location state if Google returned unconfigured UTC
     try:
         import db
         saved_tz = db.get_user_timezone(chat_id)
-        if saved_tz:
+        if saved_tz and saved_tz not in ("UTC", "Etc/UTC", "GMT", "Universal"):
             _USER_TZ_CACHE[chat_id] = {"tz": saved_tz, "exp": now_ts + 3600}
             return saved_tz
+        loc = db.get_user_location_state(chat_id)
+        if loc and loc.get("country", "").lower() in ("india", "in", ""):
+            _USER_TZ_CACHE[chat_id] = {"tz": "Asia/Kolkata", "exp": now_ts + 3600}
+            return "Asia/Kolkata"
     except Exception:
         pass
 
+    _USER_TZ_CACHE[chat_id] = {"tz": "Asia/Kolkata", "exp": now_ts + 3600}
     return "Asia/Kolkata"
 
 async def create_meeting(chat_id, title=None, start_iso=None, duration_minutes=30, attendees=None, **kwargs):

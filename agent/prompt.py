@@ -226,6 +226,8 @@ async def build_runtime_system_prompt(
     try:
         from google_services import get_user_calendar_timezone
         user_tz_str = await get_user_calendar_timezone(chat_id)
+        if not user_tz_str or user_tz_str in ("UTC", "Etc/UTC", "GMT", "Universal"):
+            user_tz_str = "Asia/Kolkata"
         from zoneinfo import ZoneInfo
         u_tz = ZoneInfo(user_tz_str)
     except Exception:

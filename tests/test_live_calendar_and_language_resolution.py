@@ -148,3 +148,28 @@ def test_multiturn_quote_validation_across_recent_turns():
     # Model provides combined multi-turn quote
     assert validate_request_quote(chat_id, "set up a remidner for me at 2pm today it should the be about meeting", user_context=turn2_ctx) is True
 
+
+@pytest.mark.asyncio
+async def test_unconfigured_google_calendar_utc_resolves_to_user_local_timezone(monkeypatch):
+    chat_id = 998877994
+    db.ensure_user(chat_id)
+    db.set_user_location_state(chat_id, "Jodhpur", "Rajasthan", "India", source="conversational_context")
+
+    import google_services
+    from agent.tools import _resolve_user_timezone
+
+    # Mock google calendar returning generic UTC
+    async def fake_access_token(cid):
+        return "mock_token", "test@example.com"
+
+    async def fake_request(method, url, access, **kwargs):
+        return {"timeZone": "UTC"}
+
+    monkeypatch.setattr(google_services, "access_token_for_chat", fake_access_token)
+    monkeypatch.setattr(google_services, "_request", fake_request)
+    google_services._USER_TZ_CACHE.clear()
+
+    tz, tz_str = await _resolve_user_timezone(chat_id)
+    assert tz_str == "Asia/Kolkata"
+    assert str(tz) == "Asia/Kolkata"
+

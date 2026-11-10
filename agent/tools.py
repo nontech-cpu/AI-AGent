@@ -25,6 +25,8 @@ async def _resolve_user_timezone(chat_id: int):
     """Dynamically resolves the user's primary calendar timezone or defaults gracefully to IST."""
     try:
         user_tz_str = await google_services.get_user_calendar_timezone(chat_id)
+        if not user_tz_str or user_tz_str in ("UTC", "Etc/UTC", "GMT", "Universal"):
+            user_tz_str = "Asia/Kolkata"
         return ZoneInfo(user_tz_str), user_tz_str
     except Exception:
         return IST, "Asia/Kolkata"
