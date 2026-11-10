@@ -2776,7 +2776,18 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
                 scope_arg = arguments.get("scope", "all")
                 deleted = db.soft_delete_reminders(chat_id, ids_to_act, scope=scope_arg)
-                if deleted:
+
+                # Check for direct calendar event ID staged from Google Calendar discovery
+                direct_cal_id = arguments.get("google_calendar_event_id")
+                if direct_cal_id:
+                    try:
+                        import google_services
+                        await google_services.delete_calendar_event(chat_id, direct_cal_id)
+                        logger.info(f"Two-way sync: deleted direct Google Calendar event {direct_cal_id}")
+                    except Exception as g_del_err:
+                        logger.warning(f"Error deleting direct calendar event {direct_cal_id}: {g_del_err}")
+
+                if deleted or direct_cal_id:
                     try:
                         from api_v1 import _invalidate_all_app_caches
                         _invalidate_all_app_caches()
@@ -2786,7 +2797,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         pass
                     # If synced to Google Calendar, remove Google Calendar event as well
                     try:
-                        for d_id, d_title in deleted:
+                        for d_id, d_title in (deleted or []):
                             cal_ev_id = None
                             with engine.connect() as conn:
                                 try:
@@ -2801,9 +2812,28 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                             if cal_ev_id:
                                 try:
                                     import google_services
-                                    await google_services.delete_calendar_event(chat_id, cal_ev_id)
+                                    base_ev_id = cal_ev_id.split("_")[0] if "_" in cal_ev_id else cal_ev_id
+                                    await google_services.delete_calendar_event(chat_id, base_ev_id)
+                                    logger.info(f"Two-way sync: deleted calendar event {base_ev_id} by event_id")
                                 except Exception as cal_err:
                                     logger.warning(f"Could not delete synced calendar event {cal_ev_id}: {cal_err}")
+
+                            # Fallback & Complete Purge: search Google Calendar for matching title
+                            # Ensures events created before column migration or recurring instances are 100% purged
+                            try:
+                                import google_services
+                                cal_events = await google_services.list_calendar_events(chat_id, query=d_title, max_results=10)
+                                norm_title = d_title.strip().lower()
+                                for ev in (cal_events or []):
+                                    ev_summary = (ev.get("summary") or "").strip().lower()
+                                    ev_id = ev.get("id")
+                                    clean_summary = ev_summary.lstrip("🔔 ").strip()
+                                    if ev_id and (clean_summary == norm_title or norm_title in clean_summary or clean_summary in norm_title):
+                                        base_ev_id = ev_id.split("_")[0] if "_" in ev_id else ev_id
+                                        await google_services.delete_calendar_event(chat_id, base_ev_id)
+                                        logger.info(f"Two-way sync: deleted matching Google Calendar event {base_ev_id} for reminder '{d_title}'")
+                            except Exception as search_del_err:
+                                logger.warning(f"Fallback calendar search-and-delete failed for '{d_title}': {search_del_err}")
                     except Exception:
                         pass
                     try:
@@ -2878,6 +2908,38 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     ).fetchall()
 
             if not matched_rows:
+                # If no active rows in memory_items, check if matching events exist on Google Calendar
+                cal_found = []
+                if clean_kw:
+                    try:
+                        import google_services
+                        cal_evs = await google_services.list_calendar_events(chat_id, query=clean_kw, max_results=5)
+                        norm_kw = clean_kw.strip().lower()
+                        for cev in (cal_evs or []):
+                            c_sum = (cev.get("summary") or "").strip().lower().lstrip("🔔 ").strip()
+                            if norm_kw in c_sum or c_sum in norm_kw:
+                                cal_found.append(cev)
+                    except Exception:
+                        pass
+
+                if cal_found:
+                    c_ev = cal_found[0]
+                    base_id = c_ev["id"].split("_")[0] if "_" in c_ev["id"] else c_ev["id"]
+                    c_title = c_ev.get("summary", clean_kw)
+                    return {
+                        "status": "needs_confirmation",
+                        "action": "delete_reminder",
+                        "tool_name": "delete_reminder",
+                        "message": f"Please confirm deletion of Google Calendar event '{c_title}'.",
+                        "target_ids": [],
+                        "facts": {
+                            "google_calendar_event_id": base_id,
+                            "title": c_title,
+                            "requires_explicit_confirmation": True
+                        },
+                        "next_options": ["confirm", "cancel"]
+                    }
+
                 return {
                     "status": "not_found",
                     "action": "delete_reminder",

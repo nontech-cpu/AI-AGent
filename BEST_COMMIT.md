@@ -1,6 +1,30 @@
 # GOLDEN STABLE COMMIT SNAPSHOTS
 
-## Snapshot 2: Final Hardening & Zero-Hardcoding Golden Release (LATEST)
+## Snapshot 3: Master Golden Release - Live Two-Way Calendar Sync, Status Question Protection & Dynamic Language Adaptation (LATEST)
+
+- **Branch**: `main`
+- **Date**: `Tue Nov 10 18:40:00 2026 +0530`
+- **Commit Message**: `fix(master-hardening): ensure two-way Google Calendar deletion, eliminate guardrail question hijacking, and enable dynamic language switching`
+
+### What is Guaranteed in Snapshot 3
+1. **Status Question Grounding Protection**:
+   - Eliminated crude `has_verb and has_done` keyword scanning in `connectors/guardrails.py` and `agent/verifier.py`.
+   - Informational status inquiries (e.g. *"ky tumn firecraker wala reminder htaa diya caldner se bhi?"*) are recognized as informational answers about existing state rather than ungrounded write actions.
+   - Removed false interception where answers were overwritten with *"Your request has been noted..."*.
+2. **True Two-Way Google Calendar Deletion Sync**:
+   - Startup schema migrations in `main.py:lifespan` automatically initialize `memory_items.google_calendar_event_id VARCHAR(128)`.
+   - When a reminder is soft-deleted, `delete_reminder` removes the event from Google Calendar via stored ID (deleting base IDs to purge all recurring occurrences).
+   - Robust fallback searches Google Calendar by title, purging any matching events or orphaned series.
+   - If a reminder is already soft-deleted in DB, `delete_reminder` checks Google Calendar directly and stages deletion of matching calendar events.
+3. **Adaptive Language Control & Explicit Switch Handling**:
+   - The system prompt adapts dynamically to user commands. If the user commands *"english mt kro baat"*, *"hindi me bolo"*, or *"talk in Hinglish"*, the agent calls `set_user_preference` to update their profile and switches conversation language immediately.
+   - Default behavior without locked preferences uses natural dynamic language mirroring.
+4. **All Unit & Regression Test Suites Passing**:
+   - 28/28 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_no_hardcoding.py`, `test_persistent_user_preference.py`, `test_status_questions_never_write.py`, `test_part_c_calendar_recurrence.py`, and `test_delete_policy_and_turn_traces.py`.
+
+---
+
+## Snapshot 2: Final Hardening & Zero-Hardcoding Golden Release
 
 - **Commit Hash**: `d5bf692872f96397bfbb1bf23e23a0acd05e69c1`
 - **Short Hash**: `d5bf692`

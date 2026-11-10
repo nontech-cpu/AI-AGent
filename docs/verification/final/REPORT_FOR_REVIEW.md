@@ -107,8 +107,44 @@ COMMIT;
 
 ---
 
-## 6. Deployment Verdict: **`GO`**
+## 6. Live Incidents Resolved (Snapshot 3 Release)
+
+### Incident 1: Status Question Overwrite with "Your request has been noted..."
+- **Root Cause**: `connectors/guardrails.py:check_fake_success_guard` matched natural verbs/done tokens (`has_verb and has_done`) in answers to user inquiries (e.g. *"ky tumn firecraker wala reminder htaa diya caldner se bhi?"*). Because no mutation tool ran in the inquiry turn, the guard treated it as an ungrounded write and clobbered the reply with `request_noted_confirm_details`.
+- **Architectural Resolution**:
+  - Eliminated crude `has_verb and has_done` keyword matching.
+  - Exempted question/inquiry turns from fake-success claim checks.
+  - Phase 5 Grounding Verifier in `agent/verifier.py` with structured LLM claim checker now serves as the single source of truth; if the verifier approves the grounded reply, secondary heuristics cannot overwrite it.
+
+### Incident 2: Two-Way Google Calendar Event Deletion Sync
+- **Root Cause**: Production `memory_items` table was missing the `google_calendar_event_id` column because column migrations were not called during application startup (`main.py:lifespan`). Furthermore, `delete_reminder` lacked a title-based fallback search in Google Calendar for recurring series or items created before migration.
+- **Architectural Resolution**:
+  - `main.py:lifespan` now executes `_init_memory_items_calendar_id_column()` on app startup.
+  - `agent/tools.py:delete_reminder` parses base event IDs (deleting parent IDs to purge all recurring occurrences) and runs a fallback search on Google Calendar to ensure 100% two-way cleanup.
+  - If a reminder was already deleted in DB, `delete_reminder` discovers and stages matching Google Calendar events for deletion.
+
+### Incident 3: Persistent Language Lock vs. Explicit Switch
+- **Root Cause**: The user's profile had `users.language = 'english'`, and the system prompt injected a rigid banner commanding *"MANDATORY: You must generate 100% of your response text in ENGLISH... NEVER switch to Hinglish"*. When the user said *"english mt kro baat"*, the model felt constrained from switching.
+- **Architectural Resolution**:
+  - Prompt instructions explicitly state that commands like *"english mt kro baat"*, *"hindi me bolo"*, or *"talk in Hinglish"* are explicit language change requests: the agent must immediately call `set_user_preference(reply_language='hinglish')` and switch conversational language.
+
+---
+
+## 7. Production SQL Proposals (Sanctioned Manual Actions)
+To update language for user 1234828592 directly in PostgreSQL:
+```sql
+UPDATE users SET language = 'hinglish' WHERE telegram_chat_id = 1234828592;
+```
+To verify `google_calendar_event_id` column exists:
+```sql
+ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS google_calendar_event_id VARCHAR(128);
+```
+
+---
+
+## 8. Deployment Verdict: **`GO`**
 
 * **Telegram Deployment (Render)**: **`GO`**
 * **Calendar Writes**: **`GO (WITH CONFIRMATION GATE)`**
 * **Destructive Auto-Execution**: **`PERMANENT NO-GO (MANDATORY ID CONFIRMATION)`**
+

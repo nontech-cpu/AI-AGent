@@ -32,7 +32,10 @@ CLAIM_CHECKER_SYSTEM_PROMPT = """You are the Grounding & Truth Claim-Checker for
 Your job is to audit the Draft Reply against the Evidence (Tool Results, Memory Context, User Query).
 
 You must output a single JSON object with these EXACT keys:
-1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, wiped, or sent (e.g. reminder created/deleted/updated, meeting scheduled, email sent, note/file saved, list updated, memory/data wiped or deleted, contacts deleted). False if the assistant is merely asking confirmation, refusing, explaining, asking a question, or greeting.
+1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, wiped, or sent in the CURRENT turn.
+CRITICAL INQUIRY EXCEPTION:
+- If the User Query is an inquiry or status question about whether something was done in the past, or asking about current state/reminders/calendar (e.g. "ky tumn firecraker wala reminder htaa diya caldner se bhi?", "is my meeting cancelled?", "kya delete ho gaya?"), answering the question or reporting status is an INFORMATIONAL ANSWER, NOT an action claim. Return "claims_action_done": false!
+- Return "claims_action_done": false if the assistant is merely asking confirmation, refusing, explaining, answering a status check, or greeting.
 2. "which_action": string or null. The canonical tool name if an action is claimed (e.g. "create_reminder", "delete_reminder", "update_reminder", "send_email", "create_meeting", "save_note_or_fact", "manage_list", "request_master_privacy_wipe", "clear_chat_history"), or null if no action is claimed.
 3. "claims_external_fact": boolean. True if the Draft Reply asserts specific real-world live facts (e.g. local business/mall names, transit routes/highways/distances, order/receipt details, market prices, live weather, availability). False for general domain knowledge (e.g. ML, coding concepts, science, history), pure language translations, greetings, conversational remarks, festival wishes, food/celebration commentary, or acknowledging the user's casual personal plans.
 4. "claims_route_or_travel_time": boolean. True if the Draft Reply asserts, describes, or predicts a physical travel route, road directions (e.g. via specific roads, highways, bypasses), transit path, or travel time/duration (e.g. '10-15 minute lagenge') between locations. False otherwise.
@@ -167,7 +170,8 @@ def deterministic_verify(
     )
     low_rep = draft_reply.lower()
 
-    if not has_action_tool_success and not has_pending_confirm:
+    is_user_inquiry = bool(user_query and "?" in user_query)
+    if not has_action_tool_success and not has_pending_confirm and not is_user_inquiry:
         # Strip question clauses so questions like "Aaj Tuesday hai — bhej diya?" are not flagged as completion claims
         clean_rep = re.sub(r'[^.!?\n]*\?', '', low_rep)
         action_claim_tokens = (
@@ -177,11 +181,7 @@ def deterministic_verify(
             "successfully scheduled", "successfully deleted", "hata di gayi", "hata diya", "clear kar diya", "wipe kar diya"
         )
         has_claim_token = any(tok in clean_rep for tok in action_claim_tokens)
-        has_verb_and_done = (
-            any(v in clean_rep for v in ("delete", "trash", "hata", "remove", "clear", "wipe", "create", "bana", "schedule", "send", "bhej", "update", "save")) and
-            any(d in clean_rep for d in ("kar diya", "kar diye", "kar di", "ho gaya", "ho gaye", "done!", "done:", "done.", "successfully", "kiye gaye", "diye gaye"))
-        )
-        if has_claim_token or has_verb_and_done:
+        if has_claim_token:
             is_wipe_claim = any(w in clean_rep for w in ("delete kar di", "delete kar diye", "clear kar diya", "hata di gayi", "wipe kar diya")) and any(w in clean_rep for w in ("memory", "data", "contacts", "reminders", "account", "location"))
             is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "dlete", "delte", "delet", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean", "entire memory", "saari memory", "all data", "poora data"))
             if is_wipe_claim and is_user_wipe_request:

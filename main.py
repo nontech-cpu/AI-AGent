@@ -3797,6 +3797,13 @@ async def lifespan(app):
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1")).fetchall()
+            try:
+                db._init_memory_items_status_column()
+                db._init_memory_items_recurrence_column()
+                db._init_memory_items_calendar_id_column()
+                db._init_reminders_scheduler_columns()
+            except Exception as mig_err:
+                logging.getLogger("uvicorn").warning(f"Startup schema migration notice: {mig_err}")
             from memory.retrieval import assemble_memory_context
             from agent.prompt import build_runtime_system_prompt
             for cid in (1758056012, 1234828592):

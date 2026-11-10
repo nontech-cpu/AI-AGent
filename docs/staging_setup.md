@@ -66,3 +66,4 @@ To rotate `AES_SECRET_KEY` without invalidating existing tokens or causing downt
    - Set `AES_SECRET_KEY = <NEW_SECRET_KEY>`
 3. Restart service. The decryption engine attempts `AES_SECRET_KEY` first. If decryption fails, it falls back to `AES_SECRET_KEY_FALLBACK`, decrypts the ciphertext, re-encrypts with `AES_SECRET_KEY`, and updates the database row automatically.
 4. Once all rows are re-encrypted, unset `AES_SECRET_KEY_FALLBACK`.
+

@@ -1144,8 +1144,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         final_reply = verified_reply
 
     # Guardrail: Fake-Success Prevention in code
-    is_fake_ok, fake_err = check_fake_success_guard(final_reply, tool_results_list)
-    if not is_fake_ok:
+    is_fake_ok, fake_err = check_fake_success_guard(final_reply, tool_results_list, user_query=user_text)
+    if not is_fake_ok and not is_grounded:
         print(f"Fake Success Guard intercepted: {fake_err}")
         violations.append(fake_err)
         from core.i18n import get_i18n_string

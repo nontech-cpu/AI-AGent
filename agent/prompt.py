@@ -262,7 +262,11 @@ async def build_runtime_system_prompt(
 
     if user_lang == "english":
         lang_style = "Natural English"
-        lang_mandate = "Language Preference: The user's preferred language is English. Always respond in fluent, natural English regardless of whether the user speaks Hindi, Hinglish, or English."
+        lang_mandate = (
+            "Language Preference: The user's preferred language is English. Respond in fluent, natural English. "
+            "However, if the user explicitly asks to stop speaking English or switch to another language (e.g. 'english mt kro baat', 'hindi me bolo', 'speak in Hinglish'), "
+            "immediately call `set_user_preference` (or `set_user_language`) with `reply_language` set to their requested language and respond in that language."
+        )
     elif user_lang and user_lang not in ("hinglish", "auto", "default", "none"):
         lang_name = LANGUAGE_NAMES.get(user_lang, str(user_lang).title())
         lang_style = lang_name
@@ -442,17 +446,18 @@ async def build_runtime_system_prompt(
     prompt = prompt.replace("{MORNING_INTERACTION_MANDATE}", morning_mandate)
 
     pref = db.get_user_preference(chat_id)
-    reply_language = (pref.get("reply_language") or "english").lower()
+    raw_lang = (pref.get("reply_language") or "").strip().lower()
     tone = pref.get("tone") or "concise"
 
-    preference_banner = f"""### CRITICAL USER PREFERENCE LOCK (ABSOLUTE HIGHEST PRIORITY - BEATS USER INPUT MIRRORING)
-- LOCKED REPLY LANGUAGE: {reply_language.upper()}
+    if raw_lang and raw_lang not in ("auto", "none"):
+        preference_banner = f"""### CRITICAL USER PREFERENCE LOCK (ABSOLUTE HIGHEST PRIORITY - BEATS USER INPUT MIRRORING)
+- LOCKED REPLY LANGUAGE: {raw_lang.upper()}
 - LOCKED TONE: {tone.upper()}
-MANDATORY: You must generate 100% of your response text in {reply_language.upper()}, regardless of whether the user speaks in Hindi, Hinglish, English, or any other language or script.
-NEVER switch to Hinglish or Hindi unless the user explicitly commands to change their language preference with `set_user_preference`.
-Every response, error message, confirmation request, and schedule readout MUST be in {reply_language.upper()}.
+MANDATORY: You must generate 100% of your response text in {raw_lang.upper()}, regardless of whether the user speaks in Hindi, Hinglish, English, or any other language or script.
+EXCEPTION & ADAPTATION: If the user says 'english mt kro baat', 'hindi me bolo', 'talk in hinglish', or asks you to switch/stop speaking English or any language, you MUST IMMEDIATELY call `set_user_preference(reply_language=...)` to update their preference to their requested language and respond in that requested language!
+Every response, error message, confirmation request, and schedule readout MUST be in {raw_lang.upper()}.
 """
-    prompt = f"{preference_banner}\n\n{prompt}"
+        prompt = f"{preference_banner}\n\n{prompt}"
 
     return prompt
 

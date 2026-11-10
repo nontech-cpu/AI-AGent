@@ -59,17 +59,21 @@ def safe_error_reply(error_type: str, connector_name: str = "Service", instructi
         lang=user_lang
     )
 
-def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
+def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]], user_query: str = "") -> Tuple[bool, Optional[str]]:
     """
     Blocks claims of successful action execution unless confirmed by a real tool result with an ID or URL.
     Returns (passed, error_reason).
     """
+    if not draft_reply or not str(draft_reply).strip():
+        return True, None
+
+    # Informational queries (structural question mark) are inquiries about past state, not new write commands
+    if user_query and "?" in user_query:
+        return True, None
+
     low = draft_reply.lower()
     # Confirmation dialogues, options, auth URL invitations, and action approval questions
-    # Closing courtesy questions (e.g. "kya main kisi aur tarah madad karun?") do NOT exempt action claims
-    is_confirm_dialogue = any(q in low for q in ["please confirm", "reply yes", "reply haan", "options:", "auth/google", "oauth", "secure link"]) or (
-        any(q in low for q in ["kya main ise", "kya aap confirm", "kya main proceed", "confirm karein"]) and "?" in low
-    )
+    is_confirm_dialogue = any(q in low for q in ["please confirm", "reply yes", "reply haan", "options:", "auth/google", "oauth", "secure link"]) or "?" in draft_reply
     if is_confirm_dialogue:
         return True, None
 
@@ -79,13 +83,7 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
 
     has_completion_claim = any(pat.search(draft_reply) for pat in ACTION_COMPLETION_PATTERNS)
     if not has_completion_claim:
-        # Catch parenthetical and word-order variations e.g. 'delete (trash) kar diye', 'trash kar diya'
-        has_verb = any(v in low for v in ("delete", "trash", "hata", "remove", "clear", "wipe", "create", "bana", "schedule", "send", "bhej", "update", "save"))
-        has_done = any(d in low for d in ("kar diya", "kar diye", "kar di", "ho gaya", "ho gaye", "done!", "done:", "done.", "successfully", "kiye gaye", "diye gaye"))
-        if has_verb and has_done:
-            has_completion_claim = True
-        else:
-            return True, None
+        return True, None
 
     # Verify if any write/destructive tool succeeded with concrete ID/URL evidence
     has_confirmed_success = False

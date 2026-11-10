@@ -52,3 +52,4 @@ Execute database migrations strictly in this order:
   - **Mitigation on Free Tier**: The scheduler includes a catch-up mechanism (`claim_pending_reminders`) that catches up all due reminders immediately upon wake-up.
 - **Paid Background Worker Guarantee**:
   - Deploying a persistent Background Worker ($7/mo) ensures 24/7 continuous uptime without sleep, guaranteeing sub-second reminder trigger precision.
+
