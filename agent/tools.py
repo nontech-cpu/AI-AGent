@@ -228,6 +228,7 @@ class CreateReminderArgs(BaseModel):
 
 class UpdateReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder, meeting, or task to update.")
+    new_title: Optional[str] = Field(None, description="New title if renaming or replacing the reminder (e.g. changing from 'Devender' to 'Rahul').")
     reminder_id: Optional[int] = Field(None, description="ID of the reminder if known.")
     due_date: Optional[str] = Field(None, description="Updated date in YYYY-MM-DD format if date is being changed.")
     due_time: Optional[str] = Field(None, description="Updated time in 24-hour HH:MM format if time is being changed.")
@@ -761,7 +762,8 @@ TOOL_DEFINITIONS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": ["string", "null"], "description": "Title or keyword of the reminder or meeting to update (e.g. 'Meeting')."},
+                    "title": {"type": ["string", "null"], "description": "Title or keyword of the existing reminder or meeting to update (e.g. 'Devender' or 'Meeting')."},
+                    "new_title": {"type": ["string", "null"], "description": "New title if renaming or replacing the reminder (e.g. changing 'Devender' to 'Meeting with Rahul')."},
                     "reminder_id": {"type": ["integer", "null"], "description": "ID of the reminder if known."},
                     "due_date": {"type": ["string", "null"], "description": "Updated date in YYYY-MM-DD format if date is being changed."},
                     "due_time": {"type": ["string", "null"], "description": "Updated time in 24-hour HH:MM format if time is being changed."},
@@ -1518,6 +1520,21 @@ def validate_request_quote(chat_id: int, quote: Optional[str], user_context: Opt
     """
     if user_context is not None and user_context.get("bypass_quote_check"):
         return True
+
+    # Layer 5 Prompt Injection & Administrative Override Defense:
+    # If the quote or current message simulates a system command or safety bypass, reject write operations immediately
+    injection_patterns = (
+        r"system\s+(?:command|prompt|override|directive)\s*:",
+        r"ignore\s+(?:all\s+)?(?:previous|prior|safety)\s+(?:instructions?|rules?)",
+        r"disregard\s+(?:all\s+)?(?:previous|prior|safety)",
+        r"you\s+are\s+now\s+(?:in\s+)?(?:developer|unrestricted|god)\s+mode",
+        r"admin\s+(?:override|command)\s*:"
+    )
+    combined_check_str = f"{quote or ''} {(user_context or {}).get('user_text', '')}"
+    if any(re.search(pat, combined_check_str, re.IGNORECASE) for pat in injection_patterns):
+        logger.warning(f"validate_request_quote blocked prompt injection pattern: {combined_check_str[:120]}")
+        return False
+
     if not quote or not str(quote).strip():
         # If user_context has user_text, quote is strictly required
         if user_context and user_context.get("user_text"):
@@ -1561,9 +1578,20 @@ def validate_request_quote(chat_id: int, quote: Optional[str], user_context: Opt
         if combined and (q_clean in combined or combined in q_clean):
             return True
 
-        # Check word containment for multi-turn quote fragments
+        # Check word containment with typo tolerance (e.g. 'devedner' -> 'devender')
+        def _token_matches(w: str, text: str) -> bool:
+            if w in text:
+                return True
+            for t in text.split():
+                if abs(len(w) - len(t)) <= 1 and len(w) >= 4:
+                    diff = sum(1 for c1, c2 in zip(sorted(w), sorted(t)) if c1 != c2) + abs(len(w) - len(t))
+                    if diff <= 1:
+                        return True
+            return False
+
         q_words = [w for w in q_clean.split() if len(w) > 2]
-        if q_words and all(w in combined for w in q_words):
+        matching_words = [w for w in q_words if _token_matches(w, combined)]
+        if q_words and (len(matching_words) / len(q_words) >= 0.6 or len(matching_words) >= 2):
             return True
     except Exception as exc:
         logger.warning(f"validate_request_quote history check error: {exc}")
@@ -1590,6 +1618,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
     return res
 
 async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
+    import google_services
     origin_chat_id = (user_context or {}).get("delivery_chat_id") or (user_context or {}).get("originating_chat_id") or chat_id
     try:
         # Step 6: Server-side validation of request_quote on write tools
@@ -2207,6 +2236,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         matched_row = dict(row)
             else:
                 existing_items = db.items_for_date(chat_id, today_d)
+                range_items = db.items_for_date_range(chat_id, today_d, today_d + timedelta(days=7))
 
                 # 1. If from_time is provided or extractable from user message, match by original time first
                 search_from_time = getattr(args, "from_time", None)
@@ -2223,7 +2253,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         search_from_time = f"{hr:02d}:{minute:02d}"
 
                 if search_from_time:
-                    for r in existing_items:
+                    for r in existing_items + range_items:
                         r_tm = _get_row_val(r, "due_time", 3)
                         if r_tm and str(r_tm).startswith(search_from_time[:5]):
                             matched_row = r
@@ -2242,14 +2272,44 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
                 # 4. If still not matched, search upcoming 7 days
                 if not matched_row and target_kw:
-                    range_items = db.items_for_date_range(chat_id, today_d, today_d + timedelta(days=7))
                     for r in range_items:
                         r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
                         if target_kw == r_title or target_kw in r_title or r_title in target_kw:
                             matched_row = r
                             break
 
-                # 5. If title keyword was omitted or generic and only one/latest item exists today
+                # 5. Mind-Changer / Entity Replacement Fallback:
+                # If user corrects an entity (e.g. 'are nahi Devender nahi Rahul ke saath 11 baje kar do'),
+                # search upcoming reminders for the entity being replaced from user_msg.
+                explicit_new_title = getattr(args, "new_title", None) or arguments.get("new_title")
+                if not matched_row and (user_msg or target_kw):
+                    combined_search = (user_msg + " " + target_kw).lower()
+                    for r in range_items:
+                        r_title = (_get_row_val(r, "title", 1, "") or "").strip().lower()
+                        r_words = [w for w in re.findall(r'\b[a-zA-Z0-9_-]+\b', r_title) if len(w) > 3 and w not in ("meeting", "reminder", "with")]
+                        if any(w in combined_search for w in r_words):
+                            matched_row = r
+                            if not explicit_new_title and target_kw and target_kw not in r_title:
+                                explicit_new_title = args.title
+                            break
+
+                # 6. Active Context Fallback (most recently created/discussed reminder)
+                if not matched_row and user_context:
+                    act_ctx = (user_context or {}).get("active_context") or {}
+                    last_ev = act_ctx.get("last_event") or {}
+                    last_id = last_ev.get("id") or last_ev.get("item_id")
+                    if last_id:
+                        with db.engine.connect() as conn:
+                            row = conn.execute(
+                                db.text("SELECT id, title, due_date, due_time, COALESCE(duration_minutes, 30) AS duration_minutes FROM memory_items WHERE id = :id AND user_id IN (SELECT id FROM users WHERE telegram_chat_id = :c) AND (status IS NULL OR status != 'deleted')"),
+                                {"id": last_id, "c": chat_id}
+                            ).mappings().first()
+                            if row:
+                                matched_row = dict(row)
+                                if not explicit_new_title and target_kw:
+                                    explicit_new_title = args.title
+
+                # 7. If title keyword was omitted or generic and only one/latest item exists today
                 if not matched_row and existing_items:
                     matched_row = search_list[0]
 
@@ -2266,13 +2326,52 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "next_options": ["list_reminders", "create_reminder"]
                 }
 
-            row_id = _get_row_val(matched_row, "id", 4)
-            orig_title = _get_row_val(matched_row, "title", 1, "")
-            curr_date = _get_row_val(matched_row, "due_date", 6, today_d) or today_d
-            curr_time = _get_row_val(matched_row, "due_time", 3)
-            curr_dur = _safe_int(_get_row_val(matched_row, "duration_minutes", 5, 30), default=30)
+            row_id = None
+            orig_title = ""
+            curr_date = None
+            curr_time = None
+            curr_dur = 30
 
-            new_title = (args.title or orig_title).strip()
+            if isinstance(matched_row, dict):
+                row_id = matched_row.get("id")
+                orig_title = matched_row.get("title", "")
+                curr_date = matched_row.get("due_date")
+                curr_time = matched_row.get("due_time")
+                curr_dur = _safe_int(matched_row.get("duration_minutes", 30), default=30)
+            elif hasattr(matched_row, "_mapping"):
+                m = matched_row._mapping
+                row_id = m.get("id")
+                orig_title = m.get("title", "")
+                curr_date = m.get("due_date")
+                curr_time = m.get("due_time")
+                curr_dur = _safe_int(m.get("duration_minutes", 30), default=30)
+            else:
+                orig_title = matched_row[1] if len(matched_row) > 1 else ""
+                curr_time = matched_row[3] if len(matched_row) > 3 else None
+                if len(matched_row) > 6 and isinstance(matched_row[6], (date, datetime, str)) and not isinstance(matched_row[6], bool):
+                    curr_date = matched_row[6]
+                    row_id = matched_row[4]
+                    curr_dur = _safe_int(matched_row[5], default=30)
+                elif len(matched_row) > 4 and isinstance(matched_row[4], (date, datetime, str)) and not isinstance(matched_row[4], bool):
+                    curr_date = matched_row[4]
+                    row_id = matched_row[5] if len(matched_row) > 5 else None
+                    curr_dur = _safe_int(matched_row[6], default=30) if len(matched_row) > 6 else 30
+                else:
+                    row_id = matched_row[4] if len(matched_row) > 4 else None
+                    curr_date = today_d
+
+            if not curr_date:
+                curr_date = today_d
+            if isinstance(curr_date, str):
+                try:
+                    curr_date = date.fromisoformat(curr_date.split("T")[0])
+                except Exception:
+                    curr_date = today_d
+            elif isinstance(curr_date, datetime):
+                curr_date = curr_date.date()
+
+            explicit_new_title = getattr(args, "new_title", None) or arguments.get("new_title")
+            new_title = (explicit_new_title or args.title or orig_title).strip()
             if args.due_date:
                 ok_d, resolved_new_date, err_d = timeutil.resolve_date(args.due_date, tz=u_tz, allow_past=False)
                 if not ok_d:
@@ -2791,7 +2890,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 direct_cal_id = arguments.get("google_calendar_event_id")
                 if direct_cal_id:
                     try:
-                        import google_services
                         await google_services.delete_calendar_event(chat_id, direct_cal_id)
                         logger.info(f"Two-way sync: deleted direct Google Calendar event {direct_cal_id}")
                     except Exception as g_del_err:
@@ -2821,7 +2919,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                                     pass
                             if cal_ev_id:
                                 try:
-                                    import google_services
                                     base_ev_id = cal_ev_id.split("_")[0] if "_" in cal_ev_id else cal_ev_id
                                     await google_services.delete_calendar_event(chat_id, base_ev_id)
                                     logger.info(f"Two-way sync: deleted calendar event {base_ev_id} by event_id")
@@ -2831,7 +2928,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                             # Fallback & Complete Purge: search Google Calendar for matching title
                             # Ensures events created before column migration or recurring instances are 100% purged
                             try:
-                                import google_services
                                 cal_events = await google_services.list_calendar_events(chat_id, query=d_title, max_results=10)
                                 norm_title = d_title.strip().lower()
                                 for ev in (cal_events or []):
@@ -2892,6 +2988,13 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 }
 
             matched_rows = []
+            kw_to_check = clean_kw
+            if not kw_to_check and user_context:
+                u_text = str(user_context.get("user_text", "")).lower()
+                cand_words = [w for w in re.findall(r'\b[a-zA-Z0-9_-]+\b', u_text) if len(w) > 3 and w not in ("cancel", "delete", "delet", "hata", "kar", "karo", "krdo", "please", "yes", "confirm", "this", "that")]
+                if cand_words:
+                    kw_to_check = " ".join(cand_words)
+
             with engine.connect() as conn:
                 is_pg = engine.dialect.name == "postgresql"
                 if ids_to_act:
@@ -2910,19 +3013,81 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                                  f"WHERE u.telegram_chat_id = :c AND m.id IN ({placeholders}) AND (m.status IS NULL OR m.status != 'deleted')"),
                             p_dict
                         ).fetchall()
-                elif clean_kw:
+
+                    # Title Consistency Verification:
+                    # If kw_to_check is present, verify that the ID-fetched candidate actually matches the requested title!
+                    if matched_rows and kw_to_check:
+                        chk_words = set(re.findall(r'\b[a-zA-Z0-9_-]+\b', kw_to_check.lower())) - {"the", "a", "an", "with", "to", "for", "in", "on", "at"}
+                        if chk_words:
+                            consistent_rows = []
+                            for r in matched_rows:
+                                r_title_lower = str(r[1] or "").lower()
+                                r_words = set(re.findall(r'\b[a-zA-Z0-9_-]+\b', r_title_lower))
+                                has_overlap = bool(chk_words & r_words) or any(w in r_title_lower for w in chk_words) or any(w in kw_to_check.lower() for w in r_words if len(w) > 3)
+                                if has_overlap:
+                                    consistent_rows.append(r)
+                            if not consistent_rows:
+                                # Candidate ID points to an unrelated item (e.g. Gym session when user asked for Devender)!
+                                logger.info(f"delete_reminder: ID {ids_to_act} title '{[r[1] for r in matched_rows]}' does not match '{kw_to_check}'. Falling back to title lookup.")
+                                ids_to_act = []
+                                matched_rows = []
+                                if not clean_kw:
+                                    clean_kw = kw_to_check
+                            else:
+                                matched_rows = consistent_rows
+
+                if not ids_to_act and clean_kw:
+                    # 1. Direct SQL LIKE search
                     matched_rows = conn.execute(
                         text("SELECT m.id, m.title, m.due_date, m.due_time FROM memory_items m JOIN users u ON u.id = m.user_id "
                              "WHERE u.telegram_chat_id = :c AND LOWER(m.title) LIKE :pat AND (m.status IS NULL OR m.status != 'deleted')"),
                         {"pat": f"%{clean_kw}%", "c": can_cid}
                     ).fetchall()
 
+                    # 2. Multi-day token overlap and typo-resilient upcoming search (today + 14 days)
+                    if not matched_rows:
+                        u_tz, _ = await _resolve_user_timezone(chat_id)
+                        today_d = timeutil.today(u_tz)
+                        all_active = conn.execute(
+                            text("SELECT m.id, m.title, m.due_date, m.due_time FROM memory_items m JOIN users u ON u.id = m.user_id "
+                                 "WHERE u.telegram_chat_id = :c AND (m.status IS NULL OR m.status != 'deleted') "
+                                 "AND (m.due_date IS NULL OR m.due_date >= :t_min) "
+                                 "ORDER BY m.due_date ASC, m.due_time ASC"),
+                            {"c": can_cid, "t_min": today_d.isoformat()}
+                        ).fetchall()
+
+                        search_tokens = [w for w in re.findall(r'\b[a-zA-Z0-9_-]+\b', clean_kw.lower()) if len(w) > 2 and w not in ("the", "with", "for", "cancel", "krdo", "karo", "please")]
+
+                        def _token_sim(t1: str, t2: str) -> bool:
+                            if t1 == t2 or t1 in t2 or t2 in t1:
+                                return True
+                            if abs(len(t1) - len(t2)) <= 1 and min(len(t1), len(t2)) >= 4:
+                                diff = sum(1 for c1, c2 in zip(sorted(t1), sorted(t2)) if c1 != c2) + abs(len(t1) - len(t2))
+                                return diff <= 1
+                            return False
+
+                        scored_items = []
+                        for r in all_active:
+                            r_title = str(r[1] or "").lower()
+                            r_toks = [w for w in re.findall(r'\b[a-zA-Z0-9_-]+\b', r_title) if len(w) > 2]
+                            match_count = 0
+                            for st in search_tokens:
+                                if any(_token_sim(st, rt) for rt in r_toks):
+                                    match_count += 1
+                            if match_count > 0:
+                                scored_items.append((match_count, r))
+
+                        if scored_items:
+                            scored_items.sort(key=lambda x: x[0], reverse=True)
+                            max_score = scored_items[0][0]
+                            top_matches = [item for sc, item in scored_items if sc == max_score]
+                            matched_rows = top_matches
+
             if not matched_rows:
                 # If no active rows in memory_items, check if matching events exist on Google Calendar
                 cal_found = []
                 if clean_kw:
                     try:
-                        import google_services
                         cal_evs = await google_services.list_calendar_events(chat_id, query=clean_kw, max_results=5)
                         norm_kw = clean_kw.strip().lower()
                         for cev in (cal_evs or []):

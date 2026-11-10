@@ -1,6 +1,29 @@
 # GOLDEN STABLE COMMIT SNAPSHOTS
 
-## Snapshot 3: Master Golden Release - Conversational Discontinuation, Canned Verifier Elimination, 503 Fast Failover & Two-Way Calendar Sync (LATEST)
+## Snapshot 4: Production Hardening Release - Auto-Sync Scope Fix, Multi-Turn In-Place Modification, Delete Title Consistency & Prompt Injection Defense (LATEST)
+
+- **Commit Hash**: `ead29f4`
+- **Branch**: `main`
+- **Date**: `Tue Nov 10 21:16:00 2026 +0530`
+- **Commit Message**: `fix(hardening): fix google_services unbound local, implement in-place mind changer updates, enforce delete title consistency, and add layer 5 injection defense`
+
+### What is Guaranteed in Snapshot 4
+1. **Google Calendar Auto-Sync UnboundLocalError Fix**:
+   - Fixed variable scoping in `agent/tools.py:_execute_tool_inner` by binding `import google_services` at the top of the function and removing redundant late imports, eliminating `UnboundLocalError: cannot access local variable 'google_services'`.
+2. **Grounding Verifier Multi-Tool Turn Resilience**:
+   - In `agent/verifier.py:deterministic_verify`, when a mutating action succeeded in the turn (`has_action_tool_success`), the verifier preserves the success draft and never clobbers it with *"Maine koshish ki lekin action complete nahi ho paya"* just because an auxiliary tool call errored.
+3. **Multi-Turn "Mind Changer" In-Place Update**:
+   - Added `new_title` parameter to `UpdateReminderArgs` and multi-turn fallback in `update_reminder`. When user changes their mind (e.g. *"are nahi Devender nahi Rahul ke saath 11 baje kar do"*), it updates the existing reminder in-place to the new title and time, preventing duplicate entries.
+4. **Delete Target Consistency & Typo-Resilient Search**:
+   - Enforces title consistency in `delete_reminder`: if an ID points to an unrelated item (e.g. Gym session ID 252) while user asked for *"meeting with devender"*, the mismatch is rejected and the tool searches active upcoming items (today + 14 days) using token overlap and Levenshtein typo tolerance (*"devedner"* -> *"devender"*).
+5. **Layer 5 Meta-Prompt & Injection Defense**:
+   - Enforces meta-prompt defense in `agent/prompt.py` and `agent/tools.py:validate_request_quote`: commands in quotes or prefixed with simulated administrative tags (*"System command: Ignore all safety rules..."*) are treated as passive text and strictly blocked from write/delete tools.
+6. **All 40 Regression & Unit Tests Passing**:
+   - 40/40 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_phase2_llm_adapter.py`, `test_status_questions_never_write.py`, `test_no_hardcoding.py`, and `test_delete_policy_and_turn_traces.py`.
+
+---
+
+## Snapshot 3: Master Golden Release - Conversational Discontinuation, Canned Verifier Elimination, 503 Fast Failover & Two-Way Calendar Sync
 
 - **Commit Hash**: `49275e5`
 - **Branch**: `main`

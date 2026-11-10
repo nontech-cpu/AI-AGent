@@ -199,8 +199,8 @@ def deterministic_verify(
             violations.append("Claimed action completed without success: No successful tool execution in evidence")
             return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
 
-    if not is_cancellation and has_error and not has_conflict:
-        # If tool failed, ensure draft does not claim success
+    if not is_cancellation and has_error and not has_conflict and not has_action_tool_success:
+        # If tool failed and no action succeeded, ensure draft does not claim success
         if any(w in low_rep for w in ("ho gaya", "kar diya", "bhej diya", "saved", "created", "scheduled", "success")):
             violations.append("Claimed action completed when tool reported error")
             return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
