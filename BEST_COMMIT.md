@@ -1,33 +1,26 @@
 # GOLDEN STABLE COMMIT SNAPSHOTS
 
-## Snapshot 3: Master Golden Release - Live Two-Way Calendar Sync, Multi-Turn Server Quote Validation, Timezone Normalization & Status Question Protection (LATEST)
+## Snapshot 3: Master Golden Release - Conversational Discontinuation, Canned Verifier Elimination, 503 Fast Failover & Two-Way Calendar Sync (LATEST)
 
-- **Commit Hash**: `ddf1b41`
+- **Commit Hash**: `49275e5`
 - **Branch**: `main`
-- **Date**: `Tue Nov 10 19:20:00 2026 +0530`
-- **Commit Message**: `fix(timezone-resolution): resolve unconfigured UTC Google Calendar default to Asia/Kolkata using user location state`
+- **Date**: `Tue Nov 10 20:10:00 2026 +0530`
+- **Commit Message**: `fix(resilience): implement conversational discontinuation, eliminate canned verifier overwrites on cancellation, and add instant 503 fast failover`
 
 ### What is Guaranteed in Snapshot 3
-1. **Physical Location vs Unconfigured Google Calendar Timezone Normalization**:
-   - Google Calendar API defaults to `UTC` for unconfigured user accounts.
-   - When Google Calendar returns generic `UTC`, `get_user_calendar_timezone` and `_resolve_user_timezone` check the user's stored timezone and physical location (`db.get_user_location_state`, e.g. Jodhpur, India) to resolve `Asia/Kolkata` (IST, UTC+5:30).
-   - Prevents the bot from running 5.5 hours behind local time (e.g. treating 1:00 PM or 2:00 PM as future times when it is already evening in India).
-2. **Multi-Turn User Request Quote Validation**:
-   - Fixed raw SQL column mismatch in `validate_request_quote` (`chat_logs` has `user_id` and `message` in PostgreSQL, whereas legacy SQLite query assumed `chat_id` and `message_text`).
-   - Now uses database-agnostic `db.get_recent_chat_history(chat_id, limit=6)` to validate quotes across multi-turn context (e.g. Turn 1 *"set up a reminder for me at 2pm"* + Turn 2 *"it should be about meeting"*).
-   - Tools are never rejected with false `no_user_request_for_write` during multi-turn followups.
-3. **Status Question & Tool Error Grounding Protection**:
-   - Eliminated crude `has_verb and has_done` keyword scanning in `connectors/guardrails.py` and `agent/verifier.py`.
-   - Informational status inquiries (e.g. *"ky tumn firecraker wala reminder htaa diya caldner se bhi?"*) and error explanations (e.g. *"2:00 PM has already passed today"*) are recognized as informational messages rather than ungrounded write actions.
-   - Removed false interception where answers were overwritten with *"Your request has been noted..."*.
-4. **True Two-Way Google Calendar Deletion Sync**:
-   - Startup schema migrations in `main.py:lifespan` automatically initialize `memory_items.google_calendar_event_id VARCHAR(128)`.
-   - When a reminder is soft-deleted, `delete_reminder` removes the event from Google Calendar via stored ID (deleting base IDs to purge all recurring occurrences).
-   - Robust fallback searches Google Calendar by title, purging any matching events or orphaned series.
-5. **Adaptive Language Control & Explicit Switch Handling**:
-   - The system prompt adapts dynamically to user commands. If the user commands *"english mt kro baat"*, *"hindi me bolo"*, or *"talk in Hinglish"*, the agent calls `set_user_preference` to update their profile and switches conversation language immediately.
-6. **All Unit & Regression Test Suites Passing**:
-   - 32/32 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_missing_info_heldout.py`, `test_no_hardcoding.py`, `test_persistent_user_preference.py`, `test_status_questions_never_write.py`, `test_part_c_calendar_recurrence.py`, and `test_delete_policy_and_turn_traces.py`.
+1. **Conversational Discontinuation & Cancellation Handling**:
+   - Explicit guideline in System Prompt: when user declines or cancels (e.g. *"no"*, *"cancel"*, *"rehne de"*, *"rhne de"*, *"chhod do"*, *"nahi chahiye"*), the model does NOT call creation tools and naturally acknowledges the dismissal.
+   - Grounding Verifier (`agent/verifier.py`) and Guardrails (`connectors/guardrails.py`) recognize cancellations as conversational dismissals, completely eliminating robotic overwrites like *"Your request has been noted..."*.
+2. **Instant Multi-Provider Fast Failover on HTTP 503 Traffic Spikes**:
+   - When Google Gemini API returns HTTP 503 (`High Demand / Server Error`), the provider router fast-fails immediately to backup provider **Groq (Llama-3.3-70b)** in <300ms without pointlessly looping through other models of the overloaded provider.
+3. **Physical Location vs Unconfigured Google Calendar Timezone Normalization**:
+   - Resolves unconfigured Google Calendar default (`UTC`) to user physical location (`Asia/Kolkata` for India) so past/future times evaluate accurately.
+4. **Multi-Turn User Request Quote Validation**:
+   - Uses database-agnostic `db.get_recent_chat_history(chat_id, limit=6)` across PostgreSQL and SQLite for multi-turn reminder flows.
+5. **True Two-Way Google Calendar Deletion Sync**:
+   - Soft-deleting a reminder removes the event from Google Calendar via stored ID and cleans up orphaned recurrence batches.
+6. **All 41 Key Unit & Regression Tests Passing**:
+   - 41/41 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_phase2_llm_adapter.py`, `test_status_questions_never_write.py`, `test_no_hardcoding.py`, `test_part_c_calendar_recurrence.py`, `test_persistent_user_preference.py`, `test_delete_policy_and_turn_traces.py`, and `test_missing_info_heldout.py`.
 
 ---
 
