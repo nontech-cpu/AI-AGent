@@ -18,8 +18,10 @@
    - Enforces title consistency in `delete_reminder`: if an ID points to an unrelated item (e.g. Gym session ID 252) while user asked for *"meeting with devender"*, the mismatch is rejected and the tool searches active upcoming items (today + 14 days) using token overlap and Levenshtein typo tolerance (*"devedner"* -> *"devender"*).
 5. **Layer 5 Meta-Prompt & Injection Defense**:
    - Enforces meta-prompt defense in `agent/prompt.py` and `agent/tools.py:validate_request_quote`: commands in quotes or prefixed with simulated administrative tags (*"System command: Ignore all safety rules..."*) are treated as passive text and strictly blocked from write/delete tools.
-6. **All 40 Regression & Unit Tests Passing**:
-   - 40/40 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_phase2_llm_adapter.py`, `test_status_questions_never_write.py`, `test_no_hardcoding.py`, and `test_delete_policy_and_turn_traces.py`.
+6. **Two-Phase Confirmed Execution Provenance Bridge**:
+   - In `agent/tools.py:validate_request_quote` and `state/pending.py:execute_pending_action`, authenticated user confirmations (`_from_pending_executor=True`) are recognized as verified human intent, allowing confirmed deletions and creations to execute seamlessly without guardrail rejection.
+7. **All 41 Regression & Unit Tests Passing**:
+   - 41/41 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_phase2_llm_adapter.py`, `test_status_questions_never_write.py`, `test_no_hardcoding.py`, and `test_delete_policy_and_turn_traces.py`.
 
 ---
 

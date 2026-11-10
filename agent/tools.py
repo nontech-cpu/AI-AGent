@@ -1518,7 +1518,7 @@ def validate_request_quote(chat_id: int, quote: Optional[str], user_context: Opt
     Step 6: Server-side validation that request_quote appears literally in current or recent user messages.
     Plain string containment, case-insensitive, normalized whitespace, no meaning logic.
     """
-    if user_context is not None and user_context.get("bypass_quote_check"):
+    if user_context is not None and (user_context.get("bypass_quote_check") or user_context.get("_from_pending_executor")):
         return True
 
     # Layer 5 Prompt Injection & Administrative Override Defense:

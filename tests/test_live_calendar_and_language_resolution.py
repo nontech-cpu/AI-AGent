@@ -401,4 +401,49 @@ async def test_prompt_injection_rejected_by_write_guardrails():
     assert is_valid is False
 
 
+@pytest.mark.asyncio
+async def test_confirmed_pending_deletion_executes_cleanly_on_yes():
+    """Verifies that when a user says 'yes' to a pending reminder deletion, execute_pending_action executes without being blocked by request_quote guardrail."""
+    from state.pending import save_pending_action, get_pending_action, execute_pending_action
+
+    chat_id = 998877996
+    db.ensure_user(chat_id)
+
+    # 1. Pre-create Meeting with Rahul
+    with db.engine.begin() as conn:
+        res = conn.execute(db.text("""
+            INSERT INTO memory_items (user_id, category, title, due_date, due_time, status)
+            VALUES ((SELECT id FROM users WHERE telegram_chat_id = :cid), 'appointments', 'Meeting with Rahul', '2026-11-11', '11:00:00', 'active')
+        """), {"cid": chat_id})
+        rahul_id = res.lastrowid
+
+    # 2. Stage pending deletion
+    payload = {
+        "kind": "delete_reminder",
+        "action": "delete_reminder",
+        "target_ids": [rahul_id],
+        "items": [{"id": rahul_id, "title": "Meeting with Rahul", "due_date": "2026-11-11", "due_time": "11:00:00"}]
+    }
+    save_pending_action(chat_id, "delete_reminder", payload)
+
+    # 3. User says "yes" with chat history present
+    db.log_chat_message(chat_id, "user", "yes")
+
+    active_pending = get_pending_action(chat_id)
+    assert active_pending is not None
+
+    success, reply_msg = await execute_pending_action(chat_id, active_pending)
+
+    assert success is True
+    assert "Successfully deleted" in reply_msg or "delete kar diye gaye" in reply_msg
+    assert "could not be deleted" not in reply_msg
+
+    # 4. Confirm database row is marked 'deleted'
+    with db.engine.connect() as conn:
+        row = conn.execute(db.text("SELECT status FROM memory_items WHERE id = :id"), {"id": rahul_id}).fetchone()
+        assert row is not None
+        assert row[0] == "deleted"
+
+
+
 

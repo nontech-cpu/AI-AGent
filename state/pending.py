@@ -562,7 +562,7 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
                 chat_id,
                 "delete_reminder",
                 {"target_ids": target_ids},
-                user_context={"_from_pending_executor": True}
+                user_context={"_from_pending_executor": True, "bypass_quote_check": True}
             )
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
@@ -586,12 +586,17 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             due_date = payload.get("due_date")
             due_time = payload.get("due_time")
             from agent.tools import execute_tool
-            res = await execute_tool(chat_id, "create_reminder", {
-                "title": title,
-                "due_date": due_date,
-                "due_time": due_time,
-                "force": True
-            })
+            res = await execute_tool(
+                chat_id,
+                "create_reminder",
+                {
+                    "title": title,
+                    "due_date": due_date,
+                    "due_time": due_time,
+                    "force": True
+                },
+                user_context={"_from_pending_executor": True, "bypass_quote_check": True}
+            )
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
             if res.get("status") in ("success", "conflict_detected"):
