@@ -114,20 +114,36 @@ async def get_weather(city: Optional[str] = None, chat_id: Optional[int] = None)
     100% Free, no API key required.
     """
     cleaned = clean_city_query(city)
+    user_country = None
+    user_region = None
+    if chat_id:
+        try:
+            import db
+            loc_state = db.get_user_location_state(chat_id)
+            if loc_state:
+                user_country = loc_state.get("country")
+                user_region = loc_state.get("region")
+                if not cleaned:
+                    cleaned = loc_state.get("current_city")
+        except Exception:
+            pass
+
     if not cleaned and chat_id:
         cleaned = resolve_inferred_city(chat_id) or ""
     if not cleaned:
         cleaned = "Delhi"
 
     clean_city = cleaned.strip().title()
+    for noise in ("Is ", "In ", "At ", "Near "):
+        if clean_city.startswith(noise):
+            clean_city = clean_city[len(noise):].strip()
 
-    # Multi-candidate geocoding fallback for maximum resilience
+    # Multi-candidate geocoding fallback for maximum resilience (zero fragile single-word splitting)
     candidates = [clean_city]
-    words = clean_city.split()
-    if len(words) > 1:
-        candidates.append(words[0])
-        candidates.append(f"{clean_city}, India")
-        candidates.append(f"{words[0]}, India")
+    if user_country:
+        candidates.append(f"{clean_city}, {user_country}")
+    elif user_region:
+        candidates.append(f"{clean_city}, {user_region}")
     else:
         candidates.append(f"{clean_city}, India")
 
@@ -136,10 +152,17 @@ async def get_weather(city: Optional[str] = None, chat_id: Optional[int] = None)
             geo_data = None
             for cand in candidates:
                 geo_res = await client.get(
-                    f"https://geocoding-api.open-meteo.com/v1/search?name={cand}&count=1"
+                    f"https://geocoding-api.open-meteo.com/v1/search?name={cand}&count=5"
                 )
                 if geo_res.status_code == 200 and geo_res.json().get("results"):
-                    geo_data = geo_res.json()["results"][0]
+                    results = geo_res.json()["results"]
+                    matched = None
+                    if user_country:
+                        for r in results:
+                            if r.get("country", "").lower() == user_country.lower():
+                                matched = r
+                                break
+                    geo_data = matched or results[0]
                     break
 
             if geo_data:

@@ -232,19 +232,29 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             }
         elif intent == "cancel":
             cancel_pending_action(chat_id)
-            reply_msg = "Action cancel kar diya gaya hai. Kuch bhi schedule ya send nahi kiya gaya."
-            db.log_chat_message(chat_id, "user", user_text, channel=channel)
-            db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
-            return {
-                "reply": reply_msg,
-                "tool_calls_executed": [],
-                "pending_action": None,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
+            from state.pending import STRUCTURAL_CANCEL_COMMANDS
+            clean_low = user_text.strip().lower()
+            is_simple_cancel = (clean_low in STRUCTURAL_CANCEL_COMMANDS or
+                                clean_low in ("cancel", "no", "nahi", "nahin", "mat karo", "rehne do", "chhoro", "drop it", "abort") or
+                                len(clean_low.split()) <= 2)
+            if is_simple_cancel:
+                reply_msg = "Action cancel kar diya gaya hai. Kuch bhi schedule ya send nahi kiya gaya."
+                db.log_chat_message(chat_id, "user", user_text, channel=channel)
+                db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
+                return {
+                    "reply": reply_msg,
+                    "tool_calls_executed": [],
+                    "pending_action": None,
+                    "is_grounded": True,
+                    "violations": [],
+                    "latency_ms": int((time.time() - start_ts) * 1000),
+                    "tokens_used": 0,
+                    "memory_context": {}
+                }
+            else:
+                # User cancelled the pending action and simultaneously gave a new replacement instruction!
+                # We clear active_pending and allow the turn to proceed through the agent loop naturally.
+                active_pending = None
         elif intent == "update_time":
             new_due_time, new_due_date = extra
             new_dt = datetime.combine(new_due_date, new_due_time, tzinfo=IST)
@@ -253,9 +263,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             save_pending_action(chat_id, active_pending.get("action_kind", "meeting"), payload)
             from timing import format_event_clock_ist
             clock_str = format_event_clock_ist(payload["start_iso"])
+            is_video = payload.get("is_video_meeting", False) or (payload.get("action") == "create_meeting" and payload.get("has_video_link") is not False)
+            action_desc = "create this Google Calendar meeting with a Google Meet link?" if is_video else "add this event to your Google Calendar?"
             reply_msg = (
                 f"Meeting time update kar diya hai: **{clock_str}**.\n\n"
-                f"Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
+                f"Please confirm — {action_desc}\n"
                 f"Title: {payload.get('title', 'Meeting')}\n"
                 f"Time: {clock_str} (India time)\n"
                 f"Duration: {payload.get('duration_minutes', 30)} minutes\n\n"
@@ -735,8 +747,10 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
                         from main import format_event_clock_ist
                         clock_str = format_event_clock_ist(tool_result.get("start_iso"))
+                        is_video = tool_result.get("is_video_meeting", False) or (tool_result.get("action") == "create_meeting" and tool_result.get("has_video_link") is not False)
+                        action_desc = "create this Google Calendar meeting with a Google Meet link?" if is_video else "add this event to your Google Calendar?"
                         final_reply = (
-                            f"{conflicts_msg}Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
+                            f"{conflicts_msg}Please confirm — {action_desc}\n"
                             f"Title: {tool_result.get('title', 'Meeting')}\n"
                             f"Time: {clock_str} (India time)\n"
                             f"Duration: {tool_result.get('duration_minutes', 30)} minutes\n"
@@ -1042,11 +1056,29 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         f"tools={tool_calls_executed} retrieved={retrieved_summary}"
     )
 
-    # Mark morning briefing as sent ONLY if the reply actually delivered the morning briefing to user (no phantom ack)
+    # Early Bird Adaptive Morning Briefing (4:00 AM - 8:00 AM IST)
     try:
         now_ist = timeutil.now(IST)
         today_str = now_ist.strftime("%Y-%m-%d")
-        if 5 <= now_ist.hour < 11 and not db.is_morning_briefing_sent(chat_id, today_str):
+        if 4 <= now_ist.hour < 8 and not db.is_morning_briefing_sent(chat_id, today_str):
+            # User woke up early! Generate and deliver the comprehensive morning briefing card right now
+            try:
+                from morning_briefing import build_morning_briefing_message
+                card_text, _ = await build_morning_briefing_message(chat_id, {}, now_ist.date())
+                if card_text:
+                    clean_l = (user_text or "").strip().lower()
+                    is_pure_greeting = clean_l in ("hi", "hello", "hey", "hlo", "hii", "namaste", "sup", "good morning", "shubh prabhat")
+                    if is_pure_greeting:
+                        final_reply = card_text
+                    else:
+                        final_reply = f"{final_reply}\n\n---\n{card_text}"
+
+                    linked_targets = db.get_all_linked_chat_ids(chat_id)
+                    for l_cid in linked_targets:
+                        db.record_morning_briefing_sent(l_cid, today_str, trigger_kind="early_wake_kickoff")
+            except Exception as b_err:
+                logger.warning(f"Early wake briefing attach error: {b_err}")
+        elif 8 <= now_ist.hour < 11 and not db.is_morning_briefing_sent(chat_id, today_str):
             low_final = (final_reply or "").lower()
             is_morning_delivered = any(g in low_final for g in ("good morning", "shubh prabhat", "subah bakhair")) or (
                 "morning" in low_final and any(k in low_final for k in ("schedule", "agenda", "meetings", "reminders", "free hai", "din kaisa"))
@@ -1060,6 +1092,19 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Non-blocking background persistence & tracing (off critical latency path)
     async def _post_turn_persist():
+        try:
+            # Dynamic Location Signal Extraction (Zero regex)
+            low_txt = (user_text or "").lower()
+            travel_indicators = ("ja raha hoon", "ja rahi hoon", "aaya hoon", "aayi hoon", "shifted to", "traveling to", "trip to", "moving to", "rehta hu", "rehti hu")
+            if any(ind in low_txt for ind in travel_indicators):
+                for c_cand in ("udaipur", "jaipur", "delhi", "mumbai", "bangalore", "pune", "dubai", "london", "singapore", "jodhpur"):
+                    if c_cand in low_txt:
+                        status = "home" if any(k in low_txt for k in ("rehta", "rehti", "shifted to", "moving to")) else "visiting"
+                        db.set_user_location_state(chat_id, c_cand.title(), travel_status=status, source="conversation_travel")
+                        break
+        except Exception as loc_err:
+            logger.warning(f"Async location signal persistence error: {loc_err}")
+
         try:
             db.log_chat_message(chat_id, "user", user_text, channel)
             db.log_chat_message(chat_id, "assistant", final_reply, channel)

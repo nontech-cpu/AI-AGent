@@ -212,6 +212,126 @@ async def create_meeting(chat_id, title=None, start_iso=None, duration_minutes=3
     }
 
 
+async def create_calendar_event(
+    chat_id,
+    summary="Event",
+    start_time=None,
+    end_time=None,
+    duration_minutes=30,
+    description="",
+    is_video_meeting=False,
+    attendees=None,
+    recurrence=None,
+    **kwargs
+):
+    """
+    Creates a standard Google Calendar event.
+    Only includes Google Meet video conferencing if is_video_meeting=True.
+    """
+    event_title = summary or kwargs.get("title") or "Event"
+    start_iso = start_time or kwargs.get("start") or kwargs.get("start_iso")
+    if not start_iso:
+        raise ValueError("Missing start_time for calendar event")
+
+    access, _ = await access_token_for_chat(chat_id)
+    user_tz_str = await get_user_calendar_timezone(chat_id)
+    try:
+        from zoneinfo import ZoneInfo
+        user_tz = ZoneInfo(user_tz_str)
+    except Exception:
+        from timing import IST
+        user_tz = IST
+        user_tz_str = "Asia/Kolkata"
+
+    try:
+        start = datetime.fromisoformat(start_iso)
+    except Exception:
+        from dateutil import parser as dt_parser
+        start = dt_parser.parse(start_iso)
+
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=user_tz)
+    else:
+        start = start.astimezone(user_tz)
+
+    if end_time:
+        try:
+            end = datetime.fromisoformat(end_time)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=user_tz)
+            else:
+                end = end.astimezone(user_tz)
+        except Exception:
+            end = start + timedelta(minutes=int(duration_minutes or 30))
+    else:
+        end = start + timedelta(minutes=int(duration_minutes or 30))
+
+    event = {
+        'summary': event_title,
+        'description': description or "Created via PeculiarAI",
+        'start': {'dateTime': start.isoformat(), 'timeZone': user_tz_str},
+        'end': {'dateTime': end.isoformat(), 'timeZone': user_tz_str},
+    }
+
+    if recurrence:
+        event['recurrence'] = recurrence if isinstance(recurrence, list) else [recurrence]
+
+    if is_video_meeting:
+        event['conferenceData'] = {
+            'createRequest': {
+                'requestId': __import__('secrets').token_urlsafe(12),
+                'conferenceSolutionKey': {'type': 'hangoutsMeet'}
+            }
+        }
+
+    emails = attendees or []
+    if emails:
+        event['attendees'] = [{'email': e} for e in emails]
+
+    params = {'sendUpdates': 'all'}
+    if is_video_meeting:
+        params['conferenceDataVersion'] = 1
+
+    try:
+        result = await _request('POST', f'{GOOGLE}/calendar/v3/calendars/primary/events', access,
+                                params=params, json=event)
+    except Exception as exc:
+        if is_video_meeting:
+            event.pop('conferenceData', None)
+            params.pop('conferenceDataVersion', None)
+            result = await _request('POST', f'{GOOGLE}/calendar/v3/calendars/primary/events', access,
+                                    params=params, json=event)
+        else:
+            raise exc
+
+    meet = (result.get('conferenceData') or {}).get('entryPoints') or []
+    meet_url = next((x.get('uri') for x in meet if x.get('entryPointType') == 'video'), '')
+    invalidate_calendar_cache(chat_id)
+
+    try:
+        from memory.store import record_action_event
+        record_action_event(
+            chat_id,
+            action_type="create_calendar_event",
+            summary=f"Created Google Calendar event '{result.get('summary') or event_title}'",
+            details={"id": result.get('id'), "summary": result.get('summary') or event_title},
+            source_type="calendar",
+            source_id=f"cal_{result.get('id')}",
+            importance=3
+        )
+    except Exception:
+        pass
+
+    return {
+        'id': result.get('id'),
+        'summary': result.get('summary', event_title),
+        'start': result.get('start') or {'dateTime': start.isoformat()},
+        'end': result.get('end') or {'dateTime': end.isoformat()},
+        'htmlLink': result.get('htmlLink', ''),
+        'meet_url': meet_url
+    }
+
+
 async def list_calendar_events(chat_id, time_min_iso=None, time_max_iso=None, query=None, max_results=20):
     import time as _pytime
     now_ts = _pytime.time()

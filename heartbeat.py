@@ -117,24 +117,45 @@ async def check_evening_wrapup(now_ist: datetime):
                 pass
 
             msg_parts = []
+            user_lang = db.get_user_language(cid)
+            is_eng = (user_lang == "english")
             if pending_items:
                 preview = ", ".join(pending_items[:3])
-                user_salutation = f"{name}, a" if name else "A"
-                msg_parts.append(
-                    f"🌙 **Evening Wrap-up & Status Check:**\n"
-                    f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**."
-                )
+                if is_eng:
+                    user_salutation = f"{name}, y" if name else "Y"
+                    msg_parts.append(
+                        f"🌙 **Evening Wrap-up & Status Check:**\n"
+                        f"{user_salutation}ou have {len(pending_items)} items pending in your lists: **{preview}**."
+                    )
+                else:
+                    user_salutation = f"{name}, a" if name else "A"
+                    msg_parts.append(
+                        f"🌙 **Evening Wrap-up & Status Check:**\n"
+                        f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**."
+                    )
             else:
-                msg_parts.append(
-                    f"🌙 **Good Evening{greeting_name}!**\n"
-                    f"Aaj ke saare major tasks aur schedule complete hain."
-                )
+                if is_eng:
+                    msg_parts.append(
+                        f"🌙 **Good Evening{greeting_name}!**\n"
+                        f"All major tasks and schedule for today are complete."
+                    )
+                else:
+                    msg_parts.append(
+                        f"🌙 **Good Evening{greeting_name}!**\n"
+                        f"Aaj ke saare major tasks aur schedule complete hain."
+                    )
 
             if pending_comms:
                 comm_preview = ", ".join(pending_comms[:2])
-                msg_parts.append(f"\n🤝 **Commitment Check:** Aaj ke liye aapne promise/plan kiya tha: **{comm_preview}**.\nKya ye complete ho gaya hai ya kal carry-forward karoon?")
+                if is_eng:
+                    msg_parts.append(f"\n🤝 **Commitment Check:** You planned: **{comm_preview}**.\nWas this completed or should I carry it forward to tomorrow?")
+                else:
+                    msg_parts.append(f"\n🤝 **Commitment Check:** Aaj ke liye aapne promise/plan kiya tha: **{comm_preview}**.\nKya ye complete ho gaya hai ya kal carry-forward karoon?")
             else:
-                msg_parts.append("\nKal ke din ki planning karni ho toh batana, aaram se rest karo! 😊")
+                if is_eng:
+                    msg_parts.append("\nLet me know if you would like to plan for tomorrow. Have a great rest! 😊")
+                else:
+                    msg_parts.append("\nKal ke din ki planning karni ho toh batana, aaram se rest karo! 😊")
 
             await broadcast_alert("\n".join(msg_parts), specific_chat_id=cid)
 

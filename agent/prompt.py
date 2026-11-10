@@ -53,7 +53,9 @@ OPERATING PRINCIPLES:
    - Anchored to {NOW_TIME} ({TODAY_ISO}). The current year is {CURRENT_YEAR}. Today's exact calendar date is {TODAY_ISO} ({WEEKDAY}). Never use past training cutoff dates (such as 2024 or 2025). When asked for today's or tomorrow's date or day, answer directly from {TODAY_ISO} ({WEEKDAY}).
    - All scheduled events, reminders, and deadlines must be forward-looking relative to {NOW_TIME} unless the user explicitly asks about historical past events.
    - When modifying, shifting time, or setting duration for an existing reminder or meeting, call `update_reminder` or `reschedule_calendar_event` on the existing item. Never delete an item merely because the user added details or duration.
-   - When user asks to set a reminder or schedule an event with a time, execute `create_reminder` or `create_meeting` immediately.
+   - When user asks to set a reminder, sync to calendar, or schedule an event with a time, execute `schedule_event` (which synchronizes across Telegram alarms and Google Calendar without forcing video links) or `create_reminder` immediately.
+   - For calendar events, reminders, or schedule requests, default to standard calendar events (`is_video_meeting=False`). Use `is_video_meeting=True` or `create_meeting` ONLY when the user explicitly requests a Google Meet or video conferencing link. Never force video conferencing links on normal reminders or calendar entries.
+   - Recurring & Daily Reminders: When user asks for a recurring or daily reminder (e.g. 'daily reminder', 'roz ka reminder', 'har din', 'everyday', 'har subah'), pass recurrence='daily' (or 'weekly'/'weekdays') to create_reminder or schedule_event. If the requested time has already passed today (e.g. 10:00 AM requested at 12:30 PM), the reminder series automatically and transparently starts tomorrow at that time.
 
 4. Communication Style (Adaptive Depth & Companion Feel):
    - Brevity & Precision by Default:
@@ -237,17 +239,14 @@ async def build_runtime_system_prompt(
 
     if user_lang == "english":
         lang_style = "Natural English"
-        lang_mandate = "Language Mandate: Respond 100% in natural, fluent English."
-    elif user_lang == "hinglish":
-        lang_style = "Roman Hinglish (Hindi/English mix in Latin alphabet)"
-        lang_mandate = "Language Mandate: Respond in friendly Roman Hinglish (Hindi/English mix in Latin script)."
-    elif user_lang:
+        lang_mandate = "Language Preference: The user's preferred language is English. Always respond in fluent, natural English regardless of whether the user speaks Hindi, Hinglish, or English."
+    elif user_lang and user_lang not in ("hinglish", "auto", "default", "none"):
         lang_name = LANGUAGE_NAMES.get(user_lang, str(user_lang).title())
         lang_style = lang_name
-        lang_mandate = f"Language Mandate: Respond in natural, fluent {lang_name}."
+        lang_mandate = f"Language Preference: The user explicitly requested {lang_name}. Respond in fluent {lang_name}."
     else:
-        lang_style = "Dynamic Language Mirroring (mirror user's language)"
-        lang_mandate = "Language Mandate: Naturally mirror the language of the user's message."
+        lang_style = "Dynamic Language Mirroring"
+        lang_mandate = "Dynamic Language Mirroring: Naturally mirror the language and script of the user's current message (e.g. if user writes English, respond in English; if user writes Hinglish, respond in Hinglish; if Devanagari Hindi, respond in Hindi). If the user explicitly asks to speak in a specific language (e.g. 'talk in English from now on', 'Hindi mein baat karo'), call the `set_user_language` tool to permanently save their preference and strictly follow it."
 
     user_name = u_ctx["user_name"]
     connected_integrations_str = u_ctx["integrations_str"]
@@ -362,9 +361,9 @@ async def build_runtime_system_prompt(
 
     # 8. Available Tools Catalog
     available_tools_str = (
-        "Memory & Contacts: save_contact, get_contact, list_contacts, update_contact_commitment, get_commitments, save_note_or_fact, search_memory, clear_chat_history | "
+        "Memory & Contacts: save_contact, get_contact, list_contacts, update_contact_commitment, get_commitments, save_note_or_fact, search_memory, set_user_language, set_user_timezone, clear_chat_history | "
         "Tasks & Reminders: create_reminder, update_reminder, list_reminders, delete_reminder, manage_smart_list, create_packing_list | "
-        "Calendar & Schedule: get_schedule, check_availability, create_meeting, update_meeting, delete_meeting, get_meet_link | "
+        "Calendar & Schedule: get_schedule, check_availability, schedule_event, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
         "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages | "
         "Real-Time Utilities & Web Search: search_web, read_webpage, get_weather, convert_currency, get_market_price, calculate"
@@ -376,12 +375,12 @@ async def build_runtime_system_prompt(
     # 10. First Morning Interaction of the Day
     now_ist = now_user
     today_str = now_user.strftime("%Y-%m-%d")
-    is_morning_window = (5 <= now_user.hour < 12)
+    is_morning_window = (4 <= now_user.hour < 12)
     briefing_already_sent = db.is_morning_briefing_sent(chat_id, today_str)
 
     if is_morning_window and not briefing_already_sent:
         morning_mandate = (
-            "- FIRST MORNING INTERACTION MANDATE (Active: 5:00 AM - 11:00 AM before daily briefing is sent):\n"
+            "- FIRST MORNING INTERACTION MANDATE (Active: 4:00 AM - 11:00 AM before daily briefing is sent):\n"
             "  * This is the user's FIRST interaction of the day. Today's morning greeting and schedule kickoff have not yet been delivered.\n"
             "  * Warmly open your response with a natural greeting: 'Good morning bhai!' (or 'Good morning {USER_NAME}!'). STRICT BAN on robotic lines like 'Namaste! Main aapki kis cheez mein madad kar sakta hoon?'.\n"
             "  * CONCISE DAY KICKOFF: Inspect the Schedule block below. If there are meetings or reminders scheduled for today, mention them in 1 concise line (e.g. 'Aaj shaam 5:00 PM aur 6:00 PM par meetings scheduled hain.'). If the schedule is completely clear, state 'Aaj ka schedule bilkul clear hai.'.\n"
@@ -442,4 +441,7 @@ def invalidate_prompt_schedule_cache(chat_id=None):
                 k: v for k, v in build_runtime_system_prompt._sched_cache.items()
                 if k[0] != cid_int
             }
+
+build_system_prompt = build_runtime_system_prompt
+
 

@@ -24,34 +24,35 @@ from morning_briefing import (
 def test_detect_user_city():
     test_chat_id = 998877
 
-    # Case 1: No facts saved -> returns None
-    with patch("db.get_user_facts", return_value=[]), \
-         patch("morning_briefing.get_active_ticket", return_value=None):
-        assert detect_user_city(test_chat_id) is None
+    with patch("db.get_user_location_state", return_value=None):
+        # Case 1: No facts saved -> returns None
+        with patch("db.get_user_facts", return_value=[]), \
+             patch("morning_briefing.get_active_ticket", return_value=None):
+            assert detect_user_city(test_chat_id) is None
 
-    # Case 2: Natural expression "I live in Delhi"
-    facts_delhi = [{"fact": "User is a software developer and lives in Delhi currently."}]
-    with patch("db.get_user_facts", return_value=facts_delhi), \
-         patch("morning_briefing.get_active_ticket", return_value=None):
-        assert detect_user_city(test_chat_id) == "Delhi"
+        # Case 2: Natural expression "I live in Delhi"
+        facts_delhi = [{"fact": "User is a software developer and lives in Delhi currently."}]
+        with patch("db.get_user_facts", return_value=facts_delhi), \
+             patch("morning_briefing.get_active_ticket", return_value=None):
+            assert detect_user_city(test_chat_id) == "Delhi"
 
-    # Case 3: Label "City: Mumbai"
-    facts_mumbai = [{"fact": "User profile | City: Mumbai | Role: Architect"}]
-    with patch("db.get_user_facts", return_value=facts_mumbai), \
-         patch("morning_briefing.get_active_ticket", return_value=None):
-        assert detect_user_city(test_chat_id) == "Mumbai"
+        # Case 3: Label "City: Mumbai"
+        facts_mumbai = [{"fact": "User profile | City: Mumbai | Role: Architect"}]
+        with patch("db.get_user_facts", return_value=facts_mumbai), \
+             patch("morning_briefing.get_active_ticket", return_value=None):
+            assert detect_user_city(test_chat_id) == "Mumbai"
 
-    # Case 4: Route origin e.g. "Route: JODHPUR JN (JU) to ABU ROAD (ABR)"
-    facts_route = [{"fact": "Booking/Ticket: IRCTC | PNR: 2524281551 | Route: JODHPUR JN (JU) to ABU ROAD (ABR)"}]
-    with patch("db.get_user_facts", return_value=facts_route), \
-         patch("morning_briefing.get_active_ticket", return_value=None):
-        assert detect_user_city(test_chat_id) == "Jodhpur"
+        # Case 4: Route origin e.g. "Route: JODHPUR JN (JU) to ABU ROAD (ABR)"
+        facts_route = [{"fact": "Booking/Ticket: IRCTC | PNR: 2524281551 | Route: JODHPUR JN (JU) to ABU ROAD (ABR)"}]
+        with patch("db.get_user_facts", return_value=facts_route), \
+             patch("morning_briefing.get_active_ticket", return_value=None):
+            assert detect_user_city(test_chat_id) == "Jodhpur"
 
-    # Case 5: Stop word like "flat" or "home" -> skipped
-    facts_stop = [{"fact": "User is staying in flat."}]
-    with patch("db.get_user_facts", return_value=facts_stop), \
-         patch("morning_briefing.get_active_ticket", return_value=None):
-        assert detect_user_city(test_chat_id) is None
+        # Case 5: Stop word like "flat" or "home" -> skipped
+        facts_stop = [{"fact": "User is staying in flat."}]
+        with patch("db.get_user_facts", return_value=facts_stop), \
+             patch("morning_briefing.get_active_ticket", return_value=None):
+            assert detect_user_city(test_chat_id) is None
 
 
 def test_detect_early_flight():

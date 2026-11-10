@@ -172,6 +172,9 @@ class DeleteNoteOrFactArgs(BaseModel):
 class SetUserTimezoneArgs(BaseModel):
     timezone: str = Field(..., description="Valid IANA timezone identifier e.g. 'America/New_York', 'Europe/London', 'Asia/Kolkata'.")
 
+class SetUserLanguageArgs(BaseModel):
+    language: str = Field(..., description="The language code or name requested by user, e.g. 'english', 'hindi', 'hinglish', 'spanish', 'french'.")
+
 class ManageSmartListArgs(BaseModel):
     action: str = Field(..., description="Action to perform: 'create', 'add_items', 'get', 'list_all', 'delete'.")
     list_name: Optional[str] = Field(None, description="Name of the checklist/smart list e.g. 'Groceries', 'Packing', 'Work Deliverables'.")
@@ -230,6 +233,19 @@ class CheckAvailabilityArgs(BaseModel):
     target_date: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. Defaults to today or tomorrow IST.")
     duration_minutes: Optional[Any] = Field(60, description="Estimated duration in minutes (e.g. 180 for movie, 30 for call).")
     activity_type: Optional[str] = Field("general", description="Type of activity e.g. 'movie', 'meeting', 'dinner'.")
+
+class ScheduleEventArgs(BaseModel):
+    title: str = Field(..., description="Title or subject of the event/meeting/reminder.")
+    start_iso: Optional[str] = Field(None, description="ISO start datetime (YYYY-MM-DDTHH:MM:SS) in user's timezone.")
+    start_time: Optional[str] = Field(None, description="Alias for start_iso.")
+    due_date: Optional[str] = Field(None, description="Optional date string (YYYY-MM-DD).")
+    due_time: Optional[str] = Field(None, description="Optional time string (HH:MM).")
+    duration_minutes: Optional[int] = Field(30, description="Duration in minutes (default 30). Set 0 for instant reminders.")
+    sync_calendar: Optional[bool] = Field(True, description="Whether to sync to Google Calendar if connected.")
+    sync_telegram: Optional[bool] = Field(True, description="Whether to set proactive Telegram alarm notifications.")
+    is_video_meeting: Optional[bool] = Field(False, description="True ONLY if user explicitly asked for Google Meet or Zoom video link. Default false.")
+    recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily', 'weekly', 'none'.")
+    attendees: Optional[List[str]] = Field(default_factory=list, description="Attendee email addresses.")
 
 class CreateMeetingArgs(BaseModel):
     title: Optional[str] = Field("Meeting", description="Title of the meeting.")
@@ -576,6 +592,20 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "set_user_language",
+            "description": "Configure or update the user's preferred conversation language in their profile when they explicitly ask to speak in a specific language (e.g. 'speak in English from now on', 'talk to me in English', 'Hindi mein bolo', 'Hinglish mein baat karo').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "language": {"type": "string", "description": "The language code or name requested by the user, e.g. 'english', 'hindi', 'hinglish'."}
+                },
+                "required": ["language"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "delete_note_or_fact",
             "description": "Delete a specific note, memory fact, travel ticket, or saved booking from memory by keyword or query (e.g. 'delete the dr verma appointment', 'remove flight ticket', 'is fact ko memory se hata do'). Use whenever user wants to remove a specific fact or note, NOT the entire account.",
             "parameters": {
@@ -746,6 +776,26 @@ TOOL_DEFINITIONS = [
                     "activity_type": {"type": ["string", "null"], "description": "Activity type e.g. movie, meeting, dinner."}
                 },
                 "required": ["start_time"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_event",
+            "description": "Create, sync, or schedule any event, meeting, or reminder across Telegram alarms and Google Calendar. By default creates a standard calendar event without video links. Set is_video_meeting=true ONLY when user explicitly requests a Google Meet or Zoom video conference link.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title or subject of the event/meeting/reminder."},
+                    "start_iso": {"type": "string", "description": "ISO start datetime (YYYY-MM-DDTHH:MM:SS) in user's timezone."},
+                    "duration_minutes": {"type": "integer", "description": "Duration in minutes (default 30). Set 0 for instant reminders."},
+                    "sync_calendar": {"type": "boolean", "description": "Whether to sync to Google Calendar if connected (default true)."},
+                    "sync_telegram": {"type": "boolean", "description": "Whether to set proactive Telegram alarm notifications at 15m, 5m, 0m (default true)."},
+                    "is_video_meeting": {"type": "boolean", "description": "True ONLY if user explicitly asked for Google Meet or Zoom video link. Default false."},
+                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Optional attendee email addresses."}
+                },
+                "required": ["title", "start_iso"]
             }
         }
     },
@@ -1829,6 +1879,16 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "timezone": args.timezone
             }
 
+        elif tool_name == "set_user_language":
+            args = SetUserLanguageArgs(**arguments)
+            clean_l = args.language.strip().lower()
+            db.set_user_language(chat_id, clean_l)
+            return {
+                "status": "success",
+                "message": f"User language preference successfully saved as {clean_l}.",
+                "language": clean_l
+            }
+
         elif tool_name == "request_master_privacy_wipe":
             from state.pending import save_pending_action
             db.set_state(chat_id, "confirm_master_wipe")
@@ -2203,6 +2263,39 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
             dur_mins = _safe_int(args.duration_minutes, default=30)
 
+            # Recurrence extraction & normalization
+            recurrence = (args.recurrence or "none").strip().lower()
+            if recurrence not in ("daily", "weekly", "weekdays", "monthly", "none"):
+                recurrence = "none"
+
+            u_text_low = ""
+            if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
+                u_text_low = user_context["user_text"].lower()
+            elif args.title:
+                u_text_low = args.title.lower()
+
+            for d_kw in ("daily", "roj", "roz", "har din", "har subah", "har shaam", "every day", "everyday"):
+                if re.search(rf"\b{re.escape(d_kw)}\b", u_text_low):
+                    recurrence = "daily"
+                    break
+
+            now_user = timeutil.now(u_tz)
+            rolled_to_tomorrow = False
+            # Smart Temporal Slot Resolver (Past-time rollover check)
+            if t_val:
+                target_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
+                if target_dt <= now_user:
+                    if recurrence in ("daily", "weekdays"):
+                        d_val = today_d + timedelta(days=1)
+                        if recurrence == "weekdays" and d_val.weekday() >= 5:
+                            d_val = d_val + timedelta(days=(7 - d_val.weekday()))
+                        args.due_date = d_val.isoformat()
+                        rolled_to_tomorrow = True
+                    elif not arguments.get("due_date"):
+                        d_val = today_d + timedelta(days=1)
+                        args.due_date = d_val.isoformat()
+                        rolled_to_tomorrow = True
+
             # Check if this is an explicit reschedule of an existing reminder
             existing_items = db.items_for_date(chat_id, d_val)
             clean_title = args.title.strip()
@@ -2308,11 +2401,11 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
             # If matched existing ID, update it cleanly
             if matched_id:
-                db.update_memory_item_full(chat_id, matched_id, title=clean_title, due_date=d_val, due_time=t_val, duration_minutes=dur_mins)
+                db.update_memory_item_full(chat_id, matched_id, title=clean_title, due_date=d_val, due_time=t_val, duration_minutes=dur_mins, recurrence=recurrence)
                 item_id = matched_id
                 rescheduled = True
             else:
-                item_id = db.save_memory(chat_id, args.category or 'appointments', clean_title, amount=None, due_date=d_val, due_time=t_val, duration_minutes=dur_mins)
+                item_id = db.save_memory(chat_id, args.category or 'appointments', clean_title, amount=None, due_date=d_val, due_time=t_val, duration_minutes=dur_mins, recurrence=recurrence)
                 rescheduled = False
 
             # Add reminders
@@ -2337,12 +2430,14 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 if is_conn and d_val and t_val:
                     ev_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
                     ev_end_dt = ev_start_dt + timedelta(minutes=dur_mins)
+                    g_rec = ["RRULE:FREQ=DAILY"] if recurrence == "daily" else (["RRULE:FREQ=WEEKLY"] if recurrence == "weekly" else None)
                     await google_services.create_calendar_event(
                         chat_id,
                         summary=f"🔔 {clean_title}",
                         start_time=ev_start_dt.isoformat(),
                         end_time=ev_end_dt.isoformat(),
-                        description=f"Auto-synced reminder from PeculiarAI ({dur_mins} mins)",
+                        description=f"Auto-synced reminder from PeculiarAI ({dur_mins} mins, recurrence={recurrence})",
+                        recurrence=g_rec,
                     )
                     sync_note = " (Synced with Google Calendar & Telegram ✅)"
             except Exception as cal_err:
@@ -2358,13 +2453,27 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
             date_str = d_val.strftime("%d %b %Y") if d_val else "specified date"
             action_word = "shift" if rescheduled else "set"
+
+            if recurrence == "daily":
+                if rolled_to_tomorrow:
+                    conf_msg = f"Done bhai! Aaj ka {time_str} ka samay nikal chuka hai, isliye aapka Daily '{clean_title}' reminder kal ({date_str}) subah {time_str} se rozana ke liye set kar diya hai.{sync_note}"
+                else:
+                    conf_msg = f"Done bhai! '{clean_title}' ka Daily reminder rozana {time_str} ke liye set kar diya hai (aaj {date_str} se shuru).{sync_note}"
+            elif recurrence == "weekly":
+                conf_msg = f"Done bhai! '{clean_title}' ka Weekly reminder har {d_val.strftime('%A')} ko {time_str} ke liye set kar diya hai.{sync_note}"
+            else:
+                if rolled_to_tomorrow:
+                    conf_msg = f"Done bhai! Aaj ka {time_str} ka samay nikal chuka hai, isliye '{clean_title}' ka reminder kal ({date_str}) {time_str} ke liye set kar diya hai.{sync_note}"
+                else:
+                    conf_msg = f"Done bhai! '{clean_title}' ka reminder {date_str} ko {time_str} ke liye {action_word} kar diya hai.{sync_note}"
+
             try:
                 from memory.store import record_action_event
                 record_action_event(
                     chat_id,
                     action_type="create_reminder",
-                    summary=f"Set reminder: '{clean_title}' for {date_str} at {time_str}",
-                    details={"title": clean_title, "due_date": args.due_date, "due_time": args.due_time, "item_id": item_id},
+                    summary=f"Set reminder: '{clean_title}' for {date_str} at {time_str} (recurrence={recurrence})",
+                    details={"title": clean_title, "due_date": args.due_date, "due_time": args.due_time, "item_id": item_id, "recurrence": recurrence},
                     source_type="reminder",
                     source_id=f"rem_{item_id}",
                     importance=3
@@ -2379,10 +2488,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "due_date": args.due_date,
                 "due_time": args.due_time,
                 "duration_minutes": dur_mins,
+                "recurrence": recurrence,
+                "rolled_to_tomorrow": rolled_to_tomorrow,
                 "rescheduled": rescheduled,
                 "conflicts": conflicts,
                 "has_conflict": len(conflicts) > 0,
-                "message": f"Done bhai! '{clean_title}' ka reminder {date_str} ko {time_str} ke liye {action_word} kar diya hai.{sync_note}"
+                "message": conf_msg
             }
 
         elif tool_name == "delete_reminder":
@@ -2649,6 +2760,182 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "queried_slot": f"{h:02d}:{m:02d} - {activity_end_mins//60:02d}:{activity_end_mins%60:02d} ({args.activity_type})",
                 "conflicts": conflicts,
                 "calendar_events_count": len(sched.get("calendar_events", []))
+            }
+
+        elif tool_name == "schedule_event":
+            args = ScheduleEventArgs(**arguments)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            cur_now = timeutil.now(u_tz)
+
+            raw_start = args.start_iso or args.start_time
+            d_val = None
+            t_val = None
+
+            if raw_start:
+                try:
+                    dt_start = datetime.fromisoformat(raw_start)
+                    if dt_start.tzinfo is None:
+                        dt_start = dt_start.replace(tzinfo=u_tz)
+                    else:
+                        dt_start = dt_start.astimezone(u_tz)
+                    if dt_start < cur_now - timedelta(minutes=2):
+                        u_text = str((user_context or {}).get("user_text", "")).lower()
+                        if "tomorrow" in u_text or "kal" in u_text:
+                            target_d = cur_now.date() + timedelta(days=1)
+                        else:
+                            target_d = cur_now.date() if dt_start.time() > cur_now.time() else cur_now.date() + timedelta(days=1)
+                        dt_start = datetime.combine(target_d, dt_start.time(), tzinfo=u_tz)
+                    d_val = dt_start.date()
+                    t_val = dt_start.time()
+                    args.start_iso = dt_start.isoformat()
+                except Exception:
+                    pass
+
+            if not d_val and args.due_date:
+                try:
+                    d_val = date.fromisoformat(args.due_date)
+                except Exception:
+                    pass
+            if not t_val and args.due_time:
+                try:
+                    t_val = dtime.fromisoformat(args.due_time)
+                except Exception:
+                    pass
+
+            if not d_val:
+                d_val = cur_now.date()
+            if not t_val:
+                t_val = dtime(17, 0)
+
+            dur_mins = _safe_int(args.duration_minutes, default=30)
+            clean_title = args.title.strip() if args.title else "Event"
+            recurrence = (args.recurrence or "none").strip().lower()
+            if recurrence not in ("daily", "weekly", "weekdays", "monthly", "none"):
+                recurrence = "none"
+
+            u_text_low = ""
+            if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
+                u_text_low = user_context["user_text"].lower()
+            elif args.title:
+                u_text_low = args.title.lower()
+
+            for d_kw in ("daily", "roj", "roz", "har din", "har subah", "har shaam", "every day", "everyday"):
+                if re.search(rf"\b{re.escape(d_kw)}\b", u_text_low):
+                    recurrence = "daily"
+                    break
+
+            rolled_to_tomorrow = False
+            if t_val:
+                target_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
+                if target_dt <= cur_now:
+                    if recurrence in ("daily", "weekdays"):
+                        d_val = cur_now.date() + timedelta(days=1)
+                        if recurrence == "weekdays" and d_val.weekday() >= 5:
+                            d_val = d_val + timedelta(days=(7 - d_val.weekday()))
+                        rolled_to_tomorrow = True
+                    elif not arguments.get("due_date") and not arguments.get("start_iso"):
+                        d_val = cur_now.date() + timedelta(days=1)
+                        rolled_to_tomorrow = True
+
+            synced_tg = False
+            item_id = None
+            if args.sync_telegram is not False:
+                try:
+                    existing = db.items_for_date(chat_id, d_val) if d_val else []
+                    matched_id = None
+                    for m in existing:
+                        m_title = _get_row_val(m, "title", 1, "")
+                        if m_title and clean_title.lower() in m_title.lower():
+                            matched_id = _get_row_val(m, "id", 4, None)
+                            break
+                    if matched_id:
+                        db.update_memory_item_full(chat_id, matched_id, title=clean_title, due_date=d_val, due_time=t_val, duration_minutes=dur_mins, recurrence=recurrence)
+                        item_id = matched_id
+                    else:
+                        item_id = db.save_memory(chat_id, 'appointments', clean_title, amount=None, due_date=d_val, due_time=t_val, duration_minutes=dur_mins, recurrence=recurrence)
+                    synced_tg = True
+                    if d_val and t_val:
+                        try:
+                            from timing import build_plan
+                            plan = build_plan(d_val, t_val)
+                            if plan.get("reminders") and item_id:
+                                db.add_reminders(item_id, plan["reminders"])
+                        except Exception as rem_e:
+                            logger.warning(f"schedule_event add_reminders error: {rem_e}")
+                except Exception as tg_err:
+                    logger.warning(f"schedule_event telegram sync error: {tg_err}")
+
+            synced_cal = False
+            if args.sync_calendar is not False:
+                from main import get_valid_google_connection_by_chat_id
+                is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+                if is_conn:
+                    if args.is_video_meeting:
+                        from main import detect_meeting_conflicts
+                        time_conflicts, day_commitments = await detect_meeting_conflicts(chat_id, args.start_iso, dur_mins)
+                        return {
+                            "status": "needs_confirmation",
+                            "action": "create_meeting",
+                            "title": clean_title,
+                            "start_iso": args.start_iso,
+                            "duration_minutes": dur_mins,
+                            "attendees": args.attendees or [],
+                            "conflicts": time_conflicts,
+                            "commitments": day_commitments
+                        }
+                    else:
+                        try:
+                            ev_start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
+                            ev_end_dt = ev_start_dt + timedelta(minutes=dur_mins)
+                            g_rec = ["RRULE:FREQ=DAILY"] if recurrence == "daily" else (["RRULE:FREQ=WEEKLY"] if recurrence == "weekly" else None)
+                            await google_services.create_calendar_event(
+                                chat_id,
+                                summary=clean_title,
+                                start_time=ev_start_dt.isoformat(),
+                                end_time=ev_end_dt.isoformat(),
+                                duration_minutes=dur_mins,
+                                is_video_meeting=False,
+                                attendees=args.attendees or [],
+                                recurrence=g_rec
+                            )
+                            synced_cal = True
+                        except Exception as cal_err:
+                            logger.warning(f"schedule_event calendar sync error: {cal_err}")
+
+            try:
+                from agent.prompt import invalidate_prompt_schedule_cache
+                invalidate_prompt_schedule_cache(chat_id)
+            except Exception:
+                pass
+
+            time_str = t_val.strftime("%I:%M %p").lstrip("0")
+            date_str = d_val.strftime("%d %b %Y")
+            if synced_cal and synced_tg:
+                channel_str = "Google Calendar aur Telegram dono par"
+            elif synced_cal:
+                channel_str = "Google Calendar par"
+            else:
+                channel_str = "Telegram reminder mein"
+
+            if recurrence == "daily":
+                if rolled_to_tomorrow:
+                    msg = f"Done bhai! Aaj ka {time_str} ka samay nikal chuka hai, isliye aapka Daily '{clean_title}' kal ({date_str}) subah {time_str} se rozana ke liye schedule kar diya hai ({channel_str}). ✅"
+                else:
+                    msg = f"Done bhai! '{clean_title}' ka Daily schedule rozana {time_str} ke liye set kar diya hai ({channel_str}). ✅"
+            else:
+                msg = f"Done bhai! '{clean_title}' ka schedule {date_str} ko {time_str} ke liye {channel_str} sync kar diya hai. ✅"
+
+            return {
+                "status": "success",
+                "action": "schedule_event",
+                "title": clean_title,
+                "due_date": d_val.isoformat(),
+                "due_time": t_val.strftime("%H:%M"),
+                "recurrence": recurrence,
+                "rolled_to_tomorrow": rolled_to_tomorrow,
+                "synced_calendar": synced_cal,
+                "synced_telegram": synced_tg,
+                "message": msg
             }
 
         elif tool_name == "create_meeting":
@@ -3887,8 +4174,8 @@ CORE_TOOL_NAMES = {
     'calculate',
     "execute_python_code", "create_reminder", "update_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "save_note_or_fact", "delete_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
-    "update_contact_commitment", "manage_relationship", "set_user_timezone", "ask_user", "learn_user_correction",
-    "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting",
+    "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "ask_user", "learn_user_correction",
+    "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "schedule_event",
     "search_web", "find_nearby_places"
 }
 
@@ -3926,7 +4213,7 @@ TOOL_GROUPS = {
     },
     "calendar_advanced": {
         "description": "meeting calendar schedule appointment slot zoom google meet availability clash",
-        "tools": {"check_availability", "get_meet_link", "create_meeting"}
+        "tools": {"check_availability", "get_meet_link", "create_meeting", "schedule_event"}
     },
     "privacy_data": {
         "description": "permanently erase delete wipe all user data and memories account reset clear history uda do clean slate",

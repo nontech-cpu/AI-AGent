@@ -33,50 +33,46 @@ from state.active_context import get_active_ticket, parse_ticket_datetime
 
 def detect_user_city(chat_id: int) -> Optional[str]:
     """
-    Infers user's current city from saved facts or profile memories without explicitly asking.
+    Infers user's current city from structured location state machine or profile memories.
+    Zero-regex priority: Checks user_location_state first!
     """
     try:
+        # 1. Primary Gold-Standard: Semantic Location State Machine
+        loc_state = db.get_user_location_state(chat_id)
+        if loc_state and loc_state.get("current_city"):
+            return loc_state["current_city"]
+
+        # 2. Check active travel tickets in context
+        tkt = get_active_ticket(chat_id)
+        if tkt and tkt.get("route"):
+            origin = tkt["route"].split("to")[0].strip().split()[0].title()
+            if origin and origin.lower() not in ("from", "train", "flight"):
+                return origin
+
+        # 3. Fallback scan of stored facts
         facts = db.get_user_facts(chat_id, limit=50) or []
         for f in facts:
-            txt = f.get("fact", "")
-            # 1. Structured labels e.g. "City: Mumbai", "Hometown: Jaipur", "Location: Bangalore"
+            txt = (f.get("fact") or "").strip()
+            txt_low = txt.lower()
+            for known in ("jodhpur", "udaipur", "jaipur", "mumbai", "delhi", "bangalore", "pune", "dubai", "london"):
+                if known in txt_low:
+                    city_title = known.title()
+                    db.set_user_location_state(chat_id, city_title, source="fact_scan")
+                    return city_title
+
             m1 = re.search(r"\b(?:city|location|residence|hometown|shehar)[:\s]+([a-zA-Z\s]{3,25})\b", txt, re.I)
             if m1:
                 cand = m1.group(1).strip()
-                if cand.lower() not in ("unknown", "null", "none", "n/a", "india"):
-                    return cand.title()
-
-            # 2. Natural expressions e.g. "lives in Delhi", "staying in Pune", "based in Bangalore"
-            m2 = re.search(r"\b(?:lives\s+in|living\s+in|stays\s+in|staying\s+in|based\s+in|shifted\s+to|rehta\s+hai|rehti\s+hai|rehta\s+hu|rehti\s+hu)\s+([a-zA-Z]{3,20})\b", txt, re.I)
-            if m2:
-                cand = m2.group(1).strip()
-                stop_words = {"home", "house", "apartment", "hostel", "flat", "pg", "hotel", "room", "office", "india", "abroad", "village"}
-                if cand.lower() not in stop_words:
-                    return cand.title()
-
-            # 2b. Natural SOV expressions e.g. "Jaipur me rehta hu", "Delhi me rehti hu"
-            m_sov = re.search(r"\b([a-zA-Z]{3,20})\s+(?:me|mein|mai)\s+(?:rehta|rehti|rahta|rahti|shift|based|post)\b", txt, re.I)
-            if m_sov:
-                cand = m_sov.group(1).strip()
-                stop_words = {"home", "house", "apartment", "hostel", "flat", "pg", "hotel", "room", "office", "india", "abroad", "village", "shehar", "city"}
-                if cand.lower() not in stop_words:
-                    return cand.title()
-
-            # 3. Route or Ticket origin e.g. "Route: JODHPUR JN (JU) to ABU ROAD (ABR)"
-            m3 = re.search(r"Route:\s*([A-Za-z]+)\s*(?:JN|CANTT|CITY)?\s*(?:\([A-Z]+\))?\s*to", txt, re.I)
-            if m3:
-                cand = m3.group(1).strip()
-                if cand.lower() not in ("from", "train", "flight"):
-                    return cand.title()
-
-        # Check active ticket in context
-        tkt = get_active_ticket(chat_id)
-        if tkt and tkt.get("route"):
-            m_route = re.search(r"^([A-Za-z]+)\s*(?:JN|CANTT|CITY)?\s*(?:\([A-Z]+\))?\s*to", tkt["route"], re.I)
-            if m_route:
-                return m_route.group(1).strip().title()
+                for noise in ("is ", "in ", "at ", "near "):
+                    if cand.lower().startswith(noise):
+                        cand = cand[len(noise):].strip()
+                stop_words = {"unknown", "null", "none", "n/a", "india", "home", "house", "room", "office", "is"}
+                if cand and cand.lower() not in stop_words:
+                    cand_title = cand.title()
+                    db.set_user_location_state(chat_id, cand_title, source="fact_scan")
+                    return cand_title
     except Exception as exc:
-        print("[morning_briefing.detect_user_city] error:", repr(exc))
+        print("[detect_user_city] error:", repr(exc))
     return None
 
 
@@ -217,6 +213,8 @@ async def build_morning_briefing_message(
     name = db.get_user_display_name(chat_id) or (user_info.get("first_name") or "").strip()
     greeting_name = f" {name}" if name else ""
     date_human = target_date.strftime("%A, %d %B %Y")
+    user_lang = db.get_user_language(chat_id)
+    is_eng = (user_lang == "english")
 
     lines = []
     trigger_kind = "standard_8am"
@@ -271,10 +269,17 @@ async def build_morning_briefing_message(
                 pass
             lines.append("")
         else:
-            lines.append(f"🌅 **Good Morning{greeting_name}! Aaj aapka early schedule hai:**\n")
-            lines.append(f"⏰ **Early Appointment:** {early_event['title']} at **{ev_time_str} IST**\n")
+            if is_eng:
+                lines.append(f"🌅 **Good Morning{greeting_name}! You have an early schedule today:**\n")
+                lines.append(f"⏰ **Early Appointment:** {early_event['title']} at **{ev_time_str} IST**\n")
+            else:
+                lines.append(f"🌅 **Good Morning{greeting_name}! Aaj aapka early schedule hai:**\n")
+                lines.append(f"⏰ **Early Appointment:** {early_event['title']} at **{ev_time_str} IST**\n")
     else:
-        lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nAaj ka din shuru ho chuka hai — yahan hai aapka daily overview:\n")
+        if is_eng:
+            lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nHere is your daily overview for today:\n")
+        else:
+            lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nAaj ka din shuru ho chuka hai — yahan hai aapka daily overview:\n")
 
     # 2. WEATHER (ONLY if user's city is known in memory/facts, without asking)
     city = detect_user_city(chat_id)
@@ -290,7 +295,7 @@ async def build_morning_briefing_message(
                 uv = w_res.get("uv_index")
 
                 w_parts = [f"• **Temperature:** {temp}°C (Min: {min_t}°C | Max: {max_t}°C)"]
-                w_parts.append(f"• **Mausam:** {cond}")
+                w_parts.append(f"• **Condition:** {cond}" if is_eng else f"• **Mausam:** {cond}")
                 metric_line = []
                 if aqi is not None:
                     metric_line.append(f"**AQI:** {aqi}")
@@ -299,14 +304,14 @@ async def build_morning_briefing_message(
                 if metric_line:
                     w_parts.append(f"• {' | '.join(metric_line)}")
 
-                lines.append(f"🌤️ **Aaj {city} Ka Mausam:**")
+                lines.append(f"🌤️ **Today's Weather in {city}:**" if is_eng else f"🌤️ **Aaj {city} Ka Mausam:**")
                 lines.extend(w_parts)
                 lines.append("")
         except Exception as w_err:
             print("[morning_briefing.weather] error:", repr(w_err))
 
     # 3. SCHEDULE & AGENDAS
-    lines.append(f"📋 **Aaj Ka Schedule & Tasks ({date_human}):**")
+    lines.append(f"📋 **Today's Schedule & Tasks ({date_human}):**" if is_eng else f"📋 **Aaj Ka Schedule & Tasks ({date_human}):**")
 
     # Calendar Events
     cal_events = (unified_sched.get("calendar_events") if unified_sched else []) or []
@@ -323,7 +328,7 @@ async def build_morning_briefing_message(
                     pass
             lines.append(f"• {summ}{t_str}")
     else:
-        lines.append("📅 **Meetings:** Aaj koi meeting scheduled nahi hai (Calendar free hai).")
+        lines.append("📅 **Meetings:** No meetings scheduled today (Calendar is free)." if is_eng else "📅 **Meetings:** Aaj koi meeting scheduled nahi hai (Calendar free hai).")
 
     # Reminders
     rems = (unified_sched.get("reminders") if unified_sched else []) or []
@@ -342,7 +347,7 @@ async def build_morning_briefing_message(
                     pass
             lines.append(f"• {title}{time_str}")
     else:
-        lines.append("⏰ **Reminders:** Aaj ke liye koi pending reminder nahi hai.")
+        lines.append("⏰ **Reminders:** No pending reminders for today." if is_eng else "⏰ **Reminders:** Aaj ke liye koi pending reminder nahi hai.")
 
     # Commitments
     comms = (unified_sched.get("commitments") if unified_sched else []) or []
@@ -392,7 +397,10 @@ async def build_morning_briefing_message(
     except Exception as radar_err:
         print("[morning_briefing.radar] error:", repr(radar_err))
 
-    lines.append("\nHave a wonderful, productive day ahead! Kuch bhi add ya note karna ho toh bata dena. 👍")
+    if is_eng:
+        lines.append("\nHave a wonderful, productive day ahead! Let me know if you need anything added or updated. 👍")
+    else:
+        lines.append("\nHave a wonderful, productive day ahead! Kuch bhi add ya note karna ho toh bata dena. 👍")
 
     return "\n".join(lines), trigger_kind
 
