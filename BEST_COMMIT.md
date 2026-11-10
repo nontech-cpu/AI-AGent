@@ -1,26 +1,29 @@
 # GOLDEN STABLE COMMIT SNAPSHOTS
 
-## Snapshot 3: Master Golden Release - Live Two-Way Calendar Sync, Status Question Protection & Dynamic Language Adaptation (LATEST)
+## Snapshot 3: Master Golden Release - Live Two-Way Calendar Sync, Multi-Turn Server Quote Validation & Status Question Protection (LATEST)
 
+- **Commit Hash**: `b943b08`
 - **Branch**: `main`
-- **Date**: `Tue Nov 10 18:40:00 2026 +0530`
-- **Commit Message**: `fix(master-hardening): ensure two-way Google Calendar deletion, eliminate guardrail question hijacking, and enable dynamic language switching`
+- **Date**: `Tue Nov 10 19:05:00 2026 +0530`
+- **Commit Message**: `fix(multi-turn-grounding): fix cross-database chat history quote validation and prevent false verifier interception on tool errors`
 
 ### What is Guaranteed in Snapshot 3
-1. **Status Question Grounding Protection**:
+1. **Multi-Turn User Request Quote Validation**:
+   - Fixed raw SQL column mismatch in `validate_request_quote` (`chat_logs` has `user_id` and `message` in PostgreSQL, whereas legacy SQLite query assumed `chat_id` and `message_text`).
+   - Now uses database-agnostic `db.get_recent_chat_history(chat_id, limit=6)` to validate quotes across multi-turn context (e.g. Turn 1 *"set up a reminder for me at 2pm"* + Turn 2 *"it should be about meeting"*).
+   - Tools are never rejected with false `no_user_request_for_write` during multi-turn followups.
+2. **Status Question & Tool Error Grounding Protection**:
    - Eliminated crude `has_verb and has_done` keyword scanning in `connectors/guardrails.py` and `agent/verifier.py`.
-   - Informational status inquiries (e.g. *"ky tumn firecraker wala reminder htaa diya caldner se bhi?"*) are recognized as informational answers about existing state rather than ungrounded write actions.
+   - Informational status inquiries (e.g. *"ky tumn firecraker wala reminder htaa diya caldner se bhi?"*) and error explanations (e.g. *"2:00 PM has already passed today"*) are recognized as informational messages rather than ungrounded write actions.
    - Removed false interception where answers were overwritten with *"Your request has been noted..."*.
-2. **True Two-Way Google Calendar Deletion Sync**:
+3. **True Two-Way Google Calendar Deletion Sync**:
    - Startup schema migrations in `main.py:lifespan` automatically initialize `memory_items.google_calendar_event_id VARCHAR(128)`.
    - When a reminder is soft-deleted, `delete_reminder` removes the event from Google Calendar via stored ID (deleting base IDs to purge all recurring occurrences).
    - Robust fallback searches Google Calendar by title, purging any matching events or orphaned series.
-   - If a reminder is already soft-deleted in DB, `delete_reminder` checks Google Calendar directly and stages deletion of matching calendar events.
-3. **Adaptive Language Control & Explicit Switch Handling**:
+4. **Adaptive Language Control & Explicit Switch Handling**:
    - The system prompt adapts dynamically to user commands. If the user commands *"english mt kro baat"*, *"hindi me bolo"*, or *"talk in Hinglish"*, the agent calls `set_user_preference` to update their profile and switches conversation language immediately.
-   - Default behavior without locked preferences uses natural dynamic language mirroring.
-4. **All Unit & Regression Test Suites Passing**:
-   - 28/28 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_no_hardcoding.py`, `test_persistent_user_preference.py`, `test_status_questions_never_write.py`, `test_part_c_calendar_recurrence.py`, and `test_delete_policy_and_turn_traces.py`.
+5. **All Unit & Regression Test Suites Passing**:
+   - 31/31 tests passing cleanly across `test_live_calendar_and_language_resolution.py`, `test_missing_info_heldout.py`, `test_no_hardcoding.py`, `test_persistent_user_preference.py`, `test_status_questions_never_write.py`, `test_part_c_calendar_recurrence.py`, and `test_delete_policy_and_turn_traces.py`.
 
 ---
 
