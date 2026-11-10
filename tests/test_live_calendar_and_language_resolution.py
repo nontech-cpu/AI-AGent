@@ -445,5 +445,65 @@ async def test_confirmed_pending_deletion_executes_cleanly_on_yes():
         assert row[0] == "deleted"
 
 
+def test_format_companion_tool_receipts_multi_action():
+    """Verifies that format_companion_tool_receipts produces concise receipts for executed companion tools."""
+    from agent.loop import format_companion_tool_receipts
+
+    results = [
+        {
+            "action": "save_contact",
+            "tool_name": "save_contact",
+            "status": "success",
+            "name": "Rohan Sharma",
+            "phone": "9876543210",
+            "email": "rohan@example.com",
+            "notes": "Rohan angel investor hai"
+        },
+        {
+            "action": "save_note_or_fact",
+            "tool_name": "save_note_or_fact",
+            "status": "success",
+            "saved_fact": "Rohan angel investor hai"
+        }
+    ]
+
+    receipts = format_companion_tool_receipts(results)
+    assert "✅ Contact 'Rohan Sharma' saved (9876543210, rohan@example.com)." in receipts
+    assert '📝 Note saved: "Rohan angel investor hai".' in receipts
+
+
+def test_format_companion_tool_receipts_ignores_read_only_tools():
+    """Verifies that read-only lookup tools (get_schedule, search_user_emails) are omitted from execution receipts."""
+    from agent.loop import format_companion_tool_receipts
+
+    results = [
+        {
+            "action": "get_schedule",
+            "tool_name": "get_schedule",
+            "status": "success",
+            "schedule": []
+        },
+        {
+            "action": "search_user_emails",
+            "tool_name": "search_user_emails",
+            "status": "success",
+            "emails": []
+        },
+        {
+            "action": "save_contact",
+            "tool_name": "save_contact",
+            "status": "success",
+            "name": "Alice Wonderland",
+            "phone": "1234567890"
+        }
+    ]
+
+    receipts = format_companion_tool_receipts(results)
+    assert "Alice Wonderland" in receipts
+    assert "schedule" not in receipts.lower()
+    assert "emails" not in receipts.lower()
+
+
+
 
 

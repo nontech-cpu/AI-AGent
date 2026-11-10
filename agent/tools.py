@@ -2049,7 +2049,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             lower_fact = args.text.lower()
             if any(w in lower_fact for w in ("nahi hai", "not", "never", "galat", "wrong", "fake", "dont", "mat")):
                 db.save_user_correction(chat_id, args.text, args.text, "user_correction")
-            return {"status": "success", "saved_fact": args.text}
+            return {"status": "success", "saved_fact": args.text, "message": f"Note saved: '{args.text}'."}
 
         elif tool_name == "clear_chat_history":
             db.clear_chat_history(chat_id)

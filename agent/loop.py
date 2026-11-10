@@ -139,6 +139,90 @@ def parse_xml_tool_calls(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
+def format_companion_tool_receipts(tool_results: list) -> str:
+    """
+    Format concise companion receipts for any mutation tools that already
+    executed successfully in this turn prior to a pending confirmation action.
+    Pure structured metadata — zero brittle regexes.
+    """
+    if not tool_results:
+        return ""
+
+    read_only_tools = {
+        "get_schedule", "get_contact", "list_contacts", "list_reminders",
+        "search_user_emails", "check_availability", "search_memory", "get_commitments",
+        "list_github_repos", "list_github_issues", "get_github_file",
+        "list_notion_pages", "get_notion_page_content", "search_web", "find_nearby_places",
+        "check_integrations_status", "ask_user"
+    }
+
+    receipts = []
+    for tr in tool_results:
+        if not isinstance(tr, dict):
+            continue
+        if tr.get("status") not in ("success", "ok"):
+            continue
+
+        action = tr.get("action") or tr.get("tool_name", "")
+        if action in read_only_tools:
+            continue
+
+        if action == "save_contact":
+            name = tr.get("name") or "Contact"
+            details = []
+            if tr.get("phone"):
+                details.append(str(tr.get("phone")))
+            if tr.get("email"):
+                details.append(str(tr.get("email")))
+            det_str = f" ({', '.join(details)})" if details else ""
+
+            notes_val = tr.get("notes")
+            has_separate_note = any(
+                isinstance(other, dict) and (other.get("action") == "save_note_or_fact" or other.get("tool_name") == "save_note_or_fact")
+                for other in tool_results
+            )
+            note_str = ""
+            if notes_val and not has_separate_note and len(str(notes_val).strip()) > 0 and str(notes_val).strip() != "Saved via Agent V2":
+                n_snip = str(notes_val).strip() if len(str(notes_val).strip()) <= 50 else (str(notes_val).strip()[:47] + "...")
+                note_str = f" with note: \"{n_snip}\""
+
+            receipts.append(f"✅ Contact '{name}' saved{det_str}{note_str}.")
+
+        elif action == "save_note_or_fact":
+            fact = tr.get("saved_fact") or tr.get("text") or ""
+            if fact:
+                snippet = fact if len(fact) <= 60 else (fact[:57] + "...")
+                receipts.append(f'📝 Note saved: "{snippet}".')
+
+        elif action == "create_reminder":
+            title = tr.get("title") or "Reminder"
+            dt_str = f" for {tr.get('due_date')} at {tr.get('due_time')}" if tr.get("due_date") and tr.get("due_time") else ""
+            receipts.append(f'⏰ Reminder set{dt_str}: "{title}".')
+
+        elif action == "update_reminder":
+            title = tr.get("title") or "Reminder"
+            receipts.append(f'⏰ Reminder updated: "{title}".')
+
+        elif action == "set_user_preference":
+            pref = tr.get("key") or tr.get("preference") or "preference"
+            receipts.append(f"⚙️ Preference '{pref}' saved.")
+
+        elif action == "set_user_timezone":
+            tz = tr.get("timezone") or ""
+            receipts.append(f"🌍 Timezone set to {tz}.")
+
+        elif action in ("update_notion_page", "create_notion_page"):
+            title = tr.get("title") or "Notion page"
+            receipts.append(f"📄 Notion page '{title}' updated.")
+
+        elif tr.get("message") and not any(w in str(tr.get("message", "")).lower() for w in ("search result", "webpage content")):
+            receipts.append(f"✅ {tr.get('message')}")
+
+    if receipts:
+        return "\n".join(receipts)
+    return ""
+
+
 async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[str] = None, channel: str = "telegram") -> Dict[str, Any]:
     """
     Executes a single user turn through the Pure ChatGPT-Grade Native Tool-Calling Loop.
@@ -752,6 +836,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             subject=payload["subject"],
                             body=payload["body"]
                         )
+                        comp_receipts = format_companion_tool_receipts(tool_results_list[:-1])
+                        if comp_receipts:
+                            final_reply = f"{comp_receipts}\n\n{final_reply}".strip()
                         break
 
                     elif act in ("upload_file", "drive_file", "upload_to_drive"):
@@ -775,6 +862,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             filename=payload["filename"],
                             content_snippet=payload["content"][:150]
                         )
+                        comp_receipts = format_companion_tool_receipts(tool_results_list[:-1])
+                        if comp_receipts:
+                            final_reply = f"{comp_receipts}\n\n{final_reply}".strip()
                         break
 
                     elif act in ("delete_meeting",):
@@ -796,6 +886,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             lang=user_lang,
                             title=payload.get("title", "Meeting")
                         )
+                        comp_receipts = format_companion_tool_receipts(tool_results_list[:-1])
+                        if comp_receipts:
+                            final_reply = f"{comp_receipts}\n\n{final_reply}".strip()
                         break
 
                     elif act in ("delete_reminder", "reminder_delete"):
@@ -818,6 +911,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             lang=user_lang,
                             items_str=items_str
                         )
+                        comp_receipts = format_companion_tool_receipts(tool_results_list[:-1])
+                        if comp_receipts:
+                            final_reply = f"{comp_receipts}\n\n{final_reply}".strip()
                         break
 
                     else:
@@ -875,6 +971,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             attendees=', '.join(tool_result.get('attendees', [])) if tool_result.get('attendees') else 'None'
                         )
                         final_reply = f"{conflicts_msg}{conf_dialogue}"
+                        comp_receipts = format_companion_tool_receipts(tool_results_list[:-1])
+                        if comp_receipts:
+                            final_reply = f"{comp_receipts}\n\n{final_reply}".strip()
                         break
 
                 # Sanitize untrusted content before appending tool result to messages
