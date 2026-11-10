@@ -2041,15 +2041,8 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
         elif tool_name == "set_user_preference":
             args = SetUserPreferenceArgs(**arguments)
-            clean_lang = (args.reply_language or "english").strip().lower()
-            if clean_lang in ("en", "eng"):
-                clean_lang = "english"
-            elif clean_lang in ("hi", "hin"):
-                clean_lang = "hindi"
-            elif clean_lang in ("hing", "hng"):
-                clean_lang = "hinglish"
-
-            tone = (args.tone or "concise").strip().lower()
+            clean_lang = (args.reply_language or "").strip()
+            tone = (args.tone or "concise").strip()
             db.set_user_preference(chat_id, reply_language=clean_lang, tone=tone)
 
             try:
@@ -2487,17 +2480,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             recurrence = (args.recurrence or "none").strip().lower()
             if recurrence not in ("daily", "weekly", "weekdays", "monthly", "none"):
                 recurrence = "none"
-
-            u_text_low = ""
-            if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
-                u_text_low = user_context["user_text"].lower()
-            elif args.title:
-                u_text_low = args.title.lower()
-
-            for d_kw in ("daily", "roj", "roz", "har din", "har subah", "har shaam", "every day", "everyday"):
-                if re.search(rf"\b{re.escape(d_kw)}\b", u_text_low):
-                    recurrence = "daily"
-                    break
 
             clean_title = args.title.strip()
             target_low = clean_title.lower()
@@ -3189,17 +3171,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             recurrence = (args.recurrence or "none").strip().lower()
             if recurrence not in ("daily", "weekly", "weekdays", "monthly", "none"):
                 recurrence = "none"
-
-            u_text_low = ""
-            if user_context and isinstance(user_context, dict) and user_context.get("user_text"):
-                u_text_low = user_context["user_text"].lower()
-            elif args.title:
-                u_text_low = args.title.lower()
-
-            for d_kw in ("daily", "roj", "roz", "har din", "har subah", "har shaam", "every day", "everyday"):
-                if re.search(rf"\b{re.escape(d_kw)}\b", u_text_low):
-                    recurrence = "daily"
-                    break
 
             rolled_to_tomorrow = False
             if t_val:

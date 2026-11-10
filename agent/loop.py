@@ -277,11 +277,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             }
         elif intent == "cancel":
             cancel_pending_action(chat_id)
-            from state.pending import STRUCTURAL_CANCEL_COMMANDS
-            clean_low = user_text.strip().lower()
-            is_simple_cancel = (clean_low in STRUCTURAL_CANCEL_COMMANDS or
-                                clean_low in ("cancel", "no", "nahi", "nahin", "mat karo", "rehne do", "chhoro", "drop it", "abort") or
-                                len(clean_low.split()) <= 2)
+            is_simple_cancel = not bool(extra and extra.get("replacement_instruction"))
             if is_simple_cancel:
                 from core.i18n import get_i18n_string
                 user_lang = db.get_user_language(chat_id)
@@ -467,24 +463,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         pass
     context_hint = " ".join(context_hint_parts).strip()
 
-    # Check if user message is pure conversational sentiment / acknowledgement
-    _low_u = (user_text or "").strip().lower()
-    _cleaned_u = "".join(c for c in _low_u if c.isalnum() or c.isspace()).strip()
-    _sentiment_words = {
-        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
-        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
-        "cool", "superb", "perfect", "done"
-    }
-    _words = _cleaned_u.split()
-    _has_task_words = any(w in _words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
-    _is_pure_sentiment = (not _has_task_words) and (
-        _cleaned_u in _sentiment_words or
-        (len(_words) <= 2 and any(w in _sentiment_words for w in _words))
-    )
-
     from agent.tools import route_tools
-    # For pure feedback, suppress unnecessary tool calling to save ~2,500 tokens and avoid false tool invocations
-    effective_tools = [] if _is_pure_sentiment else route_tools(user_text, context_text=context_hint)
+    effective_tools = route_tools(user_text, context_text=context_hint)
 
     MAX_TOOL_ITERATIONS = 6
     current_model = model
@@ -1198,19 +1178,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     # Non-blocking background persistence & tracing (off critical latency path)
     async def _post_turn_persist():
-        try:
-            # Dynamic Location Signal Extraction (Zero regex)
-            low_txt = (user_text or "").lower()
-            travel_indicators = ("ja raha hoon", "ja rahi hoon", "aaya hoon", "aayi hoon", "shifted to", "traveling to", "trip to", "moving to", "rehta hu", "rehti hu")
-            if any(ind in low_txt for ind in travel_indicators):
-                for c_cand in ("udaipur", "jaipur", "delhi", "mumbai", "bangalore", "pune", "dubai", "london", "singapore", "jodhpur"):
-                    if c_cand in low_txt:
-                        status = "home" if any(k in low_txt for k in ("rehta", "rehti", "shifted to", "moving to")) else "visiting"
-                        db.set_user_location_state(chat_id, c_cand.title(), travel_status=status, source="conversation_travel")
-                        break
-        except Exception as loc_err:
-            logger.warning(f"Async location signal persistence error: {loc_err}")
-
         try:
             db.log_chat_message(chat_id, "user", user_text, channel)
             db.log_chat_message(chat_id, "assistant", final_reply, channel)

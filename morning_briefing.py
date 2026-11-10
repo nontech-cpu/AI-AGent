@@ -49,28 +49,22 @@ def detect_user_city(chat_id: int) -> Optional[str]:
             if origin and origin.lower() not in ("from", "train", "flight"):
                 return origin
 
-        # 3. Fallback scan of stored facts
-        facts = db.get_user_facts(chat_id, limit=50) or []
-        for f in facts:
-            txt = (f.get("fact") or "").strip()
-            txt_low = txt.lower()
-            for known in ("jodhpur", "udaipur", "jaipur", "mumbai", "delhi", "bangalore", "pune", "dubai", "london"):
-                if known in txt_low:
-                    city_title = known.title()
-                    db.set_user_location_state(chat_id, city_title, source="fact_scan")
-                    return city_title
-
-            m1 = re.search(r"\b(?:city|location|residence|hometown|shehar)[:\s]+([a-zA-Z\s]{3,25})\b", txt, re.I)
-            if m1:
-                cand = m1.group(1).strip()
-                for noise in ("is ", "in ", "at ", "near "):
-                    if cand.lower().startswith(noise):
-                        cand = cand[len(noise):].strip()
-                stop_words = {"unknown", "null", "none", "n/a", "india", "home", "house", "room", "office", "is"}
-                if cand and cand.lower() not in stop_words:
-                    cand_title = cand.title()
-                    db.set_user_location_state(chat_id, cand_title, source="fact_scan")
-                    return cand_title
+        # 3. Fallback scan of stored facts for structured location
+        with db.engine.connect() as conn:
+            row = conn.execute(
+                db.text("""
+                    SELECT structured FROM memories 
+                    WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) 
+                      AND source_type IN ('location', 'city', 'profile')
+                      AND status = 'active'
+                    ORDER BY id DESC LIMIT 1
+                """),
+                {"cid": chat_id}
+            ).mappings().first()
+            if row and row.get("structured") and isinstance(row["structured"], dict) and row["structured"].get("city"):
+                c_name = row["structured"]["city"].title()
+                db.set_user_location_state(chat_id, c_name, source="structured_memory")
+                return c_name
     except Exception as exc:
         print("[detect_user_city] error:", repr(exc))
     return None

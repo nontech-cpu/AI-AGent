@@ -342,31 +342,9 @@ async def verify_and_ground_reply(
     if not passed_det:
         return False, revised_det or "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations_det
 
-    # Fast-path for non-claiming conversational phrases (0ms overhead)
-    low_reply = draft_reply.strip().lower()
-    low_query = (user_query or "").strip().lower()
-    cleaned_q = "".join(c for c in low_query if c.isalnum() or c.isspace()).strip()
-    q_words = cleaned_q.split()
-    sentiment_words = {
-        "good", "great", "nice", "awesome", "mast", "badhiya", "theek hai", "theek h",
-        "ok", "okay", "thanks", "thank you", "dhanyawad", "shukriya", "sahi hai", "sahi h",
-        "cool", "superb", "perfect", "done"
-    }
-    has_task_words = any(w in q_words for w in ("morning", "gm", "kal", "aaj", "parso", "reminder", "flight", "task", "meeting", "schedule", "delete", "remove", "notion", "email", "mail"))
-    is_pure_feedback = (not has_task_words) and (
-        cleaned_q in sentiment_words or
-        (len(q_words) <= 2 and any(w in sentiment_words for w in q_words))
-    )
-    is_greeting = any(low_reply.startswith(g) for g in ("hi", "hello", "hey", "bas bhai", "namaste", "aur bhai"))
-    is_clarifying_question = draft_reply.strip().endswith("?") and not any(w in low_reply for w in ("kar diya", "bhej diya", "saved", "created"))
-    is_explicit_refusal = any(w in low_reply for w in ("mere paas iski koi saved information nahi", "mere paas yeh information nahi hai", "i don't have access", "verified information nahi hai"))
-
-    if is_greeting or is_clarifying_question or is_explicit_refusal or is_pure_feedback:
-        return True, sanitize_regional_scripts(draft_reply), []
-
-    # If user instruction is to save/add/update/create and model is merely repeating/acknowledging input text
-    is_save_request = any(k in user_query.lower() for k in ["save", "note", "add", "store", "yaad rakh", "likh", "bana"]) and not any(w in low_reply for w in ("kar diya", "bhej diya", "created", "deleted"))
-    if is_save_request:
+    # Fast-path for questions or trivial short acknowledgements (0ms overhead, zero keyword sets)
+    clean_reply_stripped = draft_reply.strip()
+    if clean_reply_stripped.endswith("?") or len(clean_reply_stripped.split()) <= 3:
         return True, sanitize_regional_scripts(draft_reply), []
 
     evidence_text = extract_evidence_text(tool_results, memory_context, user_query, recent_history)

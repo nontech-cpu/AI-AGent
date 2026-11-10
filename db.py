@@ -181,14 +181,8 @@ def get_user_preference(chat_id):
                 {"c": chat_id},
             ).first()
             if row:
-                raw_lang = (str(row[0]).strip().lower() if row[0] else "english")
-                if raw_lang in ("en", "eng"):
-                    lang = "english"
-                elif raw_lang in ("hi", "hin"):
-                    lang = "hindi"
-                else:
-                    lang = raw_lang
-                tone = (str(row[1]).strip().lower() if row[1] else "concise")
+                lang = (str(row[0]).strip() if row[0] else "")
+                tone = (str(row[1]).strip() if row[1] else "concise")
                 _USER_LANG_CACHE[chat_id] = {"ts": now_ts, "lang": lang}
                 return {"reply_language": lang, "tone": tone}
     except Exception as exc:
@@ -2666,17 +2660,28 @@ def get_user_location_state(chat_id: int) -> Optional[Dict[str, Any]]:
                     "confidence": float(row[4] or 1.0),
                     "source": row[5] or "conversational_context"
                 }
-            # Fallback auto-seed: check user facts for known location
+            # Fallback auto-seed: check user structured memories for location
             try:
-                facts = get_user_facts(chat_id, limit=30) or []
-                for f in facts:
-                    txt = (f.get("fact") or "").lower()
-                    if "jodhpur" in txt:
-                        set_user_location_state(chat_id, "Jodhpur", "Rajasthan", "India", source="persisted_fact")
+                with engine.connect() as conn:
+                    loc_row = conn.execute(
+                        text("""
+                            SELECT structured FROM memories 
+                            WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) 
+                              AND source_type IN ('location', 'city', 'profile')
+                              AND status = 'active'
+                            ORDER BY id DESC LIMIT 1
+                        """),
+                        {"cid": chat_id}
+                    ).mappings().first()
+                    if loc_row and loc_row.get("structured") and isinstance(loc_row["structured"], dict) and loc_row["structured"].get("city"):
+                        city = loc_row["structured"]["city"].title()
+                        reg = loc_row["structured"].get("region", "")
+                        cntry = loc_row["structured"].get("country", "")
+                        set_user_location_state(chat_id, city, reg, cntry, source="persisted_fact")
                         return {
-                            "current_city": "Jodhpur",
-                            "region": "Rajasthan",
-                            "country": "India",
+                            "current_city": city,
+                            "region": reg,
+                            "country": cntry,
                             "travel_status": "home",
                             "confidence": 1.0,
                             "source": "persisted_fact"
