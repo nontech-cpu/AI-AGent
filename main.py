@@ -1898,6 +1898,34 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
             if result.get('htmlLink'):
                 msg += "\nCalendar Link: " + result['htmlLink']
             await say(chat_id, msg)
+        elif kind in ('create_calendar_event', 'calendar_event'):
+            rec = pending.get("recurrence") or "none"
+            g_rec = ["RRULE:FREQ=DAILY"] if rec == "daily" else (["RRULE:FREQ=WEEKLY"] if rec == "weekly" else None)
+            from google_services import create_calendar_event as google_create_calendar_event
+            result = await google_create_calendar_event(
+                chat_id,
+                summary=pending.get('title', 'Event'),
+                start_time=pending.get('start_iso'),
+                duration_minutes=pending.get('duration_minutes', 30),
+                is_video_meeting=False,
+                recurrence=g_rec
+            )
+            raw_start = result.get('start') if isinstance(result, dict) else None
+            if isinstance(raw_start, dict):
+                start_val = raw_start.get('dateTime') or raw_start.get('date') or pending['start_iso']
+            elif isinstance(raw_start, str):
+                start_val = raw_start
+            else:
+                start_val = pending['start_iso']
+            start_fmt = format_event_time_ist(start_val)
+            user_lang = db.get_user_language(chat_id)
+            if user_lang == "english":
+                msg = f"✅ Event added to Google Calendar: {result.get('summary') or pending.get('title')}\nTime: {start_fmt}"
+            else:
+                msg = f"✅ Calendar event schedule ho gaya: {result.get('summary') or pending.get('title')}\nTime: {start_fmt}"
+            if isinstance(result, dict) and result.get('htmlLink'):
+                msg += "\nCalendar Link: " + result['htmlLink']
+            await say(chat_id, msg)
         elif kind == 'update_meeting':
             result = await google_update_meeting(
                 chat_id,

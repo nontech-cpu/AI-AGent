@@ -111,7 +111,7 @@ class CalendarConnector(Connector):
         ]
 
     async def execute(self, user_or_chat_id: int, tool_name: str, args: Dict[str, Any]) -> ToolResult:
-        if tool_name in ["create_meeting", "delete_meeting"]:
+        if tool_name in ["create_meeting", "create_calendar_event", "delete_meeting"]:
             from main import get_valid_google_connection_by_chat_id
             is_conn, _ = await get_valid_google_connection_by_chat_id(user_or_chat_id)
             if not is_conn:
@@ -123,9 +123,9 @@ class CalendarConnector(Connector):
                     }
                 )
 
-        if tool_name == "create_meeting":
+        if tool_name in ["create_meeting", "create_calendar_event"]:
             if not args.get("_confirmed", False):
-                raw_title = args.get("title") or "Meeting"
+                raw_title = args.get("title") or ("Meeting" if tool_name == "create_meeting" else "Event")
                 if raw_title in ("Meeting", "meeting", "call"):
                     try:
                         from state.active_context import get_active_event
@@ -134,13 +134,51 @@ class CalendarConnector(Connector):
                             raw_title = act_ev["title"]
                     except Exception:
                         pass
+
+                # Step 4: Past-time validation (tolerance configurable, default 0)
+                from timing import IST
+                import core.timeutil as timeutil
+                import os
+                from datetime import datetime, timedelta
+                cur_now = timeutil.now(IST)
+                tolerance_sec = int(os.environ.get("TIME_VALIDATION_TOLERANCE_SECONDS", "0"))
+                start_iso = args.get("start_iso")
+                if start_iso:
+                    try:
+                        dt_start = datetime.fromisoformat(start_iso)
+                        if dt_start.tzinfo is None:
+                            dt_start = dt_start.replace(tzinfo=IST)
+                        else:
+                            dt_start = dt_start.astimezone(IST)
+                        if dt_start < (cur_now - timedelta(seconds=tolerance_sec)):
+                            return ToolResult(
+                                ok=True,
+                                data={
+                                    "status": "error",
+                                    "error": "time_already_passed",
+                                    "action": tool_name,
+                                    "now": cur_now.isoformat(),
+                                    "requested": dt_start.isoformat(),
+                                    "tolerance_seconds": tolerance_sec,
+                                    "facts": {
+                                        "title": raw_title,
+                                        "requested_start": dt_start.isoformat(),
+                                        "is_past": True
+                                    },
+                                    "next_options": ["schedule_for_tomorrow", "choose_future_time"]
+                                }
+                            )
+                    except Exception:
+                        pass
+
+                is_vid = (tool_name == "create_meeting")
                 try:
                     from state.active_context import set_active_event
                     set_active_event(user_or_chat_id, {
                         "title": raw_title,
                         "start_iso": args.get("start_iso"),
                         "duration_minutes": args.get("duration_minutes", 30),
-                        "type": "meeting"
+                        "type": "meeting" if is_vid else "calendar_event"
                     })
                 except Exception:
                     pass
@@ -148,11 +186,13 @@ class CalendarConnector(Connector):
                     ok=True,
                     data={
                         "status": "needs_confirmation",
-                        "action": "create_meeting",
+                        "action": tool_name,
                         "title": raw_title,
                         "start_iso": args.get("start_iso"),
                         "duration_minutes": args.get("duration_minutes", 30),
-                        "attendees": args.get("attendees", [])
+                        "attendees": args.get("attendees", []),
+                        "is_video_meeting": is_vid,
+                        "has_video_link": is_vid
                     }
                 )
 

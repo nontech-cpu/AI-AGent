@@ -152,6 +152,50 @@ def set_user_language(chat_id, lang: str):
         print("set_user_language error:", exc)
 
 
+def set_user_preference(chat_id, reply_language: str, tone: str = "concise"):
+    chat_id = canonical_chat_id(chat_id)
+    clean_lang = str(reply_language or "english").strip().lower()
+    clean_tone = str(tone or "concise").strip().lower()
+    import time as _t
+    _USER_LANG_CACHE[chat_id] = {"ts": _t.time(), "lang": clean_lang}
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE users SET language = :l, persona = :p WHERE telegram_chat_id = :c"),
+                {"l": clean_lang, "p": clean_tone, "c": chat_id},
+            )
+        save_note_or_fact(chat_id, f"User Communication Preference: Language={clean_lang.title()}, Tone={clean_tone.title()}", category="preference")
+    except Exception as exc:
+        print("set_user_preference error:", exc)
+    return {"reply_language": clean_lang, "tone": clean_tone}
+
+
+def get_user_preference(chat_id):
+    chat_id = canonical_chat_id(chat_id)
+    import time as _t
+    now_ts = _t.time()
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT language, persona FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id},
+            ).first()
+            if row:
+                raw_lang = (str(row[0]).strip().lower() if row[0] else "english")
+                if raw_lang in ("en", "eng"):
+                    lang = "english"
+                elif raw_lang in ("hi", "hin"):
+                    lang = "hindi"
+                else:
+                    lang = raw_lang
+                tone = (str(row[1]).strip().lower() if row[1] else "concise")
+                _USER_LANG_CACHE[chat_id] = {"ts": now_ts, "lang": lang}
+                return {"reply_language": lang, "tone": tone}
+    except Exception as exc:
+        print("get_user_preference error:", exc)
+    return {"reply_language": "english", "tone": "concise"}
+
+
 _MEMORY_ITEMS_RECURRENCE_INITIALIZED = False
 
 def _init_memory_items_recurrence_column():

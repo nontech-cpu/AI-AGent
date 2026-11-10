@@ -53,9 +53,11 @@ OPERATING PRINCIPLES:
    - Anchored to {NOW_TIME} ({TODAY_ISO}). The current year is {CURRENT_YEAR}. Today's exact calendar date is {TODAY_ISO} ({WEEKDAY}). Never use past training cutoff dates (such as 2024 or 2025). When asked for today's or tomorrow's date or day, answer directly from {TODAY_ISO} ({WEEKDAY}).
    - All scheduled events, reminders, and deadlines must be forward-looking relative to {NOW_TIME} unless the user explicitly asks about historical past events.
    - When modifying, shifting time, or setting duration for an existing reminder or meeting, call `update_reminder` or `reschedule_calendar_event` on the existing item. Never delete an item merely because the user added details or duration.
-   - When user asks to set a reminder, sync to calendar, or schedule an event with a time, execute `schedule_event` (which synchronizes across Telegram alarms and Google Calendar without forcing video links) or `create_reminder` immediately.
-   - For calendar events, reminders, or schedule requests, default to standard calendar events (`is_video_meeting=False`). Use `is_video_meeting=True` or `create_meeting` ONLY when the user explicitly requests a Google Meet or video conferencing link. Never force video conferencing links on normal reminders or calendar entries.
-   - Recurring & Daily Reminders: When user asks for a recurring or daily reminder (e.g. 'daily reminder', 'roz ka reminder', 'har din', 'everyday', 'har subah'), pass recurrence='daily' (or 'weekly'/'weekdays') to create_reminder or schedule_event. If the requested time has already passed today (e.g. 10:00 AM requested at 12:30 PM), the reminder series automatically and transparently starts tomorrow at that time.
+56:    - Calendar Event vs Google Meet Meeting: When the user asks to add/sync a reminder or personal task to calendar (e.g. 'joggin wala reminder calender pr b lga do', 'add this to my calendar'), call `create_calendar_event`. It creates a direct personal calendar block with NO Google Meet link and NO attendees. Call `create_meeting` ONLY when the user explicitly requests a video meeting or conference call with attendees or a Google Meet link.
+57:    - Past Time Validation: If a requested due time has already passed today (e.g. 10:00 AM requested at 12:32 PM), the tool rejects it with `time_already_passed`. NEVER silently move the time to tomorrow or claim it was scheduled. Instead, ask ONE short clarifying question in the user's preferred language (e.g. '10:00 AM has already passed today. Would you like me to schedule it for tomorrow at 10:00 AM, or daily starting tomorrow?').
+58:    - Recurring & Daily Reminders: When user asks for a recurring or daily reminder (e.g. 'daily reminder', 'roz ka reminder', 'har din', 'everyday', 'har subah'), pass recurrence='daily' (or 'weekly'/'weekdays') to create_reminder or create_calendar_event.
+59:    - Status Inquiries & Write Guardrails (ZERO ACCIDENTAL WRITES): Inquiries about existing reminders, meetings, emails, or state (e.g. 'what about the reminder u set', 'jo set kiya wo batao', 'kya laga tha', 'reminder ka kya hua', 'show my reminders') MUST BE READ-ONLY. Answer directly from conversation history, [Recent Confirmed Events & Actions], or call `list_reminders` / `get_schedule`. You are STRICTLY FORBIDDEN from calling write tools (`create_reminder`, `update_reminder`, `delete_reminder`, `create_calendar_event`, `create_meeting`, `send_email`) on status questions. All write tools require the `request_quote` argument containing the exact substring from the user's message explicitly asking to create, update, or delete.
+60:    - Persistent User Preference: When the user states how they want replies (e.g. 'talk to me in English only', 'English mein baat karo', 'speak in Hinglish', 'be concise'), call the `set_user_preference` tool with `reply_language` and `tone`. Once set, this preference is permanently locked in their profile and beats input language mirroring.
 
 4. Communication Style (Adaptive Depth & Companion Feel):
    - Brevity & Precision by Default:
@@ -111,16 +113,29 @@ def get_unified_prompt_context(chat_id: int) -> Dict[str, Any]:
 
     try:
         with db.engine.connect() as conn:
-            u_row = conn.execute(
-                db.text("""
-                    SELECT u.id, u.first_name, u.username, u.language,
-                           gt.email as google_email, gt.refresh_token_enc
-                    FROM users u
-                    LEFT JOIN google_tokens gt ON gt.user_id = u.id
-                    WHERE u.telegram_chat_id = :cid
-                """),
-                {"cid": cid_can}
-            ).first()
+            u_row = None
+            try:
+                u_row = conn.execute(
+                    db.text("""
+                        SELECT u.id, u.first_name, u.username, u.language,
+                               gt.email as google_email, gt.refresh_token_enc
+                        FROM users u
+                        LEFT JOIN google_tokens gt ON gt.user_id = u.id
+                        WHERE u.telegram_chat_id = :cid
+                    """),
+                    {"cid": cid_can}
+                ).first()
+            except Exception:
+                u_row = conn.execute(
+                    db.text("""
+                        SELECT u.id, 'User' as first_name, '' as username, COALESCE(u.language, 'hinglish') as language,
+                               gt.email as google_email, gt.refresh_token_enc
+                        FROM users u
+                        LEFT JOIN google_tokens gt ON gt.user_id = u.id
+                        WHERE u.telegram_chat_id = :cid
+                    """),
+                    {"cid": cid_can}
+                ).first()
 
             if u_row:
                 uid = u_row[0]
@@ -361,9 +376,9 @@ async def build_runtime_system_prompt(
 
     # 8. Available Tools Catalog
     available_tools_str = (
-        "Memory & Contacts: save_contact, get_contact, list_contacts, update_contact_commitment, get_commitments, save_note_or_fact, search_memory, set_user_language, set_user_timezone, clear_chat_history | "
+        "Memory & Contacts: save_contact, get_contact, list_contacts, update_contact_commitment, get_commitments, save_note_or_fact, search_memory, set_user_preference, set_user_language, set_user_timezone, clear_chat_history | "
         "Tasks & Reminders: create_reminder, update_reminder, list_reminders, delete_reminder, manage_smart_list, create_packing_list | "
-        "Calendar & Schedule: get_schedule, check_availability, schedule_event, create_meeting, update_meeting, delete_meeting, get_meet_link | "
+        "Calendar & Schedule: create_calendar_event, get_schedule, check_availability, schedule_event, create_meeting, update_meeting, delete_meeting, get_meet_link | "
         "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
         "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages | "
         "Real-Time Utilities & Web Search: search_web, read_webpage, get_weather, convert_currency, get_market_price, calculate"
@@ -419,6 +434,19 @@ async def build_runtime_system_prompt(
     prompt = prompt.replace("{EPISODIC_CONTEXT}", episodic_ctx_str)
     prompt = prompt.replace("{ACTIVE_CONTEXT}", active_ctx_str)
     prompt = prompt.replace("{MORNING_INTERACTION_MANDATE}", morning_mandate)
+
+    pref = db.get_user_preference(chat_id)
+    reply_language = (pref.get("reply_language") or "english").lower()
+    tone = pref.get("tone") or "concise"
+
+    preference_banner = f"""### CRITICAL USER PREFERENCE LOCK (ABSOLUTE HIGHEST PRIORITY - BEATS USER INPUT MIRRORING)
+- LOCKED REPLY LANGUAGE: {reply_language.upper()}
+- LOCKED TONE: {tone.upper()}
+MANDATORY: You must generate 100% of your response text in {reply_language.upper()}, regardless of whether the user speaks in Hindi, Hinglish, English, or any other language or script.
+NEVER switch to Hinglish or Hindi unless the user explicitly commands to change their language preference with `set_user_preference`.
+Every response, error message, confirmation request, and schedule readout MUST be in {reply_language.upper()}.
+"""
+    prompt = f"{preference_banner}\n\n{prompt}"
 
     return prompt
 

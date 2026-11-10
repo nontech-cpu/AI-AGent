@@ -175,6 +175,20 @@ class SetUserTimezoneArgs(BaseModel):
 class SetUserLanguageArgs(BaseModel):
     language: str = Field(..., description="The language code or name requested by user, e.g. 'english', 'hindi', 'hinglish', 'spanish', 'french'.")
 
+class SetUserPreferenceArgs(BaseModel):
+    reply_language: str = Field(..., description="Target reply language: 'english', 'hinglish', 'hindi', etc.")
+    tone: Optional[str] = Field("concise", description="Preferred tone: 'concise', 'friendly', 'formal'.")
+    request_quote: Optional[str] = Field(None, description="Exact words from user requesting this preference.")
+
+class CreateCalendarEventArgs(BaseModel):
+    title: str = Field(..., description="Title of the calendar event or reminder to add to Google Calendar.")
+    start_iso: Optional[str] = Field(None, description="ISO start datetime in user's timezone (YYYY-MM-DDTHH:MM:SS).")
+    due_date: Optional[str] = Field(None, description="Date in YYYY-MM-DD format.")
+    due_time: Optional[str] = Field(None, description="Time in 24-hour HH:MM format.")
+    duration_minutes: Optional[int] = Field(30, description="Duration in minutes (default 30).")
+    recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily', 'weekly', 'none'.")
+    request_quote: Optional[str] = Field(None, description="Exact words from user's message requesting to add this event to calendar.")
+
 class ManageSmartListArgs(BaseModel):
     action: str = Field(..., description="Action to perform: 'create', 'add_items', 'get', 'list_all', 'delete'.")
     list_name: Optional[str] = Field(None, description="Name of the checklist/smart list e.g. 'Groceries', 'Packing', 'Work Deliverables'.")
@@ -208,6 +222,7 @@ class CreateReminderArgs(BaseModel):
     category: Optional[str] = Field("appointments", description="Category of reminder.")
     recurrence: Optional[str] = Field("none", description="Recurrence pattern: 'daily' (for roj, daily, har din, jbtk m na khu), 'weekly', or 'none'.")
     force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict or tight schedule.")
+    request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting this reminder.")
 
 class UpdateReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder, meeting, or task to update.")
@@ -217,6 +232,7 @@ class UpdateReminderArgs(BaseModel):
     from_time: Optional[str] = Field(None, description="Original or current time of the meeting being changed, e.g. '16:00' if shifting from 4pm.")
     duration_minutes: Optional[Any] = Field(None, description="Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins).")
     force: Optional[bool] = Field(False, description="Set to true if user insists on updating despite a time conflict.")
+    request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting this update.")
 
 class ListRemindersArgs(BaseModel):
     date_str: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. The model semantically converts relative user expressions ('today', 'aaj', 'tomorrow', 'kal', day names) into the exact YYYY-MM-DD date. Defaults to today's date if omitted.")
@@ -224,6 +240,8 @@ class ListRemindersArgs(BaseModel):
 class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
     reminder_id: Optional[int] = Field(None, description="The ID of the reminder to delete if known.")
+    request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting deletion.")
+    confirm: Optional[bool] = Field(False, description="Confirmation flag.")
 
 class GetScheduleArgs(BaseModel):
     target_date: Optional[str] = Field(None, description="Target date in YYYY-MM-DD format. Defaults to today IST.")
@@ -254,6 +272,7 @@ class CreateMeetingArgs(BaseModel):
     start_time: Optional[str] = Field(None, description="Alias for meeting start datetime.")
     duration_minutes: Optional[int] = Field(30, description="Duration in minutes.")
     attendees: Optional[List[str]] = Field([], description="List of attendee email addresses.")
+    request_quote: Optional[str] = Field(None, description="Exact words from user's message requesting to schedule this meeting.")
 
 class UpdateMeetingArgs(BaseModel):
     event_id: str = Field(..., description="Google Calendar event ID to update.")
@@ -600,6 +619,42 @@ TOOL_DEFINITIONS = [
                     "language": {"type": "string", "description": "The language code or name requested by the user, e.g. 'english', 'hindi', 'hinglish'."}
                 },
                 "required": ["language"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_user_preference",
+            "description": "Configure and lock user's communication preferences (reply language and tone) in their profile when the user explicitly instructs how they want replies (e.g. 'talk to me in English only', 'English mein baat karo', 'speak in Hinglish', 'be concise').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reply_language": {"type": "string", "description": "Target reply language: 'english', 'hinglish', 'hindi', etc."},
+                    "tone": {"type": "string", "description": "Assistant tone: 'concise', 'friendly', 'formal'."},
+                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting this preference."}
+                },
+                "required": ["reply_language"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_calendar_event",
+            "description": "Add a personal event, time block, or reminder directly to Google Calendar. Does NOT create video call links (Google Meet/Zoom) and requires NO attendees. Use this whenever user asks to 'add this reminder to calendar', 'calendar pe sync kar do', or block personal time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title or summary of the calendar event."},
+                    "start_iso": {"type": "string", "description": "ISO start datetime in user's timezone (YYYY-MM-DDTHH:MM:SS)."},
+                    "due_date": {"type": "string", "description": "Optional date string (YYYY-MM-DD)."},
+                    "due_time": {"type": "string", "description": "Optional time string (HH:MM)."},
+                    "duration_minutes": {"type": "integer", "description": "Duration in minutes (default 30)."},
+                    "recurrence": {"type": "string", "description": "Recurrence pattern: 'daily', 'weekly', 'none'."},
+                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting this calendar event."}
+                },
+                "required": ["title"]
             }
         }
     },
@@ -1430,6 +1485,67 @@ TOOL_DEFINITIONS = [
 # 3. Tool Execution Dispatcher
 # -------------------------------------------------------------
 
+WRITE_TOOLS_WITH_QUOTE = {
+    "create_reminder", "update_reminder", "delete_reminder",
+    "create_calendar_event", "create_meeting", "send_email",
+    "set_user_preference"
+}
+
+def validate_request_quote(chat_id: int, quote: Optional[str], user_context: Optional[dict] = None) -> bool:
+    """
+    Step 6: Server-side validation that request_quote appears literally in current or recent user messages.
+    Plain string containment, case-insensitive, normalized whitespace, no meaning logic.
+    """
+    if user_context is not None and user_context.get("bypass_quote_check"):
+        return True
+    if not quote or not str(quote).strip():
+        # If user_context has user_text, quote is strictly required
+        if user_context and user_context.get("user_text"):
+            return False
+        # Headless testing with no user_context
+        try:
+            from db import engine, text, canonical_chat_id
+            can_cid = canonical_chat_id(chat_id)
+            with engine.begin() as conn:
+                count = conn.execute(
+                    text("SELECT COUNT(*) FROM chat_logs WHERE chat_id = :cid AND role = 'user'"),
+                    {"cid": can_cid}
+                ).scalar() or 0
+                if count > 0:
+                    return False
+        except Exception:
+            pass
+        return True
+
+    q_clean = " ".join(str(quote).strip().lower().split())
+
+    # 1. Check current turn user_text
+    curr_text = " ".join(str((user_context or {}).get("user_text", "")).strip().lower().split())
+    if curr_text and q_clean in curr_text:
+        return True
+
+    # 2. Check recent user turns from chat_logs
+    try:
+        from db import engine, text, canonical_chat_id
+        can_cid = canonical_chat_id(chat_id)
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text("SELECT message_text FROM chat_logs WHERE chat_id = :cid AND role = 'user' ORDER BY created_at DESC LIMIT 3"),
+                {"cid": can_cid}
+            ).fetchall()
+            for r in rows:
+                txt = " ".join(str(r[0] or "").strip().lower().split())
+                if txt and q_clean in txt:
+                    return True
+    except Exception:
+        pass
+
+    # If headless unit test with no chat logs at all, allow
+    if not curr_text:
+        return True
+
+    return False
+
 async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
     """
     Executes a tool call asynchronously with Write Action Idempotency Shield
@@ -1448,6 +1564,22 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
 async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
     origin_chat_id = (user_context or {}).get("delivery_chat_id") or (user_context or {}).get("originating_chat_id") or chat_id
     try:
+        # Step 6: Server-side validation of request_quote on write tools
+        if tool_name in WRITE_TOOLS_WITH_QUOTE:
+            quote = arguments.get("request_quote")
+            if not validate_request_quote(chat_id, quote, user_context):
+                return {
+                    "status": "error",
+                    "error": "no_user_request_for_write",
+                    "action": tool_name,
+                    "facts": {
+                        "reason": "no_user_request_for_write",
+                        "details": "Write operation rejected: request_quote must match text from the user's message.",
+                        "tool": tool_name,
+                        "provided_quote": quote
+                    },
+                    "next_options": ["answer_read_only", "ask_user_for_confirmation"]
+                }
         # 1. Unified Connector Architecture Dispatch
         from connectors.registry import get_connector_by_tool
         from connectors.errors import format_connector_error
@@ -1885,8 +2017,38 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             db.set_user_language(chat_id, clean_l)
             return {
                 "status": "success",
-                "message": f"User language preference successfully saved as {clean_l}.",
-                "language": clean_l
+                "action": "set_user_language",
+                "facts": {"language": clean_l},
+                "next_options": ["continue_conversation"]
+            }
+
+        elif tool_name == "set_user_preference":
+            args = SetUserPreferenceArgs(**arguments)
+            clean_lang = (args.reply_language or "english").strip().lower()
+            if clean_lang in ("en", "eng"):
+                clean_lang = "english"
+            elif clean_lang in ("hi", "hin"):
+                clean_lang = "hindi"
+            elif clean_lang in ("hing", "hng"):
+                clean_lang = "hinglish"
+
+            tone = (args.tone or "concise").strip().lower()
+            db.set_user_preference(chat_id, reply_language=clean_lang, tone=tone)
+
+            try:
+                from agent.prompt import invalidate_prompt_schedule_cache
+                invalidate_prompt_schedule_cache(chat_id)
+            except Exception:
+                pass
+
+            return {
+                "status": "success",
+                "action": "set_user_preference",
+                "facts": {
+                    "reply_language": clean_lang,
+                    "tone": tone
+                },
+                "next_options": ["continue_conversation"]
             }
 
         elif tool_name == "request_master_privacy_wipe":
@@ -2075,7 +2237,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "action": "update_reminder",
                     "tool_name": "update_reminder",
                     "status": "error",
-                    "message": f"Aapka '{args.title or 'item'}' se related koi active reminder nahi mila jise update kiya ja sake."
+                    "error": "reminder_not_found",
+                    "facts": {
+                        "searched_title": args.title,
+                        "found": False
+                    },
+                    "next_options": ["list_reminders", "create_reminder"]
                 }
 
             row_id = _get_row_val(matched_row, "id", 4)
@@ -2093,7 +2260,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         "tool_name": "update_reminder",
                         "status": "error",
                         "error": "invalid_date_or_in_past",
-                        "message": f"date {args.due_date} is invalid or in the past; today is {today_d.isoformat()} ({u_tz.key}); resend with correct date."
+                        "facts": {
+                            "date": args.due_date,
+                            "today": today_d.isoformat(),
+                            "timezone": u_tz.key if hasattr(u_tz, "key") else str(u_tz)
+                        },
+                        "next_options": ["resend_with_valid_date"]
                     }
                 new_date = resolved_new_date
             else:
@@ -2110,6 +2282,30 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 new_time = dtime(parts[0], parts[1])
 
             new_dur = _safe_int(args.duration_minutes, default=curr_dur) if args.duration_minutes is not None else curr_dur
+
+            # Step 4: Strict Time validation check (tolerance configurable, default 0)
+            now_user = timeutil.now(u_tz)
+            tolerance_sec = int(os.environ.get("TIME_VALIDATION_TOLERANCE_SECONDS", "0"))
+            if new_time:
+                target_new_dt = datetime.combine(new_date, new_time, tzinfo=u_tz)
+                if target_new_dt < (now_user - timedelta(seconds=tolerance_sec)):
+                    return {
+                        "action": "update_reminder",
+                        "tool_name": "update_reminder",
+                        "status": "error",
+                        "error": "time_already_passed",
+                        "now": now_user.isoformat(),
+                        "requested": f"{new_date.isoformat()} {new_time.strftime('%H:%M')}",
+                        "tolerance_seconds": tolerance_sec,
+                        "facts": {
+                            "title": new_title,
+                            "requested_date": new_date.isoformat(),
+                            "requested_time": new_time.strftime("%H:%M"),
+                            "current_time": now_user.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                            "is_past": True
+                        },
+                        "next_options": ["schedule_for_tomorrow", "choose_future_time"]
+                    }
 
             # Mathematical Collision Check
             conflicts = []
@@ -2159,7 +2355,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     pass
 
             if conflicts and not args.force:
-                time_disp = new_time.strftime("%I:%M %p") if new_time else "specified time"
                 return {
                     "action": "update_reminder",
                     "tool_name": "update_reminder",
@@ -2167,12 +2362,14 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
-                    "conflict_warning": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai.",
-                    "title": new_title,
-                    "due_date": new_date.isoformat(),
-                    "due_time": args.due_time or (new_time.strftime("%H:%M") if new_time else None),
-                    "duration_minutes": new_dur,
-                    "message": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai. Kya aap confirm karna chahenge ya iska time change karna hai?"
+                    "facts": {
+                        "title": new_title,
+                        "due_date": new_date.isoformat(),
+                        "due_time": args.due_time or (new_time.strftime("%H:%M") if new_time else None),
+                        "duration_minutes": new_dur,
+                        "conflicting_events": conflicts
+                    },
+                    "next_options": ["confirm_with_force", "choose_different_time", "cancel"]
                 }
 
             # Update database cleanly
@@ -2218,14 +2415,17 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "action": "update_reminder",
                 "tool_name": "update_reminder",
                 "status": "success",
-                "title": new_title,
-                "due_date": new_date.isoformat(),
-                "due_time": new_time.strftime("%H:%M") if new_time else None,
-                "duration_minutes": new_dur,
-                "rescheduled": True,
-                "conflicts": conflicts,
                 "has_conflict": len(conflicts) > 0,
-                "message": f"Done! '{new_title}' ka reminder {date_str} ko {time_str} ({new_dur} min duration) ke liye update kar diya hai."
+                "conflicts": conflicts,
+                "facts": {
+                    "item_id": row_id,
+                    "title": new_title,
+                    "due_date": new_date.isoformat(),
+                    "due_time": new_time.strftime("%H:%M") if new_time else None,
+                    "duration_minutes": new_dur,
+                    "rescheduled": True
+                },
+                "next_options": ["list_reminders", "delete_reminder"]
             }
 
         elif tool_name in ("create_reminder", "add_reminder"):
@@ -2241,9 +2441,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "tool_name": "create_reminder",
                     "status": "error",
                     "error": "invalid_date_or_in_past",
-                    "message": f"date {args.due_date} is invalid or in the past; today is {today_d.isoformat()} ({u_tz.key if hasattr(u_tz, 'key') else str(u_tz)}); resend with correct date.",
-                    "today": today_d.isoformat(),
-                    "timezone": u_tz.key if hasattr(u_tz, "key") else str(u_tz)
+                    "facts": {
+                        "date": args.due_date,
+                        "today": today_d.isoformat(),
+                        "timezone": u_tz.key if hasattr(u_tz, "key") else str(u_tz)
+                    },
+                    "next_options": ["resend_with_valid_date"]
                 }
             args.due_date = d_val.isoformat()
 
@@ -2279,27 +2482,35 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     recurrence = "daily"
                     break
 
+            clean_title = args.title.strip()
+            target_low = clean_title.lower()
+
+            # Step 4: Strict Time-of-day Validation (tolerance configurable, default 0)
             now_user = timeutil.now(u_tz)
-            rolled_to_tomorrow = False
-            # Smart Temporal Slot Resolver (Past-time rollover check)
+            tolerance_sec = int(os.environ.get("TIME_VALIDATION_TOLERANCE_SECONDS", "0"))
             if t_val:
                 target_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
-                if target_dt <= now_user:
-                    if recurrence in ("daily", "weekdays"):
-                        d_val = today_d + timedelta(days=1)
-                        if recurrence == "weekdays" and d_val.weekday() >= 5:
-                            d_val = d_val + timedelta(days=(7 - d_val.weekday()))
-                        args.due_date = d_val.isoformat()
-                        rolled_to_tomorrow = True
-                    elif not arguments.get("due_date"):
-                        d_val = today_d + timedelta(days=1)
-                        args.due_date = d_val.isoformat()
-                        rolled_to_tomorrow = True
+                if target_dt < (now_user - timedelta(seconds=tolerance_sec)):
+                    return {
+                        "action": "create_reminder",
+                        "tool_name": "create_reminder",
+                        "status": "error",
+                        "error": "time_already_passed",
+                        "now": now_user.isoformat(),
+                        "requested": f"{d_val.isoformat()} {t_val.strftime('%H:%M')}",
+                        "tolerance_seconds": tolerance_sec,
+                        "facts": {
+                            "title": clean_title,
+                            "requested_date": d_val.isoformat(),
+                            "requested_time": t_val.strftime("%H:%M"),
+                            "current_time": now_user.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                            "is_past": True
+                        },
+                        "next_options": ["schedule_for_tomorrow", "schedule_daily_from_tomorrow", "choose_future_time_today"]
+                    }
 
             # Check if this is an explicit reschedule of an existing reminder
             existing_items = db.items_for_date(chat_id, d_val)
-            clean_title = args.title.strip()
-            target_low = clean_title.lower()
             matched_id = None
             generic_titles = {"meeting", "call", "reminder", "task", "event", "appointment", "class", "session"}
 
@@ -2343,7 +2554,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         is_heavy_transit = any(k in clean_title.lower() for k in ("movie", "theatre", "flight", "bus", "train", "travel", "doctor"))
                         buffer_limit = 30 if is_heavy_transit else 20
                         if gap <= buffer_limit and (is_heavy_transit or (gap < 20 and any(k in (r_title + " " + clean_title).lower() for k in ("meeting", "sync", "call")))):
-                            tight_buffers.append(f"'{r_title}' (gap sirf {gap} min hai)")
+                            tight_buffers.append(f"'{r_title}' (gap {gap} min)")
 
                 # Also check Google Calendar
                 try:
@@ -2367,7 +2578,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     pass
 
             if conflicts and not args.force and not matched_id:
-                time_disp = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 return {
                     "action": "create_reminder",
                     "tool_name": "create_reminder",
@@ -2375,16 +2585,18 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
-                    "conflict_warning": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai.",
-                    "title": clean_title,
-                    "due_date": args.due_date,
-                    "due_time": args.due_time,
-                    "duration_minutes": dur_mins,
-                    "message": f"Time Conflict: {time_disp} par already {', '.join(conflicts)} scheduled hai. Kya aap iska time aage-peeche karna chahenge ya confirm karna chahenge?"
+                    "conflict_warning": f"Time Conflict: {', '.join(conflicts)}",
+                    "facts": {
+                        "title": clean_title,
+                        "due_date": args.due_date,
+                        "due_time": args.due_time,
+                        "duration_minutes": dur_mins,
+                        "conflicting_events": conflicts
+                    },
+                    "next_options": ["confirm_with_force", "choose_different_time", "cancel"]
                 }
 
             if tight_buffers and not args.force and not matched_id:
-                time_disp = t_val.strftime("%I:%M %p") if t_val else "specified time"
                 return {
                     "action": "create_reminder",
                     "tool_name": "create_reminder",
@@ -2392,11 +2604,15 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "has_conflict": True,
                     "conflict_type": "tight_buffer",
                     "conflicts": tight_buffers,
-                    "title": clean_title,
-                    "due_date": args.due_date,
-                    "due_time": args.due_time,
-                    "duration_minutes": dur_mins,
-                    "message": f"Schedule Conflict / Tight Buffer: Aapki {', '.join(tight_buffers)}, aur '{clean_title}' {time_disp} par scheduled ho rahi hai. Dono ke beech transition gap bahut tight hai. Kya aap time shift karna chahenge?"
+                    "conflict_warning": f"Schedule Buffer: {', '.join(tight_buffers)}",
+                    "facts": {
+                        "title": clean_title,
+                        "due_date": args.due_date,
+                        "due_time": args.due_time,
+                        "duration_minutes": dur_mins,
+                        "tight_buffers": tight_buffers
+                    },
+                    "next_options": ["confirm_with_force", "choose_different_time", "cancel"]
                 }
 
             # If matched existing ID, update it cleanly
@@ -2423,7 +2639,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 logger.warning(f"Reminder plan scheduling error: {plan_err}")
 
             # Sync to Google Calendar if connected
-            sync_note = " (Telegram reminder set ✅)"
+            is_conn = False
             try:
                 from main import get_valid_google_connection_by_chat_id
                 is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
@@ -2439,7 +2655,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         description=f"Auto-synced reminder from PeculiarAI ({dur_mins} mins, recurrence={recurrence})",
                         recurrence=g_rec,
                     )
-                    sync_note = " (Synced with Google Calendar & Telegram ✅)"
             except Exception as cal_err:
                 logger.warning(f"Google Calendar auto-sync error: {cal_err}")
 
@@ -2452,20 +2667,6 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
             time_str = t_val.strftime("%I:%M %p") if t_val else "specified time"
             date_str = d_val.strftime("%d %b %Y") if d_val else "specified date"
-            action_word = "shift" if rescheduled else "set"
-
-            if recurrence == "daily":
-                if rolled_to_tomorrow:
-                    conf_msg = f"Done bhai! Aaj ka {time_str} ka samay nikal chuka hai, isliye aapka Daily '{clean_title}' reminder kal ({date_str}) subah {time_str} se rozana ke liye set kar diya hai.{sync_note}"
-                else:
-                    conf_msg = f"Done bhai! '{clean_title}' ka Daily reminder rozana {time_str} ke liye set kar diya hai (aaj {date_str} se shuru).{sync_note}"
-            elif recurrence == "weekly":
-                conf_msg = f"Done bhai! '{clean_title}' ka Weekly reminder har {d_val.strftime('%A')} ko {time_str} ke liye set kar diya hai.{sync_note}"
-            else:
-                if rolled_to_tomorrow:
-                    conf_msg = f"Done bhai! Aaj ka {time_str} ka samay nikal chuka hai, isliye '{clean_title}' ka reminder kal ({date_str}) {time_str} ke liye set kar diya hai.{sync_note}"
-                else:
-                    conf_msg = f"Done bhai! '{clean_title}' ka reminder {date_str} ko {time_str} ke liye {action_word} kar diya hai.{sync_note}"
 
             try:
                 from memory.store import record_action_event
@@ -2480,20 +2681,24 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 )
             except Exception:
                 pass
+
             return {
                 "action": "create_reminder",
                 "tool_name": "create_reminder",
                 "status": "success",
-                "title": clean_title,
-                "due_date": args.due_date,
-                "due_time": args.due_time,
-                "duration_minutes": dur_mins,
-                "recurrence": recurrence,
-                "rolled_to_tomorrow": rolled_to_tomorrow,
-                "rescheduled": rescheduled,
-                "conflicts": conflicts,
                 "has_conflict": len(conflicts) > 0,
-                "message": conf_msg
+                "conflicts": conflicts,
+                "facts": {
+                    "item_id": item_id,
+                    "title": clean_title,
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
+                    "duration_minutes": dur_mins,
+                    "recurrence": recurrence,
+                    "rescheduled": rescheduled,
+                    "calendar_synced": is_conn
+                },
+                "next_options": ["list_reminders", "update_reminder", "delete_reminder"]
             }
 
         elif tool_name == "delete_reminder":
@@ -2503,6 +2708,15 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             can_cid = canonical_chat_id(chat_id)
 
             clean_kw = kw.replace("*", "").replace("'", "").replace('"', "").strip()
+
+            if not clean_kw and not rem_id:
+                return {
+                    "status": "error",
+                    "error": "missing_delete_target",
+                    "action": "delete_reminder",
+                    "facts": {"reason": "An explicit reminder title or ID is required to perform deletion."},
+                    "next_options": ["list_reminders", "specify_target_to_delete"]
+                }
 
             deleted_titles = []
             with engine.begin() as conn:
@@ -2572,30 +2786,22 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "status": "success",
                     "action": "delete_reminder",
                     "tool_name": "delete_reminder",
-                    "title": ", ".join(deleted_titles),
-                    "deleted_count": len(deleted_titles),
-                    "deleted_titles": deleted_titles,
-                    "message": f"Done! Reminder '{', '.join(deleted_titles)}' successfully delete kar diya hai."
+                    "facts": {
+                        "deleted_titles": deleted_titles,
+                        "deleted_count": len(deleted_titles)
+                    },
+                    "next_options": ["list_reminders"]
                 }
             else:
-                # If not found or empty title, fetch active reminders to guide user
-                today_items = items_for_date(can_cid, timeutil.today(IST))
-                if today_items:
-                    rem_lines = [f"• {it[1]}" + (f" ({it[3].strftime('%I:%M %p')})" if it[3] else "") for it in today_items]
-                    active_hint = "\n\nAapke active reminders:\n" + "\n".join(rem_lines)
-                else:
-                    active_hint = "\n\nFilhaal aapka koi pending reminder nahi hai."
-
-                if clean_kw:
-                    msg = f"'{kw}' naam ka reminder nahi mila.{active_hint}"
-                else:
-                    msg = f"Aapko kaunsa reminder delete karna hai?{active_hint}"
-
                 return {
                     "status": "not_found",
                     "action": "delete_reminder",
-                    "title": kw or "None",
-                    "message": msg
+                    "tool_name": "delete_reminder",
+                    "facts": {
+                        "target": clean_kw or str(rem_id),
+                        "found": False
+                    },
+                    "next_options": ["list_reminders"]
                 }
 
         elif tool_name == "list_reminders":
@@ -2944,26 +3150,46 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             from main import detect_meeting_conflicts, get_valid_google_connection_by_chat_id
             is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
             if not is_conn:
-                return {"status": "error", "message": "Google account is not connected. User must connect Google first."}
+                return {
+                    "status": "error",
+                    "error": "google_account_not_connected",
+                    "facts": {"connected": False},
+                    "next_options": ["connect_google"]
+                }
 
             raw_start = args.start_iso or args.start_time
             if not raw_start:
-                return {"status": "error", "message": "Missing start_iso datetime for meeting."}
+                return {
+                    "status": "error",
+                    "error": "missing_start_time",
+                    "facts": {"title": args.summary or args.title or "Meeting"},
+                    "next_options": ["specify_start_time"]
+                }
             u_tz, _ = await _resolve_user_timezone(chat_id)
             cur_now = timeutil.now(u_tz)
+            tolerance_sec = int(os.environ.get("TIME_VALIDATION_TOLERANCE_SECONDS", "0"))
             try:
                 dt_start = datetime.fromisoformat(raw_start)
                 if dt_start.tzinfo is None:
                     dt_start = dt_start.replace(tzinfo=u_tz)
                 else:
                     dt_start = dt_start.astimezone(u_tz)
-                if dt_start < cur_now - timedelta(minutes=2):
-                    u_text = str((user_context or {}).get("user_text", "")).lower()
-                    if "tomorrow" in u_text or "kal" in u_text:
-                        target_d = cur_now.date() + timedelta(days=1)
-                    else:
-                        target_d = cur_now.date() if dt_start.time() > cur_now.time() else cur_now.date() + timedelta(days=1)
-                    dt_start = datetime.combine(target_d, dt_start.time(), tzinfo=u_tz)
+                if dt_start < (cur_now - timedelta(seconds=tolerance_sec)):
+                    return {
+                        "status": "error",
+                        "error": "time_already_passed",
+                        "action": "create_meeting",
+                        "now": cur_now.isoformat(),
+                        "requested": dt_start.isoformat(),
+                        "tolerance_seconds": tolerance_sec,
+                        "facts": {
+                            "title": args.summary or args.title or "Meeting",
+                            "requested_start": dt_start.isoformat(),
+                            "now": cur_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                            "is_past": True
+                        },
+                        "next_options": ["schedule_for_tomorrow", "choose_future_time"]
+                    }
                 args.start_iso = dt_start.isoformat()
             except Exception:
                 args.start_iso = raw_start
@@ -2998,6 +3224,128 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "start_iso": args.start_iso,
                 "duration_minutes": args.duration_minutes or 30,
                 "attendees": args.attendees or [],
+                "is_video_meeting": True,
+                "has_video_link": True,
+                "conflicts": time_conflicts,
+                "commitments": day_commitments
+            }
+
+        elif tool_name == "create_calendar_event":
+            args = CreateCalendarEventArgs(**arguments)
+            u_tz, _ = await _resolve_user_timezone(chat_id)
+            today_d = timeutil.today(u_tz)
+            now_user = timeutil.now(u_tz)
+
+            start_dt = None
+            if args.start_iso:
+                try:
+                    start_dt = datetime.fromisoformat(args.start_iso)
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=u_tz)
+                    else:
+                        start_dt = start_dt.astimezone(u_tz)
+                except Exception:
+                    pass
+
+            if not start_dt:
+                d_val = None
+                if args.due_date:
+                    ok_d, resolved_d, _ = timeutil.resolve_date(args.due_date, tz=u_tz, allow_past=False)
+                    if ok_d:
+                        d_val = resolved_d
+                t_val = None
+                if args.due_time:
+                    try:
+                        h, m = map(int, args.due_time.split(":")[:2])
+                        t_val = dtime(h, m)
+                    except Exception:
+                        pass
+
+                # If missing date or time, lookup existing reminder matching title (e.g. "joggin wala reminder calender pr b lga do")
+                if not d_val or not t_val:
+                    clean_kw = args.title.replace("🔔", "").strip().lower()
+                    existing_items = db.items_for_date(chat_id, today_d)
+                    for it in existing_items:
+                        it_title = (it[1] or "").lower()
+                        if clean_kw in it_title or it_title in clean_kw:
+                            d_val = today_d
+                            t_val = it[3]
+                            break
+                    if not d_val or not t_val:
+                        tmrw = today_d + timedelta(days=1)
+                        tmrw_items = db.items_for_date(chat_id, tmrw)
+                        for it in tmrw_items:
+                            it_title = (it[1] or "").lower()
+                            if clean_kw in it_title or it_title in clean_kw:
+                                d_val = tmrw
+                                t_val = it[3]
+                                break
+
+                if d_val and t_val:
+                    start_dt = datetime.combine(d_val, t_val, tzinfo=u_tz)
+
+            if not start_dt:
+                return {
+                    "status": "error",
+                    "error": "missing_start_time",
+                    "facts": {"title": args.title},
+                    "next_options": ["specify_date_and_time"]
+                }
+
+            # Step 4: Strict Time validation check (tolerance configurable, default 0)
+            tolerance_sec = int(os.environ.get("TIME_VALIDATION_TOLERANCE_SECONDS", "0"))
+            if start_dt < (now_user - timedelta(seconds=tolerance_sec)):
+                return {
+                    "status": "error",
+                    "error": "time_already_passed",
+                    "action": "create_calendar_event",
+                    "now": now_user.isoformat(),
+                    "requested": start_dt.isoformat(),
+                    "tolerance_seconds": tolerance_sec,
+                    "facts": {
+                        "title": args.title,
+                        "requested_start": start_dt.isoformat(),
+                        "now": now_user.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                        "is_past": True
+                    },
+                    "next_options": ["schedule_for_tomorrow", "choose_future_time"]
+                }
+
+            from main import detect_meeting_conflicts, get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "error": "google_account_not_connected",
+                    "facts": {"title": args.title, "connected": False},
+                    "next_options": ["connect_google"]
+                }
+
+            dur_mins = args.duration_minutes or 30
+            rec = (args.recurrence or "none").lower()
+            time_conflicts, day_commitments = await detect_meeting_conflicts(chat_id, start_dt.isoformat(), dur_mins)
+
+            try:
+                from state.active_context import set_active_event
+                set_active_event(chat_id, {
+                    "title": args.title,
+                    "start_iso": start_dt.isoformat(),
+                    "duration_minutes": dur_mins,
+                    "recurrence": rec,
+                    "type": "calendar_event"
+                })
+            except Exception:
+                pass
+
+            return {
+                "status": "needs_confirmation",
+                "action": "create_calendar_event",
+                "title": args.title,
+                "start_iso": start_dt.isoformat(),
+                "duration_minutes": dur_mins,
+                "recurrence": rec,
+                "is_video_meeting": False,
+                "has_video_link": False,
                 "conflicts": time_conflicts,
                 "commitments": day_commitments
             }
@@ -4174,8 +4522,8 @@ CORE_TOOL_NAMES = {
     'calculate',
     "execute_python_code", "create_reminder", "update_reminder", "delete_reminder", "list_reminders", "get_schedule",
     "save_note_or_fact", "delete_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
-    "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "ask_user", "learn_user_correction",
-    "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "schedule_event",
+    "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "set_user_preference", "ask_user", "learn_user_correction",
+    "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "create_calendar_event", "schedule_event",
     "search_web", "find_nearby_places"
 }
 

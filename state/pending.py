@@ -409,6 +409,53 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
                 complete_pending_action(action_id, status="confirmed")
             return True, msg
 
+        elif kind in ("create_calendar_event", "calendar_event"):
+            title = payload.get("title", "Event")
+            start_iso = payload.get("start_iso") or payload.get("start")
+            duration_minutes = payload.get("duration_minutes") or payload.get("duration", 30)
+            rec = payload.get("recurrence") or "none"
+            g_rec = ["RRULE:FREQ=DAILY"] if rec == "daily" else (["RRULE:FREQ=WEEKLY"] if rec == "weekly" else None)
+
+            result = await google_services.create_calendar_event(
+                chat_id=chat_id,
+                summary=title,
+                start_time=start_iso,
+                duration_minutes=duration_minutes,
+                is_video_meeting=False,
+                recurrence=g_rec
+            )
+
+            clock_str = format_event_clock_ist(start_iso)
+            calendar_link = result.get("htmlLink", "") if isinstance(result, dict) else ""
+
+            try:
+                from memory.store import record_action_event
+                import time as _t
+                cal_src_id = f"cal_{result.get('id') if isinstance(result, dict) else action_id or int(_t.time())}"
+                record_action_event(
+                    chat_id,
+                    action_type="create_calendar_event",
+                    summary=f"Added event to Google Calendar '{title}' for {clock_str} ({duration_minutes} mins)",
+                    details={"title": title, "start": start_iso, "duration": duration_minutes, "recurrence": rec},
+                    source_type="calendar",
+                    source_id=cal_src_id,
+                    importance=3
+                )
+            except Exception:
+                pass
+
+            user_lang = db.get_user_language(chat_id)
+            if user_lang == "english":
+                msg = f"✅ **Event added to Google Calendar!**\n\n📌 **Title:** {title}\n🕒 **Time:** {clock_str} (India Time)\n⏱️ **Duration:** {duration_minutes} mins"
+            else:
+                msg = f"✅ **Calendar event successfully scheduled!**\n\n📌 **Title:** {title}\n🕒 **Time:** {clock_str} (India Time)\n⏱️ **Duration:** {duration_minutes} mins"
+            if calendar_link:
+                msg += f"\n📅 **Calendar Event:** [Google Calendar]({calendar_link})"
+
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+            return True, msg
+
         elif kind in ("send_email", "email"):
             to = payload.get("to")
             subject = payload.get("subject", "No Subject")

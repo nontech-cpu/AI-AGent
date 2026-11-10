@@ -238,7 +238,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                                 clean_low in ("cancel", "no", "nahi", "nahin", "mat karo", "rehne do", "chhoro", "drop it", "abort") or
                                 len(clean_low.split()) <= 2)
             if is_simple_cancel:
-                reply_msg = "Action cancel kar diya gaya hai. Kuch bhi schedule ya send nahi kiya gaya."
+                from core.i18n import get_i18n_string
+                user_lang = db.get_user_language(chat_id)
+                reply_msg = get_i18n_string("action_cancelled", lang=user_lang)
                 db.log_chat_message(chat_id, "user", user_text, channel=channel)
                 db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
                 return {
@@ -264,15 +266,18 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             from timing import format_event_clock_ist
             clock_str = format_event_clock_ist(payload["start_iso"])
             is_video = payload.get("is_video_meeting", False) or (payload.get("action") == "create_meeting" and payload.get("has_video_link") is not False)
-            action_desc = "create this Google Calendar meeting with a Google Meet link?" if is_video else "add this event to your Google Calendar?"
-            reply_msg = (
-                f"Meeting time update kar diya hai: **{clock_str}**.\n\n"
-                f"Please confirm — {action_desc}\n"
-                f"Title: {payload.get('title', 'Meeting')}\n"
-                f"Time: {clock_str} (India time)\n"
-                f"Duration: {payload.get('duration_minutes', 30)} minutes\n\n"
-                f"Reply yes to create or no to cancel."
+            from core.i18n import get_i18n_string
+            user_lang = db.get_user_language(chat_id)
+            tmpl_key = "confirm_meeting" if is_video else "confirm_calendar_event"
+            conf_dialogue = get_i18n_string(
+                tmpl_key,
+                lang=user_lang,
+                title=payload.get('title', 'Meeting'),
+                time=clock_str,
+                duration=payload.get('duration_minutes', 30),
+                attendees=', '.join(payload.get('attendees', [])) if payload.get('attendees') else 'None'
             )
+            reply_msg = f"Meeting time updated: **{clock_str}**.\n\n{conf_dialogue}"
             db.log_chat_message(chat_id, "user", user_text, channel=channel)
             db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
             return {
@@ -567,25 +572,18 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
                 tool_results_list.append(tool_result)
 
-                # Single-turn direct response optimization:
-                # Only for simple, single-action commands. If user combined multiple actions (and, aur, bhi, pehle), let the agent chain tools naturally!
-                has_multi_intents = any(kw in user_text.lower() for kw in (" and ", " aur ", " b ", " bhi ", " fir ", " then ", " pehle ", " sath ", " with "))
-                if not has_multi_intents and len(tool_calls) == 1 and len(tool_results_list) == 1:
-                    if fn_name in ("create_reminder", "update_reminder", "delete_reminder", "manage_smart_list", "save_note_or_fact", "learn_user_correction", "create_packing_list"):
-                        if tool_result.get("status") in ("success", "conflict_detected") and tool_result.get("message"):
-                            if fn_name in ("create_reminder", "update_reminder") and tool_result.get("status") == "conflict_detected":
-                                payload_cf = {
-                                    "kind": fn_name,
-                                    "action": fn_name,
-                                    "title": tool_result.get("title") or args_dict.get("title"),
-                                    "due_date": tool_result.get("due_date") or args_dict.get("due_date"),
-                                    "due_time": tool_result.get("due_time") or args_dict.get("due_time"),
-                                    "force": True
-                                }
-                                save_pending_action(chat_id, fn_name, payload_cf)
-                                pending_action = payload_cf
-                            final_reply = tool_result["message"]
-                            break
+                # Conflict state capture (preserve pending state for user confirmation, without tool prose short-circuit)
+                if fn_name in ("create_reminder", "update_reminder") and tool_result.get("status") == "conflict_detected":
+                    payload_cf = {
+                        "kind": fn_name,
+                        "action": fn_name,
+                        "title": tool_result.get("title") or args_dict.get("title"),
+                        "due_date": tool_result.get("due_date") or args_dict.get("due_date"),
+                        "due_time": tool_result.get("due_time") or args_dict.get("due_time"),
+                        "force": True
+                    }
+                    save_pending_action(chat_id, fn_name, payload_cf)
+                    pending_action = payload_cf
 
                 # Track active conversation context for seamless multi-turn references ("pehla wala", "usko", etc.)
                 try:
@@ -731,6 +729,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             "start_iso": tool_result.get("start_iso"),
                             "duration_minutes": tool_result.get("duration_minutes", 30),
                             "attendees": tool_result.get("attendees", []),
+                            "is_video_meeting": tool_result.get("is_video_meeting", False),
+                            "recurrence": tool_result.get("recurrence", "none"),
                             "created_at": timeutil.now(IST).isoformat()
                         }
                         pending_action = payload
@@ -748,15 +748,18 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         from main import format_event_clock_ist
                         clock_str = format_event_clock_ist(tool_result.get("start_iso"))
                         is_video = tool_result.get("is_video_meeting", False) or (tool_result.get("action") == "create_meeting" and tool_result.get("has_video_link") is not False)
-                        action_desc = "create this Google Calendar meeting with a Google Meet link?" if is_video else "add this event to your Google Calendar?"
-                        final_reply = (
-                            f"{conflicts_msg}Please confirm — {action_desc}\n"
-                            f"Title: {tool_result.get('title', 'Meeting')}\n"
-                            f"Time: {clock_str} (India time)\n"
-                            f"Duration: {tool_result.get('duration_minutes', 30)} minutes\n"
-                            f"Attendees: {', '.join(tool_result.get('attendees', [])) if tool_result.get('attendees') else 'None'}\n\n"
-                            f"Reply yes to create or no to cancel."
+                        from core.i18n import get_i18n_string
+                        user_lang = db.get_user_language(chat_id)
+                        tmpl_key = "confirm_meeting" if is_video else "confirm_calendar_event"
+                        conf_dialogue = get_i18n_string(
+                            tmpl_key,
+                            lang=user_lang,
+                            title=tool_result.get('title', 'Meeting'),
+                            time=clock_str,
+                            duration=tool_result.get('duration_minutes', 30),
+                            attendees=', '.join(tool_result.get('attendees', [])) if tool_result.get('attendees') else 'None'
                         )
+                        final_reply = f"{conflicts_msg}{conf_dialogue}"
                         break
 
                 # Sanitize untrusted content before appending tool result to messages

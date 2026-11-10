@@ -39,16 +39,13 @@ def setup_recurring_fixtures():
 
 
 @pytest.mark.asyncio
-async def test_daily_reminder_created_at_past_time_rolls_to_tomorrow():
+async def test_daily_reminder_created_at_past_time_rejects_past_time():
     """
-    CRITICAL USER SCENARIO:
+    Phase 7e Step 4:
     User asks at 12:32 PM for 'daily reminder of jogging at 10am'.
     10:00 AM has already passed today.
-    The engine MUST:
-    1. Detect that today's 10:00 AM has passed.
-    2. Auto-roll the first occurrence to tomorrow (11 Nov 2026).
-    3. Save recurrence='daily' in the database.
-    4. Provide clear, helpful confirmation explaining it starts tomorrow.
+    The engine MUST reject past time with {status: 'error', error: 'time_already_passed'}.
+    No silent write, no silent move to tomorrow.
     """
     now_1232pm = datetime(2026, 11, 10, 12, 32, tzinfo=IST)
     with patch("core.timeutil.now", return_value=now_1232pm), \
@@ -60,19 +57,15 @@ async def test_daily_reminder_created_at_past_time_rolls_to_tomorrow():
             {
                 "title": "Jogging",
                 "due_time": "10:00",
-                "recurrence": "daily"
+                "recurrence": "daily",
+                "request_quote": "daily reminder"
             },
             user_context={"user_text": "mere daily reminder set krdo joggina ka 10am ka"}
         )
 
-        assert res["status"] == "success"
-        assert res["due_date"] == "2026-11-11"  # Automatically advanced to tomorrow!
-        assert res["due_time"] == "10:00"
-        assert res["recurrence"] == "daily"
-        assert res["rolled_to_tomorrow"] is True
-        # Confirmation message clarifies that 10:00 AM today passed and starts tomorrow
-        assert "Daily" in res["message"]
-        assert "kal" in res["message"].lower() or "11 Nov" in res["message"]
+        assert res["status"] == "error"
+        assert res["error"] == "time_already_passed"
+        assert "10:00" in res["requested"]
 
 
 def test_virtual_recurrence_projection_returns_jogging_for_tomorrow_and_future():
@@ -124,9 +117,11 @@ async def test_google_calendar_sync_receives_rrule_freq_daily():
             "create_reminder",
             {
                 "title": "Jogging",
-                "due_time": "10:00",
-                "recurrence": "daily"
-            }
+                "due_time": "15:00",
+                "recurrence": "daily",
+                "request_quote": "daily reminder"
+            },
+            user_context={"user_text": "set daily reminder for jogging at 3pm", "bypass_quote_check": True}
         )
 
         assert res["status"] == "success"

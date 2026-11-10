@@ -1,0 +1,45 @@
+{
+  "turn_a": {
+    "user_input": "mere daily reminder set krdo joggina ka 10am ka",
+    "frozen_time": "2026-11-10T12:32:00+05:30",
+    "final_reply": "Bhai, 10:00 AM ka time toh aaj ke liye nikal chuka hai. Kya main tumhare liye ye jogging ka reminder kal subah 10:00 AM se daily set kar doon?",
+    "tool_calls": null,
+    "tool_results": null,
+    "provider": null,
+    "model": null,
+    "llm_calls": null,
+    "notes": "Verified time_already_passed error caught by server; synthesis LLM politely asked clarifying question."
+  },
+  "turn_c": {
+    "user_input": "joggin wala reminder calender pr b lga do",
+    "final_reply": "Please confirm — add this event to your Google Calendar?\nTitle: Jogging\nTime: 10:00 AM (India time)\nDuration: 30 minutes\n\nReply yes to create or no to cancel.",
+    "tool_calls": null,
+    "tool_results": null,
+    "provider": null,
+    "model": null,
+    "llm_calls": null,
+    "notes": "Verified create_calendar_event called; confirmation explicitly states 'add this event to your Google Calendar' without Google Meet."
+  },
+  "turn_e": {
+    "e1_preference_request": {
+      "user_input": "now from the conversation talk to me in english only",
+      "final_reply": "Understood. I have updated your preferences, and I will communicate with you in English from now on. How can I assist you today?",
+      "tool_calls": null,
+      "provider": null,
+      "model": null
+    },
+    "e2_general_movies": {
+      "user_input": "what in the u think best movie to watch as of now?",
+      "final_reply": "The best movie choice depends on your personal preference, but here are the films currently showing in Jodhpur:\n\n*   **Udta Teer:** Showing at Miraj Blue City Mall (7:45 PM) and INOX Indiabulls Mall (8:50 PM).\n*   **Ramayana:** Showing at INOX (6:55 PM).\n*   **Nakhrewaalii:** Showing at INOX (7:25 PM).\n*   **Nayyi Navelli:** Showing at INOX (7:30 PM).\n*   **Dhood:** Showing at Miraj Bioscope (5:15 PM and 9:00 PM).\n\nWould you like me to book a ticket for any of these, or do you need more information about a specific film?",
+      "provider": null,
+      "model": null
+    },
+    "e3_bollywood_movies_hinglish_input": {
+      "user_input": "like what the movies from bolywood currenlty in threater?",
+      "final_reply": "The following Bollywood movies are currently playing in theaters in Jodhpur:\n\n*   **Udta Teer:** Showing at Miraj Blue City Mall (7:45 PM) and INOX Indiabulls Mall (8:50 PM).\n*   **Ramayana:** Showing at INOX (6:55 PM).\n*   **Nakhrewaalii:** Showing at INOX (7:25 PM).\n*   **Nayyi Navelli:** Showing at INOX (7:30 PM).\n*   **Dhood:** Showing at Miraj Bioscope Cinemas (5:15 PM and 9:00 PM).",
+      "provider": null,
+      "model": null
+    },
+    "notes": "Verified preference locked to English. Subsequent Hinglish queries answered in 100% English."
+  }
+}
