@@ -95,7 +95,7 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
         status = tr.get("status")
         ok = tr.get("ok", False)
         # Check success status
-        if status in ("success", "needs_confirmation", "confirmation_required") or ok is True:
+        if status in ("success", "needs_confirmation", "confirmation_required", "ready_for_dispatch") or ok is True:
             t_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
             from agent.verifier import READ_ONLY_TOOL_NAMES
             if t_name in READ_ONLY_TOOL_NAMES and not (tr.get("files_sent") or tr.get("filename") or tr.get("file_path")):

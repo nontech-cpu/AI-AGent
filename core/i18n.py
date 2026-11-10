@@ -129,6 +129,16 @@ I18N: Dict[str, Dict[str, str]] = {
             "📝 **Content:** {content_snippet}\n\n"
             "Upload karne ke liye yes ya cancel karne ke liye no kahein."
         )
+    },
+    "request_noted_confirm_details": {
+        "english": "Your request has been noted. Please confirm the details so I can proceed.",
+        "hinglish": "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun.",
+        "hindi": "आपका अनुरोध दर्ज कर लिया गया है। कृपया विवरण की पुष्टि करें ताकि मैं आगे बढ़ सकूँ।"
+    },
+    "file_delivered": {
+        "english": "✅ I have generated and sent your document **{filename}**! Please check.",
+        "hinglish": "✅ Maine aapka document **{filename}** generate karke bhej diya hai! Check kar lijiye.",
+        "hindi": "✅ मैंने आपका दस्तावेज़ **{filename}** जनरेट करके भेज दिया है! कृपया देखें।"
     }
 }
 

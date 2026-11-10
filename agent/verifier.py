@@ -367,7 +367,7 @@ async def verify_and_ground_reply(
                 continue
             status = tr.get("status")
             ok = tr.get("ok", False)
-            if status in ("success", "ok", "needs_confirmation", "confirmation_required", "conflict_detected") or ok is True:
+            if status in ("success", "ok", "needs_confirmation", "confirmation_required", "conflict_detected", "ready_for_dispatch") or ok is True:
                 tr_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
                 # Read-only tools CANNOT satisfy a mutation/deletion action claim (unless file artifacts were produced)!
                 if tr_name in READ_ONLY_TOOL_NAMES and not (tr.get("files_sent") or tr.get("filename")):
@@ -395,7 +395,8 @@ async def verify_and_ground_reply(
                 )
                 return False, revised, violations
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
-            revised = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
+            from core.i18n import get_i18n_string
+            revised = get_i18n_string("request_noted_confirm_details", "english")
             return False, revised, violations
 
     # Check 2B: Route / Travel Time Claimed Without Verified Navigation Tool
