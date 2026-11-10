@@ -173,3 +173,73 @@ async def test_unconfigured_google_calendar_utc_resolves_to_user_local_timezone(
     assert tz_str == "Asia/Kolkata"
     assert str(tz) == "Asia/Kolkata"
 
+
+@pytest.mark.asyncio
+async def test_cancellation_and_decline_never_overwritten_by_verifier():
+    from agent.verifier import verify_and_ground_reply
+    from connectors.guardrails import check_fake_success_guard
+
+    draft_reply = "Theek hai bhai, reminder cancel kar diya hai. Kuch aur chahiye toh batana!"
+    user_query = "rhne de"
+
+    # Simulated error from tool call or empty tool results
+    tool_results = [
+        {"error": "no_user_request_for_write", "status": "error", "tool_name": "create_reminder"}
+    ]
+
+    is_grounded, revised, viols = await verify_and_ground_reply(
+        draft_reply=draft_reply,
+        tool_results=tool_results,
+        user_query=user_query,
+        user_lang="hinglish"
+    )
+
+    assert is_grounded is True
+    assert "Your request has been noted" not in revised
+    assert "cancel" in revised.lower()
+
+    is_ok, err = check_fake_success_guard(draft_reply, tool_results, user_query=user_query)
+    assert is_ok is True
+    assert err is None
+
+
+@pytest.mark.asyncio
+async def test_server_503_fast_failover_to_fallback_provider(monkeypatch):
+    import llm.provider as llm_provider
+    from llm.provider import LLMResponse, BaseLLMProvider, LLMError
+
+    # Mock primary provider throwing 503
+    class BrokenPrimaryProvider(BaseLLMProvider):
+        def __init__(self):
+            super().__init__(name="BrokenPrimary")
+        def is_configured(self):
+            return True
+        def get_models(self):
+            return ["model-a", "model-b", "model-c"]
+        async def chat(self, *args, **kwargs):
+            raise LLMError("Server overloaded (503)", status_code=503)
+
+    # Mock backup provider succeeding
+    class WorkingBackupProvider(BaseLLMProvider):
+        def __init__(self):
+            super().__init__(name="WorkingBackup")
+        def is_configured(self):
+            return True
+        def get_models(self):
+            return ["backup-model"]
+        async def chat(self, *args, **kwargs):
+            return LLMResponse(
+                text="Healthy response from backup",
+                provider="WorkingBackup",
+                model="backup-model",
+                usage={"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}
+            )
+
+    monkeypatch.setattr(llm_provider, "get_available_providers", lambda: [BrokenPrimaryProvider(), WorkingBackupProvider()])
+
+    resp = await llm_provider.chat(messages=[{"role": "user", "content": "hello"}])
+    assert resp.text == "Healthy response from backup"
+    assert resp.provider == "WorkingBackup"
+    assert resp.fallback_used is True
+
+

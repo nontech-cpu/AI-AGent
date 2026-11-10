@@ -4696,6 +4696,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         logger.warning(f"Tool validation error [{trace_id}] in {tool_name}: {val_err}")
         return {
             "status": "error",
+            "error": "validation_error",
             "error_type": "validation_error",
             "retryable": False,
             "user_message": f"Tool '{tool_name}' parameters are invalid. Please check the requested inputs.",

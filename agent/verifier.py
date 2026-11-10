@@ -33,7 +33,8 @@ Your job is to audit the Draft Reply against the Evidence (Tool Results, Memory 
 
 You must output a single JSON object with these EXACT keys:
 1. "claims_action_done": boolean. True if the Draft Reply states, asserts, or implies that a real-world, external, or stateful action was completed, created, updated, deleted, wiped, or sent in the CURRENT turn.
-CRITICAL INQUIRY & ERROR EXCEPTION:
+CRITICAL INQUIRY, CANCELLATION & ERROR EXCEPTION:
+- If the User Query declines, cancels, or dismisses an action (e.g. "rhne de", "no", "cancel", "rehne de", "chhod do", "nahi chahiye", "never mind", "drop it"), or if the Draft Reply acknowledges that an action was cancelled, not performed, or dismissed, return "claims_action_done": false! Acknowledging cancellation or decline is NOT an action execution claim.
 - If the User Query is an inquiry or status question about whether something was done in the past, or asking about current state/reminders/calendar (e.g. "ky tumn firecraker wala reminder htaa diya caldner se bhi?", "is my meeting cancelled?", "kya delete ho gaya?"), answering the question or reporting status is an INFORMATIONAL ANSWER, NOT an action claim. Return "claims_action_done": false!
 - If Tool Results contains an error, conflict, or parameter request (e.g. 'time_already_passed', 'needs_info', 'conflict_detected', 'error', 'no_user_request_for_write') and the Draft Reply explains this situation or asks the user how to proceed, return "claims_action_done": false!
 - Return "claims_action_done": false if the assistant is merely asking confirmation, refusing, explaining, answering a status check, or greeting.
@@ -172,7 +173,8 @@ def deterministic_verify(
     low_rep = draft_reply.lower()
 
     is_user_inquiry = bool(user_query and "?" in user_query)
-    if not has_action_tool_success and not has_pending_confirm and not is_user_inquiry:
+    is_cancellation = any(w in (user_query or "").lower() for w in ("rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye", "never mind", "drop it", "mat karo")) or any(w in low_rep for w in ("cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"))
+    if not has_action_tool_success and not has_pending_confirm and not is_user_inquiry and not is_cancellation:
         # Strip question clauses so questions like "Aaj Tuesday hai — bhej diya?" are not flagged as completion claims
         clean_rep = re.sub(r'[^.!?\n]*\?', '', low_rep)
         action_claim_tokens = (
@@ -197,7 +199,7 @@ def deterministic_verify(
             violations.append("Claimed action completed without success: No successful tool execution in evidence")
             return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
 
-    if has_error and not has_conflict:
+    if not is_cancellation and has_error and not has_conflict:
         # If tool failed, ensure draft does not claim success
         if any(w in low_rep for w in ("ho gaya", "kar diya", "bhej diya", "saved", "created", "scheduled", "success")):
             violations.append("Claimed action completed when tool reported error")
@@ -294,7 +296,8 @@ async def audit_claims_with_llm(
 
     # Fallback heuristic when LLM provider is offline or unreachable in unit tests:
     low = draft_reply.lower()
-    has_action_phrase = any(w in low for w in (
+    is_cancellation = any(w in (user_query or "").lower() for w in ("rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye", "never mind", "drop it", "mat karo")) or any(w in low for w in ("cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"))
+    has_action_phrase = False if is_cancellation else any(w in low for w in (
         "kar diya", "bhej diya", "delete kar diya", "set kar diya", "laga diya",
         "save kar diya", "update kar diya", "shift kar diya", "successfully created", "successfully sent",
         "successfully deleted", "successfully scheduled"
@@ -396,6 +399,13 @@ async def verify_and_ground_reply(
                     "Reply **yes/haan** to confirm ya **no/cancel** to abort."
                 )
                 return False, revised, violations
+
+            # If user declined or cancelled, or tool reported error, NEVER overwrite with canned text:
+            is_declined = any(w in (user_query or "").lower() for w in ("rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye", "never mind", "drop it", "mat karo")) or any(w in draft_reply.lower() for w in ("cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"))
+            has_tool_error = any(isinstance(tr, dict) and tr.get("status") in ("error", "failed", "conflict_detected") for tr in tool_results)
+            if is_declined or has_tool_error:
+                return True, sanitize_regional_scripts(draft_reply), []
+
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
             from core.i18n import get_i18n_string
             lang = user_lang or "english"

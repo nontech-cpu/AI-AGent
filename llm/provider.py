@@ -926,7 +926,9 @@ async def chat(
         raise LLMError("No LLM provider is configured. Please set GEMINI_API_KEY or GROQ_API_KEY in .env.", status_code=503)
 
     if provider:
-        all_providers = [p for p in all_providers if p.name.lower() == provider.lower()] or all_providers
+        matched = [p for p in all_providers if p.name.lower() == provider.lower()]
+        others = [p for p in all_providers if p.name.lower() != provider.lower()]
+        all_providers = matched + others if matched else all_providers
 
     last_error: Optional[Exception] = None
     fallback_used = False
@@ -958,7 +960,10 @@ async def chat(
             if is_fallback_provider:
                 fallback_used = True
 
+            skip_current_provider = False
             for m_candidate in candidate_models:
+                if skip_current_provider:
+                    break
                 # Per-provider retry attempt with backoff
                 for attempt in range(max_retries_per_provider + 1):
                     try:
@@ -1011,6 +1016,14 @@ async def chat(
                         last_error = err
                         err_reason = f"{prov.name} {m_candidate} (Attempt {attempt+1}): {str(err)}"
                         logger.warning(err_reason)
+                        fallback_reasons.append(err_reason)
+
+                        # Instant fast-failover on 5xx server errors (e.g. 503 high demand spike / 502 / 504)
+                        status_code = getattr(err, "status_code", None)
+                        if status_code and status_code in (500, 502, 503, 504):
+                            logger.warning(f"{prov.name} server error {status_code}: fast-failing provider immediately to next provider.")
+                            skip_current_provider = True
+                            break
 
                         # If rate limited or server error, apply backoff and retry same provider once
                         if attempt < max_retries_per_provider and isinstance(err, (RateLimitedError, ProviderTimeoutError)):
@@ -1021,7 +1034,6 @@ async def chat(
                             await asyncio.sleep(sleep_dur)
                             continue
                         else:
-                            fallback_reasons.append(err_reason)
                             break  # Fall back to next model / provider
 
                     except Exception as unk_err:

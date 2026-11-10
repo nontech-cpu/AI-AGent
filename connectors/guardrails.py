@@ -81,6 +81,11 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
     if any(s in low for s in ["connected hai", "connected nahi", "link nahi", "linked nahi", "not connected", "connect nahi", "workspace:"]):
         return True, None
 
+    # Discontinuation, cancellations, declinations, or negative acknowledgements are conversational dismissals, not action claims
+    is_cancellation = any(w in (user_query or "").lower() for w in ["rhne de", "rehne de", "cancel", "no", "chhod do", "mat karo", "drop", "never mind", "nahi chahiye"]) or any(w in low for w in ["cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"])
+    if is_cancellation:
+        return True, None
+
     has_completion_claim = any(pat.search(draft_reply) for pat in ACTION_COMPLETION_PATTERNS)
     if not has_completion_claim:
         return True, None
