@@ -701,6 +701,17 @@ def mark_sent(reminder_id, sent_at=None):
             ).first()
             if row and row[6] in ("daily", "weekly", "weekdays"):
                 item_id, remind_at, due_at, label, base_d, due_t, rec = row
+                from datetime import datetime, timedelta
+                if isinstance(remind_at, str):
+                    try:
+                        remind_at = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                if isinstance(due_at, str):
+                    try:
+                        due_at = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
                 step_days = 7 if rec == "weekly" else 1
                 next_remind_at = (remind_at + timedelta(days=step_days)) if remind_at else None
                 next_due_at = (due_at + timedelta(days=step_days)) if due_at else None
@@ -1084,8 +1095,11 @@ def find_meetings_before(chat_id, due_date, before_time):
         ).fetchall()
 
 
-def soft_delete_reminders(chat_id, item_ids):
-    """Soft delete reminders (status='deleted') strictly by exact IDs owned by this user."""
+def soft_delete_reminders(chat_id, item_ids, scope: str = "all"):
+    """Soft delete reminders (status='deleted') strictly by exact IDs owned by this user.
+    If scope == 'this' and the item is recurring, only the current occurrence is deleted,
+    and the next recurrence is scheduled. If scope == 'all', the entire recurring series is deleted.
+    """
     _init_memory_items_status_column()
     chat_id = canonical_chat_id(chat_id)
     ids = [int(v) for v in item_ids if isinstance(v, int) or (isinstance(v, str) and v.isdigit())]
@@ -1097,7 +1111,7 @@ def soft_delete_reminders(chat_id, item_ids):
         if is_pg:
             owned = conn.execute(
                 text(
-                    "SELECT m.id, m.title FROM memory_items m JOIN users u ON u.id = m.user_id "
+                    "SELECT m.id, m.title, COALESCE(m.recurrence, 'none') FROM memory_items m JOIN users u ON u.id = m.user_id "
                     "WHERE u.telegram_chat_id = :c AND m.id = ANY(:ids) AND (m.status IS NULL OR m.status != 'deleted')"
                 ),
                 {"c": chat_id, "ids": ids},
@@ -1108,7 +1122,7 @@ def soft_delete_reminders(chat_id, item_ids):
             param_dict["c"] = chat_id
             owned = conn.execute(
                 text(
-                    f"SELECT m.id, m.title FROM memory_items m JOIN users u ON u.id = m.user_id "
+                    f"SELECT m.id, m.title, COALESCE(m.recurrence, 'none') FROM memory_items m JOIN users u ON u.id = m.user_id "
                     f"WHERE u.telegram_chat_id = :c AND m.id IN ({placeholders}) AND (m.status IS NULL OR m.status != 'deleted')"
                 ),
                 param_dict,
@@ -1118,32 +1132,78 @@ def soft_delete_reminders(chat_id, item_ids):
             return []
 
         safe_ids = [int(r[0]) for r in owned]
-        if is_pg:
-            conn.execute(
-                text("UPDATE memory_items SET status = 'deleted' WHERE id = ANY(:ids)"),
-                {"ids": safe_ids},
-            )
-            try:
+
+        if scope == "this":
+            # Delete only current active occurrence in reminders table
+            from datetime import timedelta
+            for r_row in owned:
+                m_id, m_title, m_rec = r_row[0], r_row[1], r_row[2]
+                curr_rem = conn.execute(
+                    text("SELECT id, remind_at, due_at, label FROM reminders WHERE item_id = :mid AND (sent IS NOT TRUE OR sent = 0) AND (status IS NULL OR status != 'deleted') ORDER BY id ASC LIMIT 1"),
+                    {"mid": m_id}
+                ).first()
+                if curr_rem:
+                    rem_pk, remind_at, due_at, label = curr_rem
+                    conn.execute(
+                        text("UPDATE reminders SET status = 'deleted' WHERE id = :rid"),
+                        {"rid": rem_pk}
+                    )
+                    # Advance to next recurrence if recurring
+                    if m_rec in ("daily", "weekly", "weekdays"):
+                        from datetime import datetime
+                        if isinstance(remind_at, str):
+                            try:
+                                remind_at = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
+                            except Exception:
+                                pass
+                        if isinstance(due_at, str):
+                            try:
+                                due_at = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+                            except Exception:
+                                pass
+                        step_days = 7 if m_rec == "weekly" else 1
+                        next_remind_at = (remind_at + timedelta(days=step_days)) if remind_at else None
+                        next_due_at = (due_at + timedelta(days=step_days)) if due_at else None
+                        if m_rec == "weekdays" and next_due_at and next_due_at.weekday() >= 5:
+                            add_days = 2 if next_due_at.weekday() == 5 else 1
+                            next_remind_at = (next_remind_at + timedelta(days=add_days)) if next_remind_at else None
+                            next_due_at = (next_due_at + timedelta(days=add_days)) if next_due_at else None
+                        if next_remind_at:
+                            conn.execute(
+                                text("INSERT INTO reminders (item_id, remind_at, due_at, label) VALUES (:item_id, :remind_at, :due_at, :label)"),
+                                {"item_id": m_id, "remind_at": next_remind_at, "due_at": next_due_at, "label": label}
+                            )
+                else:
+                    # No pending reminder row; mark memory_item deleted
+                    conn.execute(text("UPDATE memory_items SET status = 'deleted' WHERE id = :mid"), {"mid": m_id})
+        else:
+            # scope == "all": Delete parent memory_item and all child reminders
+            if is_pg:
                 conn.execute(
-                    text("UPDATE reminders SET status = 'deleted' WHERE item_id = ANY(:ids)"),
+                    text("UPDATE memory_items SET status = 'deleted' WHERE id = ANY(:ids)"),
                     {"ids": safe_ids},
                 )
-            except Exception:
-                pass
-        else:
-            placeholders = ", ".join([f":id_{i}" for i in range(len(safe_ids))])
-            param_dict = {f"id_{i}": val for i, val in enumerate(safe_ids)}
-            conn.execute(
-                text(f"UPDATE memory_items SET status = 'deleted' WHERE id IN ({placeholders})"),
-                param_dict,
-            )
-            try:
+                try:
+                    conn.execute(
+                        text("UPDATE reminders SET status = 'deleted' WHERE item_id = ANY(:ids)"),
+                        {"ids": safe_ids},
+                    )
+                except Exception:
+                    pass
+            else:
+                placeholders = ", ".join([f":id_{i}" for i in range(len(safe_ids))])
+                param_dict = {f"id_{i}": val for i, val in enumerate(safe_ids)}
                 conn.execute(
-                    text(f"UPDATE reminders SET status = 'deleted' WHERE item_id IN ({placeholders})"),
+                    text(f"UPDATE memory_items SET status = 'deleted' WHERE id IN ({placeholders})"),
                     param_dict,
                 )
-            except Exception:
-                pass
+                try:
+                    conn.execute(
+                        text(f"UPDATE reminders SET status = 'deleted' WHERE item_id IN ({placeholders})"),
+                        param_dict,
+                    )
+                except Exception:
+                    pass
 
         return [(r[0], r[1]) for r in owned]
 

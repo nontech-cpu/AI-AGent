@@ -484,7 +484,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             # Dynamic Token Budget:
             # - Pure acknowledgments/feedback ('Good', 'Thanks', 'Ok'): 150 max_tokens (saves ~85% generation tokens).
             # - Real queries & detailed explanations: 1024 max_tokens (ensures zero premature truncation).
-            turn_max_tokens = 150 if _is_pure_sentiment else 1024
+            turn_max_tokens = 1024
 
             payload = {
                 "model": current_model,
@@ -610,16 +610,27 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 except Exception:
                     args_dict = {}
 
-                # Execute tool with per-tool timeout (15s) and catch-all error handling
-                try:
-                    tool_result = await asyncio.wait_for(
-                        execute_tool(chat_id, fn_name, args_dict, user_context={"user_text": user_text, "delivery_chat_id": delivery_chat_id, "originating_chat_id": delivery_chat_id}),
-                        timeout=15.0
-                    )
-                except asyncio.TimeoutError:
-                    tool_result = {"status": "error", "message": f"Tool '{fn_name}' timed out after 15s"}
-                except Exception as tool_exc:
-                    tool_result = {"status": "error", "message": f"Tool '{fn_name}' error: {str(tool_exc)}"}
+                # Pre-execution validation (Part D / Step 9 policy)
+                from agent.tool_metadata import validate_tool_call_parameters, validate_evidence
+                param_valid, param_err = validate_tool_call_parameters(fn_name, args_dict)
+                if not param_valid and param_err:
+                    tool_result = param_err
+                else:
+                    # Shadow mode evidence check
+                    is_grounded, unverified = validate_evidence(fn_name, args_dict, [user_text])
+                    if not is_grounded:
+                        logger.warning(f"[EvidenceShadow] {fn_name} arguments had unverified quotes: {unverified}")
+
+                    # Execute tool with per-tool timeout (15s) and catch-all error handling
+                    try:
+                        tool_result = await asyncio.wait_for(
+                            execute_tool(chat_id, fn_name, args_dict, user_context={"user_text": user_text, "delivery_chat_id": delivery_chat_id, "originating_chat_id": delivery_chat_id}),
+                            timeout=15.0
+                        )
+                    except asyncio.TimeoutError:
+                        tool_result = {"status": "error", "message": f"Tool '{fn_name}' timed out after 15s"}
+                    except Exception as tool_exc:
+                        tool_result = {"status": "error", "message": f"Tool '{fn_name}' error: {str(tool_exc)}"}
 
                 if isinstance(tool_result, dict):
                     tool_result.setdefault("action", fn_name)
@@ -728,12 +739,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         save_pending_action(chat_id, "send_email", payload)
                         from main import PENDING_GOOGLE_ACTIONS
                         PENDING_GOOGLE_ACTIONS[chat_id] = payload
-                        final_reply = (
-                            f"Please confirm 📤 send this email from your connected Gmail?\n\n"
-                            f"• **To:** {payload['to']}\n"
-                            f"• **Subject:** {payload['subject']}\n"
-                            f"• **Body:** {payload['body']}\n\n"
-                            "Reply 'yes' to send, or let me know what changes to make."
+                        from core.i18n import get_i18n_string
+                        user_lang = db.get_user_language(chat_id)
+                        final_reply = get_i18n_string(
+                            "confirm_send_email",
+                            lang=user_lang,
+                            to=payload["to"],
+                            subject=payload["subject"],
+                            body=payload["body"]
                         )
                         break
 
@@ -750,11 +763,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         save_pending_action(chat_id, "upload_file", payload)
                         from main import PENDING_GOOGLE_ACTIONS
                         PENDING_GOOGLE_ACTIONS[chat_id] = payload
-                        final_reply = (
-                            f"Please confirm — upload this file to Google Drive?\n\n"
-                            f"📄 **Filename:** {payload['filename']}\n"
-                            f"📝 **Content:** {payload['content'][:150]}\n\n"
-                            f"Reply yes to upload or no to cancel."
+                        from core.i18n import get_i18n_string
+                        user_lang = db.get_user_language(chat_id)
+                        final_reply = get_i18n_string(
+                            "confirm_upload_file",
+                            lang=user_lang,
+                            filename=payload["filename"],
+                            content_snippet=payload["content"][:150]
                         )
                         break
 
@@ -770,9 +785,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         save_pending_action(chat_id, "delete_meeting", payload)
                         from main import PENDING_GOOGLE_ACTIONS
                         PENDING_GOOGLE_ACTIONS[chat_id] = payload
-                        final_reply = (
-                            f"Please confirm — delete '{payload.get('title')}' from your Google Calendar?\n\n"
-                            f"Reply yes to delete or no to cancel."
+                        from core.i18n import get_i18n_string
+                        user_lang = db.get_user_language(chat_id)
+                        final_reply = get_i18n_string(
+                            "confirm_delete_meeting",
+                            lang=user_lang,
+                            title=payload.get("title", "Meeting")
                         )
                         break
 
@@ -789,19 +807,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         pending_action = payload
                         save_pending_action(chat_id, "delete_reminder", payload)
                         items_str = "\n".join([f"• `[ID {it.get('id')}]` {it.get('title')} ({it.get('due_date')} {it.get('due_time')})" for it in items])
+                        from core.i18n import get_i18n_string
                         user_lang = db.get_user_language(chat_id)
-                        if user_lang == "english":
-                            final_reply = (
-                                f"Please confirm deletion of the following reminder(s):\n\n"
-                                f"{items_str}\n\n"
-                                f"Reply 'confirm' to delete or 'cancel' to keep them."
-                            )
-                        else:
-                            final_reply = (
-                                f"Kripya confirmation dein — kya aap ye reminder(s) delete karna chahte hain?\n\n"
-                                f"{items_str}\n\n"
-                                f"Reply karein 'confirm' delete karne ke liye ya 'cancel' cancel karne ke liye."
-                            )
+                        final_reply = get_i18n_string(
+                            "confirm_delete_reminder",
+                            lang=user_lang,
+                            items_str=items_str
+                        )
                         break
 
                     else:
@@ -831,6 +843,19 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         from main import format_event_clock_ist
                         clock_str = format_event_clock_ist(tool_result.get("start_iso"))
                         is_video = tool_result.get("is_video_meeting", False) or (tool_result.get("action") == "create_meeting" and tool_result.get("has_video_link") is not False)
+                        
+                        start_iso = tool_result.get("start_iso")
+                        date_weekday = "Upcoming"
+                        time_str = clock_str
+                        if start_iso:
+                            try:
+                                dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+                                dt_ist = dt.astimezone(IST) if dt.tzinfo else dt.replace(tzinfo=IST)
+                                date_weekday = dt_ist.strftime("%A, %d %B %Y")
+                                time_str = dt_ist.strftime("%I:%M %p").lstrip("0") + " IST"
+                            except Exception:
+                                pass
+
                         from core.i18n import get_i18n_string
                         user_lang = db.get_user_language(chat_id)
                         tmpl_key = "confirm_meeting" if is_video else "confirm_calendar_event"
@@ -838,8 +863,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             tmpl_key,
                             lang=user_lang,
                             title=tool_result.get('title', 'Meeting'),
-                            time=clock_str,
+                            date_weekday=date_weekday,
+                            time=time_str,
                             duration=tool_result.get('duration_minutes', 30),
+                            recurrence=tool_result.get('recurrence', 'once') or 'once',
+                            calendar_name=tool_result.get('calendar_name', 'Primary Google Calendar') or 'Primary Google Calendar',
                             attendees=', '.join(tool_result.get('attendees', [])) if tool_result.get('attendees') else 'None'
                         )
                         final_reply = f"{conflicts_msg}{conf_dialogue}"

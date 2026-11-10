@@ -227,7 +227,7 @@ class GeminiProvider(BaseLLMProvider):
     Primary tier with 1M token context and native function calling.
     """
 
-    DEFAULT_MODELS = ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]
+    DEFAULT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3-flash-preview"]
 
     def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None):
         super().__init__("Gemini")

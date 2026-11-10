@@ -64,6 +64,25 @@ ROLLBACK; -- Safe default in proposal
 
 ---
 
+## 6. Test User Row 4441 Cleanup Proposal (Read-Only)
+
+During local test verification, row `user_id = 4441` (`telegram_chat_id = 9988001`) was inserted into the users table before the test environment guard redirected execution to local SQLite.
+
+### Proposed Cleanup SQL:
+```sql
+BEGIN;
+
+-- Preview test user row
+SELECT id, telegram_chat_id, created_at FROM users WHERE id = 4441 AND telegram_chat_id = 9988001;
+
+-- Proposed delete (run only upon explicit user instruction):
+-- DELETE FROM users WHERE id = 4441 AND telegram_chat_id = 9988001;
+
+ROLLBACK; -- Safe default in proposal
+```
+
+---
+
 ## 4. Reconstructive Restore Proposal (Read-Only)
 
 Using provenance records preserved in `turn_traces`, `chat_logs`, and immutable event memories in the `memories` table, the 6 deleted rows have been forensically reconstructed.
@@ -119,6 +138,25 @@ WHERE id = 257 AND user_id = 306;
 -- UPDATE memory_items SET status = 'deleted' WHERE id = 257 AND user_id = 306;
 
 -- Associated Google Calendar event to delete via API: 'r704lglg3t37seu596q8rqfm4o'
+
+ROLLBACK; -- Safe default in proposal
+```
+
+---
+
+## 6. Test User Row 4441 Cleanup Proposal (Read-Only)
+
+During local test verification, row `user_id = 4441` (`telegram_chat_id = 9988001`) was inserted into the users table before the test environment guard redirected execution to local SQLite.
+
+### Proposed Cleanup SQL:
+```sql
+BEGIN;
+
+-- Preview test user row
+SELECT id, telegram_chat_id, created_at FROM users WHERE id = 4441 AND telegram_chat_id = 9988001;
+
+-- Proposed delete (run only upon explicit user instruction):
+-- DELETE FROM users WHERE id = 4441 AND telegram_chat_id = 9988001;
 
 ROLLBACK; -- Safe default in proposal
 ```

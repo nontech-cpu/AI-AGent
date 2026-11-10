@@ -36,8 +36,9 @@ You must output a single JSON object with these EXACT keys:
 2. "which_action": string or null. The canonical tool name if an action is claimed (e.g. "create_reminder", "delete_reminder", "update_reminder", "send_email", "create_meeting", "save_note_or_fact", "manage_list", "request_master_privacy_wipe", "clear_chat_history"), or null if no action is claimed.
 3. "claims_external_fact": boolean. True if the Draft Reply asserts specific real-world live facts (e.g. local business/mall names, transit routes/highways/distances, order/receipt details, market prices, live weather, availability). False for general domain knowledge (e.g. ML, coding concepts, science, history), pure language translations, greetings, conversational remarks, festival wishes, food/celebration commentary, or acknowledging the user's casual personal plans.
 4. "claims_route_or_travel_time": boolean. True if the Draft Reply asserts, describes, or predicts a physical travel route, road directions (e.g. via specific roads, highways, bypasses), transit path, or travel time/duration (e.g. '10-15 minute lagenge') between locations. False otherwise.
-5. "sourced_by_tool": boolean. True if ALL external facts, routes, or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact, route, or action is NOT found in the Evidence.
-6. "reason": string. Short 1-sentence explanation of your assessment.
+5. "claims_unavailable_capability": boolean. True if the Draft Reply states, offers, or promises that the assistant can perform an action or capability that does NOT exist in the tool suite (e.g. offering to book tickets, book cinema/movie tickets, book flights/trains/buses, make payments/purchases, order food, place phone calls). False otherwise.
+6. "sourced_by_tool": boolean. True if ALL external facts, routes, or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact, route, or action is NOT found in the Evidence.
+7. "reason": string. Short 1-sentence explanation of your assessment.
 
 CRITICAL GROUNDING RULES FOR EXTERNAL SAAS / WORKSPACE ACTIONS:
 - `execute_python_code` is a local Python sandbox for calculations, data processing, and document creation. It CANNOT modify external SaaS pages, emails, calendar events, Notion notes, or GitHub files. However, when it generates and delivers file artifacts (`files_sent`), document/PDF/report creation claims ARE fully verified and sourced by it!
@@ -283,6 +284,7 @@ async def audit_claims_with_llm(
                 "which_action": parsed.get("which_action"),
                 "claims_external_fact": bool(parsed.get("claims_external_fact", False)),
                 "claims_route_or_travel_time": bool(parsed.get("claims_route_or_travel_time", False)),
+                "claims_unavailable_capability": bool(parsed.get("claims_unavailable_capability", False)),
                 "sourced_by_tool": bool(parsed.get("sourced_by_tool", False)),
                 "reason": str(parsed.get("reason", ""))
             }
@@ -304,6 +306,7 @@ async def audit_claims_with_llm(
 
     claims_route = any(w in low for w in ("road", "rasta", "route", "hote hue", "highway", "bypass", "flyover", "shortest rasta")) or bool(re.search(r'\b\d+(?:-\d+)?\s*(?:minute|min|ghante|hours?)\b', low))
     has_ext_fact = any(w in low for w in ("mall", "malls", "km", "order tha:", "order", "rupees", "₹"))
+    claims_unavail = any(w in low for w in ("book a ticket", "ticket book kar", "ticket book kr", "book kar doon", "book kr du", "order food", "make payment"))
     has_evidence = bool(evidence_str and ("status" in evidence_str or "Tool 1" in evidence_str))
 
     return {
@@ -311,7 +314,8 @@ async def audit_claims_with_llm(
         "which_action": which_act,
         "claims_external_fact": has_ext_fact,
         "claims_route_or_travel_time": claims_route,
-        "sourced_by_tool": has_evidence if (has_action_phrase or has_ext_fact or claims_route) else True,
+        "claims_unavailable_capability": claims_unavail,
+        "sourced_by_tool": has_evidence if (has_action_phrase or has_ext_fact or claims_route or claims_unavail) else True,
         "reason": "Fallback heuristic evaluation"
     }
 
@@ -411,6 +415,15 @@ async def verify_and_ground_reply(
         # If evidence contains the exact numbers/facts, allow
         violations.append("Unsubstantiated external fact claimed without verified tool source")
         revised = "Mere paas iski verified information nahi hai."
+        return False, revised, violations
+
+    # Check 2D: Unavailable Capability Claimed (e.g. Offering to book tickets / make payments)
+    if audit.get("claims_unavailable_capability"):
+        violations.append(f"Claimed unavailable capability: {audit.get('reason')}")
+        revised = (
+            "Main directly tickets book ya purchases nahi kar sakta kyunki mere paas ticket booking tool nahi hai. "
+            "Lekin main schedules, showtimes, options aur direct booking links dhoondhne mein aapki madad kar sakta hoon!"
+        )
         return False, revised, violations
 
     return True, sanitize_regional_scripts(draft_reply), violations

@@ -44,6 +44,13 @@ OPERATING PRINCIPLES:
    - Places & Stores vs Shopping Malls: NEVER mix small retail shops, fashion boutiques, or sari stores with shopping malls. When asked for shopping malls, list only verified, prominent shopping malls from search results or state honestly that only standalone retail shops were found.
    - Email Recall Lookup Order: When user asks what they emailed someone or what an earlier email said (e.g. 'mene X ko mail kra tha kya tha vo'): First check [Recent Confirmed Events & Actions] / Cognitive Memory in context. If not present or live lookup is requested, call search_user_emails(to=..., folder='sent'). If no email is found, state plainly that no matching sent email was found and offer to check another keyword/folder; NEVER ask the user what was in their own sent email as the first move.
    - Master Privacy Wipe & Data Deletion: If the user expresses ANY intent or desire to delete all memory, erase history, wipe personal data, forget everything, or start completely fresh (regardless of language, phrasing, or typos like 'dlete entire memory', 'mera saara data uda do', 'sab bhool jao', 'wipe my data', 'clean slate'), you MUST call `request_master_privacy_wipe`. NEVER claim in conversation that you deleted contacts, reminders, locations, or memory without an executed deletion tool. NEVER call read tools (like `list_contacts`, `list_reminders`, `search_memory`) to narrate data deletion; call `request_master_privacy_wipe` directly to initiate the authorized wipe process.
+   - Available Capabilities & Zero Invented Capabilities:
+     Your capabilities are strictly limited to your registered tools: {AVAILABLE_TOOLS}.
+     You do NOT have tools to book tickets (flights, trains, buses, movie/cinema tickets, events), make financial payments, buy physical items, or place phone calls.
+     NEVER promise, offer, or claim that you can book a ticket or make a purchase (e.g. NEVER ask 'Kya main aapke liye ticket book kar doon?' or 'Would you like me to book a ticket?').
+     If the user asks to book tickets or buy things, state clearly and honestly that you cannot book tickets or purchase items directly, and offer to find schedules, showtimes, or official links instead.
+   - Movie & Place Recommendations Source Citation:
+     When recommending movies, theater showtimes, restaurants, or local places, ALWAYS append the tool/data source at the end (e.g. '(Source: Movie Showtimes)', '(Source: Google Places)', or '(Source: Web Search)').
    - Conversational Banter vs Factual Grounding Boundary:
      * Factual Grounding rules apply strictly to external world queries (places, businesses, live data, weather, prices, routes) and system state (reminders, meetings, files, emails).
      * Grounding rules do NOT apply to the user's personal chat, casual plans, food/festival remarks, jokes, mood, or conversational replies (e.g. 'kuch khaas nahi bas patakhe phodenge aur khana banayenge', 'aaj thak gaya hu', 'diwali celebrate kar rahe hain').
@@ -375,15 +382,13 @@ async def build_runtime_system_prompt(
 
     schedule_block = "\n".join(schedule_parts)
 
-    # 8. Available Tools Catalog
-    available_tools_str = (
-        "Memory & Contacts: save_contact, get_contact, list_contacts, update_contact_commitment, get_commitments, save_note_or_fact, search_memory, set_user_preference, set_user_language, set_user_timezone, clear_chat_history | "
-        "Tasks & Reminders: create_reminder, update_reminder, list_reminders, delete_reminder, manage_smart_list, create_packing_list | "
-        "Calendar & Schedule: create_calendar_event, get_schedule, check_availability, schedule_event, create_meeting, update_meeting, delete_meeting, get_meet_link | "
-        "Communications & Files: send_email, upload_to_drive, generate_pdf, generate_excel | "
-        "Third-Party Connectors: check_integrations_status, connect_integration, list_github_repos, get_github_file, update_github_file, list_github_issues, create_notion_page, update_notion_page, list_notion_pages | "
-        "Real-Time Utilities & Web Search: search_web, read_webpage, get_weather, convert_currency, get_market_price, calculate"
-    )
+    # 8. Available Tools Catalog (Built dynamically from TOOL_DEFINITIONS)
+    try:
+        from agent.tools import TOOL_DEFINITIONS
+        tool_names = sorted(list({t["function"]["name"] for t in TOOL_DEFINITIONS if isinstance(t, dict) and "function" in t and "name" in t["function"]}))
+        available_tools_str = ", ".join(tool_names)
+    except Exception:
+        available_tools_str = "create_reminder, update_reminder, delete_reminder, list_reminders, create_calendar_event, create_meeting, update_meeting, delete_meeting, get_schedule, send_email, search_memory, set_user_preference, search_web"
 
     # 9. Active Context
     active_ctx_str = format_active_context(chat_id)

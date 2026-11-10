@@ -116,12 +116,19 @@ def _execute_retrieval(chat_id: int, user_text: str) -> Dict[str, Any]:
     except Exception as rrf_err:
         logger.warning(f"Hybrid memory search error: {rrf_err}")
 
-    # 3. Exact Temporal Date Filtered Retrieval (e.g. '10 oct ko kya khaya tha?', '15 nov ko kya hua tha')
-    date_match = re.search(r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)\b', user_text, re.I)
-    if date_match:
+    # 3. Exact Temporal Date Filtered Retrieval (ISO date validation, zero English month regex)
+    target_d = None
+    iso_m = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', user_text)
+    if iso_m:
         try:
-            from dateutil import parser as dt_parser
-            target_d = dt_parser.parse(date_match.group(1)).strftime('%Y-%m-%d')
+            from datetime import date
+            valid_d = date.fromisoformat(iso_m.group(1))
+            target_d = valid_d.isoformat()
+        except Exception:
+            target_d = None
+
+    if target_d:
+        try:
             with db.engine.connect() as conn:
                 d_rows = conn.execute(text("""
                     SELECT id, memory_type, content, structured, created_at

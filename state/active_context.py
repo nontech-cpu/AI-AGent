@@ -280,75 +280,22 @@ def get_active_ticket(chat_id: int) -> Optional[Dict[str, Any]]:
     if ctx and ctx.get("last_ticket"):
         return ctx["last_ticket"]
 
-    # Fallback 1: check recent chat history for active PNR or ticket mention
+    # Structured Context Lookup: check persisted structured ticket memories
     try:
-        import db, re
-        history = db.get_recent_chat_history(chat_id, limit=4)
-        has_recent_ticket_topic = any(
-            re.search(r"\b(pnr|ticket|booking|train|flight|journey)\b", t.get("text", ""), re.I)
-            for t in history
-        )
-        if has_recent_ticket_topic:
-            # Check recent chat turns for explicit PNR/details
-            for t in reversed(history):
-                txt = t.get("text", "")
-                if "pnr" in txt.lower():
-                    pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]{6,12})", txt, re.I)
-                    route_m = re.search(r"route\s*[:\-#]?\s*([^\n]+)", txt, re.I)
-                    date_m = re.search(r"(?:travel\s*date|date\s*&\s*time|date)\s*[:\-#]?\s*([^\n]+)", txt, re.I)
-                    carrier_m = re.search(r"(?:provider|service)\s*[:\-#]?\s*([^\n]+)", txt, re.I)
-                    if pnr_m:
-                        return {
-                            "pnr": pnr_m.group(1).strip(),
-                            "route": route_m.group(1).strip() if route_m else None,
-                            "datetime_str": date_m.group(1).strip() if date_m else None,
-                            "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
-                            "summary": txt[:200]
-                        }
-
-            # If recent chat mentioned ticket, check facts as backup
-            facts = db.get_user_facts(chat_id) or []
-            for f in reversed(facts):
-                f_text = f.get("fact", "")
-                if "pnr" in f_text.lower() or "booking/ticket" in f_text.lower():
-                    pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]+)", f_text, re.I)
-                    route_m = re.search(r"route\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                    date_m = re.search(r"date\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                    carrier_m = re.search(r"(?:booking/ticket|ticket|provider)\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                    pax_m = re.search(r"passengers\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                    seat_m = re.search(r"seats\s*[:\-#]?\s*([^|]+)", f_text, re.I)
-                    if pnr_m:
-                        return {
-                            "pnr": pnr_m.group(1).strip(),
-                            "route": route_m.group(1).strip() if route_m else None,
-                            "datetime_str": date_m.group(1).strip() if date_m else None,
-                            "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
-                            "passengers": pax_m.group(1).strip() if pax_m else None,
-                            "seats": seat_m.group(1).strip() if seat_m else None,
-                            "summary": f_text
-                        }
-    except Exception:
-        pass
-
-    # Fallback 2: check recent chat history for PNR
-    try:
-        import db, re
-        history = db.get_recent_chat_history(chat_id, limit=8)
-        for t in reversed(history):
-            txt = t.get("text", "")
-            if "pnr" in txt.lower():
-                pnr_m = re.search(r"pnr\s*[:\-#]?\s*([a-zA-Z0-9]{6,12})", txt, re.I)
-                route_m = re.search(r"route\s*[:\-#]?\s*([^\n]+)", txt, re.I)
-                date_m = re.search(r"(?:travel\s*date|date\s*&\s*time|date)\s*[:\-#]?\s*([^\n]+)", txt, re.I)
-                carrier_m = re.search(r"(?:provider|service)\s*[:\-#]?\s*([^\n]+)", txt, re.I)
-                if pnr_m:
-                    return {
-                        "pnr": pnr_m.group(1).strip(),
-                        "route": route_m.group(1).strip() if route_m else None,
-                        "datetime_str": date_m.group(1).strip() if date_m else None,
-                        "carrier": carrier_m.group(1).strip() if carrier_m else "Travel Provider",
-                        "summary": txt[:200]
-                    }
+        import db
+        with db.engine.connect() as conn:
+            row = conn.execute(
+                db.text("""
+                    SELECT structured FROM memories 
+                    WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid)
+                      AND source_type IN ('ticket', 'booking', 'travel')
+                      AND status = 'active'
+                    ORDER BY id DESC LIMIT 1
+                """),
+                {"cid": chat_id}
+            ).mappings().first()
+            if row and row.get("structured") and isinstance(row["structured"], dict) and row["structured"].get("pnr"):
+                return row["structured"]
     except Exception:
         pass
 

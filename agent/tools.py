@@ -241,6 +241,7 @@ class DeleteReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder or meeting to delete.")
     reminder_id: Optional[int] = Field(None, description="The exact database ID of the reminder to delete if known.")
     target_ids: Optional[List[int]] = Field(None, description="List of exact database IDs of reminders to delete.")
+    scope: Optional[str] = Field("all", description="Scope for recurring items: 'this' cancels only this occurrence; 'all' cancels all recurring occurrences.")
     request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting deletion.")
 
 class RestoreReminderArgs(BaseModel):
@@ -2773,7 +2774,8 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         "next_options": ["list_reminders"]
                     }
 
-                deleted = db.soft_delete_reminders(chat_id, ids_to_act)
+                scope_arg = arguments.get("scope", "all")
+                deleted = db.soft_delete_reminders(chat_id, ids_to_act, scope=scope_arg)
                 if deleted:
                     try:
                         from api_v1 import _invalidate_all_app_caches
@@ -3265,25 +3267,20 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             else:
                 channel_str = "Telegram reminder mein"
 
-            if recurrence == "daily":
-                if rolled_to_tomorrow:
-                    msg = f"Done bhai! Aaj ka {time_str} ka samay nikal chuka hai, isliye aapka Daily '{clean_title}' kal ({date_str}) subah {time_str} se rozana ke liye schedule kar diya hai ({channel_str}). ✅"
-                else:
-                    msg = f"Done bhai! '{clean_title}' ka Daily schedule rozana {time_str} ke liye set kar diya hai ({channel_str}). ✅"
-            else:
-                msg = f"Done bhai! '{clean_title}' ka schedule {date_str} ko {time_str} ke liye {channel_str} sync kar diya hai. ✅"
-
             return {
                 "status": "success",
                 "action": "schedule_event",
-                "title": clean_title,
-                "due_date": d_val.isoformat(),
-                "due_time": t_val.strftime("%H:%M"),
-                "recurrence": recurrence,
-                "rolled_to_tomorrow": rolled_to_tomorrow,
-                "synced_calendar": synced_cal,
-                "synced_telegram": synced_tg,
-                "message": msg
+                "tool_name": "schedule_event",
+                "facts": {
+                    "title": clean_title,
+                    "due_date": d_val.isoformat(),
+                    "due_time": t_val.strftime("%H:%M"),
+                    "recurrence": recurrence,
+                    "rolled_to_tomorrow": rolled_to_tomorrow,
+                    "synced_calendar": synced_cal,
+                    "synced_telegram": synced_tg
+                },
+                "next_options": ["get_schedule", "create_reminder"]
             }
 
         elif tool_name == "create_meeting":

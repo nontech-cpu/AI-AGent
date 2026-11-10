@@ -14,35 +14,120 @@ I18N: Dict[str, Dict[str, str]] = {
     "confirm_meeting": {
         "english": (
             "Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
-            "Title: {title}\n"
-            "Time: {time}\n"
-            "Duration: {duration} minutes\n"
-            "Attendees: {attendees}\n\n"
+            "• Calendar: {calendar_name}\n"
+            "• Title: {title}\n"
+            "• Date: {date_weekday}\n"
+            "• Time: {time}\n"
+            "• Duration: {duration} minutes\n"
+            "• Recurrence: {recurrence}\n"
+            "• Attendees: {attendees}\n\n"
             "Reply yes to create or no to cancel."
         ),
         "hinglish": (
             "Please confirm — create this Google Calendar meeting with a Google Meet link?\n"
-            "Title: {title}\n"
-            "Time: {time} (India time)\n"
-            "Duration: {duration} minutes\n"
-            "Attendees: {attendees}\n\n"
+            "• Calendar: {calendar_name}\n"
+            "• Title: {title}\n"
+            "• Date: {date_weekday}\n"
+            "• Time: {time}\n"
+            "• Duration: {duration} minutes\n"
+            "• Recurrence: {recurrence}\n"
+            "• Attendees: {attendees}\n\n"
             "Reply yes to create or no to cancel."
+        ),
+        "hindi": (
+            "कृपया पुष्टि करें — क्या यह गूगल मीट मीटिंग गूगल कैलेंडर में बनाई जाए?\n"
+            "• कैलेंडर: {calendar_name}\n"
+            "• शीर्षक: {title}\n"
+            "• दिनांक: {date_weekday}\n"
+            "• समय: {time}\n"
+            "• अवधि: {duration} मिनट\n"
+            "• पुनरावृत्ति: {recurrence}\n"
+            "• प्रतिभागी: {attendees}\n\n"
+            "स्वीकार करने के लिए yes या रद्द करने के लिए no लिखें।"
         )
     },
     "confirm_calendar_event": {
         "english": (
             "Please confirm — add this event to your Google Calendar?\n"
-            "Title: {title}\n"
-            "Time: {time}\n"
-            "Duration: {duration} minutes\n\n"
+            "• Calendar: {calendar_name}\n"
+            "• Title: {title}\n"
+            "• Date: {date_weekday}\n"
+            "• Time: {time}\n"
+            "• Duration: {duration} minutes\n"
+            "• Recurrence: {recurrence}\n\n"
             "Reply yes to create or no to cancel."
         ),
         "hinglish": (
             "Please confirm — add this event to your Google Calendar?\n"
-            "Title: {title}\n"
-            "Time: {time} (India time)\n"
-            "Duration: {duration} minutes\n\n"
+            "• Calendar: {calendar_name}\n"
+            "• Title: {title}\n"
+            "• Date: {date_weekday}\n"
+            "• Time: {time}\n"
+            "• Duration: {duration} minutes\n"
+            "• Recurrence: {recurrence}\n\n"
             "Reply yes to create or no to cancel."
+        ),
+        "hindi": (
+            "कृपया पुष्टि करें — क्या यह इवेंट आपके गूगल कैलेंडर में जोड़ा जाए?\n"
+            "• कैलेंडर: {calendar_name}\n"
+            "• शीर्षक: {title}\n"
+            "• दिनांक: {date_weekday}\n"
+            "• समय: {time}\n"
+            "• अवधि: {duration} मिनट\n"
+            "• पुनरावृत्ति: {recurrence}\n\n"
+            "स्वीकार करने के लिए yes या रद्द करने के लिए no लिखें।"
+        )
+    },
+    "confirm_delete_reminder": {
+        "english": (
+            "Please confirm deletion of the following reminder(s):\n\n"
+            "{items_str}\n\n"
+            "Reply 'confirm' to delete or 'cancel' to keep them."
+        ),
+        "hinglish": (
+            "Kripya confirmation dein — kya aap ye reminder(s) delete karna chahte hain?\n\n"
+            "{items_str}\n\n"
+            "Reply karein 'confirm' delete karne ke liye ya 'cancel' cancel karne ke liye."
+        )
+    },
+    "confirm_delete_meeting": {
+        "english": (
+            "Please confirm — delete '{title}' from your Google Calendar?\n\n"
+            "Reply yes to delete or no to cancel."
+        ),
+        "hinglish": (
+            "Please confirm — kya '{title}' ko Google Calendar se delete karna hai?\n\n"
+            "Reply karein yes delete karne ke liye ya no cancel karne ke liye."
+        )
+    },
+    "confirm_send_email": {
+        "english": (
+            "Please confirm 📤 send this email from your connected Gmail?\n\n"
+            "• **To:** {to}\n"
+            "• **Subject:** {subject}\n"
+            "• **Body:** {body}\n\n"
+            "Reply 'yes' to send, or let me know what changes to make."
+        ),
+        "hinglish": (
+            "Please confirm 📤 kya ye email aapke Gmail se send kar diya jaye?\n\n"
+            "• **To:** {to}\n"
+            "• **Subject:** {subject}\n"
+            "• **Body:** {body}\n\n"
+            "Send karne ke liye 'yes' kahein, ya batayein kya badlav karna hai."
+        )
+    },
+    "confirm_upload_file": {
+        "english": (
+            "Please confirm — upload this file to Google Drive?\n\n"
+            "📄 **Filename:** {filename}\n"
+            "📝 **Content:** {content_snippet}\n\n"
+            "Reply yes to upload or no to cancel."
+        ),
+        "hinglish": (
+            "Please confirm — kya ye file Google Drive par upload karni hai?\n\n"
+            "📄 **Filename:** {filename}\n"
+            "📝 **Content:** {content_snippet}\n\n"
+            "Upload karne ke liye yes ya cancel karne ke liye no kahein."
         )
     }
 }

@@ -207,15 +207,12 @@ def cancel_pending_action(chat_id: int) -> Optional[Dict[str, Any]]:
     return pending
 
 
-# Deterministic structural commands (Telegram callback buttons & slash commands & explicit affirmative/negative)
+# Deterministic structural commands (Telegram callback buttons & slash commands & explicit system actions)
 STRUCTURAL_CONFIRM_COMMANDS = {
-    "confirm", "action_confirm", "cb:confirm", "/confirm", "yes", "haan",
-    "kar do", "kardo", "bilkul", "create it", "haanji", "sure", "proceed",
-    "send", "send it", "bhej do", "haan kar do", "haan kardo", "haan bilkul", "bilkul haan"
+    "confirm", "action_confirm", "cb:confirm", "/confirm", "yes"
 }
 STRUCTURAL_CANCEL_COMMANDS = {
-    "cancel", "action_cancel", "cb:cancel", "/cancel", "no", "mat karo",
-    "rehne do", "nahi", "galat", "stop", "abort", "drop it", "dont"
+    "cancel", "action_cancel", "cb:cancel", "/cancel", "no"
 }
 
 
@@ -240,7 +237,7 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
         return ("cancel", None)
 
     # 2. Structural Question Detection
-    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "batao", "kya", "before", "pehle")):
+    if "?" in clean:
         return ("cross_question", None)
 
     # 3. Time update for meetings (structural ISO/time parsing)
@@ -297,7 +294,7 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
     if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
 
-    if "?" in clean or any(q in low for q in ("schedule", "free time", "meeting", "batao", "kya", "before", "pehle")):
+    if "?" in clean:
         return ("cross_question", None)
 
     kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")

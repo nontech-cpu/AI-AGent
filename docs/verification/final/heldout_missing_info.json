@@ -1,0 +1,747 @@
+[
+  {
+    "case_id": "cal_01",
+    "tool": "schedule_event",
+    "language": "en",
+    "user_text": "Schedule a meeting for tomorrow at 3pm",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "memory",
+      "reminders",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cal_02",
+    "tool": "schedule_event",
+    "language": "hi",
+    "user_text": "Kal Dr. Sharma se milne ka appointment fix kar do",
+    "passed": true,
+    "missing_fields": [
+      "start_iso"
+    ],
+    "can_be_found_in": [
+      "calendar",
+      "reminders",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cal_03",
+    "tool": "schedule_event",
+    "language": "hinglish",
+    "user_text": "Bhai kal meeting schedule kar de",
+    "passed": true,
+    "missing_fields": [
+      "start_iso"
+    ],
+    "can_be_found_in": [
+      "calendar",
+      "reminders",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cal_04",
+    "tool": "schedule_event",
+    "language": "en",
+    "user_text": "Put an event on my calendar at 10 AM",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "memory",
+      "reminders",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cal_05",
+    "tool": "schedule_event",
+    "language": "hinglish",
+    "user_text": "Calendar pe daal do 5 baje",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "memory",
+      "reminders",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "rem_01",
+    "tool": "create_reminder",
+    "language": "en",
+    "user_text": "Remind me tomorrow",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "memory",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "rem_02",
+    "tool": "create_reminder",
+    "language": "hi",
+    "user_text": "Dawa lene ka reminder laga do",
+    "passed": true,
+    "missing_fields": [
+      "due_date",
+      "due_time"
+    ],
+    "can_be_found_in": [
+      "calendar",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "rem_03",
+    "tool": "create_reminder",
+    "language": "hinglish",
+    "user_text": "Bhai reminder daal dena",
+    "passed": true,
+    "missing_fields": [
+      "title",
+      "due_date"
+    ],
+    "can_be_found_in": [
+      "calendar",
+      "memory",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "rem_04",
+    "tool": "create_reminder",
+    "language": "en",
+    "user_text": "Remind me to call John",
+    "passed": true,
+    "missing_fields": [
+      "due_date",
+      "due_time"
+    ],
+    "can_be_found_in": [
+      "calendar",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "rem_05",
+    "tool": "create_reminder",
+    "language": "hinglish",
+    "user_text": "Kal subah 8 baje yaad dila dena",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "memory",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "em_01",
+    "tool": "send_email",
+    "language": "en",
+    "user_text": "Send an email about the project status",
+    "passed": true,
+    "missing_fields": [
+      "to"
+    ],
+    "can_be_found_in": [
+      "contacts",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "em_02",
+    "tool": "send_email",
+    "language": "hi",
+    "user_text": "Rohan ko email bhej do",
+    "passed": true,
+    "missing_fields": [
+      "subject",
+      "body"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "em_03",
+    "tool": "send_email",
+    "language": "hinglish",
+    "user_text": "Boss ko mail kar do ki main late hounga",
+    "passed": true,
+    "missing_fields": [
+      "to"
+    ],
+    "can_be_found_in": [
+      "contacts",
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "em_04",
+    "tool": "send_email",
+    "language": "en",
+    "user_text": "Email test@example.com",
+    "passed": true,
+    "missing_fields": [
+      "subject",
+      "body"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "em_05",
+    "tool": "send_email",
+    "language": "hinglish",
+    "user_text": "Send email to team@peculiar.ai with report",
+    "passed": true,
+    "missing_fields": [
+      "body"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "notion_01",
+    "tool": "create_notion_page",
+    "language": "en",
+    "user_text": "Add a task to Notion",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "notion_02",
+    "tool": "create_notion_page",
+    "language": "hi",
+    "user_text": "Notion me task daal do",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "notion_03",
+    "tool": "create_notion_page",
+    "language": "hinglish",
+    "user_text": "Notion pe nayi entry banao",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "notion_04",
+    "tool": "create_notion_page",
+    "language": "en",
+    "user_text": "Create Notion item with high priority",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "notion_05",
+    "tool": "create_notion_page",
+    "language": "hinglish",
+    "user_text": "Notion list update kar de",
+    "passed": true,
+    "missing_fields": [
+      "title"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "gh_01",
+    "tool": "update_github_file",
+    "language": "en",
+    "user_text": "Update README in repo",
+    "passed": true,
+    "missing_fields": [
+      "repo"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "gh_02",
+    "tool": "update_github_file",
+    "language": "hi",
+    "user_text": "GitHub repo frontend me file update karo",
+    "passed": true,
+    "missing_fields": [
+      "content"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "gh_03",
+    "tool": "update_github_file",
+    "language": "hinglish",
+    "user_text": "GitHub pe file save kar do",
+    "passed": true,
+    "missing_fields": [
+      "repo",
+      "path"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "gh_04",
+    "tool": "update_github_file",
+    "language": "en",
+    "user_text": "Commit changes to peculiar-ai/backend",
+    "passed": true,
+    "missing_fields": [
+      "path"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "gh_05",
+    "tool": "update_github_file",
+    "language": "hinglish",
+    "user_text": "GitHub update kar do with content fix",
+    "passed": true,
+    "missing_fields": [
+      "repo",
+      "path"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "plc_01",
+    "tool": "find_nearby_places",
+    "language": "en",
+    "user_text": "Find places near me",
+    "passed": true,
+    "missing_fields": [
+      "query"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "plc_02",
+    "tool": "find_nearby_places",
+    "language": "hi",
+    "user_text": "Paas ke ache sthan dikhao",
+    "passed": true,
+    "missing_fields": [
+      "query"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "plc_03",
+    "tool": "find_nearby_places",
+    "language": "hinglish",
+    "user_text": "Aas paas kya badiya h",
+    "passed": true,
+    "missing_fields": [
+      "query"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "plc_04",
+    "tool": "find_nearby_places",
+    "language": "en",
+    "user_text": "Locate nearest spots",
+    "passed": true,
+    "missing_fields": [
+      "query"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "plc_05",
+    "tool": "find_nearby_places",
+    "language": "hinglish",
+    "user_text": "Best cafes check karo",
+    "passed": true,
+    "missing_fields": [
+      "query"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "note_01",
+    "tool": "save_note_or_fact",
+    "language": "en",
+    "user_text": "Save a note under Personal",
+    "passed": true,
+    "missing_fields": [
+      "text"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "note_02",
+    "tool": "save_note_or_fact",
+    "language": "hi",
+    "user_text": "Ek note save kar lo",
+    "passed": true,
+    "missing_fields": [
+      "text"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "note_03",
+    "tool": "save_note_or_fact",
+    "language": "hinglish",
+    "user_text": "Notes me add kar lo",
+    "passed": true,
+    "missing_fields": [
+      "text"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "note_04",
+    "tool": "save_note_or_fact",
+    "language": "en",
+    "user_text": "Write down a note",
+    "passed": true,
+    "missing_fields": [
+      "text"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "note_05",
+    "tool": "save_note_or_fact",
+    "language": "hinglish",
+    "user_text": "Note banao",
+    "passed": true,
+    "missing_fields": [
+      "text"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cnt_01",
+    "tool": "save_contact",
+    "language": "en",
+    "user_text": "Save phone number 9876543210",
+    "passed": true,
+    "missing_fields": [
+      "name"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cnt_02",
+    "tool": "save_contact",
+    "language": "hi",
+    "user_text": "Naya sampark jodo email test@abc.com",
+    "passed": true,
+    "missing_fields": [
+      "name"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cnt_03",
+    "tool": "save_contact",
+    "language": "hinglish",
+    "user_text": "Contact save karo number 9998887776",
+    "passed": true,
+    "missing_fields": [
+      "name"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cnt_04",
+    "tool": "save_contact",
+    "language": "en",
+    "user_text": "Add new contact from Google",
+    "passed": true,
+    "missing_fields": [
+      "name"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  },
+  {
+    "case_id": "cnt_05",
+    "tool": "save_contact",
+    "language": "hinglish",
+    "user_text": "Contact save kar de",
+    "passed": true,
+    "missing_fields": [
+      "name"
+    ],
+    "can_be_found_in": [
+      "user_message"
+    ],
+    "next_options": [
+      "ask_user",
+      "lookup_context"
+    ],
+    "zero_side_effects_verified": true
+  }
+]
