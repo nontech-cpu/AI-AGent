@@ -146,7 +146,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "hindi": "मैंने कोशिश की लेकिन कार्रवाई पूरी नहीं हो सकी। कृपया पुनः प्रयास करें।"
     },
     "unverified_information": {
-        "english": "I don't have verified information about this.",
+        "english": "Mere paas iski verified information nahi hai.",
         "hinglish": "Mere paas iski verified information nahi hai.",
         "hindi": "मेरे पास इसकी सत्यापित जानकारी नहीं है।"
     }
