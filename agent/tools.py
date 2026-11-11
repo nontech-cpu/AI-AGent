@@ -5007,12 +5007,15 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
 
     activated_tools = set()
 
-    # 1. Multi-turn context hint activation for direct follow-ups or confirmations
-    if ctx_clean and len(low.split()) <= 3:
+    # 1. Multi-turn active context & continuity activation:
+    # If the active context indicates an ongoing session with a connector (Notion, GitHub, Email, etc.),
+    # retain that domain's tool group in the working set for follow-up turns.
+    if ctx_clean:
         ctx_lower = ctx_clean.lower()
         for g_name, g_info in TOOL_GROUPS.items():
             parts = g_name.split("_")
-            if any(p in ctx_lower for p in parts):
+            domain_key = parts[1] if len(parts) > 1 else parts[0]
+            if domain_key in ctx_lower:
                 activated_tools.update(g_info["tools"])
 
     # 2. Semantic Embedding Similarity Routing

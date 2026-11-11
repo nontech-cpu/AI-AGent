@@ -373,7 +373,13 @@ class GroqProvider(BaseLLMProvider):
     Ultra-low latency fallback tier with Llama / Qwen / Mistral architectures.
     """
 
-    DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    DEFAULT_MODELS = [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant"
+    ]
 
     def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None):
         super().__init__("Groq")
@@ -1023,6 +1029,11 @@ async def chat(
                         if status_code and status_code in (500, 502, 503, 504):
                             logger.warning(f"{prov.name} server error {status_code}: fast-failing provider immediately to next provider.")
                             skip_current_provider = True
+                            break
+
+                        # Instant fast-skip on 404 (model not found / no access on organization)
+                        if status_code and status_code == 404:
+                            logger.warning(f"{prov.name} model {m_candidate} returned 404 (not accessible). Fast-skipping to next candidate model.")
                             break
 
                         # If rate limited or server error, apply backoff and retry same provider once

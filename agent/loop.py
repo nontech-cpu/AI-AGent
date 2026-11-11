@@ -70,8 +70,8 @@ GROUNDING & TRUTH CONTRACT:
      Clearly inform the user: "Bhai, ye ticket purani hai (travel date nikal chuki hai), beete hue time ke liye calendar event ya reminder create nahi ho sakta!"
 12. NOTION VS REMINDERS / SCHEDULE CONTRACT:
    - ONLY call `create_notion_page` when the user EXPLICITLY asks to save something in Notion (e.g. 'notion me daal do', 'notion page banao', 'save to notion') or explicitly asks for detailed documentation / written notes in Notion.
-   - When the user asks to add content, format code into code blocks, or update an existing Notion page (e.g. 'python code code block me add karna tha', 'is page me ye add karo'):
-     NEVER claim or apologize that you cannot edit or update existing pages! You HAVE the tool `update_notion_page(content=..., page_title_or_id=...)`!
+   - When the user asks to add content, format code into code blocks, or update an existing Notion page (e.g. 'python code code block me add karna tha', 'is page me ye add karo', 'isi page me code block add kar do'):
+     ALWAYS call `update_notion_page` directly! NEVER claim or apologize that you cannot edit or update existing pages! You HAVE the tool `update_notion_page(content=..., page_title_or_id=...)`!
      Format code blocks using triple backticks (```python ... ```) — the system converts them into native Notion syntax-highlighted code blocks!
    - When the user asks to delete, trash, or remove pages from Notion (e.g. 'dlete all the fast api series', 'notion se ye page delete kardo', 'trash notion page'):
      ALWAYS call the official tool `delete_notion_page(page_id_or_title=...)`!
@@ -1123,7 +1123,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         default_fb_msg = "Hallo! Wie kann ich dir heute weiterhelfen? Möchtest du Termine planen oder deine Aufgaben besprechen?"
     elif active_user_lang == "english":
         fb_sys = "You are PeculiarAI. You MUST reply completely in natural, professional ENGLISH. Do not use Hindi words."
-        default_fb_msg = "Hello! How can I assist you today? Would you like to check your schedule or set a reminder?"
+        default_fb_msg = "I am experiencing momentary high server traffic right now. Please wait a few seconds and try again."
     else:
         fb_sys = "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish."
         default_fb_msg = "Bhai, AI server par momentary peak traffic aa gaya hai. Kripya 2-3 second ruk kar ek baar dobara message bhein."
