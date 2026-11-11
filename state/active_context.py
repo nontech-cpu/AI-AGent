@@ -351,14 +351,23 @@ _EPISODIC_MEMORY_STORE: Dict[int, Dict[str, Any]] = {}
 def get_episodic_context(chat_id: int) -> Dict[str, Any]:
     """Retrieves long-term episodic working memory (locations, recent tasks, ongoing activities)."""
     if chat_id not in _EPISODIC_MEMORY_STORE:
+        known_loc = None
+        home_city = None
+        try:
+            import db
+            loc_state = db.get_user_location_state(chat_id)
+            if loc_state and loc_state.get("city"):
+                home_city = loc_state["city"]
+                area = loc_state.get("area") or ""
+                known_loc = f"{area}, {home_city}".strip(", ") if area else home_city
+        except Exception:
+            pass
+
         _EPISODIC_MEMORY_STORE[chat_id] = {
-            "known_location": "Sardarpura C Road, Jodhpur",
-            "location_context": "Blinkit grocery delivery address",
-            "home_city": "Jodhpur",
-            "recent_episodes": [
-                {"topic": "delivery", "summary": "Blinkit grocery order placed for Sardarpura C Road, Jodhpur"},
-                {"topic": "hotel", "summary": "Jaipur hotel booking query (status: unbooked, no charges incurred)"}
-            ],
+            "known_location": known_loc,
+            "location_context": "Verified user profile" if known_loc else None,
+            "home_city": home_city,
+            "recent_episodes": [],
             "last_active_topic": None,
             "updated_at": timeutil.now(IST).isoformat()
         }
@@ -391,20 +400,19 @@ def format_episodic_context(chat_id: int) -> str:
     """Formats episodic context into a high-density, token-efficient prompt string."""
     ctx = get_episodic_context(chat_id)
     lines = []
-    loc = ctx.get("known_location") or "Sardarpura C Road, Jodhpur"
-    loc_ctx = ctx.get("location_context") or "Recent Blinkit delivery address"
-    lines.append(f"- User Location: {loc} (Source: {loc_ctx})")
+    loc = ctx.get("known_location")
+    if loc:
+        loc_ctx = ctx.get("location_context") or "Verified user profile"
+        lines.append(f"- User Location: {loc} (Source: {loc_ctx})")
+        lines.append(
+            f"- Context Linking Rule: When user mentions 'jahan main rehta hoon', 'mere aas-paas', or asks for local places without specifying city, "
+            f"proactively connect it to this verified location ({loc})."
+        )
 
     episodes = ctx.get("recent_episodes", [])
     if episodes:
         ep_strs = [f"  * {e['summary']}" for e in episodes[-3:]]
         lines.append("- Recent Cross-Session Context:\n" + "\n".join(ep_strs))
-
-    lines.append(
-        "- Context Linking Rule: When user mentions 'jahan main rehta hoon', 'mere aas-paas', or asks for local movies/theatres without specifying city, "
-        "proactively connect it to this known location (e.g. 'Jodhpur, Sardarpura C Road ke aas-paas dekhun? Abhi Blinkit ke liye tumne wahi area diya tha.') "
-        "or fetch showtimes directly for Jodhpur/Sardarpura. Never ask 'Aap kahan rehte hain?'!"
-    )
     return "\n".join(lines)
 
 

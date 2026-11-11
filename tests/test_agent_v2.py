@@ -4,6 +4,7 @@ from unittest.mock import patch, AsyncMock
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import core.timeutil as timeutil
 from agent.tools import execute_tool, TOOL_DEFINITIONS
 from agent.loop import run_agent_turn
 
@@ -80,17 +81,20 @@ async def test_tool_create_meeting_two_phase_confirmation():
 
     with patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "test@gmail.com")), \
          patch("main.detect_meeting_conflicts", return_value=([], [])):
+        timeutil.set_frozen_clock(datetime(2026, 10, 26, 12, 0, tzinfo=IST))
+        try:
+            res = await execute_tool(chat_id, "create_meeting", {
+                "title": "Meeting",
+                "start_iso": start_iso,
+                "duration_minutes": 30
+            })
 
-        res = await execute_tool(chat_id, "create_meeting", {
-            "title": "Meeting",
-            "start_iso": start_iso,
-            "duration_minutes": 30
-        })
-
-        # Must return needs_confirmation, NEVER directly claim created without user confirm
-        assert res["status"] == "needs_confirmation"
-        assert res["action"] == "create_meeting"
-        assert res["start_iso"] == start_iso
+            # Must return needs_confirmation, NEVER directly claim created without user confirm
+            assert res["status"] == "needs_confirmation"
+            assert res["action"] == "create_meeting"
+            assert res["start_iso"] == start_iso
+        finally:
+            timeutil.set_frozen_clock(None)
 
 @pytest.mark.asyncio
 async def test_agent_loop_executes_tool_and_answers():

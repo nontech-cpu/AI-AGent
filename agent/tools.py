@@ -1631,17 +1631,8 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             quote = arguments.get("request_quote")
             if not quote and user_context and user_context.get("user_text"):
                 u_text = str(user_context["user_text"]).strip()
-                low_u = u_text.lower()
-                status_patterns = (
-                    r"what about", r"kya (?:hua|laga tha|set tha|hai)", r"reminder ka kya hua",
-                    r"show (?:my|the)", r"dikhao", r"list ", r"check (?:karo|kar|my|the)"
-                )
-                action_patterns = (
-                    r"\b(?:set (?:a|an|new|ek|kr|kar|up|reminder)|create|remind me|delete|cancel|banao|laga do|lga do|hata do|shift|update|move)\b",
-                    r"\b(?:yes|haan|ha|sure|ok|proceed|confirm|kardo|krdo)\b",
-                    r"\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)|everyday|daily|tomorrow|kal)\b"
-                )
-                is_status_inquiry = any(re.search(p, low_u) for p in status_patterns) and not any(re.search(a, low_u) for a in action_patterns)
+                # Status inquiries and informational questions must never auto-synthesize a write quote
+                is_status_inquiry = "?" in u_text or any(w in u_text.lower().split() for w in ("kya", "what", "show", "check", "list", "dikhao", "status"))
                 if not is_status_inquiry:
                     quote = u_text
             if not validate_request_quote(chat_id, quote, user_context):
@@ -5036,6 +5027,9 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
             parts = g_name.split("_")
             domain_key = parts[1] if len(parts) > 1 else parts[0]
             if domain_key in ctx_lower:
+                # Never offer Notion write tools on casual trip/schedule/reminder queries unless user mentions Notion
+                if domain_key == "notion" and not any(w in low.lower() for w in ("notion", "note", "notes", "doc", "document", "page", "write", "likh")):
+                    continue
                 activated_tools.update(g_info["tools"])
 
     # 2. Semantic Embedding Similarity Routing
@@ -5065,8 +5059,12 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
                 activated_tools.update(TOOL_GROUPS[g_name]["tools"])
     else:
         # Safe default when embeddings are unavailable (offline test suite):
-        # Return core + all domain tools so test assertions with FakeLLM never fail
-        domain_tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in CORE_TOOL_NAMES]
+        is_casual_trip = any(w in low.lower() for w in ("trip", "tour", "chalte hain", "dost k sth", "dost ke sath", "ghoomne")) and not any(w in low.lower() for w in ("notion", "note", "doc", "page", "write", "likh"))
+        domain_tools = [
+            t for t in TOOL_DEFINITIONS
+            if t["function"]["name"] not in CORE_TOOL_NAMES and
+            not (is_casual_trip and t["function"]["name"] in ("create_notion_page", "update_notion_page"))
+        ]
         return core_tools + domain_tools
 
     extra_tools = [

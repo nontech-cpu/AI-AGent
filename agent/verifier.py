@@ -11,6 +11,8 @@ import json
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 
+from connectors.guardrails import is_cancellation_or_decline
+
 logger = logging.getLogger("peculiar_verifier")
 
 MEET_URL_PATTERN = re.compile(r'https?://meet\.google\.com/[a-z0-9-]+', re.IGNORECASE)
@@ -176,7 +178,7 @@ def deterministic_verify(
     low_rep = draft_reply.lower()
 
     is_user_inquiry = bool(user_query and "?" in user_query)
-    is_cancellation = any(w in (user_query or "").lower() for w in ("rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye", "never mind", "drop it", "mat karo")) or any(w in low_rep for w in ("cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"))
+    is_cancellation = is_cancellation_or_decline(user_query, draft_reply)
     if not has_action_tool_success and not has_pending_confirm and not is_user_inquiry and not is_cancellation:
         # Strip question clauses so questions like "Aaj Tuesday hai — bhej diya?" are not flagged as completion claims
         clean_rep = re.sub(r'[^.!?\n]*\?', '', low_rep)
@@ -326,7 +328,7 @@ async def audit_claims_with_llm(
 
     # Fallback heuristic when LLM provider is offline or unreachable in unit tests:
     low = draft_reply.lower()
-    is_cancellation = any(w in (user_query or "").lower() for w in ("rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye", "never mind", "drop it", "mat karo")) or any(w in low for w in ("cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"))
+    is_cancellation = is_cancellation_or_decline(user_query, draft_reply)
     has_action_phrase = False if is_cancellation else any(w in low for w in (
         "kar diya", "bhej diya", "delete kar diya", "set kar diya", "laga diya",
         "save kar diya", "update kar diya", "shift kar diya", "successfully created", "successfully sent",
@@ -434,7 +436,7 @@ async def verify_and_ground_reply(
                 return False, revised, violations
 
             # If user declined or cancelled, or tool reported error, NEVER overwrite with canned text:
-            is_declined = any(w in (user_query or "").lower() for w in ("rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye", "never mind", "drop it", "mat karo")) or any(w in draft_reply.lower() for w in ("cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"))
+            is_declined = is_cancellation_or_decline(user_query, draft_reply)
             has_tool_error = any(isinstance(tr, dict) and tr.get("status") in ("error", "failed", "conflict_detected") for tr in tool_results)
             if is_declined or has_tool_error:
                 return True, sanitize_regional_scripts(draft_reply), []

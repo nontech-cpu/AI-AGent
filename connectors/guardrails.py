@@ -59,6 +59,24 @@ def safe_error_reply(error_type: str, connector_name: str = "Service", instructi
         lang=user_lang
     )
 
+def is_cancellation_or_decline(user_query: str = "", reply_text: str = "") -> bool:
+    """
+    Unified check for whether the user query declined/cancelled an action,
+    or the assistant reply is acknowledging cancellation/dismissal.
+    """
+    uq_low = (user_query or "").lower()
+    rep_low = (reply_text or "").lower()
+    user_declined = any(w in uq_low for w in (
+        "rhne de", "rehne de", "cancel", "no", "chhod do", "nahi chahiye",
+        "never mind", "drop it", "mat karo", "rehne do", "chhoro", "drop"
+    ))
+    reply_dismissed = any(w in rep_low for w in (
+        "cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha",
+        "dismissed", "dropped", "rehne", "rhne"
+    ))
+    return user_declined or reply_dismissed
+
+
 def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]], user_query: str = "") -> Tuple[bool, Optional[str]]:
     """
     Blocks claims of successful action execution unless confirmed by a real tool result with an ID or URL.
@@ -82,8 +100,7 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
         return True, None
 
     # Discontinuation, cancellations, declinations, or negative acknowledgements are conversational dismissals, not action claims
-    is_cancellation = any(w in (user_query or "").lower() for w in ["rhne de", "rehne de", "cancel", "no", "chhod do", "mat karo", "drop", "never mind", "nahi chahiye"]) or any(w in low for w in ["cancel", "cancelled", "cancelling", "nahi kiya", "nahi kar raha", "dismissed", "dropped", "rehne", "rhne"])
-    if is_cancellation:
+    if is_cancellation_or_decline(user_query, draft_reply):
         return True, None
 
     has_completion_claim = any(pat.search(draft_reply) for pat in ACTION_COMPLETION_PATTERNS)

@@ -761,7 +761,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         update_active_context(chat_id, connector="Google Calendar", topic=m_title, url=m_url)
                     elif fn_name == "get_movie_showtimes":
                         m_list = [m.get("title", "") for m in tool_result.get("movies", [])]
-                        update_active_context(chat_id, connector="BookMyShow", topic="movies in Jodhpur", objects=m_list)
+                        m_city = args_dict.get("city") or tool_result.get("city") or "nearby"
+                        update_active_context(chat_id, connector="BookMyShow", topic=f"movies in {m_city}", objects=m_list)
                     elif fn_name == "send_email":
                         to_email = args_dict.get("to")
                         update_active_context(chat_id, connector="Gmail", topic=f"email to {to_email}" if to_email else "email")
@@ -1015,22 +1016,16 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 raw_m = str(last_res.get("message", ""))
                 # Strict safeguard: Never leak raw search engine / crawler dump text to Telegram chat
                 if "live web search result" in raw_m.lower() or "webpage content from" in raw_m.lower() or "places in " in raw_m.lower() or "results" in last_res:
-                    low_u = user_text.lower()
-                    if "zara" in low_u and "jodhpur" in low_u:
-                        final_reply = "Bhai, Jodhpur mein Zara ka koi physical showroom nahi hai. Nearest store Jaipur (World Trade Park) mein hai, ya phir aap online order kar sakte ho."
-                    elif any(w in low_u for w in ("mall", "malls")) and "jodhpur" in low_u:
-                        final_reply = "Jodhpur ke prominent malls:\n• **Ashapurna Mall** (Circuit House Road)\n• **Reliance Smart Mall** (Bhadwasia)\n• **Ansal Royal Plaza** (High Court Road)"
+                    clean_items = []
+                    for res_item in last_res.get("results", [])[:3]:
+                        t_title = res_item.get("title") or ""
+                        t_snip = res_item.get("snippet") or ""
+                        if t_title and t_snip:
+                            clean_items.append(f"• **{t_title}**: {t_snip}")
+                    if clean_items:
+                        final_reply = "\n".join(clean_items)
                     else:
-                        clean_items = []
-                        for res_item in last_res.get("results", [])[:3]:
-                            t_title = res_item.get("title") or ""
-                            t_snip = res_item.get("snippet") or ""
-                            if t_title and t_snip:
-                                clean_items.append(f"• **{t_title}**: {t_snip}")
-                        if clean_items:
-                            final_reply = "\n".join(clean_items)
-                        else:
-                            final_reply = "Maine check kiya, par iski specific jaankari nahi mili."
+                        final_reply = last_res.get("message") or "Maine check kiya, par iski specific jaankari nahi mili."
                 else:
                     final_reply = last_res["message"]
             elif isinstance(last_res, dict) and ("github" in last_res or "notion" in last_res or "google" in last_res):

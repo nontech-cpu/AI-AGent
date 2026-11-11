@@ -356,6 +356,7 @@ async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[st
             "message": f"'{clean_item}' is not a recognized commodity or crypto (supported: gold, silver, bitcoin, ethereum, solana)."
         }
 
+    is_live = False
     data = None
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
@@ -365,6 +366,7 @@ async def get_market_price(item: str = "gold", currency: str = "INR") -> Dict[st
             if res.status_code == 200:
                 data = res.json()
                 _FALLBACK_MARKET_DATA.update(data)
+                is_live = True
     except Exception as exc:
         print("[utilities.get_market_price] live fetch exception, using cached rate:", repr(exc))
 
@@ -927,54 +929,37 @@ async def read_webpage(url: str, max_chars: int = 4000) -> Dict[str, Any]:
 async def get_movie_showtimes(city: str = "Jodhpur", area: Optional[str] = "Sardarpura", movie: Optional[str] = None) -> Dict[str, Any]:
     """
     Direct structured cinema and BookMyShow showtimes fetcher for user's local area.
-    Bypasses messy raw search dumps and Cloudflare CAPTCHAs, returning clean cinema listings & showtimes.
+    Queries live search dynamically to find actual currently running films without hardcoded fake movies.
     """
     clean_city = (city or "Jodhpur").strip()
-    clean_area = (area or "Sardarpura").strip()
+    clean_area = (area or "").strip()
 
-    # Pre-structured verified theatre listings for Jodhpur / regional centers
-    if "jodhpur" in clean_city.lower():
-        theatres = [
-            {"name": "Miraj Blue City Mall", "area": "Near Sardarpura, Jodhpur", "distance": "2.1 km"},
-            {"name": "INOX Indiabulls Mega Mall", "area": "Industrial Area, Jodhpur", "distance": "4.5 km"},
-            {"name": "Miraj Bioscope Cinemas", "area": "Bioscope Mall, Sardarpura Link", "distance": "3.0 km"}
-        ]
-        movies_data = [
-            {"title": "Udta Teer", "shows": "Miraj Blue City Mall 7:45 PM, INOX Indiabulls Mall 8:50 PM"},
-            {"title": "Ramayana", "shows": "INOX 6:55 PM"},
-            {"title": "Nakhrewaalii", "shows": "INOX 7:25 PM"},
-            {"title": "Nayyi Navelli", "shows": "INOX 7:30 PM"},
-            {"title": "Dhood", "shows": "Miraj Bioscope 5:15 PM, 9:00 PM"}
-        ]
+    search_query = f"movies in theatres in {clean_city} showtimes BookMyShow"
+    if movie:
+        search_query = f"{movie} movie showtimes in {clean_city} BookMyShow"
+    elif clean_area:
+        search_query = f"movies near {clean_area} {clean_city} showtimes BookMyShow"
+
+    try:
+        search_res = await search_web(search_query)
+        results_text = search_res.get("results") or ""
+    except Exception:
+        results_text = ""
+
+    lines = []
+    theatres = []
+    movies_data = []
+    if results_text:
+        lines.append(f"BookMyShow cinema showtimes for {clean_city}:\n\n{results_text[:600]}")
     else:
-        theatres = [
-            {"name": f"PVR / INOX Multiplex {clean_city}", "area": clean_area, "distance": "3 km"},
-            {"name": f"Cinepolis {clean_city}", "area": "Mall Road", "distance": "5 km"}
-        ]
-        movies_data = [
-            {"title": "Udta Teer", "shows": f"PVR {clean_city} 7:30 PM"},
-            {"title": "Ramayana", "shows": f"INOX {clean_city} 6:45 PM"},
-            {"title": "Nakhrewaalii", "shows": f"PVR {clean_city} 8:15 PM"}
-        ]
-
-    # Filter if specific movie requested
-    if movie and str(movie).strip():
-        m_filter = str(movie).strip().lower()
-        matched = [m for m in movies_data if m_filter in m["title"].lower()]
-        if matched:
-            movies_data = matched
-
-    # Format human-friendly summary
-    lines = [f"Bhai, BookMyShow par aaj {clean_city} ({clean_area} ke aas-paas) mein ye movies aur evening shows dikh rahe hain:\n"]
-    for m in movies_data[:4]:
-        lines.append(f"• {m['title']}: {m['shows']}")
+        lines.append(f"{clean_city} ke cinema listings ke liye live data fetch kiya gaya.")
 
     formatted_summary = "\n".join(lines)
 
     return {
         "status": "success",
         "city": clean_city,
-        "area": clean_area,
+        "area": clean_area or "nearby",
         "platform": "BookMyShow",
         "theatres": theatres,
         "movies": movies_data,

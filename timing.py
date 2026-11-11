@@ -44,9 +44,9 @@ def parse_followup_time(message: str, now: datetime | None = None):
     if now is None:
         now = timeutil.now(IST)
     low = message.lower().strip()
-    # Replace spoken/written number words (Hindi and English) before time units
+    # Replace spoken/written number words (Hindi and English) strictly before time units
     for word, digit in _WORD_NUMBERS.items():
-        low = re.sub(rf"(^|\s){re.escape(word)}\s*(baje|bje|bajey|bajay|बजे|o\'?clock|am|pm|pr|par|pe|ko)?(\s|$)", rf"\g<1>{digit} \g<2>\g<3>", low, flags=re.I)
+        low = re.sub(rf"(^|\s){re.escape(word)}\s+(baje|bje|bajey|bajay|बजे|o\'?clock|am|pm|pr|par|pe|ko)(\s|$)", rf"\g<1>{digit} \g<2>\g<3>", low, flags=re.I)
 
     # Strip explicit day-of-month phrases so e.g. "aaj 16 ko 2 baje" doesn't parse 16 as a time.
     time_text = re.sub(r"\b(?:aaj|today)\s+\d{1,2}(?:st|nd|rd|th)?\s+ko\b", " ", low)
