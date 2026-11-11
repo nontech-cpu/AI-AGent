@@ -311,7 +311,7 @@ async def test_mind_changer_inplace_update_replaces_entity():
     with db.engine.begin() as conn:
         res = conn.execute(db.text("""
             INSERT INTO memory_items (user_id, category, title, due_date, due_time, duration_minutes, status)
-            VALUES ((SELECT id FROM users WHERE telegram_chat_id = :cid), 'appointments', 'Meeting with Devender', '2026-11-11', '10:00:00', 30, 'active')
+            VALUES ((SELECT id FROM users WHERE telegram_chat_id = :cid), 'appointments', 'Meeting with Devender', '2026-11-12', '10:00:00', 30, 'active')
         """), {"cid": chat_id})
         rem_id = res.lastrowid
 
@@ -321,6 +321,7 @@ async def test_mind_changer_inplace_update_replaces_entity():
         "update_reminder",
         {
             "title": "Meeting with Rahul",
+            "due_date": "2026-11-12",
             "due_time": "11:00",
             "request_quote": "Rahul ke saath 11 baje kar do"
         },

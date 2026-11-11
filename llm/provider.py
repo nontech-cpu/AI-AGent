@@ -17,6 +17,9 @@ import httpx
 
 logger = logging.getLogger("llm.provider")
 
+# In-memory circuit breaker cooldowns for quota-exhausted providers (e.g. 10 minutes)
+_PROVIDER_COOLDOWNS: Dict[str, float] = {}
+
 # ---------------------------------------------------------------------------
 # Typed Exceptions
 # ---------------------------------------------------------------------------
@@ -229,9 +232,10 @@ class GeminiProvider(BaseLLMProvider):
 
     DEFAULT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3-flash-preview"]
 
-    def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None):
-        super().__init__("Gemini")
+    def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None, name: str = "Gemini", backup_key: Optional[str] = None):
+        super().__init__(name)
         self.api_key = api_key or os.getenv("TEST_LLM_KEY") or os.getenv("GEMINI_API_KEY", "")
+        self.backup_key = backup_key or os.getenv("GEMINI_API_KEY_BACKUP", "")
         env_models = os.getenv("GEMINI_MODELS", "")
         if models:
             self.models = models
@@ -424,7 +428,32 @@ class GroqProvider(BaseLLMProvider):
             "temperature": temperature,
         }
 
-        if tools:
+        if tools and len(tools) > 8:
+            # Compact toolset for Groq: retain only core tools + query-relevant tools to prevent HTTP 413
+            user_msg = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    user_msg = str(m.get("content") or "").lower()
+                    break
+            
+            core_groq_names = {
+                "create_reminder", "update_reminder", "delete_reminder", "list_reminders",
+                "get_schedule", "create_meeting", "create_calendar_event"
+            }
+            if any(w in user_msg for w in ("github", "repo", "commit", "issue")):
+                core_groq_names.update({"list_github_repos", "get_github_file", "update_github_file"})
+            if any(w in user_msg for w in ("notion", "page")):
+                core_groq_names.update({"create_notion_page", "update_notion_page", "get_notion_page_content"})
+            if any(w in user_msg for w in ("mail", "email", "send")):
+                core_groq_names.add("send_email")
+            if any(w in user_msg for w in ("contact", "phone", "number")):
+                core_groq_names.update({"save_contact", "get_contact", "list_contacts"})
+
+            pruned_tools = [t for t in tools if t.get("function", {}).get("name") in core_groq_names]
+            payload["tools"] = pruned_tools if pruned_tools else tools[:8]
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+        elif tools:
             payload["tools"] = tools
             if tool_choice:
                 payload["tool_choice"] = tool_choice
@@ -875,10 +904,18 @@ def get_available_providers() -> List[BaseLLMProvider]:
         return [get_fake_llm()]
 
     chain_env = os.getenv("LLM_PROVIDER_CHAIN", "").strip().lower()
-    configured_order = [p.strip() for p in chain_env.split(",") if p.strip()] if chain_env else ["gemini", "groq"]
+    default_order = ["gemini"]
+    if os.getenv("GEMINI_API_KEY_BACKUP"):
+        default_order.append("gemini_backup")
+    default_order.append("groq")
+
+    configured_order = [p.strip() for p in chain_env.split(",") if p.strip()] if chain_env else default_order
+
+    gemini_backup_obj = GeminiProvider(api_key=os.getenv("GEMINI_API_KEY_BACKUP"), name="GeminiBackup") if os.getenv("GEMINI_API_KEY_BACKUP") else None
 
     provider_map: Dict[str, BaseLLMProvider] = {
         "gemini": GeminiProvider(),
+        "gemini_backup": gemini_backup_obj,
         "groq": GroqProvider(),
         "openai": OpenAIProvider(),
         "anthropic": AnthropicProvider(),
@@ -952,6 +989,14 @@ async def chat(
         primary_provider_name = all_providers[0].name
 
         for p_idx, prov in enumerate(all_providers):
+            # Check circuit breaker cooldown for quota-exhausted providers
+            cooldown_until = _PROVIDER_COOLDOWNS.get(prov.name, 0)
+            if cooldown_until > time.time() and len(all_providers) > 1:
+                logger.info(f"{prov.name} is in quota cooldown ({int(cooldown_until - time.time())}s left). Skipping to next provider.")
+                fallback_used = True
+                fallback_reasons.append(f"{prov.name} quota cooldown")
+                continue
+
             # Staging Mode provider failover simulation
             staging_mode = os.getenv("STAGING_MODE", "").strip() == "1"
             force_fail = os.getenv("FORCE_PROVIDER_FAIL", "").strip().lower()
@@ -1039,6 +1084,7 @@ async def chat(
                         # Retrying quota exhaustion is futile and only burns 25+ seconds
                         if (status_code == 429 or isinstance(err, RateLimitedError)) and any(q in err_str for q in ("quota", "exceeded your current quota", "billing")):
                             logger.warning(f"{prov.name} quota exhausted (429): fast-failing provider immediately to next provider.")
+                            _PROVIDER_COOLDOWNS[prov.name] = time.time() + 600.0  # Cooldown 10 mins
                             skip_current_provider = True
                             break
 
