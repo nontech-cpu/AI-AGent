@@ -585,7 +585,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     current_model = model
     executed_tool_signatures = set()
     trace_provider = "Gemini" if gemini_key else "Groq"
-    trace_model = current_model
+    trace_model = "gemini-3.5-flash-lite" if gemini_key else current_model
     trace_fallback_used = False
     trace_fallback_reason = None
     trace_llm_calls = 0

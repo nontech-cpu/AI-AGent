@@ -36,3 +36,4 @@ def test_pending_action_not_hijacked_by_conversational_question():
     last_assistant_clash_msg = "Time Conflict: 'Review PHP' ke saath clash hai. Kya main ise confirm kar doon?"
     intent, extra = classify_confirmation_intent("yes", pending_action, last_assistant_text=last_assistant_clash_msg)
     assert intent == "confirm"
+

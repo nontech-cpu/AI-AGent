@@ -961,7 +961,10 @@ async def chat(
                 last_error = RateLimitedError(f"Simulated failure for {prov.name}", provider=prov.name)
                 continue
 
-            candidate_models = [model] if model else prov.get_models()
+            if model and model in prov.get_models():
+                candidate_models = [model]
+            else:
+                candidate_models = prov.get_models()
             is_fallback_provider = (p_idx > 0)
             if is_fallback_provider:
                 fallback_used = True
@@ -1026,8 +1029,16 @@ async def chat(
 
                         # Instant fast-failover on 5xx server errors (e.g. 503 high demand spike / 502 / 504)
                         status_code = getattr(err, "status_code", None)
+                        err_str = str(err).lower()
                         if status_code and status_code in (500, 502, 503, 504):
                             logger.warning(f"{prov.name} server error {status_code}: fast-failing provider immediately to next provider.")
+                            skip_current_provider = True
+                            break
+
+                        # Instant fast-failover on account-level quota exhaustion (429 with 'quota' / 'exceeded' / 'billing')
+                        # Retrying quota exhaustion is futile and only burns 25+ seconds
+                        if (status_code == 429 or isinstance(err, RateLimitedError)) and any(q in err_str for q in ("quota", "exceeded your current quota", "billing")):
+                            logger.warning(f"{prov.name} quota exhausted (429): fast-failing provider immediately to next provider.")
                             skip_current_provider = True
                             break
 

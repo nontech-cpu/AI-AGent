@@ -159,3 +159,56 @@ async def test_fakellm_status_turn_answers_read_only():
         assert "create_reminder" not in turn_res["tool_calls_executed"]
         assert "delete_reminder" not in turn_res["tool_calls_executed"]
 
+@pytest.mark.asyncio
+async def test_write_tool_succeeds_without_request_quote_when_user_gives_command_or_confirms():
+    """
+    Ensures that when an LLM calls create_reminder without an explicit request_quote,
+    actionable user commands (e.g. '10 am morning evrryday' or 'yes') are accepted,
+    while status questions ('what about the reminder u set') are still strictly rejected.
+    """
+    chat_id = 998877504
+    db.ensure_user(chat_id)
+
+    # 1. Actionable timing command without request_quote -> succeeds
+    res_cmd = await execute_tool(
+        chat_id,
+        "create_reminder",
+        {
+            "title": "Check sugar and reading",
+            "due_date": "2026-11-12",
+            "due_time": "10:00",
+            "recurrence": "daily"
+        },
+        user_context={"user_text": "10 am morning evrryday"}
+    )
+    assert res_cmd.get("status") in ("success", "ok") or res_cmd.get("ok") is True or "Check sugar" in str(res_cmd)
+
+    # 2. Confirmation 'yes' without request_quote -> succeeds
+    res_yes = await execute_tool(
+        chat_id,
+        "create_reminder",
+        {
+            "title": "Check sugar and reading",
+            "due_date": "2026-11-12",
+            "due_time": "10:00",
+            "recurrence": "daily"
+        },
+        user_context={"user_text": "yes"}
+    )
+    assert res_yes.get("status") in ("success", "ok") or res_yes.get("ok") is True or "Check sugar" in str(res_yes)
+
+    # 3. Read-only status inquiry without request_quote -> rejected
+    res_status = await execute_tool(
+        chat_id,
+        "create_reminder",
+        {
+            "title": "Check sugar and reading",
+            "due_date": "2026-11-12",
+            "due_time": "10:00"
+        },
+        user_context={"user_text": "what about the reminder u set"}
+    )
+    assert res_status["status"] == "error"
+    assert res_status["error"] == "no_user_request_for_write"
+
+

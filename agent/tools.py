@@ -741,7 +741,8 @@ TOOL_DEFINITIONS = [
                     "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60, 120)."},
                     "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
                     "recurrence": {"type": ["string", "null"], "description": "Recurrence pattern: 'daily' for every day (roj, daily, har din, jbtk m na khu), 'weekly' for every week, or 'none' for single occurrence."},
-                    "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict or tight schedule exists."}
+                    "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict or tight schedule exists."},
+                    "request_quote": {"type": "string", "description": "Exact words or phrase from user message requesting this reminder (e.g. 'remind me at 10am', '10 am morning evrryday', 'yes')."}
                 },
                 "required": ["title"]
             }
@@ -769,7 +770,8 @@ TOOL_DEFINITIONS = [
                     "due_time": {"type": ["string", "null"], "description": "Updated time in 24-hour HH:MM format if time is being changed."},
                     "from_time": {"type": ["string", "null"], "description": "Original or previous time of the event being rescheduled, e.g. '16:00' if shifting from 4pm or '4 baje ki jagah 5 baje'."},
                     "duration_minutes": {"type": ["integer", "null"], "description": "Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins)."},
-                    "force": {"type": ["boolean", "null"], "description": "Set to true to force update even if a time conflict exists."}
+                    "force": {"type": ["boolean", "null"], "description": "Set to true to force update even if a time conflict exists."},
+                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting this update or reschedule."}
                 }
             }
         }
@@ -785,7 +787,8 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "title": {"type": "string", "description": "Title or keyword of the reminder/event to delete."},
                     "reminder_id": {"type": ["integer", "null"], "description": "Optional specific reminder ID to delete."},
-                    "target_ids": {"type": ["array", "null"], "items": {"type": "integer"}, "description": "List of exact database IDs to delete."}
+                    "target_ids": {"type": ["array", "null"], "items": {"type": "integer"}, "description": "List of exact database IDs to delete."},
+                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting deletion or cancellation."}
                 }
             }
         }
@@ -887,7 +890,8 @@ TOOL_DEFINITIONS = [
                     "title": {"type": "string", "description": "Meeting title (default: 'Meeting')."},
                     "start_iso": {"type": "string", "description": "Start datetime in ISO format (e.g. YYYY-MM-DDTHH:MM:SS with user's timezone offset or local time)."},
                     "duration_minutes": {"type": "integer", "description": "Duration in minutes (default 30)."},
-                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee email addresses."}
+                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee email addresses."},
+                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting to schedule this meeting."}
                 },
                 "required": ["start_iso"]
             }
@@ -916,7 +920,8 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "to": {"type": "string", "description": "Recipient email."},
                     "subject": {"type": "string", "description": "Email subject."},
-                    "body": {"type": "string", "description": "Email body."}
+                    "body": {"type": "string", "description": "Email body."},
+                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting to send this email."}
                 },
                 "required": ["to", "subject", "body"]
             }
@@ -1624,6 +1629,21 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         # Step 6: Server-side validation of request_quote on write tools
         if tool_name in WRITE_TOOLS_WITH_QUOTE:
             quote = arguments.get("request_quote")
+            if not quote and user_context and user_context.get("user_text"):
+                u_text = str(user_context["user_text"]).strip()
+                low_u = u_text.lower()
+                status_patterns = (
+                    r"what about", r"kya (?:hua|laga tha|set tha|hai)", r"reminder ka kya hua",
+                    r"show (?:my|the)", r"dikhao", r"list ", r"check (?:karo|kar|my|the)"
+                )
+                action_patterns = (
+                    r"\b(?:set (?:a|an|new|ek|kr|kar|up|reminder)|create|remind me|delete|cancel|banao|laga do|lga do|hata do|shift|update|move)\b",
+                    r"\b(?:yes|haan|ha|sure|ok|proceed|confirm|kardo|krdo)\b",
+                    r"\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)|everyday|daily|tomorrow|kal)\b"
+                )
+                is_status_inquiry = any(re.search(p, low_u) for p in status_patterns) and not any(re.search(a, low_u) for a in action_patterns)
+                if not is_status_inquiry:
+                    quote = u_text
             if not validate_request_quote(chat_id, quote, user_context):
                 return {
                     "status": "error",
