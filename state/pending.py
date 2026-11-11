@@ -239,12 +239,10 @@ async def classify_confirmation_intent_with_llm(
         if last_assistant_text:
             p_title = (pending_action.get("payload", {}).get("title") or "").strip().lower()
             last_low = last_assistant_text.lower()
-            # Verify that the assistant's previous message was actually asking about or referencing this pending action
-            # (or an explicit confirmation / clash prompt).
-            # If the assistant asked an unrelated question (e.g. sugar follow-up) and user said 'yes',
-            # 'yes' belongs to that conversational question, NOT to the old pending action!
-            is_pending_prompt = (
-                (bool(p_title) and p_title in last_low) or
+            # If the assistant asked a clarifying question for missing parameters (e.g. 'which day', 'when', 'what time'),
+            # the user's reply is not an action confirmation; it's continuing the dialogue!
+            is_parameter_query = any(q in last_low for q in ("which day", "what time", "when would you", "kis din", "kab karni", "kis time"))
+            is_confirmation_prompt = (
                 "pending confirmation" in last_low or
                 "kya main ise confirm" in last_low or
                 "confirm" in last_low or
@@ -253,7 +251,7 @@ async def classify_confirmation_intent_with_llm(
                 "clash" in last_low or
                 "conflict" in last_low
             )
-            if not is_pending_prompt:
+            if is_parameter_query or not is_confirmation_prompt:
                 return ("unrelated", None)
         return ("confirm", None)
 
@@ -284,10 +282,10 @@ async def classify_confirmation_intent_with_llm(
             f"A pending action is awaiting user confirmation: {action_desc}{ctx_clause}\n"
             f"User message: \"{clean}\"\n\n"
             "Classify user confirmation intent into exactly one category:\n"
-            "- 'confirm': User agrees, approves, confirms, or wants to proceed with THIS pending action.\n"
+            "- 'confirm': User clearly agrees, approves, confirms, or wants to proceed with executing THIS pending action.\n"
             "- 'cancel': User rejects, declines, cancels, or aborts.\n"
             "- 'cross_question': User asks an informational question or schedule query before deciding.\n"
-            "- 'unrelated': Completely unrelated task, greeting (e.g. 'hi', 'hello', 'hey'), or fresh query.\n\n"
+            "- 'unrelated': The user is answering an assistant question (e.g. giving date/time like 'today', 'kal', 'at 4pm'), providing missing parameters, asking a fresh task, or greeting. Parameter replies belong to the conversation.\n\n"
             "Return JSON only: {\"intent\": \"confirm\"|\"cancel\"|\"cross_question\"|\"unrelated\"}"
         )
 
@@ -626,14 +624,15 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
                     msg = "Reminder delete nahi ho saka."
                 return False, msg
 
-        elif kind in ("create_reminder", "reminder_create"):
+        elif kind in ("create_reminder", "reminder_create", "update_reminder", "reminder_update"):
             title = payload.get("title", "")
             due_date = payload.get("due_date")
             due_time = payload.get("due_time")
+            tool_name = "update_reminder" if "update" in kind else "create_reminder"
             from agent.tools import execute_tool
             res = await execute_tool(
                 chat_id,
-                "create_reminder",
+                tool_name,
                 {
                     "title": title,
                     "due_date": due_date,
@@ -645,15 +644,31 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
             if res.get("status") in ("success", "conflict_detected"):
-                msg = res.get("message") or f"✅ Done! '{title}' reminder set kar diya hai."
+                msg = res.get("message")
+                if not msg:
+                    action_word = "update" if "update" in kind else "set"
+                    msg = f"✅ Done! '{title}' reminder {action_word} kar diya hai."
                 return True, msg
             else:
-                return False, res.get("message") or "Reminder set nahi ho saka."
+                return False, res.get("message") or "Reminder update nahi ho saka."
 
         else:
+            from agent.tools import execute_tool
+            clean_payload = {k: v for k, v in payload.items() if k not in ("action", "kind", "created_at")}
+            res = await execute_tool(
+                chat_id,
+                kind,
+                clean_payload,
+                user_context={"_from_pending_executor": True, "bypass_quote_check": True}
+            )
             if action_id:
                 complete_pending_action(action_id, status="confirmed")
-            return True, f"Action '{kind}' confirmed and processed."
+            if isinstance(res, dict) and res.get("status") in ("success", "ok"):
+                msg = res.get("message") or "✅ Action successfully completed."
+                return True, msg
+            elif isinstance(res, dict) and res.get("message"):
+                return False, res.get("message")
+            return True, "✅ Action complete kar diya gaya hai."
 
     except Exception as exc:
         logger.error(f"Error executing pending action {action_id}: {exc}", exc_info=True)

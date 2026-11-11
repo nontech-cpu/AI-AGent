@@ -757,16 +757,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
                 # Conflict state capture (preserve pending state for user confirmation, without tool prose short-circuit)
                 if fn_name in ("create_reminder", "update_reminder") and tool_result.get("status") == "conflict_detected":
-                    payload_cf = {
-                        "kind": fn_name,
-                        "action": fn_name,
-                        "title": tool_result.get("title") or args_dict.get("title"),
-                        "due_date": tool_result.get("due_date") or args_dict.get("due_date"),
-                        "due_time": tool_result.get("due_time") or args_dict.get("due_time"),
-                        "force": True
-                    }
-                    save_pending_action(chat_id, fn_name, payload_cf)
-                    pending_action = payload_cf
+                    c_date = tool_result.get("due_date") or args_dict.get("due_date")
+                    c_time = tool_result.get("due_time") or args_dict.get("due_time")
+                    # Only arm if fully specified with date and time; incomplete parameters are dialogue clarifications
+                    if c_date and c_time:
+                        payload_cf = {
+                            "kind": fn_name,
+                            "action": fn_name,
+                            "title": tool_result.get("title") or args_dict.get("title"),
+                            "due_date": c_date,
+                            "due_time": c_time,
+                            "force": True
+                        }
+                        save_pending_action(chat_id, fn_name, payload_cf)
+                        pending_action = payload_cf
 
                 # Track active conversation context for seamless multi-turn references ("pehla wala", "usko", etc.)
                 try:
@@ -1249,19 +1253,22 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     if not pending_action:
         for tr in tool_results_list:
             if isinstance(tr, dict) and tr.get("status") == "conflict_detected":
-                c_title = tr.get("title") or "Meeting"
-                payload_conf = {
-                    "kind": "create_reminder",
-                    "action": "create_reminder",
-                    "title": c_title,
-                    "due_time": tr.get("due_time"),
-                    "due_date": tr.get("due_date"),
-                    "force": True,
-                    "created_at": timeutil.now(IST).isoformat()
-                }
-                save_pending_action(chat_id, "create_reminder", payload_conf)
-                pending_action = payload_conf
-                break
+                c_date = tr.get("due_date")
+                c_time = tr.get("due_time")
+                if c_date and c_time:
+                    c_title = tr.get("title") or "Meeting"
+                    payload_conf = {
+                        "kind": "create_reminder",
+                        "action": "create_reminder",
+                        "title": c_title,
+                        "due_time": c_time,
+                        "due_date": c_date,
+                        "force": True,
+                        "created_at": timeutil.now(IST).isoformat()
+                    }
+                    save_pending_action(chat_id, "create_reminder", payload_conf)
+                    pending_action = payload_conf
+                    break
 
     # Phase 5: Structured Grounding Verifier Audit
     is_grounded, verified_reply, violations = await verify_and_ground_reply(
