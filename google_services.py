@@ -691,10 +691,13 @@ async def fetch_user_inbox_messages(chat_id: int, max_results: int = 5, query: s
                                 if txt:
                                     attachment_texts.append(f"[Attached Document: {fn}]\n{txt}")
                             elif any(lower_fn.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.webp')):
-                                from multimodal import analyze_image_with_groq
-                                img_txt = await analyze_image_with_groq(att_bytes, caption=f"Email attachment {fn}")
-                                if img_txt:
-                                    attachment_texts.append(f"[Attached Image: {fn}]\n{img_txt}")
+                                # Skip tiny email tracking pixels, spacers, logos, and UI icons (< 4KB or common icon names) to protect vision quotas
+                                is_tiny_or_icon = len(att_bytes) < 4096 or any(k in lower_fn for k in ("icon", "logo", "pixel", "spacer", "badge", "button", "arrow", "triangle", "footer", "header", "social"))
+                                if not is_tiny_or_icon:
+                                    from multimodal import analyze_image_with_groq
+                                    img_txt = await analyze_image_with_groq(att_bytes, caption=f"Email attachment {fn}")
+                                    if img_txt:
+                                        attachment_texts.append(f"[Attached Image: {fn}]\n{img_txt}")
                     except Exception as att_err:
                         print(f"Error fetching attachment {fn} in message {m_id}:", att_err)
 

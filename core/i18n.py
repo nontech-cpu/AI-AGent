@@ -139,6 +139,11 @@ I18N: Dict[str, Dict[str, str]] = {
         "english": "✅ I have generated and sent your document **{filename}**! Please check.",
         "hinglish": "✅ Maine aapka document **{filename}** generate karke bhej diya hai! Check kar lijiye.",
         "hindi": "✅ मैंने आपका दस्तावेज़ **{filename}** जनरेट करके भेज दिया है! कृपया देखें।"
+    },
+    "action_failed": {
+        "english": "I tried, but could not complete the action. Please check and try again.",
+        "hinglish": "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.",
+        "hindi": "मैंने कोशिश की लेकिन कार्रवाई पूरी नहीं हो सकी। कृपया पुनः प्रयास करें।"
     }
 }
 

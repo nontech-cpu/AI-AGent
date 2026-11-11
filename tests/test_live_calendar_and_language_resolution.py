@@ -504,6 +504,83 @@ def test_format_companion_tool_receipts_ignores_read_only_tools():
     assert "emails" not in receipts.lower()
 
 
+def test_verifier_allows_repo_with_underscores_and_hyphens():
+    """Verifies that repositories with underscores and hyphens (like Agentic_AI-Chatbot) pass grounding without false alarm."""
+    from agent.verifier import deterministic_verify
+
+    draft = "Here are your GitHub repositories:\n1. Agentic_AI-Chatbot\n2. AI-AGent\n3. php-project"
+    tool_results = [{
+        "status": "success",
+        "username": "nontech-cpu",
+        "repositories": ["Agentic_AI-Chatbot", "AI-AGent", "php-project"]
+    }]
+
+    passed, revised, violations = deterministic_verify(draft, tool_results, user_query="mere github account m konse repositry h")
+    assert passed is True
+    assert len(violations) == 0
+
+
+def test_verifier_does_not_inspect_readme_content_as_repos():
+    """Verifies that get_github_file returning README markdown with bullet points is not treated as repository names."""
+    from agent.verifier import deterministic_verify
+
+    draft = (
+        "In your php-project repository, the README.md highlights:\n"
+        "• Key Highlights: PHP + MySQL Gumming Sheet Price Calculator\n"
+        "• Features: Customer-facing calculator and admin panel\n\n"
+        "Reminder has also been scheduled for tomorrow at 11:00 AM."
+    )
+    tool_results = [
+        {
+            "action": "get_github_file",
+            "status": "success",
+            "repo": "nontech-cpu/php-project",
+            "name": "README.md",
+            "content": "A PHP + MySQL based Gumming Sheet Price Calculator"
+        },
+        {
+            "action": "create_reminder",
+            "status": "success",
+            "title": "Review PHP project architecture",
+            "due_date": "2026-11-12",
+            "due_time": "11:00:00"
+        }
+    ]
+
+    passed, revised, violations = deterministic_verify(draft, tool_results, user_query="check php-project readme")
+    assert passed is True
+    assert len(violations) == 0
+
+
+def test_check_repeat_guard_never_hijacks_with_canned_greeting():
+    """Verifies that repeat guard never overwrites candidate replies containing words like 'architecture'."""
+    from connectors.guardrails import check_repeat_guard
+
+    cand = "In your php-project repository, the README describes the architecture."
+    user_q = "Review PHP project architecture"
+    result = check_repeat_guard(12345, cand, user_text=user_q)
+    assert result == cand
+    assert "Bas bhai" not in result
+
+
+def test_verifier_language_localization_english():
+    """Verifies that English interactions receive English fallback rather than hardcoded Hinglish."""
+    from agent.verifier import deterministic_verify
+
+    draft = "I have successfully deleted all your reminders and meetings."
+    tool_results = []  # No tool execution, so must fail
+    passed, revised, violations = deterministic_verify(
+        draft,
+        tool_results,
+        user_query="delete everything",
+        user_lang="english"
+    )
+    assert passed is False
+    assert "I tried, but could not complete the action" in revised
+    assert "Maine koshish ki" not in revised
+
+
+
 
 
 

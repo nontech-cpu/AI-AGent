@@ -128,12 +128,15 @@ def deterministic_verify(
     tool_results: List[Dict[str, Any]],
     memory_context: Optional[Dict[str, Any]] = None,
     user_query: str = "",
-    recent_history: Optional[List[Dict[str, Any]]] = None
+    recent_history: Optional[List[Dict[str, Any]]] = None,
+    user_lang: str = "english"
 ) -> Tuple[bool, Optional[str], List[str]]:
     """
     Deterministic safety checks for tool-result facts (status==success, IDs, URLs).
     Guarantees zero-latency enforcement on objective, verifiable tool artifacts.
     """
+    from core.i18n import get_i18n_string
+    action_failed_msg = get_i18n_string("action_failed", lang=user_lang)
     evidence_str = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
     violations = []
 
@@ -197,32 +200,40 @@ def deterministic_verify(
                 )
                 return False, revised, violations
             violations.append("Claimed action completed without success: No successful tool execution in evidence")
-            return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
+            return False, action_failed_msg, violations
 
     if not is_cancellation and has_error and not has_conflict and not has_action_tool_success:
         # If tool failed and no action succeeded, ensure draft does not claim success
         if any(w in low_rep for w in ("ho gaya", "kar diya", "bhej diya", "saved", "created", "scheduled", "success")):
             violations.append("Claimed action completed when tool reported error")
-            return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
+            return False, action_failed_msg, violations
 
-    # 3. Fake GitHub Repositories Check (if repo tools returned real repo lists)
-    if any(isinstance(tr, dict) and ("repositories" in tr or "repo" in tr) for tr in tool_results):
+    # 3. Fake GitHub Repositories Check (ONLY when tool returned repository list)
+    has_repo_list_tool = any(
+        isinstance(tr, dict) and "repositories" in tr
+        for tr in tool_results
+    )
+    if has_repo_list_tool:
         real_repos = set()
         for gtr in tool_results:
             if not isinstance(gtr, dict):
                 continue
             if "repositories" in gtr:
-                real_repos.update(str(r).lower() for r in gtr.get("repositories", []))
-            if "repo" in gtr:
-                r_str = str(gtr.get("repo")).lower()
-                real_repos.add(r_str)
-                if "/" in r_str:
-                    real_repos.add(r_str.split("/")[-1])
+                for r in gtr.get("repositories", []):
+                    r_str = str(r).lower().strip()
+                    real_repos.add(r_str)
+                    if "/" in r_str:
+                        real_repos.add(r_str.split("/")[-1])
         if real_repos:
             clean_draft = re.sub(r'https?://[^\s]+', '', draft_reply)
-            clean_draft = re.sub(r'[*_`\[\]()]', '', clean_draft)
+            clean_draft = re.sub(r'[`*\[\]()]', '', clean_draft)  # Keep _ and - intact
             mentioned_items = re.findall(r'(?:[-*•]|\d+\.)\s*([a-zA-Z0-9_\-\/]+)', clean_draft)
-            allowed_tokens = {"peculiarai", "github", "repositories", "repo", "public", "private", "account", "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main", "master", "status", "commit", "url", "code"}
+            allowed_tokens = {
+                "peculiarai", "github", "repositories", "repo", "public", "private", "account",
+                "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main",
+                "master", "status", "commit", "url", "code", "total", "here", "found", "following",
+                "list", "name", "all", "updated", "recent", "active"
+            }
             for item in mentioned_items:
                 clean_item = item.lower().split('/')[-1]
                 if clean_item not in real_repos and item.lower() not in real_repos and clean_item not in allowed_tokens and len(clean_item) > 2 and not clean_item.isdigit():
@@ -237,7 +248,7 @@ def deterministic_verify(
         if any("Fabricated Google Meet link" in v for v in violations):
             clean_reply = MEET_URL_PATTERN.sub("[Meet link available upon confirmation]", draft_reply)
             return False, clean_reply, violations
-        return False, "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations
+        return False, action_failed_msg, violations
 
     return True, draft_reply, []
 
@@ -346,10 +357,13 @@ async def verify_and_ground_reply(
         tool_results=tool_results,
         memory_context=memory_context,
         user_query=user_query,
-        recent_history=recent_history
+        recent_history=recent_history,
+        user_lang=user_lang
     )
     if not passed_det:
-        return False, revised_det or "Maine koshish ki lekin action complete nahi ho paya. Kripya check karein.", violations_det
+        from core.i18n import get_i18n_string
+        fallback_msg = get_i18n_string("action_failed", lang=user_lang)
+        return False, revised_det or fallback_msg, violations_det
 
     # Fast-path for questions or trivial short acknowledgements (0ms overhead, zero keyword sets)
     clean_reply_stripped = draft_reply.strip()
