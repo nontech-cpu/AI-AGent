@@ -92,7 +92,21 @@ GROUNDING & TRUTH CONTRACT:
      * If no items are scheduled for today, state warmly: "Bhai, aaj aapka koi reminder ya meeting scheduled nahi hai!" (or "You have no reminders or meetings scheduled for today!"). NEVER say you lack access!
    - TIME EXTRACTION: When user mentions any time ('11pm', '10:30pm', '3 baje', 'at 11'), ALWAYS pass `due_time` in 24h format ('23:00', '22:30', '15:00') to `create_reminder`. NEVER leave `due_time` null when user specified a time!
 
-15. PYTHON SANDBOX ISOLATION & HONEST CAPABILITY CONTRACT:
+15. RECURRING & DAILY REMINDERS / HEALTH CHECK-INS (ZERO INTERROGATION MANDATE):
+   - When the user asks for a daily or recurring reminder or health tracking check-in (e.g. 'daily remind me to check sugar at 10am and give you the reading', 'roz subah 10 baje bp test ka remind karo', 'daily reminder at 10 am', 'har din remind karo'):
+     * IMMEDIATELY call `create_reminder` with:
+       - `title`: descriptive title (e.g. 'Check sugar and share reading' or 'Check sugar and blood pressure')
+       - `due_time`: 24-hour time format (e.g. '10:00')
+       - `due_date`: defaults to today's date ({current_date_weekday})
+       - `recurrence`: 'daily' (or 'weekly' if weekly)
+     * STRICT PROHIBITION: DO NOT interrogate the user with redundant questions!
+       - NEVER ask which messaging app or phone number (the user is ALREADY chatting with you on Telegram!)
+       - NEVER ask whether they want a text reminder or phone alarm
+       - NEVER ask what date to start from (always start from today {current_date_weekday}!)
+       - NEVER demand the user confirm with an exact rigid phrase
+     * Call `create_reminder` in turn 1 and warmly confirm the schedule!
+
+16. PYTHON SANDBOX ISOLATION & HONEST CAPABILITY CONTRACT:
    - `execute_python_code` is STRICTLY an isolated sandbox for math, calculations, and data processing.
    - It runs in an isolated container without network access, credentials, or SaaS API access.
    - NEVER EVER use `execute_python_code` to simulate, mock, or print dummy logs (e.g. print("Deleting page...")) claiming to interact with external services (Notion, Google, GitHub, Email, etc.).
@@ -329,7 +343,15 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     active_pending = get_pending_action(chat_id)
     is_cross_q = False
     if active_pending:
-        intent, extra = await classify_confirmation_intent_with_llm(user_text, active_pending)
+        recent_history = db.get_chat_history_turns(chat_id, limit=4)
+        last_asst_msg = None
+        if recent_history:
+            for t in reversed(recent_history):
+                if t.get("role") == "assistant":
+                    last_asst_msg = (t.get("text") or t.get("message") or "").strip()
+                    break
+
+        intent, extra = await classify_confirmation_intent_with_llm(user_text, active_pending, last_assistant_text=last_asst_msg)
         if intent == "confirm":
             success, reply_msg = await execute_pending_action(chat_id, active_pending)
             db.log_chat_message(chat_id, "user", user_text, channel=channel)
@@ -445,6 +467,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 "tokens_used": 0,
                 "memory_context": {}
             }
+        elif intent == "cross_question":
+            is_cross_q = True
+        elif intent == "unrelated":
+            # User moved on to a fresh command or answered a different conversation turn;
+            # automatically cancel/supersede the stale pending action so it never hijacks future turns!
+            cancel_pending_action(chat_id)
+            active_pending = None
 
     # 3. Trigger Telegram typing indicator immediately for live feedback
     try:
@@ -1253,7 +1282,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         print(f"Fake Success Guard intercepted: {fake_err}")
         violations.append(fake_err)
         from core.i18n import get_i18n_string
-        final_reply = get_i18n_string("request_noted_confirm_details", user_pref_lang)
+        final_reply = get_i18n_string("action_failed", user_pref_lang)
 
 
     # Guardrail: Repeat Suppression

@@ -442,7 +442,7 @@ async def verify_and_ground_reply(
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
             from core.i18n import get_i18n_string
             lang = user_lang or "english"
-            revised = get_i18n_string("request_noted_confirm_details", lang)
+            revised = get_i18n_string("action_failed", lang)
             return False, revised, violations
 
     # Check 2B: Route / Travel Time Claimed Without Verified Navigation Tool

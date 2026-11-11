@@ -307,31 +307,73 @@ async def build_morning_briefing_message(
     # 3. SCHEDULE & AGENDAS
     lines.append(f"📋 **Today's Schedule & Tasks ({date_human}):**" if is_eng else f"📋 **Aaj Ka Schedule & Tasks ({date_human}):**")
 
-    # Calendar Events
+    # Calendar Events & Local Schedule Items
     cal_events = (unified_sched.get("calendar_events") if unified_sched else []) or []
-    if cal_events:
+    rems = (unified_sched.get("reminders") if unified_sched else []) or []
+
+    def _is_meeting_entry(title_str: str, cat_str: str = "") -> bool:
+        t_clean = (title_str or "").strip().lower()
+        cat_clean = (cat_str or "").strip().lower()
+        if cat_clean in ("meeting", "meetings"):
+            return True
+        # Explicit meeting phrases take absolute priority
+        meeting_markers = (
+            "meeting", "call with", "sync with", "discussion with", "appointment with",
+            "catch up with", "interview with", "1-on-1", "1:1", "zoom with", "google meet", "doctor appointment"
+        )
+        if any(m in t_clean for m in meeting_markers):
+            return True
+        return False
+
+    meeting_items = []
+    task_items = []
+
+    for ev in cal_events:
+        meeting_items.append({
+            "title": ev.get("summary") or "Meeting",
+            "start_iso": ev.get("start", {}).get("dateTime"),
+            "due_time": None
+        })
+
+    for r in rems:
+        cat = (r.get("category") if isinstance(r, dict) else (r[0] if len(r) > 0 else "")) or ""
+        title = r.get("title") if isinstance(r, dict) else (r[1] if len(r) > 1 else "Reminder")
+        r_time = r.get("due_time") if isinstance(r, dict) else (r[3] if len(r) > 3 else None)
+        entry = {"title": title, "due_time": r_time, "start_iso": None}
+
+        if _is_meeting_entry(title, cat):
+            meeting_items.append(entry)
+        else:
+            task_items.append(entry)
+
+    # Render Meetings & Events
+    if meeting_items:
         lines.append("📅 **Meetings & Events:**")
-        for ev in cal_events:
-            summ = ev.get("summary") or "Meeting"
-            st_iso = ev.get("start", {}).get("dateTime")
+        for m in meeting_items:
             t_str = ""
-            if st_iso:
+            if m.get("start_iso"):
                 try:
-                    t_str = f" at {datetime.fromisoformat(st_iso).astimezone(IST).strftime('%I:%M %p')}"
+                    t_str = f" at {datetime.fromisoformat(m['start_iso']).astimezone(IST).strftime('%I:%M %p')}"
                 except Exception:
                     pass
-            lines.append(f"• {summ}{t_str}")
+            elif m.get("due_time"):
+                r_time = m["due_time"]
+                try:
+                    rh = r_time.hour if hasattr(r_time, "hour") else int(str(r_time).split(":")[0])
+                    rm = r_time.minute if hasattr(r_time, "minute") else int(str(r_time).split(":")[1])
+                    t_str = f" at {rh:02d}:{rm:02d}"
+                except Exception:
+                    pass
+            lines.append(f"• {m['title']}{t_str}")
     else:
         lines.append("📅 **Meetings:** No meetings scheduled today (Calendar is free)." if is_eng else "📅 **Meetings:** Aaj koi meeting scheduled nahi hai (Calendar free hai).")
 
-    # Reminders
-    rems = (unified_sched.get("reminders") if unified_sched else []) or []
-    if rems:
+    # Render Tasks & Reminders
+    if task_items:
         lines.append("⏰ **Tasks & Reminders:**")
-        for r in rems:
-            title = r.get("title") if isinstance(r, dict) else (r[1] if len(r) > 1 else "Reminder")
-            r_time = r.get("due_time") if isinstance(r, dict) else (r[3] if len(r) > 3 else None)
+        for r in task_items:
             time_str = ""
+            r_time = r.get("due_time")
             if r_time:
                 try:
                     rh = r_time.hour if hasattr(r_time, "hour") else int(str(r_time).split(":")[0])
@@ -339,7 +381,7 @@ async def build_morning_briefing_message(
                     time_str = f" at {rh:02d}:{rm:02d}"
                 except Exception:
                     pass
-            lines.append(f"• {title}{time_str}")
+            lines.append(f"• {r['title']}{time_str}")
     else:
         lines.append("⏰ **Reminders:** No pending reminders for today." if is_eng else "⏰ **Reminders:** Aaj ke liye koi pending reminder nahi hai.")
 
@@ -378,10 +420,13 @@ async def build_morning_briefing_message(
             for f in due_f[:2]:
                 lines.append(f"• **{f['recipient']}** ({f['subject']}) — Reply pending (3+ days)")
 
-        # Contextual Travel Day
+        # Contextual Travel Day (ONLY for genuine transit / travel spans like flight, train, bus, trip)
         from state.timeline import get_user_timeline_spans
         spans = get_user_timeline_spans(chat_id)
         for sp in spans:
+            s_kind = getattr(sp, "kind", None) or (sp.get("kind") if isinstance(sp, dict) else "")
+            if str(s_kind).lower() not in ("flight", "train", "bus", "travel", "journey", "transit"):
+                continue
             s_st = getattr(sp, "start_dt", None) or (sp.get("start_dt") if isinstance(sp, dict) else None)
             s_en = getattr(sp, "end_dt", None) or (sp.get("end_dt") if isinstance(sp, dict) else None)
             t_curr = target_date.date() if hasattr(target_date, 'date') else target_date

@@ -264,7 +264,7 @@ async def test_auto_sync_google_services_unbound_local_fixed():
             "create_reminder",
             {
                 "title": "Meeting with Devender",
-                "due_date": "2026-11-11",
+                "due_date": "2026-11-12",
                 "due_time": "10:00",
                 "duration_minutes": 30,
                 "request_quote": "Meeting with Devender"

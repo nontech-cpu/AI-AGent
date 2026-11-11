@@ -216,7 +216,11 @@ STRUCTURAL_CANCEL_COMMANDS = {
 }
 
 
-async def classify_confirmation_intent_with_llm(user_text: str, pending_action: dict) -> Tuple[str, Optional[Any]]:
+async def classify_confirmation_intent_with_llm(
+    user_text: str,
+    pending_action: dict,
+    last_assistant_text: Optional[str] = None
+) -> Tuple[str, Optional[Any]]:
     """
     Classifies the user's intent when a pending action is waiting using LLM semantic understanding.
     Zero meaning regexes. Deterministic structural buttons/commands are handled upfront.
@@ -232,7 +236,27 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
 
     # 1. Deterministic Structural / Button Commands (ALLOWED)
     if low in STRUCTURAL_CONFIRM_COMMANDS:
+        if last_assistant_text:
+            p_title = (pending_action.get("payload", {}).get("title") or "").strip().lower()
+            last_low = last_assistant_text.lower()
+            # Verify that the assistant's previous message was actually asking about or referencing this pending action
+            # (or an explicit confirmation / clash prompt).
+            # If the assistant asked an unrelated question (e.g. sugar follow-up) and user said 'yes',
+            # 'yes' belongs to that conversational question, NOT to the old pending action!
+            is_pending_prompt = (
+                (bool(p_title) and p_title in last_low) or
+                "pending confirmation" in last_low or
+                "kya main ise confirm" in last_low or
+                "confirm" in last_low or
+                "time aage-peeche" in last_low or
+                "schedule buffer" in last_low or
+                "clash" in last_low or
+                "conflict" in last_low
+            )
+            if not is_pending_prompt:
+                return ("unrelated", None)
         return ("confirm", None)
+
     if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
 
@@ -255,11 +279,12 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
     try:
         import llm.provider as llm_provider
         action_desc = f"{kind}: {pending_action.get('payload', {})}"
+        ctx_clause = f"\nLast Assistant Message: \"{last_assistant_text}\"" if last_assistant_text else ""
         prompt = (
-            f"A pending action is awaiting user confirmation: {action_desc}\n"
+            f"A pending action is awaiting user confirmation: {action_desc}{ctx_clause}\n"
             f"User message: \"{clean}\"\n\n"
             "Classify user confirmation intent into exactly one category:\n"
-            "- 'confirm': User agrees, approves, confirms, or wants to proceed.\n"
+            "- 'confirm': User agrees, approves, confirms, or wants to proceed with THIS pending action.\n"
             "- 'cancel': User rejects, declines, cancels, or aborts.\n"
             "- 'cross_question': User asks an informational question or schedule query before deciding.\n"
             "- 'unrelated': Completely unrelated task, greeting (e.g. 'hi', 'hello', 'hey'), or fresh query.\n\n"
@@ -282,7 +307,11 @@ async def classify_confirmation_intent_with_llm(user_text: str, pending_action: 
     return ("unrelated", None)
 
 
-def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[str, Optional[Any]]:
+def classify_confirmation_intent(
+    user_text: str,
+    pending_action: dict,
+    last_assistant_text: Optional[str] = None
+) -> Tuple[str, Optional[Any]]:
     """
     Synchronous compatibility facade backed by classify_confirmation_intent_with_llm.
     """
@@ -290,7 +319,23 @@ def classify_confirmation_intent(user_text: str, pending_action: dict) -> Tuple[
     low = clean.lower()
 
     if low in STRUCTURAL_CONFIRM_COMMANDS:
+        if last_assistant_text:
+            p_title = (pending_action.get("payload", {}).get("title") or "").strip().lower()
+            last_low = last_assistant_text.lower()
+            is_pending_prompt = (
+                (bool(p_title) and p_title in last_low) or
+                "pending confirmation" in last_low or
+                "kya main ise confirm" in last_low or
+                "confirm" in last_low or
+                "time aage-peeche" in last_low or
+                "schedule buffer" in last_low or
+                "clash" in last_low or
+                "conflict" in last_low
+            )
+            if not is_pending_prompt:
+                return ("unrelated", None)
         return ("confirm", None)
+
     if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
 
