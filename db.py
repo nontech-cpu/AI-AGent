@@ -1961,6 +1961,8 @@ def get_recent_chat_history(chat_id, limit=15, channel=None):
         print("get_recent_chat_history error:", repr(exc))
         return []
 
+get_chat_history_turns = get_recent_chat_history
+
 
 def clear_chat_history(chat_id):
     """Deletes recent conversation logs for a user."""

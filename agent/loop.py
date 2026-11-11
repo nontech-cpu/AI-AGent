@@ -343,7 +343,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     active_pending = get_pending_action(chat_id)
     is_cross_q = False
     if active_pending:
-        recent_history = db.get_chat_history_turns(chat_id, limit=4)
+        recent_history = db.get_recent_chat_history(chat_id, limit=4)
         last_asst_msg = None
         if recent_history:
             for t in reversed(recent_history):
