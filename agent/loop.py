@@ -383,7 +383,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             }
         elif intent == "cancel":
             cancel_pending_action(chat_id)
-            is_simple_cancel = not bool(extra and extra.get("replacement_instruction"))
+            is_simple_cancel = not bool(extra and extra.get("replacement_instruction")) and len(user_text.strip().split()) <= 4
             if is_simple_cancel:
                 from core.i18n import get_i18n_string
                 user_lang = db.get_user_language(chat_id)
@@ -419,54 +419,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 # User cancelled the pending action and simultaneously gave a new replacement instruction!
                 # We clear active_pending and allow the turn to proceed through the agent loop naturally.
                 active_pending = None
-        elif intent == "update_time":
-            new_due_time, new_due_date = extra
-            new_dt = datetime.combine(new_due_date, new_due_time, tzinfo=IST)
-            payload = dict(active_pending.get("payload", {}))
-            payload["start_iso"] = new_dt.isoformat()
-            save_pending_action(chat_id, active_pending.get("action_kind", "meeting"), payload)
-            from timing import format_event_clock_ist
-            clock_str = format_event_clock_ist(payload["start_iso"])
-            is_video = payload.get("is_video_meeting", False) or (payload.get("action") == "create_meeting" and payload.get("has_video_link") is not False)
-            from core.i18n import get_i18n_string
-            user_lang = db.get_user_language(chat_id)
-            tmpl_key = "confirm_meeting" if is_video else "confirm_calendar_event"
-            conf_dialogue = get_i18n_string(
-                tmpl_key,
-                lang=user_lang,
-                title=payload.get('title', 'Meeting'),
-                time=clock_str,
-                duration=payload.get('duration_minutes', 30),
-                attendees=', '.join(payload.get('attendees', [])) if payload.get('attendees') else 'None'
-            )
-            reply_msg = f"Meeting time updated: **{clock_str}**.\n\n{conf_dialogue}"
-            db.log_chat_message(chat_id, "user", user_text, channel=channel)
-            db.log_chat_message(chat_id, "assistant", reply_msg, channel=channel)
-            try:
-                from connectors.trace import log_turn_trace
-                log_turn_trace(
-                    chat_id=chat_id,
-                    message=user_text,
-                    tools_called=["update_meeting_time"],
-                    tool_results=[{"start_iso": payload.get("start_iso")}],
-                    guard_results={},
-                    latency_ms=int((time.time() - start_ts) * 1000),
-                    tokens=0,
-                    reply_path="pending_update_time",
-                    llm_calls=1
-                )
-            except Exception:
-                pass
-            return {
-                "reply": reply_msg,
-                "tool_calls_executed": [],
-                "pending_action": payload,
-                "is_grounded": True,
-                "violations": [],
-                "latency_ms": int((time.time() - start_ts) * 1000),
-                "tokens_used": 0,
-                "memory_context": {}
-            }
         elif intent == "cross_question":
             is_cross_q = True
         elif intent == "unrelated":
@@ -1235,11 +1187,6 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             tr_url = tr["url"]
             if tr_url not in final_reply:
                 final_reply += f"\n\n🔗 **Link:** {tr_url}"
-
-    # If user was asking a cross-question during a pending confirmation, append pending reminder
-    if is_cross_q and active_pending:
-        p_title = active_pending.get("payload", {}).get("title") or "Meeting"
-        final_reply += f"\n\n📌 **Pending Confirmation:** Aapka '{p_title}' schedule karne ka request abhi bhi waiting hai. Kya main ise confirm kar doon? (Reply 'yes' ya 'cancel')"
 
     # Proactive Time Conflict Alert: Ensure conflict warnings from tools are NEVER missed
     for tr in tool_results_list:

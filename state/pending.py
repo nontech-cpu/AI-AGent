@@ -59,7 +59,7 @@ def ensure_pending_table():
     _TABLE_INITIALIZED = True
 
 
-def save_pending_action(chat_id: int, action_kind: str, payload: dict, expires_minutes: int = 60) -> int:
+def save_pending_action(chat_id: int, action_kind: str, payload: dict, expires_minutes: int = 10) -> int:
     _PENDING_ACTION_CACHE.pop(chat_id, None)
     """
     Saves or replaces a pending confirmation action in the database.
@@ -258,22 +258,8 @@ async def classify_confirmation_intent_with_llm(
     if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
 
-    # 2. Structural Question Detection
-    if "?" in clean:
-        return ("cross_question", None)
-
-    # 3. Time update for meetings (structural ISO/time parsing)
+    # 2. LLM Semantic Classification for Free-Text Nuances (Zero Pre-LLM Regex Hijacking)
     kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")
-    if kind in ("create_meeting", "meeting", "update_meeting"):
-        try:
-            from timing import parse_followup_time
-            parsed = parse_followup_time(clean, timeutil.now(IST))
-            if parsed and parsed[0] is not None:
-                return ("update_time", parsed)
-        except Exception:
-            pass
-
-    # 4. LLM Semantic Classification for Free-Text Nuances
     try:
         import llm.provider as llm_provider
         action_desc = f"{kind}: {pending_action.get('payload', {})}"
@@ -282,11 +268,11 @@ async def classify_confirmation_intent_with_llm(
             f"A pending action is awaiting user confirmation: {action_desc}{ctx_clause}\n"
             f"User message: \"{clean}\"\n\n"
             "Classify user confirmation intent into exactly one category:\n"
-            "- 'confirm': User clearly agrees, approves, confirms, or wants to proceed with executing THIS pending action.\n"
-            "- 'cancel': User rejects, declines, cancels, or aborts.\n"
-            "- 'cross_question': User asks an informational question or schedule query before deciding.\n"
-            "- 'unrelated': The user is answering an assistant question (e.g. giving date/time like 'today', 'kal', 'at 4pm'), providing missing parameters, asking a fresh task, or greeting. Parameter replies belong to the conversation.\n\n"
-            "Return JSON only: {\"intent\": \"confirm\"|\"cancel\"|\"cross_question\"|\"unrelated\"}"
+            "- 'confirm': User clearly agrees, approves, confirms, or says yes to executing THIS exact pending action (e.g. 'yes', 'haan', 'proceed', 'sure', 'confirm').\n"
+            "- 'cancel': User rejects, declines, cancels, aborts, or says to drop it (e.g. 'chhodo use', 'cancel', 'nahi', 'drop', 'rehne de').\n"
+            "- 'cross_question': User asks an informational question or schedule query specifically regarding THIS pending action before deciding (e.g. 'is meeting se pehle free time milega kya?').\n"
+            "- 'unrelated': User is asking a different question (e.g. about reminders, tasks, weather, general queries), starting a fresh command, providing missing parameters for a different query, or switching topics.\n\n"
+            "Return JSON only: {\"intent\": \"confirm\"|\"cancel\"|\"cross_question\"|\"unrelated\", \"has_replacement_instruction\": true|false}"
         )
 
         resp = await llm_provider.chat(
@@ -297,8 +283,10 @@ async def classify_confirmation_intent_with_llm(
         )
         data = json.loads(resp.text or "{}")
         intent = data.get("intent", "unrelated")
+        has_replacement = bool(data.get("has_replacement_instruction", False)) or len(clean.split()) > 3
         if intent in ("confirm", "cancel", "cross_question", "unrelated"):
-            return (intent, None)
+            extra_payload = {"replacement_instruction": has_replacement} if intent == "cancel" else None
+            return (intent, extra_payload)
     except Exception as exc:
         logger.warning(f"Confirmation intent LLM classification error: {exc}")
 
@@ -336,19 +324,6 @@ def classify_confirmation_intent(
 
     if low in STRUCTURAL_CANCEL_COMMANDS:
         return ("cancel", None)
-
-    if "?" in clean:
-        return ("cross_question", None)
-
-    kind = pending_action.get("action_kind") or pending_action.get("payload", {}).get("action") or pending_action.get("payload", {}).get("kind")
-    if kind in ("create_meeting", "meeting", "update_meeting"):
-        try:
-            from timing import parse_followup_time
-            parsed = parse_followup_time(clean, timeutil.now(IST))
-            if parsed and parsed[0] is not None:
-                return ("update_time", parsed)
-        except Exception:
-            pass
 
     try:
         import asyncio
