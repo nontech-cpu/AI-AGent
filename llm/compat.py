@@ -41,7 +41,7 @@ async def _chat_json(system: str, user_text: str):
     if hasattr(httpx.AsyncClient.post, "assert_called") or hasattr(httpx.AsyncClient.post, "side_effect") or groq_key:
         try:
             payload = {
-                "model": os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b",
+                "model": os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile",
                 "temperature": 0,
                 "response_format": {"type": "json_object"},
                 "messages": [
@@ -262,7 +262,7 @@ async def answer_conversation_memory(user_query: str, chat_history: list | None 
     mock_post = getattr(httpx.AsyncClient.post, "assert_called", None) or getattr(httpx.AsyncClient.post, "side_effect", None)
     if groq_key or mock_post:
         try:
-            model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+            model = os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
             system = "You are PeculiarAI, a helpful personal assistant."
             messages = [{"role": "system", "content": system}]
             if chat_history:

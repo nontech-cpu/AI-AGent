@@ -56,7 +56,7 @@ GROUNDING & TRUTH CONTRACT:
    - If the user sends an email address (e.g. 'xyz@gmail.com') wishing to connect Google, DO NOT say you cannot connect Google! Call `connect_integration` with service='google' and return the official OAuth link so the user can authorize.
    - When user asks to send an email, upload a file, or create a calendar event: ALWAYS call the respective tool (send_email, upload_to_drive, create_meeting) DIRECTLY in your FIRST turn! NEVER ask the user for confirmation in chat text before calling the tool. The tool execution itself triggers the system confirmation prompt automatically.
    - When user asks to connect or link GitHub (e.g. 'mera github link krde', 'github link krde', 'connect github', 'github connect kar do') or sends a GitHub profile/token: ALWAYS call `connect_integration` with service='github'! DO NOT call `ask_user` to ask for username or URL — calling `connect_integration(service='github')` immediately returns the official 1-click OAuth link!
-   - When user asks to list or show their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao'), ALWAYS call `list_github_repos`. If username was given or mentioned in recent turns (like 'nontech-cpu'), pass it as `username`.
+   - When user asks to list, show, or check their GitHub repositories (e.g. 'mere github ke sarre repositry naam btao', 'mere github account m konse konse repositry h btana', 'what repositories do I have', 'show my github repos'): ALWAYS call `list_github_repos` directly in your first turn! If no username is specified in the message, call `list_github_repos` with empty arguments or the connected account username. NEVER attempt to answer without calling `list_github_repos`!
    - When user asks to check, inspect, or see if a file/README exists in a repo (e.g. 'php-project m readme file h kya dkhkr btaa', 'readme check karo'): ALWAYS call `get_github_file(repo=..., path="README.md")` autonomously! NEVER ask the user to share the file link or copy-paste file content.
    - When user asks to update, create, or commit a file/README (e.g. 'readme update kar do', 'commit kar do', 'ye line add kar do'), OR when user confirms a previous draft (e.g. 'ha kr do', 'kardo', 'proceed'): ALWAYS call `update_github_file` autonomously. NEVER ask redundant confirmation questions like 'Would you like to proceed?' or 'Confirm updating?'. The commit is non-destructive, so execute it immediately and report the live commit URL!
 10. PROACTIVE TIME CONFLICT DETECTION & ALERTING:
@@ -565,6 +565,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     trace_error_type = None
     trace_memory_status = "ok" if (mem_ctx and mem_ctx.get("relevant_memories")) else "empty"
 
+    forced_tool_choice = None
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # Dynamic Token Budget:
@@ -596,8 +597,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             if effective_tools and not is_terminal_synthesis:
                 payload["tools"] = effective_tools
-                if payload.get("tool_choice") != "required":
-                    payload["tool_choice"] = "auto"
+                payload["tool_choice"] = forced_tool_choice or "auto"
+                forced_tool_choice = None
             else:
                 payload.pop("tools", None)
                 payload.pop("tool_choice", None)
@@ -661,7 +662,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 if not is_cand_ok and iteration == 0 and trace_llm_calls < 2 and effective_tools:
                     # Model claimed an unverified action or external fact without tools; re-run with tool_choice='required'
                     logger.info(f"Ungrounded direct reply intercepted on iteration 0: {cand_viols}. Re-running with tool_choice='required'")
-                    payload["tool_choice"] = "required"
+                    forced_tool_choice = "required"
                     continue
 
                 final_reply = candidate_reply if is_cand_ok else v_cand_reply

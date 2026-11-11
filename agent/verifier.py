@@ -227,16 +227,29 @@ def deterministic_verify(
         if real_repos:
             clean_draft = re.sub(r'https?://[^\s]+', '', draft_reply)
             clean_draft = re.sub(r'[`*\[\]()]', '', clean_draft)  # Keep _ and - intact
-            mentioned_items = re.findall(r'(?:[-*•]|\d+\.)\s*([a-zA-Z0-9_\-\/]+)', clean_draft)
-            allowed_tokens = {
+            stop_words = {
                 "peculiarai", "github", "repositories", "repo", "public", "private", "account",
                 "profile", "repos", "readme", "readmemd", "issues", "issue", "branch", "main",
                 "master", "status", "commit", "url", "code", "total", "here", "found", "following",
-                "list", "name", "all", "updated", "recent", "active"
+                "list", "name", "all", "updated", "recent", "active", "kisi", "aap", "hai", "karein",
+                "bol", "aur", "bhi", "nahi", "hoga", "the", "is", "for", "to", "you", "can", "check",
+                "with", "view", "please", "details", "language", "stars", "fork", "description",
+                "note", "tips", "yeh", "rahe", "aapke", "sample", "project"
             }
-            for item in mentioned_items:
+            for raw_line in clean_draft.splitlines():
+                line = raw_line.strip()
+                m = re.match(r'^(?:[-*•]|\d+\.)\s+(.+)$', line)
+                if not m:
+                    continue
+                content = m.group(1).strip()
+                if ':' in content:
+                    continue
+                words = [w for w in re.findall(r'[a-zA-Z0-9_\-\/]+', content) if w]
+                if len(words) > 3:
+                    continue
+                item = words[0]
                 clean_item = item.lower().split('/')[-1]
-                if clean_item not in real_repos and item.lower() not in real_repos and clean_item not in allowed_tokens and len(clean_item) > 2 and not clean_item.isdigit():
+                if clean_item not in real_repos and item.lower() not in real_repos and clean_item not in stop_words and len(clean_item) > 2 and not clean_item.isdigit():
                     violations.append(f"Fabricated GitHub repository: {item}")
 
     # 4. Route & Travel Time Grounding: handled structurally in audit_claims_with_llm (claims_route_or_travel_time)
@@ -248,6 +261,12 @@ def deterministic_verify(
         if any("Fabricated Google Meet link" in v for v in violations):
             clean_reply = MEET_URL_PATTERN.sub("[Meet link available upon confirmation]", draft_reply)
             return False, clean_reply, violations
+        if any("Fabricated GitHub repository" in v for v in violations) and has_repo_list_tool:
+            revised = (
+                "Aapke GitHub account par ye verified repositories hain:\n\n" +
+                "\n".join(f"{i+1}. **{r}**" for i, r in enumerate(sorted(real_repos)))
+            )
+            return False, revised, violations
         return False, action_failed_msg, violations
 
     return True, draft_reply, []
@@ -442,7 +461,8 @@ async def verify_and_ground_reply(
     if audit.get("claims_external_fact") and not audit.get("sourced_by_tool"):
         # If evidence contains the exact numbers/facts, allow
         violations.append("Unsubstantiated external fact claimed without verified tool source")
-        revised = "Mere paas iski verified information nahi hai."
+        from core.i18n import get_i18n_string
+        revised = get_i18n_string("unverified_information", lang=user_lang) or "Mere paas iski verified information nahi hai."
         return False, revised, violations
 
     # Check 2D: Unavailable Capability Claimed (e.g. Offering to book tickets / make payments)

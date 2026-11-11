@@ -373,7 +373,7 @@ class GroqProvider(BaseLLMProvider):
     Ultra-low latency fallback tier with Llama / Qwen / Mistral architectures.
     """
 
-    DEFAULT_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.1-8b-instant"]
+    DEFAULT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
     def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None):
         super().__init__("Groq")

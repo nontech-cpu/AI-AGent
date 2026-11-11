@@ -43,12 +43,22 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
 
 async def analyze_image_with_groq(image_bytes: bytes, caption: str = "") -> str:
     """
-    Sends an image (as base64) to Groq's Vision LLM.
+    Sends an image (as base64) to Vision LLM (Groq with seamless Gemini fallback).
     Extracts structured details (bills, due dates, meetings, notes, etc.).
     """
     groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        raise RuntimeError("GROQ_API_KEY is missing in environment.")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not groq_key and not gemini_key:
+        raise RuntimeError("Neither GROQ_API_KEY nor GEMINI_API_KEY is available in environment.")
+
+    # Guard against images smaller than 32x32 pixels (tracking pixels, icons)
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            if img.width < 32 or img.height < 32:
+                return f"[Image skipped: small icon/spacer {img.width}x{img.height}]"
+    except Exception:
+        pass
 
     b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -86,20 +96,46 @@ async def analyze_image_with_groq(image_bytes: bytes, caption: str = "") -> str:
         ],
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            GROQ_API_URL,
-            headers={"Authorization": f"Bearer {groq_key}"},
-            json=payload,
-        )
-        if resp.status_code != 200:
-            err_text = resp.text[:300]
-            print(f"[multimodal] Groq vision failed ({resp.status_code}): {err_text}")
-            raise RuntimeError(f"Vision analysis failed: {err_text}")
+    last_err = None
+    if groq_key:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    GROQ_API_URL,
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json=payload,
+                )
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    analysis = res_json["choices"][0]["message"]["content"].strip()
+                    return analysis
+                err_text = resp.text[:300]
+                print(f"[multimodal] Groq vision failed ({resp.status_code}): {err_text}")
+                last_err = err_text
+        except Exception as exc:
+            print("[multimodal] Groq vision exception:", exc)
+            last_err = str(exc)
 
-        res_json = resp.json()
-        analysis = res_json["choices"][0]["message"]["content"].strip()
-        return analysis
+    # Gemini Vision Fallback
+    if gemini_key:
+        try:
+            gemini_payload = dict(payload)
+            gemini_payload["model"] = "gemini-2.5-flash"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                    headers={"Authorization": f"Bearer {gemini_key}"},
+                    json=gemini_payload,
+                )
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    analysis = res_json["choices"][0]["message"]["content"].strip()
+                    return analysis
+                print(f"[multimodal] Gemini vision fallback failed ({resp.status_code}): {resp.text[:300]}")
+        except Exception as exc:
+            print("[multimodal] Gemini vision fallback exception:", exc)
+
+    raise RuntimeError(f"Vision analysis failed: {last_err or 'All vision providers exhausted'}")
 
 
 def extract_text_from_pdf(pdf_bytes: bytes, max_pages: int = 10) -> str:

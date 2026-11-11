@@ -382,11 +382,11 @@ async def build_morning_briefing_message(
         from state.timeline import get_user_timeline_spans
         spans = get_user_timeline_spans(chat_id)
         for sp in spans:
-            s_st = sp.get("start_dt")
-            s_en = sp.get("end_dt")
+            s_st = getattr(sp, "start_dt", None) or (sp.get("start_dt") if isinstance(sp, dict) else None)
+            s_en = getattr(sp, "end_dt", None) or (sp.get("end_dt") if isinstance(sp, dict) else None)
             t_curr = target_date.date() if hasattr(target_date, 'date') else target_date
             if s_st and s_en and s_st.date() <= t_curr <= s_en.date():
-                t_title = sp.get("title") or "Trip"
+                t_title = getattr(sp, "title", None) or (sp.get("title") if isinstance(sp, dict) else "Trip")
                 lines.append(f"\n✈️ **Travel Day:** {t_title} (Safe travels!)")
     except Exception as radar_err:
         print("[morning_briefing.radar] error:", repr(radar_err))

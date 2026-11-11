@@ -124,3 +124,47 @@ def test_verifier_sanitizes_regional_script_labels():
     assert "- **Commitment:**" in revised
 
 
+def test_verifier_allows_real_github_repos_with_conversational_bullet_points():
+    draft = (
+        "Aapke GitHub account me ye repositories hain:\n"
+        "1. **AI-AGent**\n"
+        "2. **php-project**\n"
+        "3. **Agentic_AI-Chatbot**\n\n"
+        "Aap mujhe ye commands de sakte hain:\n"
+        "- Kisi repo ka code ya README check karne ke liye bol sakte hain\n"
+        "- Kisi file ko update karne ke liye bol sakte hain"
+    )
+    tool_results = [{
+        "status": "success",
+        "username": "nontech-cpu",
+        "repositories": ["AI-AGent", "php-project", "Agentic_AI-Chatbot"]
+    }]
+    passed, revised, violations = deterministic_verify(
+        draft,
+        tool_results=tool_results,
+        user_query="mere github account m konse konse repositry h btana"
+    )
+    assert passed is True
+    assert revised == draft
+    assert len(violations) == 0
+
+
+def test_verifier_provides_verified_repos_fallback_when_fake_repo_present():
+    draft = "Yeh rahe aapke repositories:\n- fake-crypto-repo\n- php-project"
+    tool_results = [{
+        "status": "success",
+        "username": "nontech-cpu",
+        "repositories": ["php-project", "AI-AGent"]
+    }]
+    passed, revised, violations = deterministic_verify(
+        draft,
+        tool_results=tool_results,
+        user_query="mere github account m konse konse repositry h btana"
+    )
+    assert passed is False
+    assert any("fake-crypto-repo" in v for v in violations)
+    # Verifies that it does NOT return 'I tried, but could not complete the action'
+    assert "could not complete" not in revised.lower()
+    assert "php-project" in revised
+
+
