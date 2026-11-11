@@ -174,6 +174,7 @@ class NotionConnector(Connector):
                         action_type="create_notion_page",
                         summary=f"Created Notion page '{title}' ({pg_url or ''})",
                         details={"title": title, "url": pg_url or ""},
+                        subject_name="Notion",
                         source_type="notion",
                         source_id=f"notion_{title}_{int(_t.time())}",
                         importance=3
@@ -233,6 +234,7 @@ class NotionConnector(Connector):
                         action_type="update_notion_page",
                         summary=f"Updated Notion page '{page_title_or_id}'",
                         details={"page": str(page_title_or_id), "url": pg_url or ""},
+                        subject_name="Notion",
                         source_type="notion",
                         source_id=f"notion_{page_title_or_id}_{int(_t.time())}",
                         importance=3

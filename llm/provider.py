@@ -7,6 +7,7 @@ import os
 import re
 import json
 import time
+import hashlib
 import random
 import logging
 import asyncio
@@ -20,12 +21,24 @@ import httpx
 
 logger = logging.getLogger("llm.provider")
 
-# In-memory circuit breaker cooldowns for quota-exhausted providers (e.g. 10 minutes)
+# In-memory per-credential and per-model circuit breaker cooldowns (e.g. 10 minutes)
 _PROVIDER_COOLDOWNS: Dict[str, float] = {}
+_MODEL_COOLDOWNS: Dict[Tuple[str, str], float] = {}
+
 
 def reset_provider_cooldowns() -> None:
-    """Clear provider circuit breaker cooldowns (used in test harness / test isolation)."""
+    """Clear provider and model circuit breaker cooldowns (used in test harness / test isolation)."""
     _PROVIDER_COOLDOWNS.clear()
+    _MODEL_COOLDOWNS.clear()
+
+
+def _credential_cooldown_key(prov: "BaseLLMProvider") -> str:
+    """Build an isolated circuit-breaker key per provider credential."""
+    raw_key = getattr(prov, "api_key", "") or ""
+    if raw_key:
+        key_fp = hashlib.sha256(str(raw_key).encode()).hexdigest()[:12]
+        return f"{prov.name}:{key_fp}"
+    return prov.name
 
 # ---------------------------------------------------------------------------
 # Typed Exceptions
@@ -241,7 +254,7 @@ class GeminiProvider(BaseLLMProvider):
     Primary tier with 1M token context and native function calling.
     """
 
-    DEFAULT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3-flash-preview"]
+    DEFAULT_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"]
 
     def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None, name: str = "Gemini", backup_key: Optional[str] = None):
         super().__init__(name)
@@ -392,12 +405,10 @@ class GroqProvider(BaseLLMProvider):
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
         "qwen/qwen3.8-27b",
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant"
     ]
 
-    def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None):
-        super().__init__("Groq")
+    def __init__(self, api_key: Optional[str] = None, models: Optional[List[str]] = None, name: str = "Groq"):
+        super().__init__(name)
         self.api_key = api_key or os.getenv("TEST_LLM_KEY") or os.getenv("GROQ_API_KEY", "")
         self.backup_key = os.getenv("GROQ_API_KEY_BACKUP", "")
         env_models = os.getenv("GROQ_MODELS", "")
@@ -439,29 +450,13 @@ class GroqProvider(BaseLLMProvider):
             "temperature": temperature,
         }
 
-        if tools and len(tools) > 8:
-            # Compact toolset for Groq: retain only core tools + query-relevant tools to prevent HTTP 413
-            user_msg = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    user_msg = str(m.get("content") or "").lower()
-                    break
-            
-            core_groq_names = {
-                "create_reminder", "update_reminder", "delete_reminder", "list_reminders",
-                "get_schedule", "create_meeting", "create_calendar_event"
-            }
-            if any(w in user_msg for w in ("github", "repo", "commit", "issue")):
-                core_groq_names.update({"list_github_repos", "get_github_file", "update_github_file"})
-            if any(w in user_msg for w in ("notion", "page")):
-                core_groq_names.update({"create_notion_page", "update_notion_page", "get_notion_page_content"})
-            if any(w in user_msg for w in ("mail", "email", "send")):
-                core_groq_names.add("send_email")
-            if any(w in user_msg for w in ("contact", "phone", "number")):
-                core_groq_names.update({"save_contact", "get_contact", "list_contacts"})
-
-            pruned_tools = [t for t in tools if t.get("function", {}).get("name") in core_groq_names]
-            payload["tools"] = pruned_tools if pruned_tools else tools[:8]
+        if tools and len(tools) > 24:
+            # Semantic budget selection for Groq: rank tools via embeddings/relevance instead of keyword hacks
+            try:
+                from agent.tools import select_semantic_tools_for_budget
+                payload["tools"] = select_semantic_tools_for_budget(messages, tools, max_tools=24)
+            except Exception:
+                payload["tools"] = tools[:24]
             if tool_choice:
                 payload["tool_choice"] = tool_choice
         elif tools:
@@ -909,25 +904,34 @@ def reset_fake_llm() -> None:
 def get_available_providers() -> List[BaseLLMProvider]:
     """
     Build ordered provider chain based on environment configuration.
-    Prioritizes Gemini -> Groq by default, or follows LLM_PROVIDER_CHAIN.
+    Prioritizes Gemini -> GeminiBackup -> Groq -> GroqBackup by default, or follows LLM_PROVIDER_CHAIN.
     """
     if os.getenv("USE_FAKE_LLM", "0") in ("1", "true"):
         return [get_fake_llm()]
 
     chain_env = os.getenv("LLM_PROVIDER_CHAIN", "").strip().lower()
+    gemini_primary_key = (os.getenv("TEST_LLM_KEY") or os.getenv("GEMINI_API_KEY", "")).strip()
+    gemini_backup_key = os.getenv("GEMINI_API_KEY_BACKUP", "").strip()
+    groq_primary_key = (os.getenv("TEST_LLM_KEY") or os.getenv("GROQ_API_KEY", "")).strip()
+    groq_backup_key = os.getenv("GROQ_API_KEY_BACKUP", "").strip()
+
     default_order = ["gemini"]
-    if os.getenv("GEMINI_API_KEY_BACKUP"):
+    if gemini_backup_key and gemini_backup_key != gemini_primary_key:
         default_order.append("gemini_backup")
     default_order.append("groq")
+    if groq_backup_key and groq_backup_key != groq_primary_key:
+        default_order.append("groq_backup")
 
     configured_order = [p.strip() for p in chain_env.split(",") if p.strip()] if chain_env else default_order
 
-    gemini_backup_obj = GeminiProvider(api_key=os.getenv("GEMINI_API_KEY_BACKUP"), name="GeminiBackup") if os.getenv("GEMINI_API_KEY_BACKUP") else None
+    gemini_backup_obj = GeminiProvider(api_key=gemini_backup_key, name="GeminiBackup") if gemini_backup_key else None
+    groq_backup_obj = GroqProvider(api_key=groq_backup_key, name="GroqBackup") if groq_backup_key else None
 
     provider_map: Dict[str, BaseLLMProvider] = {
         "gemini": GeminiProvider(),
         "gemini_backup": gemini_backup_obj,
         "groq": GroqProvider(),
+        "groq_backup": groq_backup_obj,
         "openai": OpenAIProvider(),
         "anthropic": AnthropicProvider(),
         "fake": get_fake_llm()
@@ -1000,8 +1004,9 @@ async def chat(
         primary_provider_name = all_providers[0].name
 
         for p_idx, prov in enumerate(all_providers):
-            # Check circuit breaker cooldown for quota-exhausted providers
-            cooldown_until = _PROVIDER_COOLDOWNS.get(prov.name, 0)
+            cred_key = _credential_cooldown_key(prov)
+            # Check per-credential circuit breaker cooldown for quota-exhausted keys
+            cooldown_until = _PROVIDER_COOLDOWNS.get(cred_key, 0)
             if cooldown_until > time.time() and len(all_providers) > 1:
                 logger.info(f"{prov.name} is in quota cooldown ({int(cooldown_until - time.time())}s left). Skipping to next provider.")
                 fallback_used = True
@@ -1026,9 +1031,16 @@ async def chat(
                 fallback_used = True
 
             skip_current_provider = False
+            quota_exhausted_models = 0
             for m_candidate in candidate_models:
                 if skip_current_provider:
                     break
+                m_cooldown_until = _MODEL_COOLDOWNS.get((cred_key, m_candidate), 0)
+                if m_cooldown_until > time.time() and (len(candidate_models) > 1 or len(all_providers) > 1):
+                    quota_exhausted_models += 1
+                    fallback_used = True
+                    fallback_reasons.append(f"{prov.name} {m_candidate} model quota cooldown")
+                    continue
                 # Per-provider retry attempt with backoff
                 for attempt in range(max_retries_per_provider + 1):
                     try:
@@ -1086,10 +1098,10 @@ async def chat(
                         status_code = getattr(err, "status_code", None)
                         err_str = str(err).lower()
 
-                        # Instant fast-failover on invalid API key (401)
+                        # Instant fast-failover on invalid API key (401) scoped strictly to this credential
                         if status_code == 401 or "invalid_api_key" in err_str:
-                            logger.warning(f"{prov.name} API key invalid (401): fast-failing provider immediately.")
-                            _PROVIDER_COOLDOWNS[prov.name] = time.time() + 3600.0
+                            logger.warning(f"{prov.name} API key invalid (401): fast-failing credential immediately.")
+                            _PROVIDER_COOLDOWNS[cred_key] = time.time() + 3600.0
                             skip_current_provider = True
                             break
 
@@ -1099,25 +1111,22 @@ async def chat(
                             skip_current_provider = True
                             break
 
-                        # Instant fast-failover on account-level quota exhaustion (429 with 'insufficient_quota' / billing)
-                        # Retrying quota exhaustion is futile and only burns 25+ seconds
+                        # Per-model / per-credential quota cooldown (never poison separate backup credentials!)
                         if (status_code == 429 or isinstance(err, RateLimitedError)) and any(q in err_str for q in ("insufficient_quota", "check your plan and billing details", "exceeded your current quota")):
-                            logger.warning(f"{prov.name} quota exhausted (429): fast-failing provider immediately to next provider.")
-                            _PROVIDER_COOLDOWNS[prov.name] = time.time() + 600.0  # Cooldown 10 mins
-                            if "gemini" in prov.name.lower():
-                                _PROVIDER_COOLDOWNS["Gemini"] = time.time() + 600.0
-                                _PROVIDER_COOLDOWNS["GeminiBackup"] = time.time() + 600.0
-                            skip_current_provider = True
+                            logger.warning(f"{prov.name} model {m_candidate} quota exhausted (429): cooling down model/credential and trying next candidate.")
+                            _MODEL_COOLDOWNS[(cred_key, m_candidate)] = time.time() + 600.0
+                            quota_exhausted_models += 1
+                            if quota_exhausted_models >= len(candidate_models):
+                                _PROVIDER_COOLDOWNS[cred_key] = time.time() + 600.0
                             break
 
-                        # Instant fast-failover to next candidate model on TPM limit
+                        # Instant fast-failover to next candidate model on TPM limit or 400 tool/request error
                         if (status_code == 429 or isinstance(err, RateLimitedError)) and "tpm" in err_str:
                             logger.warning(f"{prov.name} model {m_candidate} TPM rate limited (429): fast-failing to next candidate model.")
                             break
 
-                        # Instant fast-skip on 404 (model not found / no access on organization)
-                        if status_code and status_code == 404:
-                            logger.warning(f"{prov.name} model {m_candidate} returned 404 (not accessible). Fast-skipping to next candidate model.")
+                        if status_code and status_code in (400, 404, 413):
+                            logger.warning(f"{prov.name} model {m_candidate} returned {status_code}. Fast-skipping to next candidate model.")
                             break
 
                         # If rate limited or server error, apply backoff and retry same provider once

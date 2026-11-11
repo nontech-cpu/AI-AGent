@@ -2384,6 +2384,7 @@ async def handle_active(chat_id, text):
                 pass
 
         typing_task = asyncio.create_task(_send_typing_after_delay())
+        _log_writer_tok = db.set_external_chat_log_writer(True)
         try:
             from agent.loop import run_agent_turn
             res = await run_agent_turn(chat_id, text, channel="telegram")
@@ -2416,6 +2417,7 @@ async def handle_active(chat_id, text):
             await say(chat_id, fallback_msg)
             return
         finally:
+            db.reset_external_chat_log_writer(_log_writer_tok)
             typing_task.cancel()
 
 
@@ -3808,7 +3810,14 @@ async def commitment_nudge_loop():
 
 @asynccontextmanager
 async def lifespan(app):
+    import sys
     validate_startup_environment()
+    if os.getenv("PYTEST_CURRENT_TEST") or "pytest" in sys.modules or os.getenv("TESTING") == "1":
+        # Avoid spawning daemon scheduler/catchup loops inside pytest sessions,
+        # which would mutate shared SQLite tables or fire httpx mocks mid-test.
+        yield
+        return
+
     from morning_briefing import morning_briefing_loop
     from heartbeat import heartbeat_loop
 

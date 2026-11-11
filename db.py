@@ -1,11 +1,27 @@
 import os
 import json
 import logging
+import contextvars
 from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
+
+# Single-writer ContextVar: prevents double chat_logs insertion when caller (main.py) already logs turns
+_EXTERNAL_CHAT_LOG_WRITER: contextvars.ContextVar[bool] = contextvars.ContextVar("_EXTERNAL_CHAT_LOG_WRITER", default=False)
+
+
+def set_external_chat_log_writer(enabled: bool):
+    return _EXTERNAL_CHAT_LOG_WRITER.set(enabled)
+
+
+def reset_external_chat_log_writer(token) -> None:
+    _EXTERNAL_CHAT_LOG_WRITER.reset(token)
+
+
+def has_external_chat_log_writer() -> bool:
+    return bool(_EXTERNAL_CHAT_LOG_WRITER.get())
 
 load_dotenv()
 is_production = os.getenv("ENV", "").lower() == "production" or os.getenv("RENDER", "").lower() == "true" or os.getenv("ENVIRONMENT", "").lower() == "production"
@@ -3116,6 +3132,13 @@ def get_memory_bubbles(chat_id) -> list[dict]:
     _init_frontier_sqlite_if_needed()
     uid = get_internal_user_id(chat_id)
     is_postgres = "postgresql" in engine.url.drivername
+    defaults = [
+        ('everything', 'Everything', '#6366F1', 'Inbox'),
+        ('work', 'Work & Projects', '#3B82F6', 'Briefcase'),
+        ('travel', 'Travel & Transit', '#EC4899', 'Plane'),
+        ('health', 'Health & Fitness', '#10B981', 'Heart'),
+        ('finance', 'Finance & Bills', '#F59E0B', 'CreditCard')
+    ]
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("""
@@ -3124,48 +3147,41 @@ def get_memory_bubbles(chat_id) -> list[dict]:
                 WHERE user_id = :uid
                 ORDER BY id ASC
             """), {"uid": uid}).fetchall()
-            
-            defaults = [
-                ('everything', 'Everything', '#6366F1', 'Inbox'),
-                ('work', 'Work & Projects', '#3B82F6', 'Briefcase'),
-                ('travel', 'Travel & Transit', '#EC4899', 'Plane'),
-                ('health', 'Health & Fitness', '#10B981', 'Heart'),
-                ('finance', 'Finance & Bills', '#F59E0B', 'CreditCard')
-            ]
-            existing_slugs = {r[0] for r in rows}
-            missing = [d for d in defaults if d[0] not in existing_slugs]
-            if missing:
-                with engine.begin() as wconn:
-                    for s, n, c, i in missing:
-                        if is_postgres:
-                            wconn.execute(text("""
-                                INSERT INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
-                                VALUES (:u, :s, :n, :c, :i)
-                                ON CONFLICT (user_id, slug) DO NOTHING
-                            """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
-                        else:
-                            wconn.execute(text("""
-                                INSERT OR IGNORE INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
-                                VALUES (:u, :s, :n, :c, :i)
-                            """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
-                with engine.connect() as rconn:
-                    rows = rconn.execute(text("""
-                        SELECT slug, name, color_hex, icon_name, created_at
-                        FROM memory_bubbles
-                        WHERE user_id = :uid
-                        ORDER BY id ASC
-                    """), {"uid": uid}).fetchall()
 
-            return [
-                {
-                    "slug": r[0],
-                    "name": r[1],
-                    "color_hex": r[2],
-                    "icon_name": r[3],
-                    "created_at": str(r[4])
-                }
-                for r in rows
-            ]
+        existing_slugs = {r[0] for r in rows}
+        missing = [d for d in defaults if d[0] not in existing_slugs]
+        if missing:
+            with engine.begin() as wconn:
+                for s, n, c, i in missing:
+                    if is_postgres:
+                        wconn.execute(text("""
+                            INSERT INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
+                            VALUES (:u, :s, :n, :c, :i)
+                            ON CONFLICT (user_id, slug) DO NOTHING
+                        """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
+                    else:
+                        wconn.execute(text("""
+                            INSERT OR IGNORE INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
+                            VALUES (:u, :s, :n, :c, :i)
+                        """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
+            with engine.connect() as rconn:
+                rows = rconn.execute(text("""
+                    SELECT slug, name, color_hex, icon_name, created_at
+                    FROM memory_bubbles
+                    WHERE user_id = :uid
+                    ORDER BY id ASC
+                """), {"uid": uid}).fetchall()
+
+        return [
+            {
+                "slug": r[0],
+                "name": r[1],
+                "color_hex": r[2],
+                "icon_name": r[3],
+                "created_at": str(r[4])
+            }
+            for r in rows
+        ]
     except Exception as exc:
         logger.error(f"get_memory_bubbles error: {exc}")
         return []

@@ -537,14 +537,28 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     current_model = model
     executed_tool_signatures = set()
     trace_provider = "Gemini" if gemini_key else "Groq"
-    trace_model = "gemini-3.5-flash-lite" if gemini_key else current_model
+    if gemini_key:
+        try:
+            trace_model = llm_provider.GeminiProvider().get_models()[0]
+        except Exception:
+            trace_model = "gemini-3.5-flash"
+    else:
+        trace_model = current_model
     trace_fallback_used = False
     trace_fallback_reason = None
     trace_llm_calls = 0
     trace_prompt_tokens = 0
     trace_completion_tokens = 0
     trace_error_type = None
-    trace_memory_status = "ok" if (mem_ctx and mem_ctx.get("relevant_memories")) else "empty"
+    has_mem_data = bool(
+        mem_ctx and (
+            mem_ctx.get("relevant_memories")
+            or mem_ctx.get("recent_actions")
+            or mem_ctx.get("matched_entities")
+            or (mem_ctx.get("formatted_block") and not mem_ctx.get("error"))
+        )
+    )
+    trace_memory_status = "ok" if has_mem_data else ("timeout" if (mem_ctx and mem_ctx.get("error")) else "empty")
 
     forced_tool_choice = None
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1108,16 +1122,20 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         fb_sys = "You are PeculiarAI. Answer the user's question directly, warmly, and helpfully in natural everyday Roman Hinglish."
         default_fb_msg = "Bhai, AI server par momentary peak traffic aa gaya hai. Kripya 2-3 second ruk kar ek baar dobara message bhein."
 
-    if not final_reply:
+    if not final_reply and not trace_error_type:
         try:
             rec_lang = active_user_lang or "user language"
-            # Ultra-compact recovery prompt: < 100 tokens (prevents 429 TPM exhaustion during rapid multi-turn)
+            # Context-preserving grounded recovery: never strip Schedule, Memory, or Active Context
+            ctx_idx = system_content.find("CONTEXT:")
+            grounded_ctx_slice = system_content[ctx_idx:ctx_idx + 2800] if ctx_idx != -1 else ""
             recovery_system = (
                 f"You are PeculiarAI personal assistant. Answer the user's question directly, accurately, "
-                f"warmly, and concisely in {rec_lang}. Keep tone friendly and peer-to-peer (1-2 sentences). "
-                f"NEVER fabricate or invent fake places, fake business/mall names, or fake URLs. "
-                f"If user expresses an open-ended goal/plan (like 'I want to go home today by 5pm'), acknowledge in 1 short line and ask ONE clarifying question (e.g. 'Got it! Where are you right now?') — never dump a multi-hour timetable."
-            )
+                f"warmly, and concisely in {rec_lang}. Keep tone friendly and peer-to-peer (1-3 sentences). "
+                f"Use ONLY the grounded schedule, memory, and active context records below. "
+                f"NEVER fabricate or invent fake places, fake business/mall names, fake reminders, or fake URLs. "
+                f"If the answer is genuinely absent from the context below, say so honestly.\n\n"
+                f"{grounded_ctx_slice}"
+            ).strip()
             rec_messages = [{"role": "system", "content": recovery_system}]
             rec_hist = []
             for turn in recent_turns[-6:]:
@@ -1140,7 +1158,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             try:
                 fb_llm_resp = await llm_provider.chat(
                     messages=rec_messages,
-                    temperature=0.4,
+                    temperature=0.3,
                     timeout=15.0
                 )
                 if fb_llm_resp.text:
@@ -1152,9 +1170,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     if not final_reply:
         u_clean_lower = (user_text or "").strip().lower()
-        if any(w in u_clean_lower for w in ("aur bhy", "aur bhai", "aur btao", "kya haal", "kaise ho", "kaisa hai", "sup", "hi", "hello", "hey", "hlo")):
-            final_reply = "Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch naya?"
-        elif tool_results_list:
+        if tool_results_list:
             valid_msgs = [
                 tr.get("message") for tr in tool_results_list
                 if isinstance(tr, dict) and tr.get("message") and tr.get("status") in ("success", "conflict_detected", "needs_permission")
@@ -1167,6 +1183,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             else:
                 last_res = tool_results_list[-1]
                 final_reply = last_res.get("message") or default_fb_msg
+        elif trace_error_type:
+            # Fail closed on LLM exhaustion: never run an amnesiac prompt pretending user data is missing
+            final_reply = default_fb_msg
+        elif any(w in u_clean_lower for w in ("aur bhy", "aur bhai", "aur btao", "kya haal", "kaise ho", "kaisa hai", "sup", "hi", "hello", "hey", "hlo")):
+            final_reply = "Bas bhai, sab badhiya! Aap sunao, kya chal raha hai? Kuch naya?"
         else:
             final_reply = default_fb_msg
 
@@ -1212,13 +1233,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     pending_action = payload_conf
                     break
 
-    # Phase 5: Structured Grounding Verifier Audit
+    # Phase 5: Structured Grounding Verifier Audit (skip extra LLM call when main LLM chain already exhausted)
     is_grounded, verified_reply, violations = await verify_and_ground_reply(
         draft_reply=final_reply,
         tool_results=tool_results_list,
         memory_context=mem_ctx,
         user_query=user_text,
         recent_history=recent_turns,
+        allow_llm=(not bool(trace_error_type)),
         user_lang=user_pref_lang
     )
     if not is_grounded:
@@ -1289,12 +1311,15 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
         logger.warning(f"Early morning briefing record error: {emb_err}")
 
     # Non-blocking background persistence & tracing (off critical latency path)
+    skip_loop_chat_log = hasattr(db, "has_external_chat_log_writer") and db.has_external_chat_log_writer()
+
     async def _post_turn_persist():
-        try:
-            db.log_chat_message(chat_id, "user", user_text, channel)
-            db.log_chat_message(chat_id, "assistant", final_reply, channel)
-        except Exception as log_err:
-            logger.warning(f"Async log chat message error: {log_err}")
+        if not skip_loop_chat_log:
+            try:
+                db.log_chat_message(chat_id, "user", user_text, channel)
+                db.log_chat_message(chat_id, "assistant", final_reply, channel)
+            except Exception as log_err:
+                logger.warning(f"Async log chat message error: {log_err}")
 
         try:
             from connectors.trace import log_turn_trace

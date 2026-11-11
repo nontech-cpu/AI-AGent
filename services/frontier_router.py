@@ -423,12 +423,20 @@ async def unregister_mcp_server(server_name: str, request: Request):
 async def get_me(request: Request):
     """Returns user profile, active bubbles, and system readiness."""
     cid = resolve_chat_id(request)
-    bubbles, mcp_servers, timeline_spans, persona = await asyncio.gather(
-        asyncio.to_thread(db.get_memory_bubbles, cid),
-        asyncio.to_thread(db.get_user_mcp_servers, cid),
-        asyncio.to_thread(get_user_timeline_spans, cid, window_days_back=0, window_days_forward=2),
-        asyncio.to_thread(db.get_persona, cid)
-    )
+    if db.engine.dialect.name == "sqlite":
+        # SQLite uses StaticPool (one shared DBAPI connection); serialize reads/seeds
+        # to prevent concurrent thread transactions from rolling back default bubble inserts.
+        bubbles = db.get_memory_bubbles(cid)
+        mcp_servers = db.get_user_mcp_servers(cid)
+        timeline_spans = get_user_timeline_spans(cid, window_days_back=0, window_days_forward=2)
+        persona = db.get_persona(cid)
+    else:
+        bubbles, mcp_servers, timeline_spans, persona = await asyncio.gather(
+            asyncio.to_thread(db.get_memory_bubbles, cid),
+            asyncio.to_thread(db.get_user_mcp_servers, cid),
+            asyncio.to_thread(get_user_timeline_spans, cid, window_days_back=0, window_days_forward=2),
+            asyncio.to_thread(db.get_persona, cid)
+        )
     
     return {
         "chat_id": cid,

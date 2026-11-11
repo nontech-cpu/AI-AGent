@@ -442,8 +442,10 @@ async def verify_and_ground_reply(
 
     evidence_text = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
 
-    # 2. Structured LLM Claim Checker
+    # 2. Structured LLM Claim Checker (skipped cleanly when caller explicitly disables LLM auditing)
     violations = list(violations_det)
+    if not allow_llm:
+        return True, sanitize_regional_scripts(draft_reply), violations
     audit = await audit_claims_with_llm(draft_reply, evidence_text, user_query)
 
     # Check 2A: Action Claimed Without Successful Tool Result

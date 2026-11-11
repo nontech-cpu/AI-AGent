@@ -198,30 +198,46 @@ def _get_embedding_model():
 
 
 _EMBED_QUERY_CACHE: dict = {}
+_EMBED_SESSION = None
+
+
+def _get_embed_session():
+    global _EMBED_SESSION
+    if _EMBED_SESSION is None:
+        import requests
+        _EMBED_SESSION = requests.Session()
+    return _EMBED_SESSION
+
 
 def _embed_with_gemini(content: str, is_query: bool = False) -> Optional[List[float]]:
-    """Generates 384-dimensional vector embedding using Google Gemini Cloud API (0 MB local RAM)."""
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
+    """Generates 384-dimensional vector embedding using Google Gemini Cloud API with backup-key failover."""
+    keys = []
+    for k in (os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_BACKUP")):
+        if k and k.strip() and k.strip() not in keys:
+            keys.append(k.strip())
+    if not keys:
         return None
-    import requests
-    # Try models in order: gemini-embedding-2-preview, then gemini-embedding-001
-    for model_name in ("gemini-embedding-2-preview", "gemini-embedding-001"):
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:embedContent?key={gemini_key}"
-            payload = {
-                "model": f"models/{model_name}",
-                "content": {"parts": [{"text": content.strip()}]},
-                "outputDimensionality": 384
-            }
-            res = requests.post(url, json=payload, timeout=5.0)
-            if res.status_code == 200:
-                data = res.json()
-                values = data.get("embedding", {}).get("values")
-                if values and len(values) == 384:
-                    return values
-        except Exception as exc:
-            logger.debug(f"Gemini embedding ({model_name}) error: {exc}")
+    sess = _get_embed_session()
+    text_clean = content.strip()
+    for api_key in keys:
+        for model_name in ("gemini-embedding-2-preview", "gemini-embedding-001"):
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:embedContent?key={api_key}"
+                payload = {
+                    "model": f"models/{model_name}",
+                    "content": {"parts": [{"text": text_clean}]},
+                    "outputDimensionality": 384
+                }
+                res = sess.post(url, json=payload, timeout=3.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    values = data.get("embedding", {}).get("values")
+                    if values and len(values) == 384:
+                        return values
+                elif res.status_code in (401, 429):
+                    break  # Fail fast to backup key if credential is unauthorized/rate-limited
+            except Exception as exc:
+                logger.debug(f"Gemini embedding ({model_name}) error: {exc}")
     return None
 
 def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
@@ -277,6 +293,9 @@ _RESOLVED_USER_ID_CACHE: Dict[int, int] = {}
 _MEASUREMENTS_CACHE: Dict[Tuple, Dict[str, Any]] = {}
 _CORE_PROFILE_CACHE: Dict[int, Dict[str, Any]] = {}
 _CONV_SUMMARY_CACHE: Dict[int, Dict[str, Any]] = {}
+_WORKING_CTX_CACHE: Dict[int, Dict[str, Any]] = {}
+_RECENT_ACTIONS_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+_PROJECTS_CACHE: Dict[int, Dict[str, Any]] = {}
 
 def enqueue_embedding_retry(memory_id: int, error_msg: str = "Pending embedding"):
     """Enqueues a memory ID into embedding_retry_queue for background processing."""
@@ -375,14 +394,25 @@ def backfill_null_embeddings() -> int:
 
 
 def invalidate_memory_caches(user_id: Optional[int] = None):
-    """Invalidates core profile cache, conversation summary cache, and retrieval context cache."""
-    global _CORE_PROFILE_CACHE, _CONV_SUMMARY_CACHE
+    """Invalidates core profile, working context, recent actions, projects, summary, and retrieval caches."""
+    global _CORE_PROFILE_CACHE, _CONV_SUMMARY_CACHE, _RECENT_ACTIONS_CACHE, _PROJECTS_CACHE, _WORKING_CTX_CACHE
     if user_id is not None:
         _CORE_PROFILE_CACHE.pop(user_id, None)
         _CONV_SUMMARY_CACHE.pop(user_id, None)
+        _PROJECTS_CACHE.pop(user_id, None)
+        for k in list(_RECENT_ACTIONS_CACHE.keys()):
+            if k[0] == user_id:
+                _RECENT_ACTIONS_CACHE.pop(k, None)
+        for k in list(_MEASUREMENTS_CACHE.keys()):
+            if k[0] == user_id:
+                _MEASUREMENTS_CACHE.pop(k, None)
     else:
         _CORE_PROFILE_CACHE.clear()
         _CONV_SUMMARY_CACHE.clear()
+        _WORKING_CTX_CACHE.clear()
+        _RECENT_ACTIONS_CACHE.clear()
+        _PROJECTS_CACHE.clear()
+        _MEASUREMENTS_CACHE.clear()
 
     try:
         import memory.retrieval as _ret
@@ -1038,7 +1068,7 @@ def search_memories_hybrid(
                                COALESCE(1.0 / (60.0 + vr.v_rank), 0.0) +
                                COALESCE(1.0 / (60.0 + fr.f_rank), 0.0) +
                                COALESCE(1.0 / (60.0 + tr.t_rank), 0.0) +
-                               (0.015 / (1.0 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400.0)) +
+                               (0.040 / (1.0 + GREATEST(EXTRACT(EPOCH FROM (NOW() - m.created_at)), 0.0) / 86400.0)) +
                                (0.005 * COALESCE(m.importance, 3))
                            ) AS score
                     FROM candidates c
@@ -1398,6 +1428,32 @@ def forget_memory(user_id: int, id_or_keyword: str) -> bool:
     return deleted_count > 0
 
 
+def _infer_entity_id_from_text(user_id: int, text_blob: str) -> Optional[int]:
+    """Dynamically resolves a known entity ID from text using the user's entity table."""
+    if not text_blob or not text_blob.strip():
+        return None
+    try:
+        low_blob = text_blob.lower()
+        # Ensure user entities cache is populated cleanly
+        if user_id not in _USER_ENTITIES_CACHE:
+            find_entity(user_id, "___warm_cache___")
+        records = (_USER_ENTITIES_CACHE.get(user_id) or {}).get("records", [])
+        best_eid = None
+        best_len = 0
+        for r in records:
+            eid = r[0]
+            candidates = [r[1], r[3], r[5]]
+            for cand in candidates:
+                c_clean = (cand or "").strip().lower()
+                if len(c_clean) >= 3 and re.search(rf"\b{re.escape(c_clean)}\b", low_blob):
+                    if len(c_clean) > best_len:
+                        best_len = len(c_clean)
+                        best_eid = eid
+        return best_eid
+    except Exception:
+        return None
+
+
 def record_action_event(
     chat_id_or_user_id: int,
     action_type: str,
@@ -1425,6 +1481,8 @@ def record_action_event(
                 entity_id = ent.get("id")
         except Exception:
             pass
+    if entity_id is None:
+        entity_id = _infer_entity_id_from_text(user_id, f"{subject_name or ''} {summary}")
 
     struct_payload = {"action": action_type, **(details or {})}
     if source_id:
@@ -1480,6 +1538,12 @@ def get_recent_actions_for_user(
     """Retrieves most recent actions from the action ledger for this user or specific entity."""
     _init_sqlite_if_needed()
     user_id = resolve_user_id(chat_id_or_user_id)
+    now_ts = time.time()
+    ck = (user_id, entity_id, action_type, limit)
+    cached = _RECENT_ACTIONS_CACHE.get(ck)
+    if cached and (now_ts - cached["ts"] < 45.0):
+        return cached["data"]
+
     with db.engine.connect() as conn:
         query = """
             SELECT m.id, m.content, m.structured, m.created_at, e.name as subject_name
@@ -1489,8 +1553,18 @@ def get_recent_actions_for_user(
         """
         params = {"uid": user_id, "lim": limit}
         if entity_id:
-            query += " AND m.subject_entity_id = :eid"
-            params["eid"] = entity_id
+            ent_row = conn.execute(
+                text("SELECT name FROM entities WHERE id = :eid AND user_id = :uid"),
+                {"eid": entity_id, "uid": user_id}
+            ).fetchone()
+            ent_name = (ent_row[0] or "").strip().lower() if ent_row else ""
+            if len(ent_name) >= 3:
+                query += " AND (m.subject_entity_id = :eid OR LOWER(m.content) LIKE :ename_pat)"
+                params["eid"] = entity_id
+                params["ename_pat"] = f"%{ent_name}%"
+            else:
+                query += " AND m.subject_entity_id = :eid"
+                params["eid"] = entity_id
         if action_type:
             query += " AND m.structured LIKE :atype"
             params["atype"] = f"%{action_type}%"
@@ -1512,6 +1586,7 @@ def get_recent_actions_for_user(
                 "created_at": str(r[3]),
                 "subject_name": r[4]
             })
+        _RECENT_ACTIONS_CACHE[ck] = {"ts": now_ts, "data": results}
         return results
 
 
@@ -1668,10 +1743,15 @@ def save_working_context(
                 "pjson": p_json
             })
         conn.commit()
+        _WORKING_CTX_CACHE.pop(chat_id, None)
 
 
 def get_working_context(chat_id: int) -> Dict[str, Any]:
-    """Retrieves persistent working context across server restarts."""
+    """Retrieves persistent working context across server restarts with short-TTL caching."""
+    now_ts = time.time()
+    cached = _WORKING_CTX_CACHE.get(chat_id)
+    if cached and (now_ts - cached["ts"] < 60.0):
+        return cached["data"]
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         row = conn.execute(
@@ -1679,6 +1759,7 @@ def get_working_context(chat_id: int) -> Dict[str, Any]:
             {"cid": chat_id}
         ).fetchone()
         if not row:
+            _WORKING_CTX_CACHE[chat_id] = {"ts": now_ts, "data": {}}
             return {}
         p_act = row[5]
         if isinstance(p_act, str):
@@ -1686,7 +1767,7 @@ def get_working_context(chat_id: int) -> Dict[str, Any]:
                 p_act = json.loads(p_act)
             except Exception:
                 pass
-        return {
+        data = {
             "active_project": row[0],
             "current_topic": row[1],
             "current_task": row[2],
@@ -1695,6 +1776,8 @@ def get_working_context(chat_id: int) -> Dict[str, Any]:
             "pending_action": p_act,
             "updated_at": str(row[6]) if row[6] else None
         }
+        _WORKING_CTX_CACHE[chat_id] = {"ts": now_ts, "data": data}
+        return data
 
 
 def save_project_context(
@@ -1757,14 +1840,18 @@ def save_project_context(
 
 
 def get_active_projects(user_id: int) -> List[Dict[str, Any]]:
-    """Retrieves all active project compartments for user."""
+    """Retrieves all active project compartments for user with short-TTL caching."""
+    now_ts = time.time()
+    cached = _PROJECTS_CACHE.get(user_id)
+    if cached and (now_ts - cached["ts"] < 120.0):
+        return cached["data"]
     _init_sqlite_if_needed()
     with db.engine.connect() as conn:
         rows = conn.execute(
             text("SELECT id, name, objective, tech_stack, architecture, current_tasks, decisions, status, updated_at FROM projects WHERE user_id = :uid AND status = 'active' ORDER BY updated_at DESC"),
             {"uid": user_id}
         ).fetchall()
-        return [
+        res = [
             {
                 "id": r[0], "name": r[1], "objective": r[2], "tech_stack": r[3],
                 "architecture": r[4], "current_tasks": r[5], "decisions": r[6],
@@ -1772,38 +1859,58 @@ def get_active_projects(user_id: int) -> List[Dict[str, Any]]:
             }
             for r in rows
         ]
+        _PROJECTS_CACHE[user_id] = {"ts": now_ts, "data": res}
+        return res
 
 
 def search_project_memory(user_id: int, query: str, limit: int = 3) -> List[Dict[str, Any]]:
-    """Semantic/keyword search across user's project compartments."""
+    """Semantic/keyword search across user's cached active project compartments."""
     _init_sqlite_if_needed()
-    clean_q = query.strip()
+    projects = get_active_projects(user_id)
+    clean_q = query.strip().lower()
     if not clean_q:
-        return get_active_projects(user_id)[:limit]
-    with db.engine.connect() as conn:
-        rows = conn.execute(
-            text("""
-                SELECT id, name, objective, tech_stack, architecture, current_tasks, decisions, status, updated_at
-                FROM projects
-                WHERE user_id = :uid AND status = 'active'
-                  AND (LOWER(name) LIKE LOWER(:q) OR LOWER(objective) LIKE LOWER(:q) OR LOWER(tech_stack) LIKE LOWER(:q) OR LOWER(architecture) LIKE LOWER(:q) OR LOWER(decisions) LIKE LOWER(:q))
-                ORDER BY updated_at DESC LIMIT :lim
-            """),
-            {"uid": user_id, "q": f"%{clean_q}%", "lim": limit}
-        ).fetchall()
-        return [
-            {
-                "id": r[0], "name": r[1], "objective": r[2], "tech_stack": r[3],
-                "architecture": r[4], "current_tasks": r[5], "decisions": r[6],
-                "status": r[7], "updated_at": str(r[8]) if r[8] else None
-            }
-            for r in rows
-        ]
+        return projects[:limit]
+    matched = [
+        p for p in projects
+        if any(clean_q in str(p.get(k) or "").lower() for k in ("name", "objective", "tech_stack", "architecture", "decisions"))
+    ]
+    return matched[:limit]
 
+
+
+def normalize_fact_text(text_val: str) -> str:
+    """Strips date prefixes, bullet markers, and trailing date anchors for comparison."""
+    cleaned = re.sub(r"^\s*[•*-]\s*", "", (text_val or "").strip())
+    cleaned = re.sub(r"^\d{4}-\d{2}-\d{2}:\s*", "", cleaned)
+    cleaned = re.sub(r"\s*\(added \d{4}-\d{2}-\d{2}\)\s*$", "", cleaned)
+    return cleaned.strip().lower()
+
+
+def is_semantic_fact_duplicate(
+    candidate_norm: str,
+    candidate_tokens: set,
+    seen_entries: list,
+) -> bool:
+    """Returns True if candidate overlaps semantically with any already-seen entry."""
+    if not candidate_norm:
+        return True
+    for prev_norm, prev_toks in seen_entries:
+        if candidate_norm == prev_norm:
+            return True
+        if min(len(candidate_norm), len(prev_norm)) >= 12 and (
+            candidate_norm in prev_norm or prev_norm in candidate_norm
+        ):
+            return True
+        if difflib.SequenceMatcher(None, candidate_norm, prev_norm).ratio() >= 0.80:
+            return True
+        min_len = min(len(candidate_tokens), len(prev_toks))
+        if min_len >= 4 and (len(candidate_tokens & prev_toks) / min_len) >= 0.85:
+            return True
+    return False
 
 
 def get_core_profile(user_id: int) -> str:
-    """Loads ~300 tokens of always-true core user profile directly with temporal anchoring (NO retrieval needed)."""
+    """Loads deduplicated, temporally-anchored core user profile (budgeted to prevent context starvation)."""
     now_ts = time.time()
     if user_id in _CORE_PROFILE_CACHE and (now_ts - _CORE_PROFILE_CACHE[user_id]["ts"] < 300.0):
         return _CORE_PROFILE_CACHE[user_id]["data"]
@@ -1815,21 +1922,31 @@ def get_core_profile(user_id: int) -> str:
               AND memory_type NOT IN ('event', 'action_event')
               AND (importance >= 4 OR memory_type IN ('preference', 'profile'))
             ORDER BY importance DESC, created_at DESC
-            LIMIT 10
+            LIMIT 25
         """), {"uid": user_id}).fetchall()
         facts = []
+        seen_entries = []
         for r in rows:
-            c = r[0]
+            c = (r[0] or "").strip()
+            if not c:
+                continue
+            c_norm = normalize_fact_text(c)
+            toks = set(re.findall(r"[a-zA-Z0-9]+", c_norm))
+            if is_semantic_fact_duplicate(c_norm, toks, seen_entries):
+                continue
+            seen_entries.append((c_norm, toks))
             d = str(r[1])[:10] if r[1] else ""
             date_anchor = f" (added {d})" if d else ""
             facts.append(f"• {c}{date_anchor}")
+            if len(facts) >= 8:
+                break
         if not facts:
             _CORE_PROFILE_CACHE[user_id] = {"ts": now_ts, "data": ""}
             return ""
         res_profile = "\n".join(facts)
-        # Cap core profile at ~1200 characters (~300 tokens)
-        if len(res_profile) > 1200:
-            res_profile = res_profile[:1190] + "\n• ..."
+        # Keep core profile bounded (~750 chars) so recent actions and RAG results always fit
+        if len(res_profile) > 750:
+            res_profile = res_profile[:740].rsplit("\n", 1)[0] + "\n• ..."
         _CORE_PROFILE_CACHE[user_id] = {"ts": now_ts, "data": res_profile}
         return res_profile
 

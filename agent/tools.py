@@ -1622,8 +1622,14 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
         record_idempotency(chat_id, tool_name, arguments, res)
     return res
 
+_TOOL_NAME_ALIASES = {
+    "find_nearby_place": "find_nearby_places",
+}
+
+
 async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
     import google_services
+    tool_name = _TOOL_NAME_ALIASES.get(tool_name, tool_name)
     origin_chat_id = (user_context or {}).get("delivery_chat_id") or (user_context or {}).get("originating_chat_id") or chat_id
     try:
         # Step 6: Server-side validation of request_quote on write tools
@@ -1711,10 +1717,20 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         if tool_name == "search_memory":
             args = SearchMemoryArgs(**arguments)
             hybrid_res = []
+            recent_actions = []
             try:
-                from memory.store import resolve_user_id, search_memories_hybrid
+                from memory.store import resolve_user_id, search_memories_hybrid, get_recent_actions_for_user
                 uid = resolve_user_id(chat_id)
                 hybrid_res = search_memories_hybrid(uid, args.query, limit=5)
+                q_tokens = [tok for tok in re.findall(r"[a-zA-Z0-9]+", (args.query or "").lower()) if len(tok) >= 2]
+                all_actions = get_recent_actions_for_user(uid, limit=10)
+                if q_tokens:
+                    recent_actions = [
+                        a for a in all_actions
+                        if any(tok in (a.get("summary") or "").lower() or tok in str(a.get("details") or "").lower() for tok in q_tokens)
+                    ]
+                if not recent_actions:
+                    recent_actions = all_actions[:5]
             except Exception as exc:
                 print("Hybrid search fallback:", exc)
 
@@ -1725,6 +1741,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "status": "success",
                 "query": args.query,
                 "hybrid_memories": [f"[{h['memory_type']}] {h['content']}" for h in hybrid_res],
+                "recent_actions": [f"[{str(a.get('created_at', ''))[:16]}] {a.get('summary', '')}" for a in recent_actions],
                 "chat_matches": [f"{l['role']}: {l['text']}" for l in logs],
                 "fact_matches": [f["fact"] for f in matched_facts]
             }
@@ -5011,6 +5028,8 @@ TOOL_GROUPS = {
 }
 
 _TOOL_GROUP_EMBEDDINGS: Dict[str, List[float]] = {}
+_TOOL_SCHEMA_EMBEDDINGS: Dict[str, List[float]] = {}
+
 
 def _get_tool_group_embedding(group_name: str, desc: str) -> Optional[List[float]]:
     global _TOOL_GROUP_EMBEDDINGS
@@ -5024,6 +5043,131 @@ def _get_tool_group_embedding(group_name: str, desc: str) -> Optional[List[float
         return vec
     except Exception:
         return None
+
+
+def _warm_tool_group_embeddings() -> None:
+    """Pre-warms uncached TOOL_GROUPS embeddings concurrently to avoid cold-start stalls."""
+    missing = [(g_name, g_info["description"]) for g_name, g_info in TOOL_GROUPS.items() if g_name not in _TOOL_GROUP_EMBEDDINGS]
+    if not missing:
+        return
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(6, len(missing))) as pool:
+            list(pool.map(lambda item: _get_tool_group_embedding(item[0], item[1]), missing))
+    except Exception:
+        pass
+
+
+_BUDGET_ESSENTIAL_TOOLS = {
+    "create_reminder", "update_reminder", "delete_reminder", "list_reminders",
+    "get_schedule", "create_meeting", "create_calendar_event",
+    "search_memory", "search_web", "find_nearby_places",
+    "list_notion_pages", "get_notion_page_content",
+    "search_user_emails", "send_email",
+    "save_contact", "get_contact", "list_contacts",
+    "check_integrations_status"
+}
+
+
+def select_semantic_tools_for_budget(
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    max_tools: int = 24
+) -> List[Dict[str, Any]]:
+    """
+    Semantic budget selector for size-constrained fallback providers (e.g. Groq).
+    Replaces brittle keyword matching with embedding cosine similarity + token overlap
+    while preserving essential state-lookup and execution tools.
+    """
+    if not tools or len(tools) <= max_tools:
+        return tools
+
+    query_parts = []
+    for m in reversed(messages or []):
+        role = m.get("role")
+        content = str(m.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            query_parts.append(content[:300])
+            if len(query_parts) >= 2:
+                break
+    query_text = " ".join(reversed(query_parts)).strip()
+
+    q_vec = None
+    if query_text:
+        try:
+            from memory.store import embed_text
+            q_vec = embed_text(query_text, is_query=True)
+        except Exception:
+            q_vec = None
+
+    if q_vec:
+        # Warm uncached tool schema embeddings concurrently
+        missing_tools = []
+        for t in tools:
+            fn = t.get("function", {})
+            t_name = fn.get("name", "")
+            if t_name and t_name not in _TOOL_SCHEMA_EMBEDDINGS:
+                desc = fn.get("description", "")
+                missing_tools.append((t_name, f"{t_name.replace('_', ' ')}: {desc}"))
+        if missing_tools:
+            try:
+                from memory.store import embed_text
+                from concurrent.futures import ThreadPoolExecutor
+
+                def _embed_tool(item):
+                    v = embed_text(item[1], is_query=False)
+                    if v:
+                        _TOOL_SCHEMA_EMBEDDINGS[item[0]] = v
+
+                with ThreadPoolExecutor(max_workers=min(6, len(missing_tools))) as pool:
+                    list(pool.map(_embed_tool, missing_tools[:20]))
+            except Exception:
+                pass
+
+    q_tokens = set(re.findall(r"[a-zA-Z0-9]+", query_text.lower()))
+    scored = []
+    for idx, t in enumerate(tools):
+        fn = t.get("function", {})
+        t_name = fn.get("name", "")
+        t_desc = fn.get("description", "")
+        sim = 0.0
+        t_vec = _TOOL_SCHEMA_EMBEDDINGS.get(t_name)
+        if q_vec and t_vec:
+            sim = _cosine_similarity(q_vec, t_vec)
+        elif q_tokens:
+            t_tokens = set(re.findall(r"[a-zA-Z0-9]+", f"{t_name.replace('_', ' ')} {t_desc}".lower()))
+            overlap = len(q_tokens & t_tokens)
+            sim = overlap / max(len(q_tokens | t_tokens), 1)
+
+        is_essential = 1 if t_name in _BUDGET_ESSENTIAL_TOOLS else 0
+        is_domain = 1 if t_name not in CORE_TOOL_NAMES else 0
+        scored.append((sim + (0.15 * is_domain) + (0.05 * is_essential), idx, t))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    selected = []
+    seen_names = set()
+
+    # Keep highest similarity matches first, guaranteeing essential read/write tools fit comfortably
+    for _, _, t in scored:
+        name = t.get("function", {}).get("name", "")
+        if len(selected) >= max_tools:
+            break
+        if name not in seen_names:
+            seen_names.add(name)
+            selected.append(t)
+
+    # Ensure critical lookup tools weren't displaced if room can be traded from lowest-ranked slots
+    essential_present = {t.get("function", {}).get("name", "") for t in selected}
+    missing_essentials = [t for t in tools if t.get("function", {}).get("name", "") in _BUDGET_ESSENTIAL_TOOLS and t.get("function", {}).get("name", "") not in essential_present]
+    for m_tool in missing_essentials:
+        # Replace lowest-scored non-essential tail item
+        for r_idx in range(len(selected) - 1, -1, -1):
+            r_name = selected[r_idx].get("function", {}).get("name", "")
+            if r_name not in _BUDGET_ESSENTIAL_TOOLS:
+                selected[r_idx] = m_tool
+                break
+
+    return selected
 
 def _cosine_similarity(a: List[float], b: List[float]) -> float:
     try:
@@ -5091,6 +5235,7 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
         pass
 
     if q_vec:
+        _warm_tool_group_embeddings()
         domain_sims = {}
         for g_name, g_info in TOOL_GROUPS.items():
             g_vec = _get_tool_group_embedding(g_name, g_info["description"])
