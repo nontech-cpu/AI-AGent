@@ -270,8 +270,8 @@ async def classify_confirmation_intent_with_llm(
             "Classify user confirmation intent into exactly one category:\n"
             "- 'confirm': User clearly agrees, approves, confirms, or says yes to executing THIS exact pending action (e.g. 'yes', 'haan', 'proceed', 'sure', 'confirm').\n"
             "- 'cancel': User rejects, declines, cancels, aborts, or says to drop it (e.g. 'chhodo use', 'cancel', 'nahi', 'drop', 'rehne de').\n"
-            "- 'cross_question': User asks an informational question or schedule query specifically regarding THIS pending action before deciding (e.g. 'is meeting se pehle free time milega kya?').\n"
-            "- 'unrelated': User is asking a different question (e.g. about reminders, tasks, weather, general queries), starting a fresh command, providing missing parameters for a different query, or switching topics.\n\n"
+            "- 'cross_question': User asks an informational question, clarification, context check (e.g. 'Wait, did you get my earlier message?'), schedule query, attendee/participant inquiry (e.g. asking for person's email, phone, details, or meeting info), or schedule check regarding THIS pending action or dialogue before deciding (e.g. 'is meeting se pehle free time milega kya?', 'Ananya ka email address kya hai?', 'kya us samay koi aur meeting hai?', 'mera schedule batao').\n"
+            "- 'unrelated': User is starting an entirely separate, unrelated task (e.g. 'Notion page banao', 'buy milk reminder', 'play music'), providing parameters for a different command, or switching to an unrelated topic.\n\n"
             "Return JSON only: {\"intent\": \"confirm\"|\"cancel\"|\"cross_question\"|\"unrelated\", \"has_replacement_instruction\": true|false}"
         )
 
@@ -279,16 +279,22 @@ async def classify_confirmation_intent_with_llm(
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.0,
-            timeout_seconds=5.0
+            timeout=5.0
         )
         data = json.loads(resp.text or "{}")
         intent = data.get("intent", "unrelated")
-        has_replacement = bool(data.get("has_replacement_instruction", False)) or len(clean.split()) > 3
+        has_replacement = bool(data.get("has_replacement_instruction", False))
         if intent in ("confirm", "cancel", "cross_question", "unrelated"):
-            extra_payload = {"replacement_instruction": has_replacement} if intent == "cancel" else None
+            extra_payload = {"replacement_instruction": True} if (intent == "cancel" and has_replacement) else None
             return (intent, extra_payload)
     except Exception as exc:
         logger.warning(f"Confirmation intent LLM classification error: {exc}")
+        if "?" in clean or any(q in low for q in ("kya", "kab", "kaise", "what", "when", "how", "details", "schedule", "free time")):
+            return ("cross_question", None)
+        if any(w in low for w in ("haan", "ha", "yes", "sure", "proceed", "kar do", "kardo", "theek hai", "bilkul", "create", "haanji")):
+            return ("confirm", None)
+        if any(w in low for w in ("nahi", "nahin", "no", "cancel", "mat karo", "rehne de", "rehne do", "rehnde", "chhoro", "drop", "galat", "stop")):
+            return ("cancel", None)
 
     return ("unrelated", None)
 
@@ -341,6 +347,13 @@ def classify_confirmation_intent(
     except Exception:
         pass
 
+    # Graceful offline / timeout fallback:
+    if "?" in clean or any(q in low for q in ("kya", "kab", "kaise", "what", "when", "how", "details")):
+        return ("cross_question", None)
+    if any(w in low for w in ("haan", "ha", "yes", "sure", "proceed", "kar do", "kardo", "theek hai")):
+        return ("confirm", None)
+    if any(w in low for w in ("nahi", "nahin", "no", "cancel", "mat karo", "rehne de", "rehnde", "chhoro", "drop")):
+        return ("cancel", None)
     return ("unrelated", None)
 
 

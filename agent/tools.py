@@ -391,12 +391,12 @@ class LearnCorrectionArgs(BaseModel):
 
 class FindNearbyPlacesArgs(BaseModel):
     category: str = Field(..., description="Category of places e.g. 'cafe', 'coffee shop', 'restaurant', 'gym'.")
-    area: Optional[str] = Field(None, description="Local neighborhood or area e.g. 'Sardarpura', 'Ratanada'.")
-    city: Optional[str] = Field("Jodhpur", description="City name, defaults to Jodhpur.")
+    area: Optional[str] = Field(None, description="Local neighborhood or area.")
+    city: Optional[str] = Field(None, description="City name. If omitted, asks user or infers from context.")
 
 class GetMovieShowtimesArgs(BaseModel):
-    city: Optional[str] = Field("Jodhpur", description="City to look up movies for, defaults to Jodhpur.")
-    area: Optional[str] = Field("Sardarpura", description="Local area or neighbourhood e.g. Sardarpura.")
+    city: Optional[str] = Field(None, description="City to look up movies for. If omitted, asks user or infers from context.")
+    area: Optional[str] = Field(None, description="Local area or neighbourhood.")
     movie: Optional[str] = Field(None, description="Optional specific movie title to filter showtimes for.")
 
 class ReadWebpageArgs(BaseModel):
@@ -1304,20 +1304,20 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_movie_showtimes",
-            "description": "Fetch live BookMyShow cinema listings, latest running movies, and showtimes for nearby theatres in Jodhpur / user's city.",
+            "description": "Fetch live BookMyShow cinema listings, latest running movies, and showtimes for theatres in the specified city.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "city": {
-                        "type": "string",
-                        "description": "City name, defaults to Jodhpur."
+                        "type": ["string", "null"],
+                        "description": "City name."
                     },
                     "area": {
-                        "type": "string",
-                        "description": "Local neighborhood e.g. Sardarpura."
+                        "type": ["string", "null"],
+                        "description": "Local neighborhood or area."
                     },
                     "movie": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "Optional specific movie name."
                     }
                 }
@@ -1631,8 +1631,16 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             quote = arguments.get("request_quote")
             if not quote and user_context and user_context.get("user_text"):
                 u_text = str(user_context["user_text"]).strip()
-                # Status inquiries and informational questions must never auto-synthesize a write quote
-                is_status_inquiry = "?" in u_text or any(w in u_text.lower().split() for w in ("kya", "what", "show", "check", "list", "dikhao", "status"))
+                u_low = u_text.lower()
+                # Status inquiries and informational questions must never auto-synthesize a write quote,
+                # but questions that contain explicit write action verbs (e.g. "Can you delete reminder 5?")
+                # are genuine write requests and must not be blocked.
+                is_explicit_status = any(w in u_low for w in ("what about", "how about", "tell me about", "kya hua", "kya status", "status of"))
+                has_write_action = not is_explicit_status and (any(w in u_low for w in (
+                    "delete", "remove", "hata", "cancel", "create", "add", "save",
+                    "bana", "laga", "likh", "update", "kar do", "kardo", "schedule", "clear", "wipe", "drop"
+                )) or ("set" in u_low and not any(p in u_low for p in ("u set", "you set", "i set", "already set"))))
+                is_status_inquiry = is_explicit_status or (("?" in u_text or any(w in u_low.split() for w in ("kya", "what", "show", "check", "list", "dikhao", "status"))) and not has_write_action)
                 if not is_status_inquiry:
                     quote = u_text
             if not validate_request_quote(chat_id, quote, user_context):
@@ -2086,6 +2094,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             return {
                 "status": "success",
                 "action": "set_user_language",
+                "language": clean_l,
                 "facts": {"language": clean_l},
                 "next_options": ["continue_conversation"]
             }
@@ -2391,6 +2400,10 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                         "tool_name": "update_reminder",
                         "status": "error",
                         "error": "invalid_date_or_in_past",
+                        "today": today_d.isoformat(),
+                        "date": args.due_date,
+                        "timezone": u_tz.key if hasattr(u_tz, "key") else str(u_tz),
+                        "message": f"Date {args.due_date} is invalid or in the past. Today is {today_d.isoformat()} ({u_tz}). Please specify today or a future date.",
                         "facts": {
                             "date": args.due_date,
                             "today": today_d.isoformat(),
@@ -2493,6 +2506,9 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
+                    "message": f"Time Conflict: {', '.join(conflicts)}",
+                    "due_date": new_date.isoformat(),
+                    "due_time": args.due_time or (new_time.strftime("%H:%M") if new_time else None),
                     "facts": {
                         "title": new_title,
                         "due_date": new_date.isoformat(),
@@ -2546,6 +2562,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "action": "update_reminder",
                 "tool_name": "update_reminder",
                 "status": "success",
+                "title": new_title,
+                "due_date": new_date.isoformat() if new_date else None,
+                "due_time": args.due_time or (new_time.strftime("%H:%M") if new_time else None),
+                "duration_minutes": new_dur,
+                "message": f"Reminder '{new_title}' updated for {date_str} at {time_str} ({args.due_time or (new_time.strftime('%H:%M') if new_time else '')}).",
+                "rescheduled": True,
                 "has_conflict": len(conflicts) > 0,
                 "conflicts": conflicts,
                 "facts": {
@@ -2572,6 +2594,10 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "tool_name": "create_reminder",
                     "status": "error",
                     "error": "invalid_date_or_in_past",
+                    "today": today_d.isoformat(),
+                    "date": args.due_date,
+                    "timezone": u_tz.key if hasattr(u_tz, "key") else str(u_tz),
+                    "message": f"Date {args.due_date} is invalid or in the past. Today is {today_d.isoformat()} ({u_tz}). Please specify today or a future date.",
                     "facts": {
                         "date": args.due_date,
                         "today": today_d.isoformat(),
@@ -2705,7 +2731,10 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "has_conflict": True,
                     "conflict_type": "direct_overlap",
                     "conflicts": conflicts,
+                    "message": f"Time Conflict: {', '.join(conflicts)}",
                     "conflict_warning": f"Time Conflict: {', '.join(conflicts)}",
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
                     "facts": {
                         "title": clean_title,
                         "due_date": args.due_date,
@@ -2724,7 +2753,10 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                     "has_conflict": True,
                     "conflict_type": "tight_buffer",
                     "conflicts": tight_buffers,
+                    "message": f"Schedule Buffer: {', '.join(tight_buffers)}",
                     "conflict_warning": f"Schedule Buffer: {', '.join(tight_buffers)}",
+                    "due_date": args.due_date,
+                    "due_time": args.due_time,
                     "facts": {
                         "title": clean_title,
                         "due_date": args.due_date,
@@ -2811,8 +2843,13 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "action": "create_reminder",
                 "tool_name": "create_reminder",
                 "status": "success",
+                "title": clean_title,
+                "due_date": args.due_date,
+                "due_time": args.due_time,
+                "duration_minutes": dur_mins,
                 "has_conflict": len(conflicts) > 0,
                 "conflicts": conflicts,
+                "rescheduled": rescheduled,
                 "facts": {
                     "item_id": item_id,
                     "title": clean_title,
@@ -2831,7 +2868,8 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             rem_id = arguments.get("reminder_id")
             target_ids = arguments.get("target_ids")
             has_model_confirm = bool(arguments.get("confirmed") or arguments.get("confirm", False))
-            is_from_pending = bool(user_context and user_context.get("_from_pending_executor"))
+            is_agent_loop_model_call = bool(user_context and "delivery_chat_id" in user_context and not user_context.get("_from_pending_executor"))
+            is_from_pending = bool(user_context and (user_context.get("_from_pending_executor") or (user_context.get("bypass_quote_check") and arguments.get("target_ids"))))
             from db import canonical_chat_id, engine, text
             can_cid = canonical_chat_id(chat_id)
 
@@ -3519,6 +3557,9 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "status": "success",
                 "action": "schedule_event",
                 "tool_name": "schedule_event",
+                "synced_calendar": synced_cal,
+                "synced_telegram": synced_tg,
+                "message": f"Event '{clean_title}' {channel_str} schedule kar diya gaya hai.",
                 "facts": {
                     "title": clean_title,
                     "due_date": d_val.isoformat(),
@@ -4750,13 +4791,13 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         elif tool_name == "find_nearby_places":
             args = FindNearbyPlacesArgs(**arguments)
             from utilities import find_nearby_places
-            res = await find_nearby_places(args.category, args.area, args.city or "Jodhpur")
+            res = await find_nearby_places(args.category, args.area, args.city)
             return res
 
         elif tool_name == "get_movie_showtimes":
             args = GetMovieShowtimesArgs(**arguments)
             from utilities import get_movie_showtimes
-            res = await get_movie_showtimes(args.city or "Jodhpur", args.area or "Sardarpura", args.movie)
+            res = await get_movie_showtimes(args.city, args.area, args.movie)
             return res
 
         elif tool_name in ("search_web", "web_search"):
@@ -4952,7 +4993,7 @@ TOOL_GROUPS = {
         "tools": {"check_availability", "get_meet_link", "create_meeting", "schedule_event"}
     },
     "privacy_data": {
-        "description": "permanently erase delete wipe all user data and memories account reset clear history uda do clean slate",
+        "description": "permanently erase delete dlete wipe all user data and memory memories account reset clear history uda do clean slate bhool jao",
         "tools": {"request_master_privacy_wipe", "clear_chat_history"}
     },
     "web_research": {
@@ -5016,21 +5057,30 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
     if not combined:
         return core_tools
 
+    # If query is casual greeting/chitchat with no domain context, return core tools only
+    is_casual_greeting = any(w in low.lower() for w in ("kya haal", "sab badhiya", "kaise ho", "kaisa hai", "hello", "namaste")) and not ctx_clean
+    if is_casual_greeting:
+        return core_tools
+
     activated_tools = set()
 
-    # 1. Multi-turn active context & continuity activation:
-    # If the active context indicates an ongoing session with a connector (Notion, GitHub, Email, etc.),
-    # retain that domain's tool group in the working set for follow-up turns.
-    if ctx_clean:
-        ctx_lower = ctx_clean.lower()
-        for g_name, g_info in TOOL_GROUPS.items():
-            parts = g_name.split("_")
-            domain_key = parts[1] if len(parts) > 1 else parts[0]
-            if domain_key in ctx_lower:
-                # Never offer Notion write tools on casual trip/schedule/reminder queries unless user mentions Notion
-                if domain_key == "notion" and not any(w in low.lower() for w in ("notion", "note", "notes", "doc", "document", "page", "write", "likh")):
-                    continue
-                activated_tools.update(g_info["tools"])
+    # 1. Multi-turn active context & explicit domain keyword activation:
+    # If the user or context indicates an ongoing session or explicit query with a connector (Notion, GitHub, Email, etc.),
+    # retain/attach that domain's tool group in the working set.
+    for g_name, g_info in TOOL_GROUPS.items():
+        parts = g_name.split("_")
+        desc_words = [w.lower() for w in g_info["description"].split() if len(w) >= 4]
+        desc_phrases = [p for p in ("uda do", "clean slate", "bhool jao") if p in g_info["description"]]
+        has_kw_match = (
+            any(part in low.lower() or (ctx_clean and part in ctx_clean.lower()) for part in parts) or
+            any(w in low.lower() or (ctx_clean and w in ctx_clean.lower()) for w in desc_words) or
+            any(p in low.lower() or (ctx_clean and p in ctx_clean.lower()) for p in desc_phrases)
+        )
+        if has_kw_match:
+            # Never offer Notion write tools on casual trip/schedule/reminder queries unless user mentions Notion or note-taking
+            if "notion" in parts and not any(w in low.lower() for w in ("notion", "note", "notes", "doc", "document", "page", "write", "likh", "plan", "list", "track", "banao", "save")):
+                continue
+            activated_tools.update(g_info["tools"])
 
     # 2. Semantic Embedding Similarity Routing
     q_vec = None
@@ -5051,12 +5101,17 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
         if sorted_domains:
             top_name, top_sim = sorted_domains[0]
             second_sim = sorted_domains[1][1] if len(sorted_domains) > 1 else 0.0
-            if top_sim >= 0.66 and (top_sim - second_sim >= 0.05 or top_sim >= 0.70):
+            if (top_sim >= 0.60 and (top_sim - second_sim >= 0.06)) or top_sim >= 0.65:
                 activated_tools.update(TOOL_GROUPS[top_name]["tools"])
 
         for g_name, sim in domain_sims.items():
-            if sim >= 0.68:
+            if sim >= 0.64:
                 activated_tools.update(TOOL_GROUPS[g_name]["tools"])
+
+        is_casual_trip = any(w in low.lower() for w in ("trip", "tour", "chalte hain", "dost k sth", "dost ke sath", "ghoomne")) and not any(w in low.lower() for w in ("notion", "note", "notes", "doc", "document", "page", "write", "likh"))
+        if is_casual_trip:
+            activated_tools.discard("create_notion_page")
+            activated_tools.discard("update_notion_page")
     else:
         # Safe default when embeddings are unavailable (offline test suite):
         is_casual_trip = any(w in low.lower() for w in ("trip", "tour", "chalte hain", "dost k sth", "dost ke sath", "ghoomne")) and not any(w in low.lower() for w in ("notion", "note", "doc", "page", "write", "likh"))

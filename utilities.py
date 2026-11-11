@@ -228,6 +228,7 @@ async def get_weather(city: Optional[str] = None, chat_id: Optional[int] = None)
 
     return {
         "status": "error",
+        "error_type": "weather_fetch_failed",
         "found": False,
         "city": clean_city,
         "message": f"Could not fetch weather data for '{clean_city}'. Kripya city ka naam check karein."
@@ -926,13 +927,25 @@ async def read_webpage(url: str, max_chars: int = 4000) -> Dict[str, Any]:
 # 7. REVERSE-ENGINEERED DIRECT BOOKMYSHOW & CINEMA SHOWTIMES ENDPOINT
 # ==============================================================================
 
-async def get_movie_showtimes(city: str = "Jodhpur", area: Optional[str] = "Sardarpura", movie: Optional[str] = None) -> Dict[str, Any]:
+async def get_movie_showtimes(city: Optional[str] = None, area: Optional[str] = None, movie: Optional[str] = None) -> Dict[str, Any]:
     """
     Direct structured cinema and BookMyShow showtimes fetcher for user's local area.
     Queries live search dynamically to find actual currently running films without hardcoded fake movies.
+    Prompts user if city is unconfigured/omitted.
     """
-    clean_city = (city or "Jodhpur").strip()
+    clean_city = (city or "").strip()
     clean_area = (area or "").strip()
+
+    if not clean_city:
+        return {
+            "status": "needs_clarification",
+            "city": None,
+            "platform": "BookMyShow",
+            "theatres": [],
+            "movies": [],
+            "summary": "City not specified. Please ask user which city they are in.",
+            "message": "Aap kis city ke cinema showtimes dekhna chahte hain? Please city ka naam bataiye."
+        }
 
     search_query = f"movies in theatres in {clean_city} showtimes BookMyShow"
     if movie:
@@ -971,14 +984,25 @@ async def get_movie_showtimes(city: str = "Jodhpur", area: Optional[str] = "Sard
 # 8. DIRECT LIVE SEARCH GROUNDED PLACES DISCOVERY (Zero Mock / Pure Truth)
 # ==============================================================================
 
-async def find_nearby_places(category: str, area: Optional[str] = None, city: str = "Jodhpur") -> Dict[str, Any]:
+async def find_nearby_places(category: str, area: Optional[str] = None, city: Optional[str] = None) -> Dict[str, Any]:
     """
     Finds real, verified local places, malls, cafes, and restaurants by querying live search engines.
     Strictly zero mock lists, zero hardcoded fake names.
+    Prompts user if city is unconfigured/omitted.
     """
     clean_cat = (category or "").strip()
     clean_area = (area or "").strip()
-    raw_city = (city or "Jodhpur").strip()
+    raw_city = (city or "").strip()
+
+    if not raw_city:
+        return {
+            "status": "needs_clarification",
+            "city": None,
+            "results": [],
+            "search_query": "",
+            "summary": "City not specified. Please ask user which city they want to search in.",
+            "message": f"Aap kis city me {clean_cat or 'places'} search karna chahte hain? Please city ka naam bataiye."
+        }
 
     # Normalize common Indian city typos (e.g. 'jodhur' -> 'Jodhpur')
     CITY_SPELL_MAP = {

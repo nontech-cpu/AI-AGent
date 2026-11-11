@@ -300,7 +300,7 @@ async def test_brand_store_grounding_and_zero_raw_leakage():
     prompt = await build_runtime_system_prompt(TEST_CHAT_ID, "bhy jodhpur m zara ka shorrom h?")
     assert "Brand Showrooms & Store Verification" in prompt
     assert "NEVER guess, assume, or hardcode whether a brand exists in a city!" in prompt
-    assert "H&M DOES have an official physical store in Jodhpur at K Mall, while Zara does not" in prompt
+    assert "Always verify via search_web or find_nearby_places" in prompt
 
     # 2. Search spam filter must include deceptive directory domains
     assert "storelocatortool.com" in utilities.SPAM_DOMAINS
@@ -333,34 +333,39 @@ async def test_multiturn_meeting_conflict_and_transit_buffer_detection():
     assert estimate_event_duration("30 mins sync") == 0.5
     assert estimate_event_duration("Movie date") == 2.5
 
-    # 3. Setting a 1-hour meeting at 3:00 PM without date defaults to today
-    today_d = datetime.now(IST).date()
-    res1 = await execute_tool(
-        TEST_CHAT_ID,
-        "create_reminder",
-        {"title": "Project Meeting", "due_time": "15:00", "duration_minutes": 60}
-    )
-    assert res1.get("status") == "success"
-    assert res1.get("due_date") == today_d.isoformat()
+    from tests.harness.clock import FrozenClock
+    with FrozenClock("2026-11-11T12:00:00+05:30"):
+        # 3. Setting a 1-hour meeting at 3:00 PM without date defaults to today
+        today_d = datetime.now(IST).date()
+        res1 = await execute_tool(
+            TEST_CHAT_ID,
+            "create_reminder",
+            {"title": "Project Meeting", "due_time": "15:00", "duration_minutes": 60},
+            user_context={"bypass_quote_check": True}
+        )
+        assert res1.get("status") == "success"
+        assert res1.get("due_date") == today_d.isoformat()
 
-    # 4. Scheduling a direct overlap (3:30 PM call) must detect conflict
-    res_overlap = await execute_tool(
-        TEST_CHAT_ID,
-        "create_reminder",
-        {"title": "Client Call", "due_time": "15:30", "duration_minutes": 30}
-    )
-    assert res_overlap.get("status") == "conflict_detected"
-    assert res_overlap.get("has_conflict") is True
+        # 4. Scheduling a direct overlap (3:30 PM call) must detect conflict
+        res_overlap = await execute_tool(
+            TEST_CHAT_ID,
+            "create_reminder",
+            {"title": "Client Call", "due_time": "15:30", "duration_minutes": 30},
+            user_context={"bypass_quote_check": True}
+        )
+        assert res_overlap.get("status") == "conflict_detected"
+        assert res_overlap.get("has_conflict") is True
 
-    # 5. Scheduling Movie date at 4:30 PM (only 30 min transition after 4:00 PM meeting end) must detect tight buffer
-    res_buffer = await execute_tool(
-        TEST_CHAT_ID,
-        "create_reminder",
-        {"title": "Movie date", "due_time": "16:30"}
-    )
-    assert res_buffer.get("status") == "conflict_detected"
-    assert res_buffer.get("has_conflict") is True
-    assert "Project Meeting" in str(res_buffer.get("conflicts")) or "Project Meeting" in str(res_buffer.get("message"))
+        # 5. Scheduling Movie date at 4:30 PM (only 30 min transition after 4:00 PM meeting end) must detect tight buffer
+        res_buffer = await execute_tool(
+            TEST_CHAT_ID,
+            "create_reminder",
+            {"title": "Movie date", "due_time": "16:30"},
+            user_context={"bypass_quote_check": True}
+        )
+        assert res_buffer.get("status") == "conflict_detected"
+        assert res_buffer.get("has_conflict") is True
+        assert "Project Meeting" in str(res_buffer.get("conflicts")) or "Project Meeting" in str(res_buffer.get("message"))
 
 
 

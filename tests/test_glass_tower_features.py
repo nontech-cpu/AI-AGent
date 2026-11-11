@@ -97,9 +97,11 @@ async def test_feature1_search_user_emails_wraps_body_in_delimiters():
 @pytest.mark.asyncio
 async def test_feature2_write_idempotency_prevents_duplicate_reminders():
     """Verify identical create_reminder calls within sliding window replay without duplicate DB entries."""
+    from datetime import timedelta
+    future_date = (timeutil.today(IST) + timedelta(days=2)).isoformat()
     args = {
         "title": "Submit project invoice",
-        "due_date": "2026-11-10",
+        "due_date": future_date,
         "due_time": "15:00"
     }
 
@@ -114,7 +116,7 @@ async def test_feature2_write_idempotency_prevents_duplicate_reminders():
     assert res2.get("idempotent_replay") is True
 
     # Verify only ONE reminder was created in the database!
-    list_res = await execute_tool(TEST_CHAT_ID, "list_reminders", {"date_str": "2026-11-10"})
+    list_res = await execute_tool(TEST_CHAT_ID, "list_reminders", {"date_str": future_date})
     reminders = list_res.get("reminders", [])
     matching = [r for r in reminders if "Submit project invoice" in str(r)]
     assert len(matching) == 1
@@ -123,8 +125,10 @@ async def test_feature2_write_idempotency_prevents_duplicate_reminders():
 @pytest.mark.asyncio
 async def test_feature2_different_arguments_execute_independently():
     """Verify different arguments produce distinct idempotency keys and execute separately."""
-    args1 = {"title": "Call Doctor", "due_date": "2026-11-10", "due_time": "10:00"}
-    args2 = {"title": "Call Dentist", "due_date": "2026-11-10", "due_time": "11:00"}
+    from datetime import timedelta
+    future_date = (timeutil.today(IST) + timedelta(days=2)).isoformat()
+    args1 = {"title": "Call Doctor", "due_date": future_date, "due_time": "10:00"}
+    args2 = {"title": "Call Dentist", "due_date": future_date, "due_time": "11:00"}
 
     res1 = await execute_tool(TEST_CHAT_ID, "create_reminder", args1)
     res2 = await execute_tool(TEST_CHAT_ID, "create_reminder", args2)
@@ -134,7 +138,7 @@ async def test_feature2_different_arguments_execute_independently():
     assert "idempotent_replay" not in res1
     assert "idempotent_replay" not in res2
 
-    list_res = await execute_tool(TEST_CHAT_ID, "list_reminders", {"date_str": "2026-11-10"})
+    list_res = await execute_tool(TEST_CHAT_ID, "list_reminders", {"date_str": future_date})
     reminders = list_res.get("reminders", [])
     titles = [r.get("title", "") for r in reminders]
     assert "Call Doctor" in titles

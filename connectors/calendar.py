@@ -136,10 +136,6 @@ class CalendarConnector(Connector):
                         pass
 
                 # Step 4: Past-time validation (tolerance configurable, default 0)
-                from timing import IST
-                import core.timeutil as timeutil
-                import os
-                from datetime import datetime, timedelta
                 cur_now = timeutil.now(IST)
                 tolerance_sec = int(os.environ.get("TIME_VALIDATION_TOLERANCE_SECONDS", "0"))
                 start_iso = args.get("start_iso")

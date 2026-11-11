@@ -1,7 +1,9 @@
 import pytest
-from datetime import date, time as dtime
+from datetime import date, time as dtime, timedelta
 from sqlalchemy import text
 import db
+import core.timeutil as timeutil
+from timing import IST
 from agent.tools import execute_tool
 
 @pytest.fixture(autouse=True)
@@ -49,7 +51,7 @@ def init_test_db():
 async def test_meeting_update_duration_and_lunch_clash_detection():
     chat_id = 8877665544
     db.ensure_user(chat_id)
-    today = date(2026, 11, 5)
+    today = timeutil.today(IST) + timedelta(days=2)
 
     # Clean test items for today
     with db.engine.begin() as conn:

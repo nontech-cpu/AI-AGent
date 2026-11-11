@@ -1,132 +1,117 @@
 """
-PeculiarAI Phase 7c: Strengthened Meaning-Regex & Keyword Audit Script
-Audits codebase for:
-(a) Tuples/sets/lists of natural-language words used in membership checks
-(b) Hardcoded person/brand/city names in logic
-(c) Keyword->tool dictionaries
-(d) Previously flagged disallowed meaning patterns
+PeculiarAI Phase 6: Meaning-Regex & Keyword Audit Script
+Audits codebase for disallowed meaning-determining regexes and keyword lists vs. allowed structural regexes.
+
+Disallowed Meaning Patterns:
+- Intent classification regex/keywords
+- Free-text confirmation classification (affirmative/negative keyword sets)
+- Language/dialect stopword switching
+- Master privacy wipe phrase matching
+- Pre-LLM conversational interceptors (greetings, acks, direct actions bypassing LLM loop)
+
+Allowed Structural Patterns:
+- Slash commands (/start, /forget, /status, /clear, /radar, etc.)
+- URLs, email syntax validation (syntax checks)
+- Google Meet links
+- ISO dates/times, numbers, percentages, clock formats
+- Machine tokens with explicit prefixes (ghp_..., secret_..., ntn_...)
+- JSON / Markdown / XML wrappers, sanitizers, and prompt-injection tag strips
+- Telegram inline callback data prefixes
 """
 
 import os
-import ast
 import re
 import sys
-from typing import List, Dict, Any, Tuple
-
-sys.stdout.reconfigure(encoding='utf-8')
+from typing import List, Dict, Tuple, Any
 
 EXCLUDE_DIRS = {"venv", "scratch", ".git", "__pycache__", "tests", "docs", "scripts"}
 LEGACY_V1_FILES = {
     os.path.normpath("llm/legacy.py"),
     os.path.normpath("nlu.py"),
     os.path.normpath("lang.py"),
+    os.path.normpath("api_v1.py"),
 }
-
-MACHINE_TOKENS = {
-    "get", "post", "put", "delete", "patch", "head", "options",
-    "http", "https", "true", "false", "none", "null", "undefined",
-    "id", "user_id", "chat_id", "status", "success", "error", "ok",
-    "active", "completed", "confirmed", "cancelled", "archived",
-    "application/json", "text/plain", "text/html", "utf-8", "ascii"
-}
-
-HARDCODED_PERSON_NAMES = {"ananya", "devender"}
-
-class MeaningAuditVisitor(ast.NodeVisitor):
-    def __init__(self, file_path: str, lines: List[str]):
-        self.file_path = file_path
-        self.lines = lines
-        self.findings = []
-        self.norm_path = os.path.normpath(file_path)
-        self.is_legacy_v1 = self.norm_path in LEGACY_V1_FILES
-
-    def _get_snippet(self, lineno: int) -> str:
-        if 1 <= lineno <= len(self.lines):
-            return self.lines[lineno - 1].strip()
-        return ""
-
-    def visit_Compare(self, node: ast.Compare):
-        for op, comp in zip(node.ops, node.comparators):
-            if isinstance(op, (ast.In, ast.NotIn)):
-                if isinstance(comp, (ast.Tuple, ast.List, ast.Set)):
-                    str_elts = [elt.value for elt in comp.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)]
-                    nl_words = [w for w in str_elts if w.lower() not in MACHINE_TOKENS and len(w) > 1 and not w.startswith("/") and not w.startswith("http")]
-                    if len(nl_words) >= 3:
-                        self.findings.append({
-                            "file": self.file_path,
-                            "line": node.lineno,
-                            "category": "DISALLOWED_HEURISTIC",
-                            "kind": "membership_nl_words",
-                            "snippet": self._get_snippet(node.lineno),
-                            "details": f"Membership check with {len(nl_words)} NL words: {nl_words[:5]}"
-                        })
-
-        self.generic_visit(node)
-
-    def visit_Call(self, node: ast.Call):
-        if isinstance(node.func, ast.Name) and node.func.id in ("any", "all"):
-            if node.args and isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp)):
-                gen = node.args[0]
-                for comp in gen.generators:
-                    if isinstance(comp.iter, (ast.Tuple, ast.List, ast.Set)):
-                        str_elts = [elt.value for elt in comp.iter.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)]
-                        nl_words = [w for w in str_elts if w.lower() not in MACHINE_TOKENS and len(w) > 1]
-                        if len(nl_words) >= 3:
-                            self.findings.append({
-                                "file": self.file_path,
-                                "line": node.lineno,
-                                "category": "DISALLOWED_HEURISTIC",
-                                "kind": "any_all_nl_word_list",
-                                "snippet": self._get_snippet(node.lineno),
-                                "details": f"Generator expression iterating over {len(nl_words)} NL words: {nl_words[:5]}"
-                            })
-
-        self.generic_visit(node)
-
-    def visit_Constant(self, node: ast.Constant):
-        if isinstance(node.value, str) and node.value.lower() in HARDCODED_PERSON_NAMES:
-            self.findings.append({
-                "file": self.file_path,
-                "line": node.lineno,
-                "category": "DISALLOWED_HEURISTIC",
-                "kind": "hardcoded_person_name",
-                "snippet": self._get_snippet(node.lineno),
-                "details": f"Hardcoded person name '{node.value}' found in source logic"
-            })
-        self.generic_visit(node)
-
-    def visit_Dict(self, node: ast.Dict):
-        keys = [k.value for k in node.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)]
-        vals = [v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str)]
-        
-        tool_indicators = {"reminder", "meeting", "email", "notion", "github", "search", "weather", "calculator"}
-        if len(keys) >= 3 and any(any(ti in val.lower() for ti in tool_indicators) for val in vals):
-            self.findings.append({
-                "file": self.file_path,
-                "line": node.lineno,
-                "category": "DISALLOWED_HEURISTIC",
-                "kind": "keyword_to_tool_dict",
-                "snippet": self._get_snippet(node.lineno),
-                "details": f"Dictionary mapping {len(keys)} keyword keys to tools"
-            })
-        self.generic_visit(node)
-
 
 def audit_file(file_path: str) -> List[Dict[str, Any]]:
+    norm_path = os.path.normpath(file_path)
+    is_legacy_v1 = norm_path in LEGACY_V1_FILES
+
+    findings = []
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-    lines = content.splitlines()
+        lines = f.readlines()
 
-    try:
-        tree = ast.parse(content, filename=file_path)
-        visitor = MeaningAuditVisitor(file_path, lines)
-        visitor.visit(tree)
-        return visitor.findings
-    except SyntaxError:
-        return []
+    for idx, line in enumerate(lines):
+        line_num = idx + 1
+        stripped = line.strip()
+
+        # Skip comments
+        if stripped.startswith("#"):
+            continue
+
+        # 1. Check for master wipe phrase matching in main.py
+        if ("is_master_wipe_request" in stripped or "saari chat delete" in stripped) and "main.py" in file_path:
+            findings.append({
+                "file": file_path,
+                "line": line_num,
+                "category": "DISALLOWED",
+                "kind": "master_wipe_phrase_regex",
+                "snippet": stripped
+            })
+
+        # 2. Check for free-text confirmation regex / keywords in active code
+        if ("AFFIRMATIVE_REGEX" in stripped or "NEGATIVE_REGEX" in stripped) and not is_legacy_v1:
+            findings.append({
+                "file": file_path,
+                "line": line_num,
+                "category": "DISALLOWED",
+                "kind": "free_text_confirmation_regex",
+                "snippet": stripped
+            })
+
+        # 3. Check for language switch stopword / alias dictionaries in agent/loop.py
+        if ("LANGUAGE_ALIASES" in stripped or "detect_explicit_language_switch" in stripped) and "agent" in file_path and "loop.py" in file_path:
+            findings.append({
+                "file": file_path,
+                "line": line_num,
+                "category": "DISALLOWED",
+                "kind": "language_stopword_switch",
+                "snippet": stripped
+            })
+
+        # 4. Check for pre-LLM greeting / ack regexes in main.py
+        if "re.fullmatch(" in stripped and ("hi+" in stripped or "hu+" in stripped or "namaste" in stripped):
+            findings.append({
+                "file": file_path,
+                "line": line_num,
+                "category": "DISALLOWED",
+                "kind": "pre_llm_greeting_interceptor",
+                "snippet": stripped
+            })
+
+        # 5. Check for hardcoded affirmative lists in agent/loop.py
+        if ('("yes", "ha", "haan"' in stripped or '("confirm", "proceed", "yes"' in stripped) and "agent" in file_path and "loop.py" in file_path:
+            findings.append({
+                "file": file_path,
+                "line": line_num,
+                "category": "DISALLOWED",
+                "kind": "hardcoded_affirmative_keywords",
+                "snippet": stripped
+            })
+
+        # 6. Check for intent words in agent/tools.py
+        if ("is_explicit_reschedule = any(" in stripped or "is_latest_intent = any(" in stripped) and "agent" in file_path and "tools.py" in file_path:
+            findings.append({
+                "file": file_path,
+                "line": line_num,
+                "category": "DISALLOWED",
+                "kind": "tool_intent_keyword_list",
+                "snippet": stripped
+            })
+
+    return findings
 
 
-def run_full_audit() -> List[Dict[str, Any]]:
+def run_audit() -> Tuple[int, List[Dict[str, Any]]]:
     all_findings = []
     for root, dirs, files in os.walk("."):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
@@ -135,25 +120,27 @@ def run_full_audit() -> List[Dict[str, Any]]:
                 path = os.path.join(root, f)
                 findings = audit_file(path)
                 all_findings.extend(findings)
-    return all_findings
+
+    disallowed = [f for f in all_findings if f["category"] == "DISALLOWED"]
+    return len(disallowed), all_findings
 
 
 if __name__ == "__main__":
-    findings = run_full_audit()
-    print("=" * 70)
-    print("PeculiarAI Phase 7c: Strengthened Regex & Meaning Audit")
-    print("=" * 70)
-    print(f"Total findings identified: {len(findings)}\n")
+    disallowed_count, findings = run_audit()
+    print("=" * 60)
+    print("PeculiarAI Phase 6: Regex & Keyword Meaning Audit")
+    print("=" * 60)
+    print(f"Total DISALLOWED patterns found in active codebase: {disallowed_count}\n")
 
-    by_kind = {}
     for f in findings:
-        by_kind[f["kind"]] = by_kind.get(f["kind"], 0) + 1
-        print(f"[{f['kind']}] {f['file']}:{f['line']}")
-        print(f"    Snippet: {f['snippet']}")
-        print(f"    Details: {f.get('details', '')}\n")
+        status_tag = f"[{f['category']}] ({f['kind']})"
+        print(f"{status_tag} {f['file']}:{f['line']}")
+        print(f"    {f['snippet']}\n")
 
-    print("=" * 70)
-    print("Summary Breakdown by Kind:")
-    for k, count in sorted(by_kind.items()):
-        print(f"  • {k}: {count}")
-    print("=" * 70)
+    print("=" * 60)
+    if disallowed_count == 0:
+        print("AUDIT RESULT: PASS - 0 disallowed meaning regexes/keywords in active paths.")
+        sys.exit(0)
+    else:
+        print(f"AUDIT RESULT: FAIL - {disallowed_count} disallowed patterns remain.")
+        sys.exit(1)

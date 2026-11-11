@@ -72,6 +72,8 @@ def test_c4_recurrence_delivery_and_sleep_catchup():
     remind_at = datetime(2026, 11, 10, 9, 0, tzinfo=IST)
 
     with db.engine.begin() as conn:
+        conn.execute(text("DELETE FROM reminders"))
+        conn.execute(text("DELETE FROM memory_items WHERE title = 'Morning Gym'"))
         uid = conn.execute(
             text("SELECT id FROM users WHERE telegram_chat_id = :cid"),
             {"cid": TEST_CHAT_ID}
@@ -126,6 +128,8 @@ def test_c4_scope_this_vs_all():
     remind_at = datetime(2026, 11, 10, 18, 0, tzinfo=IST)
 
     with db.engine.begin() as conn:
+        conn.execute(text("DELETE FROM reminders"))
+        conn.execute(text("DELETE FROM memory_items WHERE title = 'Morning Gym'"))
         uid = conn.execute(
             text("SELECT id FROM users WHERE telegram_chat_id = :cid"),
             {"cid": TEST_CHAT_ID}

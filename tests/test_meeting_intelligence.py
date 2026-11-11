@@ -86,7 +86,34 @@ async def test_ask_for_meet_link_returns_real_link():
     async def mock_say(cid, text):
         sent.append(text)
 
+    from llm.provider import LLMResponse
+    import json
+    call_count = [0]
+    async def mock_llm_chat(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return LLMResponse(
+                text="",
+                tool_calls=[{
+                    "id": "call_meet_link_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_meet_link",
+                        "arguments": "{}"
+                    }
+                }],
+                provider="Gemini",
+                model="gemini-3.5-flash-lite"
+            )
+        return LLMResponse(
+            text="Aapki AI Sync meeting ka link yeh raha: https://meet.google.com/abc-defg-hij",
+            tool_calls=[],
+            provider="Gemini",
+            model="gemini-3.5-flash-lite"
+        )
+
     with patch.dict(os.environ, {"AGENT_CORE": "v1"}), \
+         patch("llm.provider.chat", side_effect=mock_llm_chat), \
          patch("main.say", side_effect=mock_say), \
          patch("main.get_state", return_value=(None, None)), \
          patch("main.has_consent", return_value=True), \

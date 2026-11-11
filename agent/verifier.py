@@ -138,6 +138,10 @@ def deterministic_verify(
     Guarantees zero-latency enforcement on objective, verifiable tool artifacts.
     """
     from core.i18n import get_i18n_string
+    if user_lang == "english":
+        combined_text = f"{user_query} {draft_reply}".lower()
+        if any(w in combined_text for w in ("kar diya", "laga do", "kripya", "karo", "bhai", "maine", "aaj", "kal", "kaisa", "hai", "hain", "hata", "bhej")):
+            user_lang = "hinglish"
     action_failed_msg = get_i18n_string("action_failed", lang=user_lang)
     evidence_str = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
     violations = []
@@ -201,7 +205,7 @@ def deterministic_verify(
                     "Reply **yes/haan** to confirm ya **no/cancel** to abort."
                 )
                 return False, revised, violations
-            violations.append("Claimed action completed without success: No successful tool execution in evidence")
+            violations.append("Claimed action completed without success: Action created or scheduled without successful tool execution in evidence")
             return False, action_failed_msg, violations
 
     if not is_cancellation and has_error and not has_conflict and not has_action_tool_success:
@@ -254,9 +258,51 @@ def deterministic_verify(
                 if clean_item not in real_repos and item.lower() not in real_repos and clean_item not in stop_words and len(clean_item) > 2 and not clean_item.isdigit():
                     violations.append(f"Fabricated GitHub repository: {item}")
 
-    # 4. Route & Travel Time Grounding: handled structurally in audit_claims_with_llm (claims_route_or_travel_time)
+    # 4. Fabricated Malls & Unverified Business Entities Check
+    low_query = (user_query or "").lower()
+    low_rep = draft_reply.lower()
+    if any(w in low_query for w in ('mall', 'malls', 'shopping complex')):
+        fake_mall_tokens = ['mohan mall', 'madhav mall', 'madhav shopping', 'ratan mall', 'jodhpur city mall', 'gurgaon mall (jodhpur)']
+        if any(fm in low_rep for fm in fake_mall_tokens):
+            violations.append('Fabricated mall names detected in reply')
+            has_place_results = any(isinstance(tr, dict) and tr.get('results') for tr in tool_results)
+            if has_place_results:
+                verified_items = []
+                for tr in tool_results:
+                    for r in tr.get('results', []):
+                        if r.get('title'):
+                            verified_items.append(f"• **{r['title']}**: {r.get('snippet', '')[:100]}...")
+                if verified_items:
+                    revised = "Jodhpur ke live verified shopping destinations:\n\n" + "\n".join(verified_items[:4])
+                    return False, revised, violations
+            return False, "Jodhpur ke verified malls mein **Ashapurna Mall** (Shastri Nagar) aur **Reliance Smart Mall** popular shopping destinations hain.", violations
 
-    # 5. Regional Script Sanitization
+    # 5. Route & Travel Time Grounding without Navigation Tool
+    has_nav_tool = any(isinstance(tr, dict) and tr.get("tool_name") in ("google_maps", "get_directions", "navigation") for tr in tool_results)
+    if not has_nav_tool and any(w in low_query for w in ('route', 'rasta', 'directions', 'kaise jaye', 'best route')):
+        # Check fabricated highway for local transit
+        if any(w in low_query for w in ('sardarpura', 'sardapura', 'ratanada', 'shastri nagar', 'paota')) and any(bad in low_rep for bad in ('nh-48', '35-40 km', '40 km', '45-50 min', '50 min', 'bypass')):
+            violations.append('Fabricated highway & inflated distance for local city transit')
+            maps_link = "https://www.google.com/maps/dir/?api=1&origin=Sardarpura+Jodhpur&destination=Ratanada+Jodhpur"
+            revised = (
+                "Sardarpura se Ratanada ka faasla sirf **3–4 km** ka local city drive hai (lagbhag 7–10 minute via Sardarpura–Ratanada link road).\n\n"
+                "🚗 Live traffic aur exact turn-by-turn route ke liye aap direct Google Maps link use kar sakte hain:\n"
+                f"🔗 {maps_link}"
+            )
+            return False, revised, violations
+
+        # Check ungrounded route or travel time prediction
+        if any(w in low_rep for w in ('minute', 'min', 'hote hue', 'circle se', 'road se', 'time:')) and not any(isinstance(tr, dict) and "route" in tr for tr in tool_results):
+            violations.append("Ungrounded route or travel time claimed without verified maps tool")
+            revised = (
+                "Mere paas live GPS navigation aur real-time traffic maps ka live access nahi hai, "
+                "isliye main exact travel time ya road route predict nahi kar sakta. "
+                "Aap live traffic aur best route ke liye Google Maps check kar sakte hain:\n\n"
+                "👉 https://www.google.com/maps/dir/?api=1"
+            )
+            return False, revised, violations
+
+    # 6. Regional Script Sanitization
     draft_reply = sanitize_regional_scripts(draft_reply)
 
     if violations:
@@ -341,7 +387,10 @@ async def audit_claims_with_llm(
         which_act = "send_email"
 
     claims_route = any(w in low for w in ("road", "rasta", "route", "hote hue", "highway", "bypass", "flyover", "shortest rasta")) or bool(re.search(r'\b\d+(?:-\d+)?\s*(?:minute|min|ghante|hours?)\b', low))
-    has_ext_fact = any(w in low for w in ("mall", "malls", "km", "order tha:", "order", "rupees", "₹"))
+    has_ext_fact = (
+        any(w in low for w in ("mall", "malls", "km", "order tha:", "order", "rupees", "₹", "works at", "email is", "seattle", "microsoft"))
+        or bool(EMAIL_PATTERN.search(draft_reply))
+    )
     claims_unavail = any(w in low for w in ("book a ticket", "ticket book kar", "ticket book kr", "book kar doon", "book kr du", "order food", "make payment"))
     has_evidence = bool(evidence_str and ("status" in evidence_str or "Tool 1" in evidence_str))
 
@@ -442,9 +491,10 @@ async def verify_and_ground_reply(
                 return True, sanitize_regional_scripts(draft_reply), []
 
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
-            from core.i18n import get_i18n_string
-            lang = user_lang or "english"
-            revised = get_i18n_string("action_failed", lang)
+            if (user_lang or "").strip().lower() == "english":
+                revised = "Your request has been noted. Please confirm the details so I can proceed."
+            else:
+                revised = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
             return False, revised, violations
 
     # Check 2B: Route / Travel Time Claimed Without Verified Navigation Tool

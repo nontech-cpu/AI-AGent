@@ -22,10 +22,12 @@ IST = ZoneInfo("Asia/Kolkata")
 env_vals = dotenv.dotenv_values(".env")
 DATABASE_URL = env_vals.get("DATABASE_URL") or os.getenv("REAL_DATABASE_URL")
 
-# Skip if DATABASE_URL is not configured
+from tests.conftest import PROD_DB_FINGERPRINT
+
+# Skip if DATABASE_URL is not configured or if pointing to protected production DB
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL or not DATABASE_URL.startswith("postgres"),
-    reason="Live PostgreSQL DATABASE_URL required for Postgres test schema validation"
+    not DATABASE_URL or not DATABASE_URL.startswith("postgres") or (PROD_DB_FINGERPRINT in (DATABASE_URL or "") and os.getenv("ALLOW_NEON_TEST_SCHEMA") != "1"),
+    reason="Live PostgreSQL DATABASE_URL required (protected production Neon DB skipped in automated test harness)"
 )
 
 TEST_SCHEMA = "test_phase1"

@@ -27,7 +27,7 @@ from .provider import (
     ValidationError,
 )
 
-from timing import IST, parse_followup_time, _WORD_NUMBERS
+from timing import IST, parse_followup_time, _WORD_NUMBERS, is_time_ambiguous, ParsedFollowupTime
 
 from .compat import (
     _chat_json,

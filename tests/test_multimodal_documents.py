@@ -150,21 +150,12 @@ async def test_greeting_conditional_google_recommendation():
     db.give_consent(chat_id)
     db.set_persona(chat_id, "Job")
 
-    # Fast greeting path
-    sent_msgs = []
-    async def mock_say(cid, text):
-        sent_msgs.append(text)
+    # 1. Unconnected Google -> MUST show recommendation in consent/welcome flow
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)):
+        welcome_text = await main.get_welcome_consent_text(chat_id)
+        assert "[Recommended: Please connect and link your Google account to ensure a smooth flow]" in welcome_text
 
-    # 1. Unconnected Google -> MUST show recommendation
-    with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)), \
-         patch("main.say", side_effect=mock_say):
-        sent_msgs.clear()
-        await main.handle_active(chat_id, "hi")
-        assert any("[Recommended: Please connect and link your Google account to ensure a smooth flow]" in m for m in sent_msgs)
-
-    # 2. Connected Google -> MUST NOT show recommendation
-    with patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "user@gmail.com")), \
-         patch("main.say", side_effect=mock_say):
-        sent_msgs.clear()
-        await main.handle_active(chat_id, "hi")
-        assert not any("[Recommended: Please connect and link your Google account to ensure a smooth flow]" in m for m in sent_msgs)
+    # 2. Connected Google -> MUST NOT show recommendation in consent/welcome flow
+    with patch("main.get_valid_google_connection_by_chat_id", return_value=(True, "user@gmail.com")):
+        welcome_text = await main.get_welcome_consent_text(chat_id)
+        assert "[Recommended: Please connect and link your Google account to ensure a smooth flow]" not in welcome_text

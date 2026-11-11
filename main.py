@@ -19,6 +19,8 @@ from fastapi.responses import HTMLResponse
 import smtplib
 from email.message import EmailMessage
 
+logger = logging.getLogger("peculiar_main")
+
 import difflib
 import db
 from db import (give_consent, has_consent, set_persona, get_persona,
@@ -1076,7 +1078,10 @@ async def extract_and_save_user_facts(chat_id: int, text: str):
         "}"
     )
     try:
-        data = (await _chat_json(prompt, text)) or {}
+        try:
+            data = (await _chat_json(prompt, text)) or {}
+        except Exception:
+            data = {}
         facts = data.get("facts", []) if isinstance(data, dict) else []
         for item in facts:
             f_text = (item.get("fact") or "").strip()
@@ -2200,7 +2205,7 @@ async def _begin_meeting_deletion(chat_id, clean):
         return False
 
     # If the user is asking to reschedule, move, or replace, delegate to the agent core
-    is_reschedule = any(w in low for w in ("shift", "move", "reschedule", "badal", "change", "nayi", "new", "create", "jagah", "badle", "bana"))
+    is_reschedule = any(w in low for w in ("shift", "move", "reschedule", "badal", "change", "nayi", "new", "create", "jagah", "badle", "bana", "rkhdo", "rakh do", "rakhdo", "rkh do", "rakho", "rkho"))
     if is_reschedule:
         return False
 
@@ -2948,8 +2953,15 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             await say(chat_id, "Theek hai, meeting create nahi ki. Kuch bhi schedule nahi hua.")
             return
 
-        # Check if user is asking an informational question about previous context/conversation
+        # Check if user is asking for their agenda, reminders, or schedule (not giving meeting details)
         clean_low = clean.lower()
+        is_agenda_inquiry = any(w in clean_low for w in ("remidner", "reminder", "reminders", "agenda", "schedule", "task", "tasks")) and not any(w in clean_low for w in ("create", "set", "add", "laga", "bana", "banao"))
+        if is_agenda_inquiry:
+            set_state(chat_id, None)
+            await handle_active(chat_id, clean)
+            return
+
+        # Check if user is asking an informational question about previous context/conversation
         is_context_q = "?" in clean or any(phrase in clean_low for phrase in ("kya naam", "kya bataya", "kya tha", "kya bola", "kya kaha", "what did i", "what was", "which project", "konsa project", "meeting ka title", "title kya", "kya rakhne", "kya rakhne ko")) or ("kya" in clean_low and "bataya" in clean_low)
         if is_context_q and not any(w in clean_low for w in ("baje", "pm", "am", "today", "tomorrow", "kal", "aaj", "parso")):
             history = list(RECENT_CHAT_TURNS.get(chat_id, []))
@@ -3204,6 +3216,13 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 # If user replied with a new date/time for the pending meeting (e.g. "monday 5 bje" or "tuesday 5pm"):
                 if pending.get('kind') == 'create_meeting':
                     parsed_new = parse_followup_time(clean, timeutil.now(IST))
+                    if parsed_new and getattr(parsed_new, 'is_ambiguous', False):
+                        amb_h = getattr(parsed_new, 'ambiguous_hour', None) or (parsed_new[0].hour % 12 or 12 if parsed_new[0] else 10)
+                        await say(
+                            chat_id,
+                            f"Kya aap subah {amb_h}:00 AM ya raat {amb_h}:00 PM ki meeting chahte hain? Please specify (jaise '{amb_h} AM' ya '{amb_h} PM'). Pending meeting cancel nahi hui hai."
+                        )
+                        return
                     if parsed_new and parsed_new[0] is not None:
                         new_due_time, new_due_date = parsed_new
                         new_dt = datetime.combine(new_due_date, new_due_time, tzinfo=IST)

@@ -276,6 +276,8 @@ def items_for_date(chat_id, d):
     chat_id = canonical_chat_id(chat_id)
     _init_memory_items_recurrence_column()
     _init_memory_items_status_column()
+    _init_memory_items_recurrence_column()
+    _init_memory_items_calendar_id_column()
     d_val = d.isoformat() if hasattr(d, "isoformat") and engine.dialect.name == "sqlite" else d
     with engine.connect() as conn:
         rows = conn.execute(
@@ -343,6 +345,8 @@ def items_for_date_range(chat_id, start_d, end_d):
     chat_id = canonical_chat_id(chat_id)
     _init_memory_items_recurrence_column()
     _init_memory_items_status_column()
+    _init_memory_items_recurrence_column()
+    _init_memory_items_calendar_id_column()
     s_val = start_d.isoformat() if hasattr(start_d, "isoformat") and engine.dialect.name == "sqlite" else start_d
     e_val = end_d.isoformat() if hasattr(end_d, "isoformat") and engine.dialect.name == "sqlite" else end_d
     with engine.connect() as conn:
@@ -1101,6 +1105,8 @@ def soft_delete_reminders(chat_id, item_ids, scope: str = "all"):
     and the next recurrence is scheduled. If scope == 'all', the entire recurring series is deleted.
     """
     _init_memory_items_status_column()
+    _init_memory_items_recurrence_column()
+    _init_memory_items_calendar_id_column()
     chat_id = canonical_chat_id(chat_id)
     ids = [int(v) for v in item_ids if isinstance(v, int) or (isinstance(v, str) and v.isdigit())]
     if not ids:
@@ -1211,6 +1217,8 @@ def soft_delete_reminders(chat_id, item_ids, scope: str = "all"):
 def restore_reminder(chat_id, rem_id: int):
     """Restores a soft-deleted reminder back to active status by exact ID."""
     _init_memory_items_status_column()
+    _init_memory_items_recurrence_column()
+    _init_memory_items_calendar_id_column()
     chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
         row = conn.execute(
@@ -1986,13 +1994,15 @@ def get_chat_turns_mentioning_keyword(chat_id, keyword, limit=10):
     if not keyword or len(str(keyword).strip()) < 3:
         return []
     try:
+        is_pg = "postgres" in str(engine.url)
+        like_op = "ILIKE" if is_pg else "LIKE"
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    "SELECT role, message, created_at FROM chat_logs "
-                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                    "AND message ILIKE :kw "
-                    "ORDER BY id DESC LIMIT :lim"
+                    f"SELECT role, message, created_at FROM chat_logs "
+                    f"WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    f"AND message {like_op} :kw "
+                    f"ORDER BY id DESC LIMIT :lim"
                 ),
                 {"cid": chat_id, "kw": f"%{str(keyword).strip()}%", "lim": limit}
             ).fetchall()
@@ -2029,6 +2039,11 @@ def save_user_fact(chat_id, fact, category="general"):
                 )
     except Exception as exc:
         print("save_user_fact error:", repr(exc))
+
+
+def save_note_or_fact(chat_id, fact, category="general"):
+    """Saves an extracted life context fact, plan, note, or preference to user_facts."""
+    return save_user_fact(chat_id, fact, category=category)
 
 
 def get_user_facts(chat_id, limit=25):
@@ -3110,17 +3125,18 @@ def get_memory_bubbles(chat_id) -> list[dict]:
                 ORDER BY id ASC
             """), {"uid": uid}).fetchall()
             
-            if not rows:
-                # Seed default bubbles on the fly
-                defaults = [
-                    ('everything', 'Everything', '#6366F1', 'Inbox'),
-                    ('work', 'Work & Projects', '#3B82F6', 'Briefcase'),
-                    ('travel', 'Travel & Transit', '#EC4899', 'Plane'),
-                    ('health', 'Health & Fitness', '#10B981', 'Heart'),
-                    ('finance', 'Finance & Bills', '#F59E0B', 'CreditCard')
-                ]
+            defaults = [
+                ('everything', 'Everything', '#6366F1', 'Inbox'),
+                ('work', 'Work & Projects', '#3B82F6', 'Briefcase'),
+                ('travel', 'Travel & Transit', '#EC4899', 'Plane'),
+                ('health', 'Health & Fitness', '#10B981', 'Heart'),
+                ('finance', 'Finance & Bills', '#F59E0B', 'CreditCard')
+            ]
+            existing_slugs = {r[0] for r in rows}
+            missing = [d for d in defaults if d[0] not in existing_slugs]
+            if missing:
                 with engine.begin() as wconn:
-                    for s, n, c, i in defaults:
+                    for s, n, c, i in missing:
                         if is_postgres:
                             wconn.execute(text("""
                                 INSERT INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
@@ -3132,7 +3148,13 @@ def get_memory_bubbles(chat_id) -> list[dict]:
                                 INSERT OR IGNORE INTO memory_bubbles (user_id, slug, name, color_hex, icon_name)
                                 VALUES (:u, :s, :n, :c, :i)
                             """), {"u": uid, "s": s, "n": n, "c": c, "i": i})
-                return [{"slug": s, "name": n, "color_hex": c, "icon_name": i} for s, n, c, i in defaults]
+                with engine.connect() as rconn:
+                    rows = rconn.execute(text("""
+                        SELECT slug, name, color_hex, icon_name, created_at
+                        FROM memory_bubbles
+                        WHERE user_id = :uid
+                        ORDER BY id ASC
+                    """), {"uid": uid}).fetchall()
 
             return [
                 {

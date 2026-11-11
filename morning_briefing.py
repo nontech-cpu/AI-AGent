@@ -49,7 +49,33 @@ def detect_user_city(chat_id: int) -> Optional[str]:
             if origin and origin.lower() not in ("from", "train", "flight"):
                 return origin
 
-        # 3. Fallback scan of stored facts for structured location
+        # 3. Check stored user facts
+        facts = db.get_user_facts(chat_id)
+        if facts:
+            for f in facts:
+                txt = f.get("fact", "") if isinstance(f, dict) else str(f)
+                # Route origin e.g. "Route: JODHPUR JN (JU) to ABU ROAD"
+                m_route = re.search(r"Route:\s*([A-Za-z]+)", txt, re.IGNORECASE)
+                if m_route and m_route.group(1).lower() not in ("from", "train", "flight"):
+                    return m_route.group(1).title()
+                # Label "City: Mumbai"
+                m_city = re.search(r"City:\s*([A-Za-z]+)", txt, re.IGNORECASE)
+                if m_city:
+                    return m_city.group(1).title()
+                # Natural English: "lives in Delhi"
+                m_live = re.search(r"\blives?\s+in\s+([A-Za-z]+)", txt, re.IGNORECASE)
+                if m_live:
+                    return m_live.group(1).title()
+                # Natural Hindi SOV: "Jaipur me rehta hu"
+                m_sov = re.search(r"\b([A-Za-z]+)\s+me\s+(?:rehta|rehti|rahta|rehte)\b", txt, re.IGNORECASE)
+                if m_sov:
+                    return m_sov.group(1).title()
+                # Natural Hindi: "Delhi se hu"
+                m_from = re.search(r"\b([A-Za-z]+)\s+se\s+h[au]", txt, re.IGNORECASE)
+                if m_from:
+                    return m_from.group(1).title()
+
+        # 4. Fallback scan of stored facts for structured location
         with db.engine.connect() as conn:
             row = conn.execute(
                 db.text("""

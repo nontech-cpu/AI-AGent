@@ -43,6 +43,15 @@ import google_services
 import multimodal
 
 
+@pytest.fixture(autouse=True)
+def reset_provider_cooldowns_fixture():
+    """Ensure LLM provider cooldowns are cleared before and after each test."""
+    from llm.provider import reset_provider_cooldowns
+    reset_provider_cooldowns()
+    yield
+    reset_provider_cooldowns()
+
+
 @pytest.fixture(scope="session")
 def client():
     """FastAPI TestClient fixture."""
@@ -122,11 +131,26 @@ def init_test_db():
                 due_date DATE,
                 due_time TIME,
                 duration_minutes INTEGER DEFAULT 30,
+                status TEXT DEFAULT 'active',
+                recurrence TEXT DEFAULT 'none',
+                google_calendar_event_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
         try:
             conn.execute(text("ALTER TABLE memory_items ADD COLUMN duration_minutes INTEGER DEFAULT 30"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE memory_items ADD COLUMN status TEXT DEFAULT 'active'"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE memory_items ADD COLUMN recurrence TEXT DEFAULT 'none'"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE memory_items ADD COLUMN google_calendar_event_id TEXT"))
         except Exception:
             pass
         conn.execute(text("""
@@ -209,9 +233,14 @@ def init_test_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 rule_text TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        try:
+            conn.execute(text("ALTER TABLE user_rules ADD COLUMN is_active INTEGER DEFAULT 1"))
+        except Exception:
+            pass
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS user_relationships (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -282,6 +311,14 @@ def init_test_db():
                 permission TEXT DEFAULT 'read',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(bubble_id, shared_with_chat_id)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS oauth_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                state TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
         conn.execute(text("""

@@ -17,7 +17,10 @@ async def fake_wipe_chat(*args, **kwargs):
     # If claim verifier calls LLM
     if "audit_claims" in last_content or "is_grounded" in last_content or kwargs.get("response_format", {}).get("type") == "json_object":
         if "confirmation intent" in last_content.lower() or "classify user confirmation" in last_content.lower():
-            intent = "cancel" if any(w in last_content.lower() for w in ("cancel", "mat karo", "rehne do", "nahi")) else "confirm"
+            import re
+            m = re.search(r'User message:\s*"([^"]*)"', last_content, re.IGNORECASE)
+            target_text = m.group(1).lower() if m else last_content.lower()
+            intent = "cancel" if any(w in target_text for w in ("cancel", "mat karo", "rehne do", "nahi", "no", "abort")) else "confirm"
             return LLMResponse(
                 text=json.dumps({"intent": intent}),
                 tool_calls=[],

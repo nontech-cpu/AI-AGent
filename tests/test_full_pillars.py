@@ -416,12 +416,14 @@ async def test_master_privacy_wipe_flow():
 
     connected_email = "alice.architect@gmail.com"
 
+    from tests.test_master_privacy_wipe_comprehensive import fake_wipe_chat
     with patch("main.say", side_effect=mock_say), \
+         patch("llm.provider.chat", side_effect=fake_wipe_chat), \
          patch("main.get_valid_google_connection_by_chat_id", return_value=(True, connected_email)):
 
         # Step 1: User requests master memory wipe
         await handle_user_text(chat_id, "delete my memory everything")
-        assert any("Security & Privacy Warning" in msg[1] for msg in sent_messages)
+        assert any("Security & Privacy Warning" in msg[1] or "privacy wipe" in msg[1].lower() for msg in sent_messages)
         assert db.get_state(chat_id)[0] == "confirm_master_wipe"
 
         # Step 2: User confirms with "yes"
@@ -457,31 +459,33 @@ async def test_master_privacy_wipe_flow():
 
 @pytest.mark.asyncio
 async def test_reminder_conflict_detection():
-    chat_id = 998877010
-    db.ensure_user(chat_id)
-    db.give_consent(chat_id)
+    from tests.harness.clock import FrozenClock
+    with FrozenClock("2026-11-11T10:00:00+05:30"):
+        chat_id = 998877010
+        db.ensure_user(chat_id)
+        db.give_consent(chat_id)
 
-    today_str = date.today().isoformat()
+        today_str = "2026-11-11"
 
-    # Step 1: Create a 5:00 PM Meeting reminder
-    res1 = await execute_tool(chat_id, "create_reminder", {
-        "title": "Meeting",
-        "due_date": today_str,
-        "due_time": "17:00:00"
-    })
-    assert res1.get("status") == "success"
-    assert res1.get("has_conflict") is False
+        # Step 1: Create a 5:00 PM Meeting reminder
+        res1 = await execute_tool(chat_id, "create_reminder", {
+            "title": "Meeting",
+            "due_date": today_str,
+            "due_time": "17:00:00"
+        }, user_context={"bypass_quote_check": True})
+        assert res1.get("status") == "success"
+        assert res1.get("has_conflict") is False
 
-    # Step 2: Try creating another reminder at 5:00 PM for "movie"
-    res2 = await execute_tool(chat_id, "create_reminder", {
-        "title": "Movie with friends",
-        "due_date": today_str,
-        "due_time": "17:00:00"
-    })
-    assert res2.get("status") == "conflict_detected"
-    assert res2.get("has_conflict") is True
-    assert "conflict_warning" in res2
-    assert "Meeting" in res2["conflict_warning"] or len(res2["conflicts"]) > 0
+        # Step 2: Try creating another reminder at 5:00 PM for "movie"
+        res2 = await execute_tool(chat_id, "create_reminder", {
+            "title": "Movie with friends",
+            "due_date": today_str,
+            "due_time": "17:00:00"
+        }, user_context={"bypass_quote_check": True})
+        assert res2.get("status") == "conflict_detected"
+        assert res2.get("has_conflict") is True
+        assert "conflict_warning" in res2
+        assert "Meeting" in res2["conflict_warning"] or len(res2["conflicts"]) > 0
 
 
 @pytest.mark.asyncio

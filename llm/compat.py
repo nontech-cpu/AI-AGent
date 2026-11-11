@@ -73,7 +73,7 @@ async def _chat_json(system: str, user_text: str):
         ],
         temperature=0.0,
     )
-    raw = resp.content.strip()
+    raw = (getattr(resp, "text", None) or getattr(resp, "content", "") or "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)

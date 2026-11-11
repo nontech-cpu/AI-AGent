@@ -42,15 +42,23 @@ def sanitize_memory_content(text_val: Optional[str]) -> str:
     return cleaned.strip()
 
 
+_CONVERSATIONAL_NON_ENTITIES = {
+    "bhai", "bhy", "bro", "dude", "yaar", "sir", "please", "plz", "pls",
+    "kya", "ky", "ko", "se", "me", "mein", "par", "pe", "ka", "ki", "ke",
+    "tha", "thi", "the", "hai", "hain", "ho", "hu", "karo", "kar", "krdo",
+    "the", "is", "are", "was", "were", "what", "how", "when", "where", "who", "why",
+    "to", "from", "with", "in", "on", "at", "for", "a", "an"
+}
+
 def extract_potential_entity_tokens(text_val: str) -> List[str]:
     """
     Extracts candidate names or terms (Devanagari, English, >= 2 chars).
-    Structural parsing only: removes pure digits, no 150-word stopword list.
+    Filters out conversational salutations, interrogatives, and basic grammar particles.
     """
     if not text_val:
         return []
     tokens = re.findall(r'[\u0900-\u097Fa-zA-Z0-9_\-\']{2,}', text_val)
-    candidates = [w for w in tokens if not w.isdigit()][:6]
+    candidates = [w for w in tokens if not w.isdigit() and w.lower() not in _CONVERSATIONAL_NON_ENTITIES][:6]
     return candidates
 
 
@@ -244,9 +252,9 @@ def _execute_retrieval(chat_id: int, user_text: str) -> Dict[str, Any]:
     has_substantive = bool(matched_entities or measurements or relevant_mems or core_profile or projects or working_ctx)
     formatted = "\n".join(lines) if has_substantive else ""
 
-    # Strict token budget: cap memory block at ~800 tokens (~3200 characters) to prevent context pollution
-    if len(formatted) > 3200:
-        formatted = formatted[:3190] + "\n...</memory>"
+    # Strict token budget: cap memory block at ~600 tokens (~2400 characters) to prevent context pollution
+    if len(formatted) > 2400:
+        formatted = formatted[:2390] + "\n...</memory>"
 
     return {
         "formatted_block": formatted,

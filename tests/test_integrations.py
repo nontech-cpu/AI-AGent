@@ -128,6 +128,7 @@ async def test_execute_tool_get_github_file():
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_llm
 async def test_email_link_status_query_fast_path():
     """Verify 'meri email link h?' is treated as account status check, not URL."""
     from dotenv import load_dotenv

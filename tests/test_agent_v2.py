@@ -207,8 +207,34 @@ async def test_connect_integration_google_returns_oauth_url():
 @pytest.mark.asyncio
 async def test_standalone_email_provides_google_oauth_url():
     chat_id = 771122
+    from llm.provider import LLMResponse
+    call_idx = 0
+    async def mock_chat(*args, **kwargs):
+        nonlocal call_idx
+        call_idx += 1
+        if call_idx == 1:
+            return LLMResponse(
+                text=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "connect_integration",
+                        "arguments": '{"service": "google"}'
+                    }
+                }],
+                provider="Fake",
+                model="test"
+            )
+        return LLMResponse(
+            text="Please use this link to connect Google: https://test.com/oauth/google",
+            provider="Fake",
+            model="test"
+        )
+
     with patch("main.get_valid_google_connection_by_chat_id", return_value=(False, None)), \
          patch("google_auth.build_auth_url", return_value="https://test.com/oauth/google"), \
+         patch("llm.provider.chat", side_effect=mock_chat), \
          patch("db.log_chat_message"):
         res = await run_agent_turn(chat_id, "google connect karna hai neeravmishrarealme1@gmail.com")
         assert "https://test.com/oauth/google" in res["reply"]
@@ -320,14 +346,40 @@ async def test_casual_trip_schedule_never_creates_notion_page():
 async def test_affirmative_yes_to_conversational_email_draft_executes_send_email():
     chat_id = 998877666
     from unittest.mock import patch, AsyncMock
+    from llm.provider import LLMResponse
 
     mock_history = [
         {"role": "user", "text": "bhy aaravmishra619@gmail.com pr email send kr subject kurta and body 18000 kurta is worth buying"},
         {"role": "assistant", "text": "Sure! I'm ready to send an email to aaravmishra619@gmail.com with:\n- Subject: kurta\n- Body: 18000 kurta is worth buying\nJust give me a quick 'yes' to go ahead."}
     ]
 
+    call_idx = 0
+    async def mock_chat(*args, **kwargs):
+        nonlocal call_idx
+        call_idx += 1
+        if call_idx == 1:
+            return LLMResponse(
+                text=None,
+                tool_calls=[{
+                    "id": "call_send_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_email",
+                        "arguments": '{"to": "aaravmishra619@gmail.com", "subject": "kurta", "body": "18000 kurta is worth buying"}'
+                    }
+                }],
+                provider="Fake",
+                model="test"
+            )
+        return LLMResponse(
+            text="Maine aapka email aaravmishra619@gmail.com ko successfully send kar diya hai!",
+            provider="Fake",
+            model="test"
+        )
+
     with patch("db.get_recent_chat_history", return_value=mock_history), \
          patch("google_services.send_email", new_callable=AsyncMock) as mock_send, \
+         patch("llm.provider.chat", side_effect=mock_chat), \
          patch("db.log_chat_message"):
 
         mock_send.return_value = "msg_12345"

@@ -210,21 +210,15 @@ async def test_failure_05_connected_account_does_not_shortcircuit_task():
     chat_id = 777501
     query = "Connect Google Calendar and schedule a 30-minute meeting tomorrow at 4 PM"
 
-    with patch("main.start_google_connection", new_callable=AsyncMock) as mock_connect:
-        with patch("main.understand", new_callable=AsyncMock) as mock_understand:
-            mock_understand.return_value = {
-                "intent": "create_meeting",
-                "title": "Meeting",
-                "start_iso": "2026-10-21T16:00:00+05:30",
-                "duration_minutes": 30,
-                "attendees": [],
-            }
-            with patch("main.prepare_google_action", new_callable=AsyncMock) as mock_prep:
-                await main.handle_active(chat_id, query)
-                # start_google_connection must NOT have been called directly
-                mock_connect.assert_not_called()
-                # prepare_google_action must be called for the task
-                mock_prep.assert_called_once()
+    with patch("main.start_google_connection", new_callable=AsyncMock) as mock_connect, \
+         patch("agent.loop.run_agent_turn", new_callable=AsyncMock) as mock_turn, \
+         patch("main.say", new_callable=AsyncMock):
+        mock_turn.return_value = {"reply": "Meeting scheduled"}
+        await main.handle_active(chat_id, query)
+        # start_google_connection must NOT have been called directly
+        mock_connect.assert_not_called()
+        # Unified agent loop must be invoked for the task
+        mock_turn.assert_called_once()
 
 
 # --- State Trap Prevention & Flexible Conversation Regressions ---
@@ -232,45 +226,34 @@ async def test_failure_05_connected_account_does_not_shortcircuit_task():
 async def test_create_meeting_details_does_not_trap_greetings():
     """
     When a user was previously asked for meeting details (state='create_meeting_details'),
-    sending 'hi' or 'heello' must NOT ask for meeting date/time. It must reset state and greet.
+    sending 'hi' or 'heello' must NOT ask for meeting date/time. It must reset state and route to agent loop.
     """
     chat_id = 888101
     state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
 
-    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
-        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
-            with patch("main.say", new_callable=AsyncMock) as mock_say:
-                await main.handle_user_text(chat_id, "heello")
-                assert state_store.get(chat_id) is None  # State cleared!
-                mock_say.assert_called()
-                reply_sent = mock_say.call_args[0][1]
-                assert "Namaste" in reply_sent or "personal assistant" in reply_sent
-                assert "Date/time" not in reply_sent
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))), \
+         patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})), \
+         patch("main.handle_active", new_callable=AsyncMock) as mock_active:
+        await main.handle_user_text(chat_id, "heello")
+        assert state_store.get(chat_id) is None  # State cleared!
+        mock_active.assert_called_once_with(chat_id, "heello")
 
 
 @pytest.mark.asyncio
 async def test_create_meeting_details_does_not_trap_agenda_query():
     """
     When in 'create_meeting_details', asking 'remidner mere aajke' must NOT ask for
-    meeting date/time. It must reset state and show today's agenda.
+    meeting date/time. It must reset state and route to agent loop.
     """
     chat_id = 888102
     state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
 
-    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
-        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
-            with patch("main.understand", new_callable=AsyncMock) as mock_understand:
-                mock_understand.return_value = {
-                    "intent": "show_agenda",
-                    "start": datetime(2026, 10, 20).date(),
-                    "end": datetime(2026, 10, 20).date(),
-                    "item": None
-                }
-                with patch("main.show_range", new_callable=AsyncMock) as mock_show_range:
-                    with patch("main.say", new_callable=AsyncMock):
-                        await main.handle_user_text(chat_id, "remidner mere aajke")
-                        assert state_store.get(chat_id) is None
-                        mock_show_range.assert_called_once()
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))), \
+         patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})), \
+         patch("main.handle_active", new_callable=AsyncMock) as mock_active:
+        await main.handle_user_text(chat_id, "remidner mere aajke")
+        assert state_store.get(chat_id) is None
+        mock_active.assert_called_once_with(chat_id, "remidner mere aajke")
 
 
 @pytest.mark.asyncio
@@ -295,19 +278,17 @@ async def test_start_command_with_bot_username_resets_state():
 async def test_create_meeting_details_does_not_trap_casual_chat():
     """
     When in 'create_meeting_details', sending 'aur bhy kesa h' must route to
-    conversational chat, not ask for date/time.
+    conversational chat/agent loop, not ask for date/time.
     """
     chat_id = 888104
     state_store = {chat_id: ("create_meeting_details", json.dumps({"title": "Test Sync"}))}
 
-    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))):
-        with patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})):
-            with patch("main.understand", new_callable=AsyncMock) as mock_understand:
-                mock_understand.return_value = {"intent": "chat"}
-                with patch("main.handle_conversational_chat", new_callable=AsyncMock) as mock_chat:
-                    await main.handle_user_text(chat_id, "aur bhy kesa h")
-                    assert state_store.get(chat_id) is None
-                    mock_chat.assert_called_once_with(chat_id, "aur bhy kesa h")
+    with patch("main.get_state", side_effect=lambda cid: state_store.get(cid, (None, None))), \
+         patch("main.set_state", side_effect=lambda cid, st, data=None: state_store.pop(cid, None) if st is None else state_store.update({cid: (st, data)})), \
+         patch("main.handle_active", new_callable=AsyncMock) as mock_active:
+        await main.handle_user_text(chat_id, "aur bhy kesa h")
+        assert state_store.get(chat_id) is None
+        mock_active.assert_called_once_with(chat_id, "aur bhy kesa h")
 
 
 @pytest.mark.asyncio
@@ -315,7 +296,7 @@ async def test_cancel_and_replace_meeting_compound_intent():
     """
     User says: 'bhy merer 5 bje wale meeting cancel krkr 6 bje rkhdo and name meeting ka peculiar ai meeting'
     Must NOT be intercepted by _begin_meeting_deletion as pure deletion.
-    Must prepare an update_meeting action with new title and new start time.
+    Must route to the agent loop.
     """
     chat_id = 888105
     query = "bhy merer 5 bje wale meeting cancel krkr 6 bje rkhdo and name meeting ka peculiar ai meeting"
@@ -324,37 +305,12 @@ async def test_cancel_and_replace_meeting_compound_intent():
     is_pure_deletion = await main._begin_meeting_deletion(chat_id, query)
     assert is_pure_deletion is False
 
-    # 2. Verify handle_active prepares update_meeting with new title & start_iso
-    fake_event = {
-        "id": "evt_5pm_old",
-        "summary": "Pecular AI Meeting",
-        "start": {"dateTime": "2026-10-20T17:00:00+05:30"},
-        "hangoutLink": "https://meet.google.com/test-meet"
-    }
-    with patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock) as mock_conn:
-        mock_conn.return_value = (True, "test@gmail.com")
-        with patch("main.google_find_calendar_event", new_callable=AsyncMock) as mock_find:
-            mock_find.return_value = ([fake_event], False)
-            with patch("main.say", new_callable=AsyncMock) as mock_say:
-                with patch("main.understand", new_callable=AsyncMock) as mock_understand:
-                    mock_understand.return_value = {
-                        "intent": "update_meeting",
-                        "target_time": "17:00",
-                        "title": "peculiar ai meeting",
-                        "start_iso": "2026-10-20T18:00:00+05:30",
-                        "duration_minutes": 30
-                    }
-                    await main.handle_active(chat_id, query)
-
-                    # Pending action must be update_meeting, not delete_meeting
-                    pending = main.PENDING_GOOGLE_ACTIONS.get(chat_id)
-                    assert pending is not None
-                    assert pending["kind"] == "update_meeting"
-                    assert pending["event_id"] == "evt_5pm_old"
-                    assert pending["new_title"] == "peculiar ai meeting"
-                    assert "18:00:00" in pending["new_start_iso"]
-                    mock_say.assert_called()
-                    assert "reschedule" in mock_say.call_args[0][1].lower() or "update" in mock_say.call_args[0][1].lower()
+    # 2. Verify handle_active invokes the unified agent loop rather than pure deletion
+    with patch("agent.loop.run_agent_turn", new_callable=AsyncMock) as mock_turn, \
+         patch("main.say", new_callable=AsyncMock):
+        mock_turn.return_value = {"reply": "Meeting updated for 6 PM"}
+        await main.handle_active(chat_id, query)
+        mock_turn.assert_called_once()
 
 
 # --- User Reported Regression: IST formatting, compound confirmation & pending interruption ---

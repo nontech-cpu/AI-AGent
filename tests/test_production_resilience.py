@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from datetime import datetime, date, time as dtime
 import db
 import google_services
+from timing import IST
+from tests.harness.clock import FrozenClock
 from agent.loop import run_agent_turn
 from agent.tools import execute_tool
 from state.active_context import set_active_event, get_active_event, format_active_context
@@ -51,7 +53,7 @@ async def test_groq_429_rate_limit_failover():
         # Verify it attempted multiple models
         assert len(call_attempts) >= 2
         assert call_attempts[1] != call_attempts[0]
-        assert any(m in call_attempts for m in ("gemini-3.1-flash-lite-preview", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"))
+        assert any(m in call_attempts for m in ("gemini-3.5-flash", "gemini-3.1-flash-lite-preview", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"))
 
 @pytest.mark.asyncio
 async def test_user_level_timezone_persistence():
@@ -77,28 +79,29 @@ async def test_user_level_timezone_persistence():
 @pytest.mark.asyncio
 async def test_active_event_context_resolution():
     chat_id = 776655
-    # Simulate user setting a reminder
-    set_active_event(chat_id, {
-        "title": "Quarterly Budget Planning",
-        "due_date": "2026-11-04",
-        "due_time": "15:00",
-        "type": "meeting"
-    })
-    
-    # Verify active context reflects it
-    ctx_str = format_active_context(chat_id)
-    assert "Quarterly Budget Planning" in ctx_str
-    
-    # When user says "calendar me laga do" and create_meeting is invoked with generic title
-    with patch("main.detect_meeting_conflicts", new_callable=AsyncMock, return_value=([], [])), \
-         patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock, return_value=(True, "test@gmail.com")):
-        res = await execute_tool(chat_id, "create_meeting", {
-            "title": "Meeting",
-            "start_iso": "2026-11-04T15:00:00"
+    with FrozenClock("2026-11-04T12:00:00", tz=IST):
+        # Simulate user setting a reminder
+        set_active_event(chat_id, {
+            "title": "Quarterly Budget Planning",
+            "due_date": "2026-11-04",
+            "due_time": "15:00",
+            "type": "meeting"
         })
-        assert res["status"] == "needs_confirmation"
-        # Verify title was contextually resolved to the active event!
-        assert res["title"] == "Quarterly Budget Planning"
+        
+        # Verify active context reflects it
+        ctx_str = format_active_context(chat_id)
+        assert "Quarterly Budget Planning" in ctx_str
+        
+        # When user says "calendar me laga do" and create_meeting is invoked with generic title
+        with patch("main.detect_meeting_conflicts", new_callable=AsyncMock, return_value=([], [])), \
+             patch("main.get_valid_google_connection_by_chat_id", new_callable=AsyncMock, return_value=(True, "test@gmail.com")):
+            res = await execute_tool(chat_id, "create_meeting", {
+                "title": "Meeting",
+                "start_iso": "2026-11-04T15:00:00"
+            }, user_context={"user_text": "calendar me laga do"})
+            assert res["status"] == "needs_confirmation"
+            # Verify title was contextually resolved to the active event!
+            assert res["title"] == "Quarterly Budget Planning"
 
 @pytest.mark.asyncio
 async def test_strict_grounding_rule_in_prompt():

@@ -30,6 +30,25 @@ WEEKDAY_PATTERNS = {
 }
 
 
+class ParsedFollowupTime(tuple):
+    """
+    Two-tuple of (due_time, due_date) supporting attribute access for ambiguity detection.
+    Unpacks cleanly as `due_time, due_date = parsed` for complete backward compatibility.
+    """
+    def __new__(cls, due_time, due_date, is_ambiguous=False, ambiguous_hour=None):
+        return super().__new__(cls, (due_time, due_date))
+
+    def __init__(self, due_time, due_date, is_ambiguous=False, ambiguous_hour=None):
+        self.is_ambiguous = is_ambiguous
+        self.ambiguous_hour = ambiguous_hour
+
+
+def is_time_ambiguous(message: str, now: datetime | None = None) -> bool:
+    """Returns True if the message specifies a time whose AM/PM cannot be reliably inferred."""
+    parsed = parse_followup_time(message, now)
+    return bool(parsed and getattr(parsed, "is_ambiguous", False))
+
+
 def _at(d, t):
     if isinstance(d, str):
         from datetime import date
@@ -74,7 +93,7 @@ def parse_followup_time(message: str, now: datetime | None = None):
         has_period = bool(re.search(r"\b(shaam|sham|evening|dopahar|afternoon|subah|subha|morning|raat|night)\b|शाम|दोपहर|सुबह|रात", low))
         if (explicit_tomorrow or explicit_parso or explicit_today) and has_period:
             t_date = now.date() + timedelta(days=1) if explicit_tomorrow else (now.date() + timedelta(days=2) if explicit_parso else now.date())
-            return None, t_date
+            return ParsedFollowupTime(None, t_date, is_ambiguous=True)
 
         explicit_weekday = None
         for wd_num, pat in WEEKDAY_PATTERNS.items():
@@ -86,22 +105,14 @@ def parse_followup_time(message: str, now: datetime | None = None):
             if days_ahead == 0:
                 days_ahead = 7
             t_date = now.date() + timedelta(days=days_ahead)
-            return None, t_date
+            return ParsedFollowupTime(None, t_date, is_ambiguous=True)
 
         return None
-    hour = int(match.group(1))
+    raw_hour = int(match.group(1))
     minute = int(match.group(2) or 0)
     meridian = match.group(3)
     is_pm_indicator = bool(re.search(r"\b(pm|shaam|sham|dopahar|evening|afternoon|raat|night)\b|शाम|दोपहर|रात", low))
     is_am_indicator = bool(re.search(r"\b(am|subah|subha|morning)\b|सुबह", low))
-
-    if (meridian == "pm" or is_pm_indicator) and hour < 12:
-        hour += 12
-    elif (meridian == "am" or is_am_indicator) and hour == 12:
-        hour = 0
-    elif meridian is None and not is_am_indicator and 1 <= hour <= 6:
-        # Common convention: 1 to 6 for meetings without morning indicator implies PM (afternoon/evening)
-        hour += 12
 
     explicit_tomorrow = bool(re.search(r"\b(tomorrow|tmrw|kal|कल)\b", low))
     explicit_parso = bool(re.search(r"\b(parso|day after tomorrow|परसों)\b", low))
@@ -112,7 +123,26 @@ def parse_followup_time(message: str, now: datetime | None = None):
             explicit_weekday = wd_num
             break
 
-    if meridian is None and not is_pm_indicator and not is_am_indicator and 1 <= hour <= 12 and not (explicit_tomorrow or explicit_parso or explicit_weekday is not None):
+    is_ambiguous = False
+    ambiguous_hour = None
+    hour = raw_hour
+
+    # When hour is in 12-hour clock (e.g. 7-12) and no AM/PM or time-of-day indicator exists,
+    # the time is ambiguous between morning and evening. Never silently convert to PM just because
+    # the morning hour has passed.
+    if meridian is None and not is_pm_indicator and not is_am_indicator and (7 <= raw_hour <= 12):
+        is_ambiguous = True
+        ambiguous_hour = raw_hour
+        hour = raw_hour if raw_hour < 12 else 12
+    elif (meridian == "pm" or is_pm_indicator) and hour < 12:
+        hour += 12
+    elif (meridian == "am" or is_am_indicator) and hour == 12:
+        hour = 0
+    elif meridian is None and not is_am_indicator and 1 <= hour <= 6:
+        # Common convention: 1 to 6 for meetings without morning indicator implies PM (afternoon/evening)
+        hour += 12
+
+    if not is_ambiguous and meridian is None and not is_pm_indicator and not is_am_indicator and 1 <= hour <= 12 and not (explicit_tomorrow or explicit_parso or explicit_weekday is not None):
         # Choose the nearest upcoming occurrence today; tolerate a just-passed minute as "now".
         candidates = []
         for h in {hour % 12, (hour % 12) + 12}:
@@ -122,9 +152,9 @@ def parse_followup_time(message: str, now: datetime | None = None):
                 candidates.append((dt, candidate))
         if candidates:
             future = min(candidates, key=lambda x: x[0])
-            return future[1], future[0].date()
+            return ParsedFollowupTime(future[1], future[0].date(), is_ambiguous=False)
         chosen_hour = hour + 12 if now.hour >= 12 else hour
-        return dtime(chosen_hour, minute), now.date() + timedelta(days=1)
+        return ParsedFollowupTime(dtime(chosen_hour, minute), now.date() + timedelta(days=1), is_ambiguous=False)
 
     due_time = dtime(hour, minute)
     target_date = now.date()
@@ -140,9 +170,9 @@ def parse_followup_time(message: str, now: datetime | None = None):
         target_date += timedelta(days=2)
     elif explicit_today:
         target_date = now.date()
-    elif datetime.combine(target_date, due_time, tzinfo=IST) < now - timedelta(minutes=2):
+    elif not is_ambiguous and datetime.combine(target_date, due_time, tzinfo=IST) < now - timedelta(minutes=2):
         target_date += timedelta(days=1)
-    return due_time, target_date
+    return ParsedFollowupTime(due_time, target_date, is_ambiguous=is_ambiguous, ambiguous_hour=ambiguous_hour)
 
 
 def build_plan(due_date, due_time, now=None):

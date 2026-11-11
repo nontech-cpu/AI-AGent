@@ -415,13 +415,13 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "request_master_privacy_wipe": {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {
-            "confirm": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+            "confirm": {"required": False, "default": True, "can_be_found_in": []}
         }
     },
     "clear_chat_history": {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {
-            "confirm": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+            "confirm": {"required": False, "default": True, "can_be_found_in": []}
         }
     },
     "resolve_pending_action": {
@@ -429,6 +429,121 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "parameters": {
             "decision": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
             "corrected_request": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "ask_user": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "question": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "options": {"required": False, "default": None, "can_be_found_in": []}
+        }
+    },
+    "deep_research": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "topic": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "goal": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "generate_pdf": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "title": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "content": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "generate_excel": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "data_type": {"required": False, "default": "all", "can_be_found_in": ["user_message"]}
+        }
+    },
+    "get_memory_health_radar": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {}
+    },
+    "validate_ticket_date": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "datetime_str": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "delete_note_or_fact": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "query": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "learn_user_correction": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "wrong_concept": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "correct_rule": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "category": {"required": False, "default": "user_feedback", "can_be_found_in": []}
+        }
+    },
+    "manage_commitment": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "action": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "title": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "description": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "target_date": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "condition_type": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "condition_details": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "commitment_id": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "status": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "manage_relationship": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "action": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "name": {"required": False, "default": None, "can_be_found_in": ["user_message", "contacts"]},
+            "relationship": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "phone": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "birthday": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "notes": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "manage_subscription": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "action": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "service_name": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "amount": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "billing_cycle": {"required": False, "default": "monthly", "can_be_found_in": ["user_message"]},
+            "renewal_date": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "is_trial": {"required": False, "default": False, "can_be_found_in": []},
+            "cancel_url": {"required": False, "default": None, "can_be_found_in": []}
+        }
+    },
+    "delete_notion_page": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "page_id_or_title": {"required": True, "default": None, "can_be_found_in": ["user_message", "notion"]},
+            "confirm": {"required": False, "default": False, "can_be_found_in": []}
+        }
+    },
+    "connect_integration": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "service": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "value": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "disconnect_integration": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "service": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "append_notion_page": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "page_id": {"required": True, "default": None, "can_be_found_in": ["notion"]},
+            "title": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "content": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
         }
     }
 }

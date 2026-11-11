@@ -10,6 +10,9 @@ import time
 import random
 import logging
 import asyncio
+from dotenv import load_dotenv
+
+load_dotenv()
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Union, Tuple
@@ -19,6 +22,10 @@ logger = logging.getLogger("llm.provider")
 
 # In-memory circuit breaker cooldowns for quota-exhausted providers (e.g. 10 minutes)
 _PROVIDER_COOLDOWNS: Dict[str, float] = {}
+
+def reset_provider_cooldowns() -> None:
+    """Clear provider circuit breaker cooldowns (used in test harness / test isolation)."""
+    _PROVIDER_COOLDOWNS.clear()
 
 # ---------------------------------------------------------------------------
 # Typed Exceptions
@@ -134,6 +141,10 @@ class LLMResponse:
     fallback_used: bool = False
     fallback_reason: Optional[str] = None
     raw_response: Optional[Dict[str, Any]] = None
+
+    @property
+    def content(self) -> str:
+        return self.text or ""
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -1000,7 +1011,7 @@ async def chat(
             # Staging Mode provider failover simulation
             staging_mode = os.getenv("STAGING_MODE", "").strip() == "1"
             force_fail = os.getenv("FORCE_PROVIDER_FAIL", "").strip().lower()
-            if staging_mode and force_fail and (force_fail == prov.name.lower() or force_fail == "all"):
+            if staging_mode and force_fail and (force_fail in prov.name.lower() or force_fail == "all"):
                 logger.warning(f"FORCE_PROVIDER_FAIL active: Simulating failure for {prov.name}")
                 fallback_reasons.append(f"FORCE_PROVIDER_FAIL: {prov.name} simulated failure")
                 last_error = RateLimitedError(f"Simulated failure for {prov.name}", provider=prov.name)
@@ -1072,20 +1083,36 @@ async def chat(
                         logger.warning(err_reason)
                         fallback_reasons.append(err_reason)
 
-                        # Instant fast-failover on 5xx server errors (e.g. 503 high demand spike / 502 / 504)
                         status_code = getattr(err, "status_code", None)
                         err_str = str(err).lower()
+
+                        # Instant fast-failover on invalid API key (401)
+                        if status_code == 401 or "invalid_api_key" in err_str:
+                            logger.warning(f"{prov.name} API key invalid (401): fast-failing provider immediately.")
+                            _PROVIDER_COOLDOWNS[prov.name] = time.time() + 3600.0
+                            skip_current_provider = True
+                            break
+
+                        # Instant fast-failover on 5xx server errors (e.g. 503 high demand spike / 502 / 504)
                         if status_code and status_code in (500, 502, 503, 504):
                             logger.warning(f"{prov.name} server error {status_code}: fast-failing provider immediately to next provider.")
                             skip_current_provider = True
                             break
 
-                        # Instant fast-failover on account-level quota exhaustion (429 with 'quota' / 'exceeded' / 'billing')
+                        # Instant fast-failover on account-level quota exhaustion (429 with 'insufficient_quota' / billing)
                         # Retrying quota exhaustion is futile and only burns 25+ seconds
-                        if (status_code == 429 or isinstance(err, RateLimitedError)) and any(q in err_str for q in ("quota", "exceeded your current quota", "billing")):
+                        if (status_code == 429 or isinstance(err, RateLimitedError)) and any(q in err_str for q in ("insufficient_quota", "check your plan and billing details", "exceeded your current quota")):
                             logger.warning(f"{prov.name} quota exhausted (429): fast-failing provider immediately to next provider.")
                             _PROVIDER_COOLDOWNS[prov.name] = time.time() + 600.0  # Cooldown 10 mins
+                            if "gemini" in prov.name.lower():
+                                _PROVIDER_COOLDOWNS["Gemini"] = time.time() + 600.0
+                                _PROVIDER_COOLDOWNS["GeminiBackup"] = time.time() + 600.0
                             skip_current_provider = True
+                            break
+
+                        # Instant fast-failover to next candidate model on TPM limit
+                        if (status_code == 429 or isinstance(err, RateLimitedError)) and "tpm" in err_str:
+                            logger.warning(f"{prov.name} model {m_candidate} TPM rate limited (429): fast-failing to next candidate model.")
                             break
 
                         # Instant fast-skip on 404 (model not found / no access on organization)

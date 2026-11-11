@@ -17,10 +17,11 @@ ACTION_COMPLETION_PATTERNS = [
     re.compile(r"\b(?:email|mail)\s+(?:send|bhej)\s+(?:diya|di|ho gaya|kar diya)\b", re.I),
     re.compile(r"\b(?:file|doc)\s+(?:upload|save)\s+(?:ho gayi|kar diya|ho gaya)\b", re.I),
     re.compile(r"\b(?:issue|pr|pull request|repo)\s+(?:create|close|merge)\s+(?:ho gaya|kar diya)\b", re.I),
-    re.compile(r"\b(?:create|schedule|send|upload|delete|clear|wipe)\s+(?:kar diya|kar di|kar diye|ho gaya|ho gayi|kiye gaye|diye gaye)\b", re.I),
+    re.compile(r"\b(?:create|schedule|send|upload|delete|trash|clear|wipe|remove)\b.{0,15}\b(?:kar diya|kar di|kar diye|kar di gayi|ho gaya|ho gayi|kiye gaye|diye gaye)\b", re.I),
     re.compile(r"\b(?:hata diya|hata di|hata diye|hata di gayi)\b", re.I),
     re.compile(r"\b(?:successfully (?:created|sent|updated|deleted|scheduled|uploaded|create))\b", re.I),
-    re.compile(r"\b(?:created|sent|deleted|scheduled)\b.{0,20}\b(?:event|meeting|email|mail|issue|page|file|reminder|contact|data|memory)\b", re.I)
+    re.compile(r"\b(?:created|sent|deleted|scheduled|trashed|removed)\b.{0,20}\b(?:event|meeting|email|mail|issue|page|pages|file|reminder|contact|data|memory)\b", re.I),
+    re.compile(r"\b(?:pages?|notes?|reminders?|meetings?|events?)\b.{0,20}\b(?:delete|deleted|trash|trashed|hata)\b", re.I)
 ]
 
 # Untrusted content injection patterns
@@ -91,7 +92,9 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
 
     low = draft_reply.lower()
     # Confirmation dialogues, options, auth URL invitations, and action approval questions
-    is_confirm_dialogue = any(q in low for q in ["please confirm", "reply yes", "reply haan", "options:", "auth/google", "oauth", "secure link"]) or "?" in draft_reply
+    is_confirm_dialogue = any(q in low for q in ["please confirm", "reply yes", "reply haan", "options:", "auth/google", "oauth", "secure link"]) or (
+        any(q in low for q in ["kya main ise", "kya aap confirm", "kya main proceed", "confirm karein", "would you like me to proceed", "should i proceed", "shall i proceed"]) and "?" in low
+    )
     if is_confirm_dialogue:
         return True, None
 
