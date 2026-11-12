@@ -332,12 +332,23 @@ async def say(chat_id, text):
 
 
 async def send_file(chat_id, filename, content_bytes, caption, mime_type="application/octet-stream"):
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        await client.post(
+    if not TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        resp = await client.post(
             f"{API}/sendDocument",
-            data={"chat_id": chat_id, "caption": caption},
+            data={"chat_id": chat_id, "caption": (caption or "")[:1024]},
             files={"document": (filename, content_bytes, mime_type)},
         )
+    payload = {}
+    try:
+        payload = resp.json()
+    except Exception:
+        pass
+    if resp.status_code != 200 or (isinstance(payload, dict) and payload.get("ok") is False):
+        desc = payload.get("description") if isinstance(payload, dict) else resp.text[:200]
+        raise RuntimeError(f"Telegram sendDocument failed ({resp.status_code}): {desc}")
+    return payload
 
 
 # ---------- Saving items ----------

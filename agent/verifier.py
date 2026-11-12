@@ -532,12 +532,15 @@ async def verify_and_ground_reply(
                 continue
             status = tr.get("status")
             ok = tr.get("ok", False)
-            if status in ("success", "ok", "needs_confirmation", "confirmation_required", "conflict_detected", "ready_for_dispatch") or ok is True:
+            if tr.get("delivered") is False:
+                continue
+            has_delivered_file = bool(tr.get("files_sent")) or (tr.get("delivered") is True)
+            if status in ("success", "ok", "needs_confirmation", "confirmation_required", "conflict_detected") or ok is True:
                 tr_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
-                # Read-only tools CANNOT satisfy a mutation/deletion action claim (unless file artifacts were produced)!
-                if tr_name in READ_ONLY_TOOL_NAMES and not (tr.get("files_sent") or tr.get("filename")):
+                # Read-only tools CANNOT satisfy a mutation/deletion action claim unless verified files were actually delivered!
+                if tr_name in READ_ONLY_TOOL_NAMES and not has_delivered_file:
                     continue
-                if tr.get("files_sent") or tr.get("filename"):
+                if has_delivered_file:
                     has_tool_success = True
                     break
                 # If specific action was named, match it; else any mutating success
@@ -555,11 +558,23 @@ async def verify_and_ground_reply(
                 revised = get_i18n_string("wipe_privacy_warning", lang=eff_lang)
                 return False, revised, violations
 
-            # If user declined or cancelled, or tool reported error, NEVER overwrite with canned text:
+            # If user declined or cancelled, preserve reply cleanly without false alarm
             is_declined = is_cancellation_or_decline(user_query, draft_reply)
-            has_tool_error = any(isinstance(tr, dict) and tr.get("status") in ("error", "failed", "conflict_detected") for tr in tool_results)
-            if is_declined or has_tool_error:
+            if is_declined:
                 return True, sanitize_regional_scripts(draft_reply), []
+
+            has_tool_error = any(isinstance(tr, dict) and tr.get("status") in ("error", "failed") for tr in tool_results)
+            if has_tool_error:
+                violations.append(f"Claimed action '{act_label}' succeeded despite failed tool execution")
+                rewritten = await rewrite_reply_with_grounding(
+                    draft_reply,
+                    f"Tool execution for '{act_label}' failed in Evidence; do not claim it succeeded or was delivered. Honestly state what failed and suggest next step.",
+                    evidence_text,
+                    user_query,
+                    eff_lang,
+                )
+                revised = rewritten or get_i18n_string("action_failed", lang=eff_lang)
+                return False, revised, violations
 
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
             rewritten = await rewrite_reply_with_grounding(

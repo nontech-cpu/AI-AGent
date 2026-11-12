@@ -8,7 +8,7 @@ from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Dict, Any
 
 import httpx
-from fastapi import APIRouter, Request, Header, HTTPException, UploadFile, File, Form, Depends, Query
+from fastapi import APIRouter, Request, Response, Header, HTTPException, UploadFile, File, Form, Depends, Query
 from pydantic import BaseModel, Field
 
 from db import (
@@ -158,6 +158,7 @@ class ChatResponse(BaseModel):
     action_type: Optional[str] = None
     saved_item: Optional[Dict[str, Any]] = None
     meeting: Optional[Dict[str, Any]] = None
+    attachments: List[Dict[str, Any]] = Field(default_factory=list)
 
 class DocumentQueryReq(BaseModel):
     query: str = Field(..., min_length=1, description="Question about the uploaded document")
@@ -468,8 +469,9 @@ async def _execute_user_action(chat_id: int, text_content: str, history: List[Di
         return {
             "reply": agent_res["reply"],
             "intent": "chat",
-            "action_taken": bool(agent_res.get("tool_calls_made")),
-            "action_type": "agent_execution" if agent_res.get("tool_calls_made") else "chat_reply"
+            "action_taken": bool(agent_res.get("tool_calls_made") or agent_res.get("tool_calls_executed")),
+            "action_type": "agent_execution" if (agent_res.get("tool_calls_made") or agent_res.get("tool_calls_executed")) else "chat_reply",
+            "attachments": agent_res.get("attachments", []),
         }
     except Exception as exc:
         print("[api_v1] run_agent_turn fallback error:", repr(exc))
@@ -529,8 +531,9 @@ async def chat_message(
         return ChatResponse(
             reply=agent_res["reply"],
             intent="chat",
-            action_taken=bool(agent_res.get("tool_calls_made")),
-            action_type="agent_execution"
+            action_taken=bool(agent_res.get("tool_calls_made") or agent_res.get("tool_calls_executed")),
+            action_type="agent_execution",
+            attachments=agent_res.get("attachments", []),
         )
     except Exception as exc:
         print("[api_v1] run_agent_turn fallback in chat_message:", repr(exc))
@@ -598,8 +601,9 @@ async def chat_voice(
             "transcript": transcript,
             "language": lang,
             "reply": agent_res["reply"],
-            "action_taken": bool(agent_res.get("tool_calls_made")),
-            "action_type": "agent_execution"
+            "action_taken": bool(agent_res.get("tool_calls_made") or agent_res.get("tool_calls_executed")),
+            "action_type": "agent_execution",
+            "attachments": agent_res.get("attachments", []),
         }
     except Exception as exc:
         print("[api_v1] run_agent_turn fallback in chat_voice:", repr(exc))
@@ -2519,6 +2523,26 @@ async def save_emergency_vault_item(
         "vault_id": iid,
         "message": f"Saved {body.title} safely to your emergency travel vault."
     }
+
+
+@router.get("/files/{artifact_id}", summary="Download a generated artifact file")
+async def download_generated_artifact(
+    artifact_id: str,
+    chat_id: int = Depends(get_current_chat_id),
+):
+    """Download an agent-generated file (PDF, Excel, CSV, DOCX, PPTX, etc.) owned by the authenticated user."""
+    from core.file_dispatch import get_artifact
+
+    found = get_artifact(artifact_id, chat_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Generated file not found or expired")
+    filename, mime_type, content_bytes = found
+    return Response(
+        content=content_bytes,
+        media_type=mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 
 

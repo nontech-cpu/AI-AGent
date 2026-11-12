@@ -20,7 +20,13 @@ import google_services
 import integrations
 import core.timeutil as timeutil
 from core.json_safe import to_json_safe
-from file_generator import build_contacts_excel, build_styled_pdf
+from core.file_dispatch import dispatch_generated_file, sanitize_filename
+from file_generator import (
+    build_contacts_excel,
+    build_document_artifact,
+    build_excel_workbook,
+    build_styled_pdf,
+)
 
 async def _resolve_user_timezone(chat_id: int):
     """Dynamically resolves the user's primary calendar timezone or defaults gracefully to IST."""
@@ -337,10 +343,31 @@ class UpdateGitHubFileArgs(BaseModel):
 
 class GeneratePdfArgs(BaseModel):
     title: str = Field(..., description="Title of the PDF.")
-    content: str = Field(..., description="Text content to format in the PDF.")
+    content: Optional[str] = Field("", description="Text or Markdown content to format in the PDF.")
+    sections: Optional[List[Dict[str, Any]]] = Field(None, description="Optional structured sections: [{'heading': str, 'paragraphs': [...], 'bullets': [...], 'table': [[...]]}].")
+    data_type: Optional[str] = Field(None, description="Optional user memory export source: 'contacts', 'reminders', 'tasks', 'facts', or 'all'.")
+    filename: Optional[str] = Field(None, description="Optional custom filename ending in .pdf.")
 
 class GenerateExcelArgs(BaseModel):
-    data_type: Optional[str] = Field("contacts", description="Type of data to export: 'contacts' or 'reminders'.")
+    data_type: Optional[str] = Field("contacts", description="Type of saved data to export: 'contacts', 'reminders', 'tasks', 'all', or 'custom'.")
+    title: Optional[str] = Field(None, description="Workbook/sheet title for custom or filtered spreadsheets.")
+    filename: Optional[str] = Field(None, description="Optional output filename ending in .xlsx.")
+    headers: Optional[List[str]] = Field(None, description="Column headers when creating a custom Excel spreadsheet.")
+    rows: Optional[List[List[Any]]] = Field(None, description="Row values when creating a custom Excel spreadsheet.")
+    sheets: Optional[List[Dict[str, Any]]] = Field(None, description="Optional multi-sheet definitions: [{'name': str, 'headers': [...], 'rows': [[...]]}].")
+
+class GenerateFileArgs(BaseModel):
+    format: str = Field(..., description="Target format: 'pdf', 'xlsx', 'csv', 'docx', 'pptx', 'md', 'txt', 'json', 'html', or 'ics'.")
+    title: Optional[str] = Field("Document", description="Document title.")
+    filename: Optional[str] = Field(None, description="Optional output filename.")
+    content: Optional[str] = Field("", description="Text, Markdown, or document body content.")
+    sections: Optional[List[Dict[str, Any]]] = Field(None, description="Structured sections for PDF, DOCX, HTML, or Markdown.")
+    slides: Optional[List[Dict[str, Any]]] = Field(None, description="Slide definitions for PPTX presentations: [{'title': str, 'bullets': [...], 'table': [[...]]}].")
+    headers: Optional[List[str]] = Field(None, description="Table column headers for CSV/XLSX/Markdown/DOCX.")
+    rows: Optional[List[List[Any]]] = Field(None, description="Table rows for CSV/XLSX.")
+    sheets: Optional[List[Dict[str, Any]]] = Field(None, description="Multi-sheet definitions for XLSX workbooks.")
+    data: Optional[Any] = Field(None, description="Arbitrary JSON or tabular object data.")
+    data_type: Optional[str] = Field(None, description="Optional user data source to export: 'contacts', 'reminders', 'tasks', 'facts', or 'all'.")
 
 class SearchUserEmailsArgs(BaseModel):
     query: Optional[str] = Field(None, description="Query to filter emails or documents e.g. 'ticket', 'flight', 'train', 'interview', 'bill', or 'in:inbox'.")
@@ -1016,14 +1043,17 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "generate_pdf",
-            "description": "Generate and send a styled PDF document to the user.",
+            "description": "Generate and send a styled PDF document (.pdf) directly to the user (supports rich text, headings, bullets, tables, or exporting saved contacts/reminders/all data).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "PDF Title."},
-                    "content": {"type": "string", "description": "Content of the document."}
+                    "content": {"type": ["string", "null"], "description": "Text or Markdown body content of the document."},
+                    "sections": {"type": ["array", "null"], "items": {"type": "object"}, "description": "Optional structured sections with heading, paragraphs, bullets, table."},
+                    "data_type": {"type": ["string", "null"], "description": "Optional saved data source to include: 'contacts', 'reminders', 'tasks', 'facts', or 'all'."},
+                    "filename": {"type": ["string", "null"], "description": "Optional output filename ending in .pdf."}
                 },
-                "required": ["title", "content"]
+                "required": ["title"]
             }
         }
     },
@@ -1031,12 +1061,40 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "generate_excel",
-            "description": "Generate and send an Excel spreadsheet of user data (e.g. contacts).",
+            "description": "Generate and send a styled Excel spreadsheet (.xlsx) directly to the user — either from saved data ('contacts', 'reminders', 'tasks', 'all') or custom headers/rows/sheets.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "data_type": {"type": "string", "description": "'contacts' or 'reminders'."}
+                    "data_type": {"type": ["string", "null"], "description": "'contacts', 'reminders', 'tasks', 'all', or 'custom'."},
+                    "title": {"type": ["string", "null"], "description": "Workbook or sheet title."},
+                    "filename": {"type": ["string", "null"], "description": "Optional output filename ending in .xlsx."},
+                    "headers": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Column headers for custom spreadsheet."},
+                    "rows": {"type": ["array", "null"], "items": {"type": "array", "items": {}}, "description": "Data rows for custom spreadsheet."},
+                    "sheets": {"type": ["array", "null"], "items": {"type": "object"}, "description": "Multi-sheet definitions."}
                 }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_file",
+            "description": "Universal document & file generator. Generates and directly sends ANY requested file format to the user: Word (.docx), PowerPoint (.pptx), CSV (.csv), PDF (.pdf), Excel (.xlsx), Markdown (.md), Plain Text (.txt), JSON (.json), HTML (.html), or Calendar (.ics).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "format": {"type": "string", "description": "File format extension: 'pdf', 'xlsx', 'csv', 'docx', 'pptx', 'md', 'txt', 'json', 'html', or 'ics'."},
+                    "title": {"type": ["string", "null"], "description": "Title of the file/presentation/report."},
+                    "filename": {"type": ["string", "null"], "description": "Optional filename."},
+                    "content": {"type": ["string", "null"], "description": "Text/Markdown/ICS body content."},
+                    "sections": {"type": ["array", "null"], "items": {"type": "object"}, "description": "Structured sections for PDF/DOCX/HTML/MD."},
+                    "slides": {"type": ["array", "null"], "items": {"type": "object"}, "description": "Slides list for PPTX decks: [{'title': ..., 'bullets': [...], 'table': [[...]]}]."},
+                    "headers": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Table column headers for CSV/XLSX."},
+                    "rows": {"type": ["array", "null"], "items": {"type": "array", "items": {}}, "description": "Table rows for CSV/XLSX."},
+                    "sheets": {"type": ["array", "null"], "items": {"type": "object"}, "description": "Multi-sheet spec for XLSX."},
+                    "data_type": {"type": ["string", "null"], "description": "Optional saved data source to export: 'contacts', 'reminders', 'tasks', 'facts', or 'all'."}
+                },
+                "required": ["format"]
             }
         }
     },
@@ -1618,10 +1676,80 @@ _TOOL_NAME_ALIASES = {
 }
 
 
+def _load_user_export_sheets(chat_id: int, data_type: Optional[str]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Shared exporter helper for contacts, reminders/tasks, facts, or all saved user data.
+    Returns (sheets, raw_contacts).
+    """
+    dtype = (data_type or "all").strip().lower()
+    sheets: List[Dict[str, Any]] = []
+    contacts: List[Dict[str, Any]] = []
+
+    if dtype in ("contacts", "contact", "all"):
+        contacts = db.get_contact_memories(chat_id) or []
+        sheets.append({
+            "name": "Contacts & Networking",
+            "headers": [
+                "Full Name", "Company", "Job Title / Role", "Email", "Phone",
+                "Met At / Location", "Context & Notes", "Commitments / Action Items", "Saved Date"
+            ],
+            "rows": [
+                [
+                    c.get("name") or "",
+                    c.get("company") or "",
+                    c.get("role_title") or "",
+                    c.get("email") or "",
+                    c.get("phone") or "",
+                    c.get("met_at") or "",
+                    c.get("context_notes") or "",
+                    c.get("commitments") or "",
+                    str(c.get("created_at") or "")[:10],
+                ]
+                for c in contacts
+            ],
+        })
+
+    if dtype in ("reminders", "reminder", "tasks", "task", "schedule", "all"):
+        tasks = db.list_memories(chat_id) or []
+        sheets.append({
+            "name": "Tasks & Reminders",
+            "headers": ["Category", "Title", "Amount", "Due Date", "Time", "Duration (mins)"],
+            "rows": [
+                [
+                    t[0] if len(t) > 0 else "",
+                    t[1] if len(t) > 1 else "",
+                    t[2] if len(t) > 2 and t[2] is not None else "",
+                    str(t[3]) if len(t) > 3 and t[3] else "",
+                    str(t[4])[:5] if len(t) > 4 and t[4] else "",
+                    t[5] if len(t) > 5 and t[5] is not None else 30,
+                ]
+                for t in tasks
+            ],
+        })
+
+    if dtype in ("facts", "fact", "notes", "all"):
+        facts = db.get_user_facts(chat_id, limit=50) or []
+        sheets.append({
+            "name": "Saved Facts",
+            "headers": ["Fact / Memory", "Category", "Saved At"],
+            "rows": [
+                [
+                    f.get("fact") or "",
+                    f.get("category") or "general",
+                    str(f.get("created_at") or "")[:10],
+                ]
+                for f in facts
+            ],
+        })
+
+    return sheets, contacts
+
+
 async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, user_context: Optional[dict] = None) -> dict:
     import google_services
     tool_name = _TOOL_NAME_ALIASES.get(tool_name, tool_name)
     origin_chat_id = (user_context or {}).get("delivery_chat_id") or (user_context or {}).get("originating_chat_id") or chat_id
+    channel = (user_context or {}).get("channel") or "telegram"
     try:
         # Step 6: Server-side validation of request_quote on write tools
         if tool_name in WRITE_TOOLS_WITH_QUOTE:
@@ -1689,7 +1817,13 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             from agent.sandbox import run_python_sandbox
             code = arguments.get("code") or ""
             purpose = arguments.get("purpose") or ""
-            return await run_python_sandbox(chat_id, code, purpose)
+            return await run_python_sandbox(
+                chat_id=chat_id,
+                code=code,
+                purpose=purpose,
+                delivery_chat_id=origin_chat_id,
+                channel=channel,
+            )
 
         if tool_name == "validate_ticket_date":
             from state.active_context import get_active_ticket, parse_ticket_datetime
@@ -4595,14 +4729,99 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
         elif tool_name == "generate_pdf":
             args = GeneratePdfArgs(**arguments)
-            pdf_bytes = build_styled_pdf(args.title, [{"heading": "Summary", "text": args.content}])
-            return {"status": "ready_for_dispatch", "type": "pdf", "filename": f"{args.title.replace(' ', '_')}.pdf", "bytes": len(pdf_bytes)}
+            sections = list(args.sections or [])
+            if not sections and (args.content or "").strip():
+                sections.append({"heading": "Details", "text": args.content})
+            if args.data_type:
+                sheets, _ = _load_user_export_sheets(chat_id, args.data_type)
+                for sh in sheets:
+                    sections.append({"heading": sh["name"], "table": [sh["headers"]] + sh["rows"]})
+            if not sections:
+                sections = [{"heading": args.title, "paragraphs": ["Generated by PeculiarAI."]}]
+            pdf_bytes = build_styled_pdf(args.title, sections)
+            fname = sanitize_filename(args.filename or args.title, default_name="document", ext=".pdf")
+            return await dispatch_generated_file(
+                chat_id=chat_id,
+                origin_chat_id=origin_chat_id,
+                filename=fname,
+                content_bytes=pdf_bytes,
+                caption=args.title,
+                channel=channel,
+            )
 
         elif tool_name == "generate_excel":
             args = GenerateExcelArgs(**arguments)
-            contacts = db.get_contact_memories(chat_id)
-            excel_bytes = build_contacts_excel(contacts)
-            return {"status": "ready_for_dispatch", "type": "excel", "filename": "contacts.xlsx", "bytes": len(excel_bytes)}
+            dtype = (args.data_type or "contacts").strip().lower()
+            if args.sheets or (args.headers is not None and args.rows is not None):
+                custom_sheets = args.sheets or [
+                    {"name": (args.title or "Data")[:31], "headers": args.headers or [], "rows": args.rows or []}
+                ]
+                excel_bytes = build_excel_workbook(custom_sheets, title=args.title or "Spreadsheet")
+                fname = sanitize_filename(args.filename or args.title or "spreadsheet", default_name="spreadsheet", ext=".xlsx")
+            elif dtype in ("contacts", "contact"):
+                contacts = db.get_contact_memories(chat_id)
+                excel_bytes = build_contacts_excel(contacts)
+                fname = sanitize_filename(args.filename or "contacts", default_name="contacts", ext=".xlsx")
+            else:
+                sheets, _ = _load_user_export_sheets(chat_id, dtype)
+                excel_bytes = build_excel_workbook(sheets, title=args.title or f"{dtype}_export")
+                fname = sanitize_filename(args.filename or f"{dtype}_export", default_name="export", ext=".xlsx")
+
+            return await dispatch_generated_file(
+                chat_id=chat_id,
+                origin_chat_id=origin_chat_id,
+                filename=fname,
+                content_bytes=excel_bytes,
+                caption=args.title or f"Generated Excel ({fname})",
+                channel=channel,
+            )
+
+        elif tool_name == "generate_file":
+            args = GenerateFileArgs(**arguments)
+            eff_sections = list(args.sections or [])
+            eff_sheets = list(args.sheets or [])
+            eff_headers = args.headers
+            eff_rows = args.rows
+            eff_data = args.data
+
+            if args.data_type:
+                loaded_sheets, loaded_contacts = _load_user_export_sheets(chat_id, args.data_type)
+                if not eff_sheets:
+                    eff_sheets = loaded_sheets
+                if eff_headers is None and eff_rows is None and loaded_sheets:
+                    eff_headers = loaded_sheets[0]["headers"]
+                    eff_rows = loaded_sheets[0]["rows"]
+                if not eff_sections:
+                    for sh in loaded_sheets:
+                        eff_sections.append({"heading": sh["name"], "table": [sh["headers"]] + sh["rows"]})
+                if eff_data is None:
+                    eff_data = (
+                        {"contacts": loaded_contacts}
+                        if args.data_type.lower() == "contacts"
+                        else {sh["name"]: {"headers": sh["headers"], "rows": sh["rows"]} for sh in loaded_sheets}
+                    )
+
+            file_bytes, fname, mime = build_document_artifact(
+                fmt=args.format,
+                title=args.title or (f"{args.data_type.title()} Export" if args.data_type else "Document"),
+                filename=args.filename,
+                content=args.content or "",
+                sections=eff_sections or None,
+                slides=args.slides,
+                headers=eff_headers,
+                rows=eff_rows,
+                sheets=eff_sheets or None,
+                data=eff_data,
+            )
+            return await dispatch_generated_file(
+                chat_id=chat_id,
+                origin_chat_id=origin_chat_id,
+                filename=fname,
+                content_bytes=file_bytes,
+                caption=args.title or fname,
+                mime_type=mime,
+                channel=channel,
+            )
 
         elif tool_name == "search_user_emails":
             args = SearchUserEmailsArgs(**arguments)
@@ -5009,8 +5228,8 @@ TOOL_GROUPS = {
         "tools": {"search_web", "web_search", "read_webpage", "fetch_url", "deep_research"}
     },
     "document_generation": {
-        "description": "generate pdf documents create excel spreadsheet export files reports download pdf xlsx",
-        "tools": {"generate_pdf", "generate_excel"}
+        "description": "generate pdf documents create excel spreadsheet export files reports download pdf xlsx csv docx pptx word powerpoint slides deck markdown json html txt ics document file sheet",
+        "tools": {"generate_pdf", "generate_excel", "generate_file"}
     },
     "subscriptions_finance": {
         "description": "manage subscriptions recurring bills renewals free trial watchdog cancel subscription audit services",

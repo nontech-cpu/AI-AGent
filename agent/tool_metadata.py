@@ -449,13 +449,24 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "risk": TOOL_RISK_READ,
         "parameters": {
             "title": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
-            "content": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+            "content": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "data_type": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
         }
     },
     "generate_excel": {
         "risk": TOOL_RISK_READ,
         "parameters": {
-            "data_type": {"required": False, "default": "all", "can_be_found_in": ["user_message"]}
+            "data_type": {"required": False, "default": "contacts", "can_be_found_in": ["user_message"]},
+            "title": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "generate_file": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "format": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "title": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "content": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "data_type": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
         }
     },
     "get_memory_health_radar": {

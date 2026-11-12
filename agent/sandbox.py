@@ -3,29 +3,23 @@ import sys
 import tempfile
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+from core.file_dispatch import MIME_MAP, dispatch_generated_file
 
 logger = logging.getLogger("uvicorn")
 
-MIME_MAP = {
-    ".pdf": "application/pdf",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".csv": "text/csv",
-    ".txt": "text/plain",
-    ".json": "application/json",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".svg": "image/svg+xml",
-}
-
-async def run_python_sandbox(chat_id: int, code: str, purpose: str = "") -> Dict[str, Any]:
+async def run_python_sandbox(
+    chat_id: int,
+    code: str,
+    purpose: str = "",
+    delivery_chat_id: Optional[int] = None,
+    channel: str = "telegram",
+) -> Dict[str, Any]:
     """
     Executes Python code dynamically inside a clean, isolated execution sandbox.
-    Auto-detects any generated documents (PDF, PPTX, Excel, CSV, charts, images)
-    and sends them directly to the user's Telegram chat via Telegram Document API.
+    Auto-detects any generated documents (PDF, PPTX, Excel, CSV, DOCX, charts, images)
+    and delivers them via channel-aware artifact dispatch (Telegram sendDocument or App URL).
     """
     if not code or not code.strip():
         return {"status": "error", "message": "No code provided to execute."}
@@ -66,35 +60,54 @@ async def run_python_sandbox(chat_id: int, code: str, purpose: str = "") -> Dict
                 generated_files.append((fname, fpath))
 
         files_sent = []
-        if generated_files and chat_id and chat_id > 0:
-            from main import send_file
+        attachments = []
+        delivery_errors = []
+        if generated_files:
             for fname, fpath in generated_files:
                 ext = os.path.splitext(fname)[1].lower()
                 mime = MIME_MAP.get(ext, "application/octet-stream")
                 caption_purpose = purpose or "Generated Document"
-                caption = f"📄 **{fname}**\n_{caption_purpose}_"
+                caption = f"{fname}\n{caption_purpose}"
 
                 with open(fpath, "rb") as gf:
                     content_bytes = gf.read()
 
-                try:
-                    await send_file(
-                        chat_id=chat_id,
-                        filename=fname,
-                        content_bytes=content_bytes,
-                        caption=caption,
-                        mime_type=mime
-                    )
+                dispatch_res = await dispatch_generated_file(
+                    chat_id=chat_id,
+                    origin_chat_id=delivery_chat_id or chat_id,
+                    filename=fname,
+                    content_bytes=content_bytes,
+                    caption=caption,
+                    mime_type=mime,
+                    channel=channel,
+                )
+                if dispatch_res.get("delivered"):
                     files_sent.append(fname)
-                    logger.info(f"Sandbox generated & sent {fname} ({len(content_bytes)} bytes) to {chat_id}")
-                except Exception as send_err:
-                    logger.error(f"Failed to send sandbox file {fname} to {chat_id}: {send_err}")
+                    attachments.append({
+                        k: dispatch_res[k]
+                        for k in ("artifact_id", "filename", "mime_type", "bytes", "download_url", "delivery_channel")
+                        if k in dispatch_res
+                    })
+                else:
+                    delivery_errors.append(dispatch_res.get("user_message") or dispatch_res.get("message") or fname)
 
         if files_sent:
             return {
                 "status": "success",
+                "delivered": True,
                 "files_sent": files_sent,
-                "message": f"Successfully generated and delivered {', '.join(files_sent)} to Telegram."
+                "filename": files_sent[0],
+                "attachments": attachments,
+                "message": f"Successfully generated and delivered {', '.join(files_sent)}."
+            }
+
+        if delivery_errors:
+            return {
+                "status": "error",
+                "error_type": "delivery_failed",
+                "delivered": False,
+                "user_message": delivery_errors[0],
+                "message": "; ".join(delivery_errors),
             }
 
         if proc.returncode != 0:

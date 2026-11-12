@@ -747,14 +747,25 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     if not is_grounded:
                         logger.warning(f"[EvidenceShadow] {fn_name} arguments had unverified quotes: {unverified}")
 
-                    # Execute tool with per-tool timeout (15s) and catch-all error handling
+                    # Execute tool with per-tool timeout (30s for python sandbox, 15s default) and catch-all error handling
+                    tool_timeout = 30.0 if fn_name == "execute_python_code" else 15.0
                     try:
                         tool_result = await asyncio.wait_for(
-                            execute_tool(chat_id, fn_name, args_dict, user_context={"user_text": user_text, "delivery_chat_id": delivery_chat_id, "originating_chat_id": delivery_chat_id}),
-                            timeout=15.0
+                            execute_tool(
+                                chat_id,
+                                fn_name,
+                                args_dict,
+                                user_context={
+                                    "user_text": user_text,
+                                    "delivery_chat_id": delivery_chat_id,
+                                    "originating_chat_id": delivery_chat_id,
+                                    "channel": channel,
+                                },
+                            ),
+                            timeout=tool_timeout,
                         )
                     except asyncio.TimeoutError:
-                        tool_result = {"status": "error", "message": f"Tool '{fn_name}' timed out after 15s"}
+                        tool_result = {"status": "error", "message": f"Tool '{fn_name}' timed out after {int(tool_timeout)}s"}
                     except Exception as tool_exc:
                         tool_result = {"status": "error", "message": f"Tool '{fn_name}' error: {str(tool_exc)}"}
 
@@ -1424,10 +1435,27 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
     asyncio.create_task(_post_turn_persist())
 
+    attachments: List[Dict[str, Any]] = []
+    for tr in tool_results_list:
+        if not isinstance(tr, dict) or not tr.get("delivered"):
+            continue
+        if isinstance(tr.get("attachments"), list):
+            attachments.extend(tr["attachments"])
+        elif tr.get("artifact_id") and tr.get("filename"):
+            attachments.append({
+                "artifact_id": tr["artifact_id"],
+                "filename": tr["filename"],
+                "mime_type": tr.get("mime_type", "application/octet-stream"),
+                "bytes": tr.get("bytes", 0),
+                "download_url": tr.get("download_url", f"/api/v1/files/{tr['artifact_id']}"),
+                "delivery_channel": tr.get("delivery_channel", channel),
+            })
+
     return {
         "reply": final_reply,
         "tool_calls_executed": tool_calls_executed,
         "pending_action": pending_action or (active_pending.get("payload") if is_cross_q else None),
+        "attachments": attachments,
         "is_grounded": is_grounded,
         "violations": violations,
         "latency_ms": latency_ms,

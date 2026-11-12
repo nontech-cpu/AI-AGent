@@ -117,19 +117,22 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
             continue
         status = tr.get("status")
         ok = tr.get("ok", False)
+        if tr.get("delivered") is False:
+            continue
+        has_delivered_file = bool(tr.get("files_sent")) or (tr.get("delivered") is True)
         # Check success status
-        if status in ("success", "needs_confirmation", "confirmation_required", "ready_for_dispatch") or ok is True:
+        if status in ("success", "needs_confirmation", "confirmation_required") or ok is True:
             t_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
             from agent.verifier import READ_ONLY_TOOL_NAMES
-            if t_name in READ_ONLY_TOOL_NAMES and not (tr.get("files_sent") or tr.get("filename") or tr.get("file_path")):
+            if t_name in READ_ONLY_TOOL_NAMES and not has_delivered_file:
                 continue
-            # Must have an ID, event/message ID, commit/issue URL, auth_url, or confirmed payload
-            if (tr.get("id") or tr.get("ids") or tr.get("url") or tr.get("urls") or 
-                tr.get("commit_url") or tr.get("commit_html") or tr.get("html_url") or 
-                tr.get("webViewLink") or tr.get("meet_url") or tr.get("message_id") or 
-                tr.get("file_id") or tr.get("auth_url") or tr.get("saved_fact") or 
+            # Must have an ID, event/message ID, commit/issue URL, auth_url, delivered file, or confirmed payload
+            if (tr.get("id") or tr.get("ids") or tr.get("url") or tr.get("urls") or
+                tr.get("commit_url") or tr.get("commit_html") or tr.get("html_url") or
+                tr.get("webViewLink") or tr.get("meet_url") or tr.get("message_id") or
+                tr.get("file_id") or tr.get("auth_url") or tr.get("saved_fact") or
                 tr.get("deleted_titles") or tr.get("deleted_count") or tr.get("due_date") or tr.get("reminder_id") or
-                tr.get("files_sent") or tr.get("filename") or tr.get("file_path") or tr.get("type") in ("pdf", "excel", "csv", "image")):
+                has_delivered_file):
                 has_confirmed_success = True
                 break
 
