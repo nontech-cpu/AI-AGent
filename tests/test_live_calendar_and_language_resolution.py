@@ -347,6 +347,8 @@ async def test_mind_changer_inplace_update_replaces_entity():
 @pytest.mark.asyncio
 async def test_delete_reminder_title_consistency_rejects_wrong_id():
     """Verifies that delete_reminder rejects candidate ID for Gym session when user requested meeting with devender, and stages Devender."""
+    from tests.harness.clock import FrozenClock
+    from timing import IST
     chat_id = 998877994
     db.ensure_user(chat_id)
 
@@ -365,19 +367,20 @@ async def test_delete_reminder_title_consistency_rejects_wrong_id():
         dev_id = res2.lastrowid
 
     # Model erroneously passed reminder_id=gym_id, but user requested "meeting with the devedner"
-    del_res = await execute_tool(
-        chat_id,
-        "delete_reminder",
-        {
-            "reminder_id": gym_id,
-            "title": "meeting with the devedner",
-            "request_quote": "meeting with the devedner cancel krdo"
-        },
-        user_context={
-            "user_text": "meeting with the devedner cancel krdo",
-            "bypass_quote_check": True
-        }
-    )
+    with FrozenClock("2026-11-10T18:00:00", tz=IST):
+        del_res = await execute_tool(
+            chat_id,
+            "delete_reminder",
+            {
+                "reminder_id": gym_id,
+                "title": "meeting with the devedner",
+                "request_quote": "meeting with the devedner cancel krdo"
+            },
+            user_context={
+                "user_text": "meeting with the devedner cancel krdo",
+                "bypass_quote_check": True
+            }
+        )
 
     assert del_res.get("status") == "needs_confirmation"
     # Target IDs must be dev_id, NOT gym_id!

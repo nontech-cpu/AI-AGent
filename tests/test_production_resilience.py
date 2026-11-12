@@ -46,7 +46,7 @@ async def test_groq_429_rate_limit_failover():
                 }
         return Mock200()
 
-    with patch("httpx.AsyncClient.post", side_effect=mock_post):
+    with FrozenClock("2026-11-05T15:00:00", tz=IST), patch("httpx.AsyncClient.post", side_effect=mock_post):
         res = await run_agent_turn(chat_id, "kya haal hai")
         assert res is not None
         assert res["reply"] == "Haan bhai, bilkul ready hu!"

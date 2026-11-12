@@ -351,7 +351,8 @@ async def audit_claims_with_llm(
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
-            timeout=8.0
+            timeout=8.0,
+            tier="fast"
         )
         if resp.text:
             cleaned_text = resp.text.strip()

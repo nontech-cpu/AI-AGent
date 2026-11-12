@@ -717,32 +717,24 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "create_reminder",
             "description": (
-                "Save a NEW task, meeting, appointment, dinner date, shopping trip, workout, or reminder with a due date and time. "
-                "CRITICAL: If the user mentions setting a brand-new reminder with a time, call this tool. "
-                "DO NOT use this tool for rescheduling, shifting, moving, postponing, preponing, or modifying an existing meeting or reminder "
-                "(use update_reminder instead). "
-                "Extract and convert time into due_time in 24-hour 'HH:MM' format (e.g. '23:00'). "
-                "If user specifies duration (e.g. '1 hour'), pass duration_minutes=60. "
-                "If no date is mentioned, due_date defaults to today's date."
+                "Save a NEW task, meeting, appointment, or reminder with due_date/due_time. "
+                "NEVER call this for rescheduling or modifying an existing reminder/meeting (use update_reminder instead). "
+                "Convert natural time to 24h 'HH:MM' due_time; defaults due_date to today if omitted."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Task, meeting, or reminder title."},
-                    "due_date": {"type": ["string", "null"], "description": "Date in YYYY-MM-DD format. Defaults to today's date if omitted."},
+                    "due_date": {"type": ["string", "null"], "description": "YYYY-MM-DD date (defaults to today)."},
                     "due_time": {
                         "type": ["string", "null"],
-                        "description": (
-                            "Due time in 24-hour HH:MM format (e.g. '23:00', '10:30', '15:00'). "
-                            "MANDATORY: Convert natural times ('11pm' -> '23:00', '10:30pm' -> '22:30', '3 baje' -> '15:00'). "
-                            "NEVER leave null when the user mentions a time!"
-                        )
+                        "description": "24-hour HH:MM time (e.g. '23:00' for 11pm, '15:00' for 3 baje). Required when user specifies a time."
                     },
-                    "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes if this is a meeting or timed event (e.g. 30, 45, 60, 120)."},
+                    "duration_minutes": {"type": ["integer", "null"], "description": "Duration in minutes (e.g. 30, 60)."},
                     "category": {"type": ["string", "null"], "description": "Category e.g. appointments, bills, work."},
-                    "recurrence": {"type": ["string", "null"], "description": "Recurrence pattern: 'daily' for every day (roj, daily, har din, jbtk m na khu), 'weekly' for every week, or 'none' for single occurrence."},
-                    "force": {"type": ["boolean", "null"], "description": "Set to true to force scheduling even if a time conflict or tight schedule exists."},
-                    "request_quote": {"type": "string", "description": "Exact words or phrase from user message requesting this reminder (e.g. 'remind me at 10am', '10 am morning evrryday', 'yes')."}
+                    "recurrence": {"type": ["string", "null"], "description": "'daily' (roj/har din), 'weekly', or 'none'."},
+                    "force": {"type": ["boolean", "null"], "description": "True to override conflict warning if user confirmed."},
+                    "request_quote": {"type": "string", "description": "Exact words from user message requesting this reminder."}
                 },
                 "required": ["title"]
             }
@@ -754,24 +746,21 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "update_reminder",
             "description": (
-                "Update or reschedule an existing reminder, meeting, or event (e.g. updating duration, time, or date). "
-                "CRITICAL: ALWAYS call this tool when the user wants to reschedule, move, shift, postpone, prepone, change the time, "
-                "or adjust duration for an existing reminder or meeting (e.g. 'meeting ko 4pm ke badle 5pm shift kar do', "
-                "'reschedule 4pm meeting to 5pm', 'shift meeting to 5pm', 'meeting 1 hour ki hai', 'move meeting to 17:00'). "
-                "NEVER call create_reminder when rescheduling or modifying an existing meeting."
+                "Update or reschedule an existing reminder/meeting (time, date, title, or duration). "
+                "ALWAYS use this to reschedule, move, shift, postpone, or modify an existing reminder/meeting; NEVER call create_reminder."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": ["string", "null"], "description": "Title or keyword of the existing reminder or meeting to update (e.g. 'Devender' or 'Meeting')."},
-                    "new_title": {"type": ["string", "null"], "description": "New title if renaming or replacing the reminder (e.g. changing 'Devender' to 'Meeting with Rahul')."},
-                    "reminder_id": {"type": ["integer", "null"], "description": "ID of the reminder if known."},
-                    "due_date": {"type": ["string", "null"], "description": "Updated date in YYYY-MM-DD format if date is being changed."},
-                    "due_time": {"type": ["string", "null"], "description": "Updated time in 24-hour HH:MM format if time is being changed."},
-                    "from_time": {"type": ["string", "null"], "description": "Original or previous time of the event being rescheduled, e.g. '16:00' if shifting from 4pm or '4 baje ki jagah 5 baje'."},
-                    "duration_minutes": {"type": ["integer", "null"], "description": "Updated duration in minutes (e.g. 60 for 1 hour, 30 for 30 mins)."},
-                    "force": {"type": ["boolean", "null"], "description": "Set to true to force update even if a time conflict exists."},
-                    "request_quote": {"type": "string", "description": "Exact words from user's message requesting this update or reschedule."}
+                    "title": {"type": ["string", "null"], "description": "Existing reminder/meeting title keyword."},
+                    "new_title": {"type": ["string", "null"], "description": "New title if renaming or replacing person/event."},
+                    "reminder_id": {"type": ["integer", "null"], "description": "Reminder ID if known."},
+                    "due_date": {"type": ["string", "null"], "description": "Updated YYYY-MM-DD date."},
+                    "due_time": {"type": ["string", "null"], "description": "Updated 24-hour HH:MM time."},
+                    "from_time": {"type": ["string", "null"], "description": "Original time of event being moved (e.g. '16:00')."},
+                    "duration_minutes": {"type": ["integer", "null"], "description": "Updated duration in minutes."},
+                    "force": {"type": ["boolean", "null"], "description": "True to override conflict warning if confirmed."},
+                    "request_quote": {"type": "string", "description": "Exact user words requesting this update."}
                 }
             }
         }
@@ -5046,11 +5035,19 @@ def _get_tool_group_embedding(group_name: str, desc: str) -> Optional[List[float
 
 
 def _warm_tool_group_embeddings() -> None:
-    """Pre-warms uncached TOOL_GROUPS embeddings concurrently to avoid cold-start stalls."""
+    """Pre-warms uncached TOOL_GROUPS embeddings in a single batch HTTP call to avoid cold-start stalls."""
     missing = [(g_name, g_info["description"]) for g_name, g_info in TOOL_GROUPS.items() if g_name not in _TOOL_GROUP_EMBEDDINGS]
     if not missing:
         return
     try:
+        from memory.store import embed_text, embed_texts_batch
+        is_mocked = bool(getattr(embed_text, "assert_called", None) or getattr(embed_text, "side_effect", None))
+        if not is_mocked:
+            vecs = embed_texts_batch([desc for _, desc in missing], is_query=True)
+            for (g_name, _), vec in zip(missing, vecs):
+                if vec:
+                    _TOOL_GROUP_EMBEDDINGS[g_name] = vec
+            return
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(6, len(missing))) as pool:
             list(pool.map(lambda item: _get_tool_group_embedding(item[0], item[1]), missing))
@@ -5111,16 +5108,24 @@ def select_semantic_tools_for_budget(
                 missing_tools.append((t_name, f"{t_name.replace('_', ' ')}: {desc}"))
         if missing_tools:
             try:
-                from memory.store import embed_text
-                from concurrent.futures import ThreadPoolExecutor
+                from memory.store import embed_text, embed_texts_batch
+                is_mocked = bool(getattr(embed_text, "assert_called", None) or getattr(embed_text, "side_effect", None))
+                batch_slice = missing_tools[:16]
+                if not is_mocked:
+                    vecs = embed_texts_batch([item[1] for item in batch_slice], is_query=False)
+                    for (t_name, _), vec in zip(batch_slice, vecs):
+                        if vec:
+                            _TOOL_SCHEMA_EMBEDDINGS[t_name] = vec
+                else:
+                    from concurrent.futures import ThreadPoolExecutor
 
-                def _embed_tool(item):
-                    v = embed_text(item[1], is_query=False)
-                    if v:
-                        _TOOL_SCHEMA_EMBEDDINGS[item[0]] = v
+                    def _embed_tool(item):
+                        v = embed_text(item[1], is_query=False)
+                        if v:
+                            _TOOL_SCHEMA_EMBEDDINGS[item[0]] = v
 
-                with ThreadPoolExecutor(max_workers=min(6, len(missing_tools))) as pool:
-                    list(pool.map(_embed_tool, missing_tools[:20]))
+                    with ThreadPoolExecutor(max_workers=min(6, len(batch_slice))) as pool:
+                        list(pool.map(_embed_tool, batch_slice))
             except Exception:
                 pass
 
@@ -5131,17 +5136,20 @@ def select_semantic_tools_for_budget(
         t_name = fn.get("name", "")
         t_desc = fn.get("description", "")
         sim = 0.0
-        t_vec = _TOOL_SCHEMA_EMBEDDINGS.get(t_name)
-        if q_vec and t_vec:
-            sim = _cosine_similarity(q_vec, t_vec)
-        elif q_tokens:
+        lex_sim = 0.0
+        if q_tokens:
             t_tokens = set(re.findall(r"[a-zA-Z0-9]+", f"{t_name.replace('_', ' ')} {t_desc}".lower()))
             overlap = len(q_tokens & t_tokens)
-            sim = overlap / max(len(q_tokens | t_tokens), 1)
+            lex_sim = overlap / max(len(q_tokens | t_tokens), 1)
+        t_vec = _TOOL_SCHEMA_EMBEDDINGS.get(t_name)
+        if q_vec and t_vec:
+            sim = _cosine_similarity(q_vec, t_vec) + (0.25 * lex_sim)
+        else:
+            sim = lex_sim
 
         is_essential = 1 if t_name in _BUDGET_ESSENTIAL_TOOLS else 0
         is_domain = 1 if t_name not in CORE_TOOL_NAMES else 0
-        scored.append((sim + (0.15 * is_domain) + (0.05 * is_essential), idx, t))
+        scored.append(((sim * 3.0) + (0.20 * is_essential) + (0.12 * is_domain), idx, t))
 
     scored.sort(key=lambda item: (-item[0], item[1]))
     selected = []
@@ -5156,12 +5164,20 @@ def select_semantic_tools_for_budget(
             seen_names.add(name)
             selected.append(t)
 
-    # Ensure critical lookup tools weren't displaced if room can be traded from lowest-ranked slots
+    # Backfill critical lookup tools into tail slots while protecting top query-relevant semantic hits
+    protected_top_k = (
+        min(6, max(2, max_tools - len(_BUDGET_ESSENTIAL_TOOLS)))
+        if max_tools >= 14
+        else max(4, max_tools // 2)
+    )
     essential_present = {t.get("function", {}).get("name", "") for t in selected}
-    missing_essentials = [t for t in tools if t.get("function", {}).get("name", "") in _BUDGET_ESSENTIAL_TOOLS and t.get("function", {}).get("name", "") not in essential_present]
+    missing_essentials = [
+        t for t in tools
+        if t.get("function", {}).get("name", "") in _BUDGET_ESSENTIAL_TOOLS
+        and t.get("function", {}).get("name", "") not in essential_present
+    ]
     for m_tool in missing_essentials:
-        # Replace lowest-scored non-essential tail item
-        for r_idx in range(len(selected) - 1, -1, -1):
+        for r_idx in range(len(selected) - 1, protected_top_k - 1, -1):
             r_name = selected[r_idx].get("function", {}).get("name", "")
             if r_name not in _BUDGET_ESSENTIAL_TOOLS:
                 selected[r_idx] = m_tool

@@ -298,3 +298,198 @@ async def test_single_writer_chat_logs_no_duplicates_in_v2():
     asst_rows = [r for r in rows if r[0] == "assistant" and "single writer confirmed" in r[1]]
     assert len(user_rows) == 1, f"Expected 1 user row, got {len(user_rows)}: {rows}"
     assert len(asst_rows) == 1, f"Expected 1 assistant row, got {len(asst_rows)}: {rows}"
+
+
+def test_embed_with_gemini_falls_back_across_models_on_same_key():
+    """429 on one Gemini embedding model must fall back to the other model on the same key before switching keys."""
+    from memory.store import _embed_with_gemini, _EMBED_MODEL_COOLDOWNS
+    _EMBED_MODEL_COOLDOWNS.clear()
+    seen_urls = []
+
+    def fake_post(url, json=None, timeout=None):
+        seen_urls.append(url)
+        resp = MagicMock()
+        if "gemini-embedding-001" in url:
+            resp.status_code = 429
+            resp.text = "rate limited"
+            return resp
+        if "gemini-embedding-2-preview" in url:
+            resp.status_code = 200
+            resp.json.return_value = {"embedding": {"values": [0.1] * 384}}
+            return resp
+        resp.status_code = 404
+        return resp
+
+    fake_sess = MagicMock()
+    fake_sess.post.side_effect = fake_post
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "k1", "GEMINI_API_KEY_BACKUP": "k2"}, clear=False), \
+         patch("memory.store._get_embed_session", return_value=fake_sess):
+        vec = _embed_with_gemini("test reminder lookup")
+
+    assert vec is not None and len(vec) == 384
+    assert any("gemini-embedding-001" in u and "k1" in u for u in seen_urls)
+    assert any("gemini-embedding-2-preview" in u and "k1" in u for u in seen_urls)
+
+
+@pytest.mark.asyncio
+async def test_groq_payload_compaction_prevents_413_and_retries_on_413():
+    """GroqProvider must compact oversized system+tool payloads under 8k TPM and retry smaller on HTTP 413."""
+    import json
+    from llm.provider import GroqProvider
+
+    big_sys = (
+        "Current Time: 07:00 AM\n"
+        + ("Rule guidance sentence (e.g. verbose sample repeated text). " * 260)
+        + "\nYour capabilities are strictly limited to your registered tools: "
+        + ", ".join(t["function"]["name"] for t in TOOL_DEFINITIONS)
+        + ".\nCONTEXT:\n- Profile & Memory: Milk reminder at 08:00 AM\n"
+    )
+    msgs = [
+        {"role": "system", "content": big_sys},
+        {"role": "user", "content": "Mere kl reminder btana"},
+    ]
+    built = GroqProvider._build_groq_payload(msgs, TOOL_DEFINITIONS, "auto", "openai/gpt-oss-120b", 0.2, None)
+    assert len(built["tools"]) <= 12
+    assert "Milk reminder at 08:00 AM" in built["messages"][0]["content"]
+    raw_chars = len(json.dumps(built))
+    assert raw_chars / 3.1 < 6800
+
+    seen_tool_counts = []
+
+    async def mock_post(url, headers=None, json=None, **kwargs):
+        seen_tool_counts.append(len((json or {}).get("tools") or []))
+        resp = MagicMock()
+        if len(seen_tool_counts) == 1:
+            resp.status_code = 413
+            resp.text = "Request too large"
+            resp.headers = {}
+            return resp
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": "Milk reminder at 8 AM"}}],
+            "usage": {"prompt_tokens": 3400, "completion_tokens": 12, "total_tokens": 3412},
+        }
+        return resp
+
+    gp = GroqProvider(api_key="groq_test_key", name="Groq")
+    with patch("httpx.AsyncClient.post", side_effect=mock_post):
+        out = await gp.chat(messages=msgs, tools=TOOL_DEFINITIONS, model="openai/gpt-oss-120b")
+
+    assert seen_tool_counts == [12, 8]
+    assert out.text == "Milk reminder at 8 AM"
+
+
+@pytest.mark.asyncio
+async def test_transient_gemini_rpm_429_does_not_blackout_provider_for_10_min():
+    """Per-minute Gemini RPM 429 must cool only that model briefly (<90s), never lock out the whole credential for 600s."""
+    import time
+    from llm.provider import _PROVIDER_COOLDOWNS, _MODEL_COOLDOWNS, GeminiProvider, _credential_cooldown_key
+
+    async def mock_post(url, headers=None, json=None, **kwargs):
+        model = (json or {}).get("model", "")
+        resp = MagicMock()
+        if model == "gemini-3.5-flash":
+            resp.status_code = 429
+            resp.text = (
+                '{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. '
+                'PerMinute limit exceeded. Please retry in 25s."}}'
+            )
+            resp.headers = {"retry-after": "25"}
+            return resp
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": "Flash-lite healthy"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105},
+        }
+        return resp
+
+    with patch.dict("os.environ", {
+        "GEMINI_API_KEY": "gem_rpm_key",
+        "GEMINI_API_KEY_BACKUP": "",
+        "GROQ_API_KEY": "",
+        "GEMINI_MODELS": "gemini-3.5-flash",
+        "USE_FAKE_LLM": "0",
+        "LLM_PROVIDER_CHAIN": "",
+    }, clear=False), patch("httpx.AsyncClient.post", side_effect=mock_post):
+        res = await llm_provider.chat(messages=[{"role": "user", "content": "hi"}], max_retries_per_provider=0)
+        assert res.model == "gemini-3.5-flash-lite"
+        assert res.text == "Flash-lite healthy"
+        cred_key = _credential_cooldown_key(GeminiProvider(api_key="gem_rpm_key"))
+        assert cred_key not in _PROVIDER_COOLDOWNS
+        ttl = _MODEL_COOLDOWNS.get((cred_key, "gemini-3.5-flash"), 0) - time.time()
+        assert 10.0 <= ttl <= 70.0
+
+
+@pytest.mark.asyncio
+async def test_task_based_fast_tier_routes_verifier_to_lite_models():
+    """audit_claims_with_llm and tier='fast' calls must prioritize fast/lite models ahead of primary 3.5-flash."""
+    seen_models = []
+
+    async def mock_post(url, headers=None, json=None, **kwargs):
+        seen_models.append((json or {}).get("model", ""))
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": '{"claims_action_done": false, "which_action": null, "claims_external_fact": false, "sourced_by_tool": true, "reason": "ok"}'
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        }
+        return resp
+
+    with patch.dict("os.environ", {
+        "GEMINI_API_KEY": "gem_tier_key",
+        "GEMINI_API_KEY_BACKUP": "",
+        "GROQ_API_KEY": "",
+        "GEMINI_MODELS": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3-flash-preview",
+        "USE_FAKE_LLM": "0",
+        "LLM_PROVIDER_CHAIN": "",
+    }, clear=False), patch("httpx.AsyncClient.post", side_effect=mock_post):
+        from agent.verifier import audit_claims_with_llm
+        out = await audit_claims_with_llm("Good morning!", "schedule clean", "Hi")
+        assert out["sourced_by_tool"] is True
+        assert seen_models[0] == "gemini-3.5-flash-lite"
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_and_immutable_static_prompt_prefix():
+    """embed_texts_batch uses a single :batchEmbedContents call and static prompt prefix precedes dynamic time/context."""
+    from memory.store import embed_texts_batch, _EMBED_QUERY_CACHE, _EMBED_MODEL_COOLDOWNS
+    from agent.prompt import build_runtime_system_prompt
+
+    _EMBED_QUERY_CACHE.clear()
+    _EMBED_MODEL_COOLDOWNS.clear()
+    batch_calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        batch_calls.append((url, len((json or {}).get("requests") or [])))
+        resp = MagicMock()
+        resp.status_code = 200
+        reqs = (json or {}).get("requests") or []
+        resp.json.return_value = {"embeddings": [{"values": [0.2] * 384} for _ in reqs]}
+        return resp
+
+    fake_sess = MagicMock()
+    fake_sess.post.side_effect = fake_post
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "k_batch", "GEMINI_API_KEY_BACKUP": ""}, clear=False), \
+         patch("memory.store._get_embed_session", return_value=fake_sess):
+        vecs = embed_texts_batch(["alpha group", "beta group", "gamma group"], is_query=True)
+
+    assert len(vecs) == 3 and all(v is not None and len(v) == 384 for v in vecs)
+    assert len(batch_calls) == 1 and batch_calls[0][1] == 3
+    assert "gemini-embedding-001:batchEmbedContents" in batch_calls[0][0]
+
+    # Immutable static prefix must precede dynamic session time, preference lock, and CONTEXT
+    chat_id = 99887799
+    db.ensure_user(chat_id)
+    db.set_user_preference(chat_id, reply_language="english")
+    prompt = await build_runtime_system_prompt(chat_id, "hello", mem_ctx={"formatted_block": "<memory>m</memory>"})
+    idx_header = prompt.find("OPERATING PRINCIPLES:")
+    idx_security = prompt.find("5. Security Boundary & Untrusted Content")
+    idx_runtime = prompt.find("RUNTIME SESSION & CONTEXT:")
+    idx_pref = prompt.find("- LOCKED REPLY LANGUAGE: ENGLISH")
+    idx_ctx = prompt.find("\nCONTEXT:\n")
+    assert 0 <= idx_header < idx_security < idx_runtime < idx_pref < idx_ctx

@@ -334,9 +334,10 @@ async def test_multiturn_meeting_conflict_and_transit_buffer_detection():
     assert estimate_event_duration("Movie date") == 2.5
 
     from tests.harness.clock import FrozenClock
+    import core.timeutil as timeutil
     with FrozenClock("2026-11-11T12:00:00+05:30"):
         # 3. Setting a 1-hour meeting at 3:00 PM without date defaults to today
-        today_d = datetime.now(IST).date()
+        today_d = timeutil.today(IST)
         res1 = await execute_tool(
             TEST_CHAT_ID,
             "create_reminder",

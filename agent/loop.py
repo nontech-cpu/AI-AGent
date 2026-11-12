@@ -456,9 +456,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     all_turns = await asyncio.to_thread(db.get_recent_chat_history, chat_id, 24, channel)
     running_summary = get_conversation_summary(uid)
 
-    if len(all_turns) > 8:
-        older_turns = all_turns[:-8]
-        recent_turns = all_turns[-8:]
+    if len(all_turns) > 6:
+        older_turns = all_turns[:-6]
+        recent_turns = all_turns[-6:]
         # Background summarization disabled to save Groq RPM quota
         pass
     else:
@@ -484,12 +484,12 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     for turn in prior_turns:
         r = turn.get("role", "user")
         t_text = (turn.get("text") or "").strip()
-        if not t_text or "Bataiye, main aapki kya madad karun" in t_text or "connection thoda slow" in t_text or "peak traffic" in t_text:
+        if not t_text or "Bataiye, main aapki kya madad karun" in t_text or "connection thoda slow" in t_text or "peak traffic" in t_text or "momentary high server traffic" in t_text:
             continue
-        if len(t_text) > 300:
-            t_text = t_text[:297] + "..."
+        if len(t_text) > 260:
+            t_text = t_text[:257] + "..."
         total_hist_chars += len(t_text)
-        if total_hist_chars > 4800:
+        if total_hist_chars > 2400:
             break
         if sanitized_history and sanitized_history[-1]["role"] == r:
             sanitized_history[-1]["content"] += f"\n{t_text}"
@@ -615,7 +615,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     temperature=payload.get("temperature", 0.2),
                     timeout=30.0,
                     client=client,
-                    require_tool_on_fallback=(iteration == 0 and bool(effective_tools))
+                    require_tool_on_fallback=(iteration == 0 and bool(effective_tools)),
+                    tier=("fast" if is_terminal_synthesis else "primary")
                 )
             except Exception as llm_err:
                 logger.error(f"Turn iteration {iteration} LLM call failed: {llm_err}")
@@ -1140,7 +1141,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             rec_hist = []
             for turn in recent_turns[-6:]:
                 t_text = (turn.get("text") or "").strip()
-                if not t_text or "Bataiye, main aapki kya madad karun" in t_text or "connection thoda slow" in t_text or "peak traffic" in t_text:
+                if not t_text or "Bataiye, main aapki kya madad karun" in t_text or "connection thoda slow" in t_text or "peak traffic" in t_text or "momentary high server traffic" in t_text:
                     continue
                 if len(t_text) > 300:
                     t_text = t_text[:297] + "..."

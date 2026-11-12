@@ -264,7 +264,9 @@ class GeminiProvider(BaseLLMProvider):
         if models:
             self.models = models
         elif env_models:
-            self.models = [m.strip() for m in env_models.split(",") if m.strip()]
+            parsed_models = [m.strip() for m in env_models.split(",") if m.strip()]
+            # Preserve configured order while keeping default Gemini fallback models available
+            self.models = parsed_models + [m for m in self.DEFAULT_MODELS if m not in parsed_models]
         else:
             self.models = list(self.DEFAULT_MODELS)
         self.endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -324,7 +326,7 @@ class GeminiProvider(BaseLLMProvider):
                 except Exception:
                     pass
                 raise RateLimitedError(
-                    f"Gemini {target_model} rate limited (HTTP 429): {resp.text[:120]}",
+                    f"Gemini {target_model} rate limited (HTTP 429): {resp.text[:500]}",
                     provider=self.name,
                     model=target_model,
                     retry_after=retry_after
@@ -426,6 +428,152 @@ class GroqProvider(BaseLLMProvider):
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
+    @staticmethod
+    def _slim_tool_schemas(selected_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Creates shallow copies of tool definitions with compact descriptions to fit strict TPM budgets."""
+        slimmed = []
+        for t in selected_tools:
+            if not isinstance(t, dict) or "function" not in t:
+                slimmed.append(t)
+                continue
+            fn = dict(t["function"])
+            desc = str(fn.get("description") or "")
+            if len(desc) > 120:
+                fn["description"] = desc[:117] + "..."
+            params = fn.get("parameters")
+            if isinstance(params, dict) and isinstance(params.get("properties"), dict):
+                new_props = {}
+                for pk, pv in params["properties"].items():
+                    if isinstance(pv, dict):
+                        pv_copy = dict(pv)
+                        p_desc = str(pv_copy.get("description") or "")
+                        if len(p_desc) > 85:
+                            pv_copy["description"] = p_desc[:82] + "..."
+                        new_props[pk] = pv_copy
+                    else:
+                        new_props[pk] = pv
+                new_params = dict(params)
+                new_params["properties"] = new_props
+                fn["parameters"] = new_params
+            t_copy = dict(t)
+            t_copy["function"] = fn
+            slimmed.append(t_copy)
+        return slimmed
+
+    @classmethod
+    def _build_groq_payload(
+        cls,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Union[str, Dict[str, Any]]],
+        target_model: str,
+        temperature: float,
+        response_format: Optional[Dict[str, Any]],
+        max_tools: int = 12,
+        max_est_tokens: int = 6000,
+        max_hist_turns: int = 4,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": [dict(m) for m in (messages or [])],
+            "temperature": temperature,
+        }
+
+        selected_tools: List[Dict[str, Any]] = []
+        if tools and len(tools) > max_tools:
+            try:
+                from agent.tools import select_semantic_tools_for_budget
+                selected_tools = select_semantic_tools_for_budget(messages, tools, max_tools=max_tools)
+            except Exception:
+                selected_tools = list(tools[:max_tools])
+        elif tools:
+            selected_tools = list(tools)
+
+        slim_tools = cls._slim_tool_schemas(selected_tools) if selected_tools else []
+        if slim_tools:
+            payload["tools"] = slim_tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+
+        if response_format:
+            payload["response_format"] = response_format
+
+        def _est_tokens(p: Dict[str, Any]) -> float:
+            try:
+                raw_len = len(json.dumps({"m": p["messages"], "t": p.get("tools", [])}, ensure_ascii=False))
+            except Exception:
+                raw_len = sum(len(str(m)) for m in p["messages"]) + len(str(p.get("tools", [])))
+            return (raw_len / 3.1) + 300.0
+
+        if _est_tokens(payload) <= max_est_tokens:
+            return payload
+
+        # 1. Trim older completed conversation turns while preserving system prompt & active turn/tool results
+        msgs = payload["messages"]
+        if len(msgs) > 2 and msgs[0].get("role") == "system":
+            sys_msg = msgs[0]
+            rest = msgs[1:]
+            active_tail_start = max(0, len(rest) - 1)
+            for idx in range(len(rest) - 1, -1, -1):
+                if rest[idx].get("role") == "user":
+                    active_tail_start = idx
+                    break
+            prior = rest[:active_tail_start]
+            active_tail = rest[active_tail_start:]
+            kept_prior = prior[-max_hist_turns:] if max_hist_turns > 0 else []
+            compact_prior = []
+            for pm in kept_prior:
+                pm_c = dict(pm)
+                if isinstance(pm_c.get("content"), str) and len(pm_c["content"]) > 180:
+                    pm_c["content"] = pm_c["content"][:177] + "..."
+                compact_prior.append(pm_c)
+            payload["messages"] = [sys_msg] + compact_prior + active_tail
+
+        # 2. Compact verbose instructions outside CONTEXT: inside a copy of system message while preserving rules & context
+        if _est_tokens(payload) > max_est_tokens and payload["messages"] and payload["messages"][0].get("role") == "system":
+            sys_copy = dict(payload["messages"][0])
+            sys_str = str(sys_copy.get("content") or "")
+            if slim_tools:
+                sel_names = ", ".join(
+                    sorted(t.get("function", {}).get("name", "") for t in slim_tools if t.get("function", {}).get("name"))
+                )
+                sys_str = re.sub(
+                    r"Your capabilities are strictly limited to your registered tools:[^\n]*",
+                    f"Your capabilities are strictly limited to your registered tools: {sel_names}.",
+                    sys_str,
+                )
+            if "\nCONTEXT:\n" in sys_str:
+                pre_ctx, ctx_tail = sys_str.split("\nCONTEXT:\n", 1)
+                pre_ctx = re.sub(r"\s*\(e\.g\.[^)]{12,}\)", "", pre_ctx)
+                # Preserve preference lock, current time, grounding, temporal, and security rules within ~5200 chars
+                if len(pre_ctx) > 5200:
+                    pre_lines = []
+                    total_pre = 0
+                    for ln in pre_ctx.splitlines():
+                        ln_s = ln.rstrip()
+                        if total_pre + len(ln_s) + 1 <= 5200 or any(
+                            k in ln_s for k in ("PREFERENCE LOCK", "LOCKED ", "Current Time:", "Security Boundary", "<untrusted_content", "Grounding & Truth")
+                        ):
+                            pre_lines.append(ln_s)
+                            total_pre += len(ln_s) + 1
+                    pre_ctx = "\n".join(pre_lines)
+                sys_str = f"{pre_ctx}\nCONTEXT:\n{ctx_tail}"
+            # If still oversized, trim non-essential middle lines cleanly while keeping memory/schedule/user query
+            max_sys_chars = max(4500, int((max_est_tokens - 2200) * 3.0))
+            if len(sys_str) > max_sys_chars:
+                if "\nCONTEXT:\n" in sys_str:
+                    p_head, p_ctx = sys_str.split("\nCONTEXT:\n", 1)
+                    head_budget = max(2200, max_sys_chars - len(p_ctx) - 32)
+                    if len(p_head) > head_budget:
+                        p_head = p_head[:head_budget].rsplit("\n", 1)[0]
+                    sys_str = f"{p_head}\nCONTEXT:\n{p_ctx[:max(2000, max_sys_chars - len(p_head) - 16)]}"
+                else:
+                    sys_str = sys_str[:max_sys_chars]
+            sys_copy["content"] = sys_str
+            payload["messages"][0] = sys_copy
+
+        return payload
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -444,28 +592,17 @@ class GroqProvider(BaseLLMProvider):
             raise LLMError("Groq API key is not configured", provider=self.name, status_code=401)
 
         target_model = model or self.models[0]
-        payload: Dict[str, Any] = {
-            "model": target_model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-
-        if tools and len(tools) > 24:
-            # Semantic budget selection for Groq: rank tools via embeddings/relevance instead of keyword hacks
-            try:
-                from agent.tools import select_semantic_tools_for_budget
-                payload["tools"] = select_semantic_tools_for_budget(messages, tools, max_tools=24)
-            except Exception:
-                payload["tools"] = tools[:24]
-            if tool_choice:
-                payload["tool_choice"] = tool_choice
-        elif tools:
-            payload["tools"] = tools
-            if tool_choice:
-                payload["tool_choice"] = tool_choice
-
-        if response_format:
-            payload["response_format"] = response_format
+        payload = self._build_groq_payload(
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            target_model=target_model,
+            temperature=temperature,
+            response_format=response_format,
+            max_tools=12,
+            max_est_tokens=6000,
+            max_hist_turns=4,
+        )
 
         headers = {
             "Authorization": f"Bearer {key_to_use}",
@@ -479,6 +616,21 @@ class GroqProvider(BaseLLMProvider):
 
         try:
             resp = await client.post(self.endpoint, headers=headers, json=payload)
+            if resp.status_code == 413 and (len(payload.get("tools", [])) > 8 or len(payload.get("messages", [])) > 2):
+                logger.warning(f"Groq {target_model} hit 413; compacting payload to <=8 semantic tools and retrying once.")
+                payload = self._build_groq_payload(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    target_model=target_model,
+                    temperature=temperature,
+                    response_format=response_format,
+                    max_tools=8,
+                    max_est_tokens=4600,
+                    max_hist_turns=2,
+                )
+                resp = await client.post(self.endpoint, headers=headers, json=payload)
+
             if resp.status_code == 429:
                 retry_after = 1.5
                 try:
@@ -486,7 +638,7 @@ class GroqProvider(BaseLLMProvider):
                 except Exception:
                     pass
                 raise RateLimitedError(
-                    f"Groq {target_model} rate limited (HTTP 429): {resp.text[:120]}",
+                    f"Groq {target_model} rate limited (HTTP 429): {resp.text[:500]}",
                     provider=self.name,
                     model=target_model,
                     retry_after=retry_after
@@ -967,6 +1119,7 @@ async def chat(
     max_retries_per_provider: int = 1,
     client: Optional[httpx.AsyncClient] = None,
     require_tool_on_fallback: bool = False,
+    tier: str = "primary",
     **kwargs
 ) -> LLMResponse:
     """
@@ -1025,7 +1178,17 @@ async def chat(
             if model and model in prov.get_models():
                 candidate_models = [model]
             else:
-                candidate_models = prov.get_models()
+                candidate_models = list(prov.get_models())
+                if tier == "fast" and len(candidate_models) > 1:
+                    if isinstance(prov, GeminiProvider):
+                        fast_first = [m for m in candidate_models if "lite" in m.lower()]
+                        mid = [m for m in candidate_models if "preview" in m.lower() and m not in fast_first]
+                        rest = [m for m in candidate_models if m not in fast_first and m not in mid]
+                        candidate_models = fast_first + mid + rest
+                    elif isinstance(prov, GroqProvider):
+                        fast_first = [m for m in candidate_models if "20b" in m.lower()]
+                        rest = [m for m in candidate_models if m not in fast_first]
+                        candidate_models = fast_first + rest
             is_fallback_provider = (p_idx > 0)
             if is_fallback_provider:
                 fallback_used = True
@@ -1111,13 +1274,30 @@ async def chat(
                             skip_current_provider = True
                             break
 
-                        # Per-model / per-credential quota cooldown (never poison separate backup credentials!)
-                        if (status_code == 429 or isinstance(err, RateLimitedError)) and any(q in err_str for q in ("insufficient_quota", "check your plan and billing details", "exceeded your current quota")):
-                            logger.warning(f"{prov.name} model {m_candidate} quota exhausted (429): cooling down model/credential and trying next candidate.")
-                            _MODEL_COOLDOWNS[(cred_key, m_candidate)] = time.time() + 600.0
-                            quota_exhausted_models += 1
-                            if quota_exhausted_models >= len(candidate_models):
-                                _PROVIDER_COOLDOWNS[cred_key] = time.time() + 600.0
+                        # Per-model / per-credential quota cooldown (never poison separate backup credentials or 10m-blackout transient RPM!)
+                        is_quota_msg = (status_code == 429 or isinstance(err, RateLimitedError)) and any(
+                            q in err_str for q in ("insufficient_quota", "check your plan and billing details", "exceeded your current quota")
+                        )
+                        if is_quota_msg:
+                            retry_m = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)\s*s", err_str)
+                            parsed_retry = float(retry_m.group(1)) if retry_m else getattr(err, "retry_after", 0.0)
+                            is_daily_or_billing = any(
+                                d in err_str for d in ("perday", "per_day", "requests per day", "limit: 0", "insufficient_quota", "billing")
+                            )
+                            is_transient_rpm = any(
+                                r in err_str for r in ("perminute", "per_minute", "rpm", "tpm")
+                            ) or (0 < parsed_retry <= 90.0 and not is_daily_or_billing)
+
+                            if is_transient_rpm:
+                                cool_secs = min(max(parsed_retry, 20.0), 65.0)
+                                logger.warning(f"{prov.name} model {m_candidate} transient RPM/TPM 429: cooling model for {cool_secs:.0f}s.")
+                                _MODEL_COOLDOWNS[(cred_key, m_candidate)] = time.time() + cool_secs
+                            else:
+                                logger.warning(f"{prov.name} model {m_candidate} daily/billing quota exhausted (429): cooling down model/credential and trying next candidate.")
+                                _MODEL_COOLDOWNS[(cred_key, m_candidate)] = time.time() + 300.0
+                                quota_exhausted_models += 1
+                                if quota_exhausted_models >= len(candidate_models):
+                                    _PROVIDER_COOLDOWNS[cred_key] = time.time() + 180.0
                             break
 
                         # Instant fast-failover to next candidate model on TPM limit or 400 tool/request error

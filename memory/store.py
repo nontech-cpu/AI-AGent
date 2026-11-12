@@ -199,6 +199,7 @@ def _get_embedding_model():
 
 _EMBED_QUERY_CACHE: dict = {}
 _EMBED_SESSION = None
+_EMBED_MODEL_COOLDOWNS: dict = {}
 
 
 def _get_embed_session():
@@ -210,17 +211,22 @@ def _get_embed_session():
 
 
 def _embed_with_gemini(content: str, is_query: bool = False) -> Optional[List[float]]:
-    """Generates 384-dimensional vector embedding using Google Gemini Cloud API with backup-key failover."""
+    """Generates 384-dimensional vector embedding using Google Gemini Cloud API with model + backup-key failover."""
     keys = []
     for k in (os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_BACKUP")):
         if k and k.strip() and k.strip() not in keys:
             keys.append(k.strip())
     if not keys:
         return None
+    import hashlib
     sess = _get_embed_session()
     text_clean = content.strip()
+    now_ts = time.time()
     for api_key in keys:
-        for model_name in ("gemini-embedding-2-preview", "gemini-embedding-001"):
+        key_fp = hashlib.sha256(api_key.encode()).hexdigest()[:10]
+        for model_name in ("gemini-embedding-001", "gemini-embedding-2-preview"):
+            if _EMBED_MODEL_COOLDOWNS.get((key_fp, model_name), 0) > now_ts:
+                continue
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:embedContent?key={api_key}"
                 payload = {
@@ -234,8 +240,16 @@ def _embed_with_gemini(content: str, is_query: bool = False) -> Optional[List[fl
                     values = data.get("embedding", {}).get("values")
                     if values and len(values) == 384:
                         return values
-                elif res.status_code in (401, 429):
-                    break  # Fail fast to backup key if credential is unauthorized/rate-limited
+                elif res.status_code in (401, 403):
+                    _EMBED_MODEL_COOLDOWNS[(key_fp, "gemini-embedding-001")] = now_ts + 300.0
+                    _EMBED_MODEL_COOLDOWNS[(key_fp, "gemini-embedding-2-preview")] = now_ts + 300.0
+                    break  # Credential itself is unauthorized; move to backup key
+                elif res.status_code == 429:
+                    _EMBED_MODEL_COOLDOWNS[(key_fp, model_name)] = now_ts + 90.0
+                    continue  # Try next embedding model on same key before moving to backup key
+                elif res.status_code == 404:
+                    _EMBED_MODEL_COOLDOWNS[(key_fp, model_name)] = now_ts + 3600.0
+                    continue
             except Exception as exc:
                 logger.debug(f"Gemini embedding ({model_name}) error: {exc}")
     return None
@@ -287,6 +301,92 @@ def embed_text(content: str, is_query: bool = False) -> Optional[List[float]]:
         return normalized
 
     return None
+
+
+def embed_texts_batch(contents: List[str], is_query: bool = False) -> List[Optional[List[float]]]:
+    """
+    Batch-generates 384-dimensional embeddings via Gemini :batchEmbedContents in a single HTTP request,
+    falling back to per-item embed_text() if offline or partially unfulfilled.
+    """
+    if not contents:
+        return []
+    results: List[Optional[List[float]]] = [None] * len(contents)
+    missing_indices: List[int] = []
+    for idx, text_val in enumerate(contents):
+        if not text_val or not text_val.strip():
+            continue
+        ck = (text_val.strip().lower(), is_query)
+        if ck in _EMBED_QUERY_CACHE:
+            results[idx] = _EMBED_QUERY_CACHE[ck]
+        else:
+            missing_indices.append(idx)
+
+    if not missing_indices:
+        return results
+
+    keys = []
+    for k in (os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_BACKUP")):
+        if k and k.strip() and k.strip() not in keys:
+            keys.append(k.strip())
+
+    if keys:
+        import hashlib
+        sess = _get_embed_session()
+        now_ts = time.time()
+        for chunk_start in range(0, len(missing_indices), 16):
+            chunk_idxs = [i for i in missing_indices[chunk_start:chunk_start + 16] if results[i] is None]
+            if not chunk_idxs:
+                continue
+            for api_key in keys:
+                key_fp = hashlib.sha256(api_key.encode()).hexdigest()[:10]
+                done_chunk = False
+                for model_name in ("gemini-embedding-001", "gemini-embedding-2-preview"):
+                    if _EMBED_MODEL_COOLDOWNS.get((key_fp, model_name), 0) > now_ts:
+                        continue
+                    try:
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:batchEmbedContents?key={api_key}"
+                        reqs = [
+                            {
+                                "model": f"models/{model_name}",
+                                "content": {"parts": [{"text": contents[i].strip()}]},
+                                "outputDimensionality": 384,
+                            }
+                            for i in chunk_idxs
+                        ]
+                        res = sess.post(url, json={"requests": reqs}, timeout=5.0)
+                        if res.status_code == 200:
+                            embs = res.json().get("embeddings") or []
+                            if len(embs) == len(chunk_idxs):
+                                for pos, orig_idx in enumerate(chunk_idxs):
+                                    vals = (embs[pos] or {}).get("values")
+                                    if vals and len(vals) == 384:
+                                        results[orig_idx] = vals
+                                        ck = (contents[orig_idx].strip().lower(), is_query)
+                                        if len(_EMBED_QUERY_CACHE) > 1000:
+                                            _EMBED_QUERY_CACHE.clear()
+                                        _EMBED_QUERY_CACHE[ck] = vals
+                                done_chunk = True
+                                break
+                        elif res.status_code in (401, 403):
+                            _EMBED_MODEL_COOLDOWNS[(key_fp, "gemini-embedding-001")] = now_ts + 300.0
+                            _EMBED_MODEL_COOLDOWNS[(key_fp, "gemini-embedding-2-preview")] = now_ts + 300.0
+                            break
+                        elif res.status_code == 429:
+                            _EMBED_MODEL_COOLDOWNS[(key_fp, model_name)] = now_ts + 90.0
+                            continue
+                        elif res.status_code == 404:
+                            _EMBED_MODEL_COOLDOWNS[(key_fp, model_name)] = now_ts + 3600.0
+                            continue
+                    except Exception as exc:
+                        logger.debug(f"Gemini batchEmbedContents ({model_name}) error: {exc}")
+                if done_chunk:
+                    break
+
+    for idx in missing_indices:
+        if results[idx] is None and contents[idx] and contents[idx].strip():
+            results[idx] = embed_text(contents[idx], is_query=is_query)
+
+    return results
 
 
 _RESOLVED_USER_ID_CACHE: Dict[int, int] = {}
@@ -413,6 +513,7 @@ def invalidate_memory_caches(user_id: Optional[int] = None):
         _RECENT_ACTIONS_CACHE.clear()
         _PROJECTS_CACHE.clear()
         _MEASUREMENTS_CACHE.clear()
+        _EMBED_MODEL_COOLDOWNS.clear()
 
     try:
         import memory.retrieval as _ret
