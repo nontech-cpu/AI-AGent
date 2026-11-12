@@ -20,6 +20,7 @@ logger = logging.getLogger("peculiar_agent_loop")
 
 from timing import IST
 import core.timeutil as timeutil
+from core.json_safe import safe_json_dumps
 import llm.provider as llm_provider
 import db
 from agent.tools import TOOL_DEFINITIONS, execute_tool
@@ -694,13 +695,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 tool_calls_executed.append(fn_name)
 
                 # Loop Guard: detect repeated identical tool call + args
-                call_sig = (fn_name, raw_args.strip() if isinstance(raw_args, str) else json.dumps(raw_args, sort_keys=True))
+                call_sig = (fn_name, raw_args.strip() if isinstance(raw_args, str) else safe_json_dumps(raw_args, sort_keys=True))
                 if call_sig in executed_tool_signatures:
                     logger.warning(f"Loop guard tripped: {fn_name} called repeatedly with {raw_args}. Aborting loop.")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": json.dumps({"status": "error", "message": f"Loop detected: Tool '{fn_name}' was already called with identical arguments."})
+                        "content": safe_json_dumps({"status": "error", "message": f"Loop detected: Tool '{fn_name}' was already called with identical arguments."})
                     })
                     abort_iteration = True
                     break
@@ -733,7 +734,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": json.dumps(block_res, ensure_ascii=False)
+                        "content": safe_json_dumps(block_res, ensure_ascii=False)
                     })
                     continue
 
@@ -1037,7 +1038,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         break
 
                 # Sanitize untrusted content before appending tool result to messages
-                raw_json = json.dumps(tool_result, ensure_ascii=False)
+                raw_json = safe_json_dumps(tool_result, ensure_ascii=False)
                 clean_json = sanitize_untrusted_content(raw_json)
                 messages.append({
                     "role": "tool",

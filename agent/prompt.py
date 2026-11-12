@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from timing import IST
 import core.timeutil as timeutil
+from core.json_safe import safe_json_dumps
 import db
 from state.active_context import format_active_context, update_active_context, format_episodic_context
 
@@ -283,7 +284,7 @@ async def build_runtime_system_prompt(
         from state.pending import get_pending_action
         p_act = get_pending_action(chat_id)
         if p_act:
-            pending_str = f"Awaiting confirmation for '{p_act.get('action_kind', 'action')}': {json.dumps(p_act.get('payload', {}), ensure_ascii=False)}"
+            pending_str = f"Awaiting confirmation for '{p_act.get('action_kind', 'action')}': {safe_json_dumps(p_act.get('payload', {}), ensure_ascii=False)}"
     except Exception:
         pass
 

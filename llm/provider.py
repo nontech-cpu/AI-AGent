@@ -12,6 +12,7 @@ import random
 import logging
 import asyncio
 from dotenv import load_dotenv
+from core.json_safe import safe_json_dumps
 
 load_dotenv()
 from abc import ABC, abstractmethod
@@ -500,7 +501,7 @@ class GroqProvider(BaseLLMProvider):
 
         def _est_tokens(p: Dict[str, Any]) -> float:
             try:
-                raw_len = len(json.dumps({"m": p["messages"], "t": p.get("tools", [])}, ensure_ascii=False))
+                raw_len = len(safe_json_dumps({"m": p["messages"], "t": p.get("tools", [])}, ensure_ascii=False))
             except Exception:
                 raw_len = sum(len(str(m)) for m in p["messages"]) + len(str(p.get("tools", [])))
             return (raw_len / 3.1) + 300.0

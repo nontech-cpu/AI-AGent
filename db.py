@@ -5,6 +5,7 @@ import contextvars
 from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from core.json_safe import safe_json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -1136,7 +1137,7 @@ def set_state(chat_id, state, data=None):
     chat_id = canonical_chat_id(chat_id)
     serialized_data = data
     if isinstance(data, (dict, list)):
-        serialized_data = json.dumps(data)
+        serialized_data = safe_json_dumps(data)
     with engine.begin() as conn:
         conn.execute(
             text(

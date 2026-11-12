@@ -12,6 +12,7 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 
 from connectors.guardrails import is_cancellation_or_decline
+from core.json_safe import safe_json_dumps
 
 logger = logging.getLogger("peculiar_verifier")
 
@@ -109,7 +110,7 @@ def extract_evidence_text(
     if tool_results:
         parts.append("Tool Results Evidence:")
         for idx, tr in enumerate(tool_results, 1):
-            parts.append(f"Tool {idx}: {json.dumps(tr, ensure_ascii=False)}")
+            parts.append(f"Tool {idx}: {safe_json_dumps(tr, ensure_ascii=False)}")
 
     return "\n\n".join(parts)
 

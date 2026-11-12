@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Literal
 import db
 from timing import IST
 import core.timeutil as timeutil
+from core.json_safe import to_json_safe
 from connectors.base import Connector, ToolSpec, ToolResult, HealthResult, ErrorType
 
 CALENDAR_FIXTURES = {
@@ -206,9 +207,9 @@ class CalendarConnector(Connector):
                 ok_d, d_obj, _ = timeutil.resolve_date(t_date, tz=IST, allow_past=True)
                 d_obj = d_obj or timeutil.today(IST)
                 sched = await get_unified_schedule(user_or_chat_id, d_obj)
-                events = sched.get("calendar_events", [])
-                rems = sched.get("reminders", [])
-                comms = sched.get("commitments", [])
+                events = to_json_safe(sched.get("calendar_events", []))
+                rems = to_json_safe(sched.get("reminders", []))
+                comms = to_json_safe(sched.get("commitments", []))
                 return ToolResult(
                     ok=True,
                     data={"date": d_obj.isoformat(), "calendar_events": events, "reminders": rems, "commitments": comms},

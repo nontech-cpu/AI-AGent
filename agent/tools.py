@@ -19,6 +19,7 @@ from timing import IST
 import google_services
 import integrations
 import core.timeutil as timeutil
+from core.json_safe import to_json_safe
 from file_generator import build_contacts_excel, build_styled_pdf
 
 async def _resolve_user_timezone(chat_id: int):
@@ -1607,6 +1608,7 @@ async def execute_tool(chat_id: int, tool_name: str, arguments: dict, user_conte
         return cached_replay
 
     res = await _execute_tool_inner(chat_id, tool_name, arguments, user_context)
+    res = to_json_safe(res)
     if isinstance(res, dict):
         record_idempotency(chat_id, tool_name, arguments, res)
     return res

@@ -11,6 +11,7 @@ import json
 import hashlib
 import logging
 from typing import Dict, Any, Optional, Tuple
+from core.json_safe import safe_json_dumps
 
 logger = logging.getLogger("peculiar_idempotency")
 
@@ -34,7 +35,7 @@ def compute_idempotency_key(chat_id: int, tool_name: str, arguments: dict) -> st
     try:
         # Normalize arguments by sorting keys and converting values to clean json strings
         clean_args = {k: v for k, v in sorted(arguments.items()) if v is not None}
-        args_str = json.dumps(clean_args, sort_keys=True, ensure_ascii=False)
+        args_str = safe_json_dumps(clean_args, sort_keys=True, ensure_ascii=False)
     except Exception:
         args_str = str(sorted(arguments.items()))
     payload = f"{chat_id}:{tool_name}:{args_str}"

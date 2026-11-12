@@ -13,6 +13,7 @@ from sqlalchemy import text
 import db
 from timing import IST
 import core.timeutil as timeutil
+from core.json_safe import safe_json_dumps
 
 # Redaction patterns for secrets
 SECRET_PATTERNS = [
@@ -178,9 +179,9 @@ def log_turn_trace(
                         "cid": chat_id,
                         "msg": clean_msg,
                         "conn": detected_connector,
-                        "tc": json.dumps(clean_tools),
-                        "tr": json.dumps(clean_results),
-                        "gr": json.dumps(clean_guards),
+                        "tc": safe_json_dumps(clean_tools),
+                        "tr": safe_json_dumps(clean_results),
+                        "gr": safe_json_dumps(clean_guards),
                         "lat": latency_ms,
                         "tok": tokens,
                         "rp": reply_path,
@@ -220,9 +221,9 @@ def log_turn_trace(
                         "cid": chat_id,
                         "msg": clean_msg,
                         "conn": detected_connector,
-                        "tc": json.dumps(clean_tools),
-                        "tr": json.dumps(clean_results),
-                        "gr": json.dumps(clean_guards),
+                        "tc": safe_json_dumps(clean_tools),
+                        "tr": safe_json_dumps(clean_results),
+                        "gr": safe_json_dumps(clean_guards),
                         "lat": latency_ms,
                         "tok": tokens,
                         "rp": reply_path,
@@ -261,7 +262,7 @@ def log_turn_trace(
                 "error_type": error_type,
             }
             with open(dead_letter_path, "a", encoding="utf-8") as f_dl:
-                f_dl.write(json.dumps(dead_letter_entry) + "\n")
+                f_dl.write(safe_json_dumps(dead_letter_entry) + "\n")
         except Exception as dl_err:
             logger.error(f"Failed writing to dead-letter file: {dl_err}")
 
@@ -282,7 +283,7 @@ def log_turn_trace(
             "error_type": error_type,
             "memory_status": memory_status
         }
-        turn_logger.info(json.dumps(structured_payload))
+        turn_logger.info(safe_json_dumps(structured_payload))
     except Exception:
         pass
 
