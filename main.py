@@ -3671,17 +3671,86 @@ def validate_startup_environment():
     logging.getLogger("uvicorn").info(f"STARTUP CONFIG: AGENT_CORE={active_core}")
 
 
+def _parse_reminder_ist_dt(scheduled_at):
+    if not scheduled_at:
+        return None
+    sched_dt = None
+    if isinstance(scheduled_at, str):
+        try:
+            sched_dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                sched_dt = datetime.strptime(scheduled_at.split(".")[0], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+    elif isinstance(scheduled_at, datetime):
+        sched_dt = scheduled_at
+    if not sched_dt:
+        return None
+    if getattr(sched_dt, "tzinfo", None) is not None:
+        return sched_dt.astimezone(IST)
+    return sched_dt.replace(tzinfo=IST)
+
+
+def _parse_due_time_obj(due_time):
+    from datetime import time as dt_time
+    if not due_time:
+        return None
+    if hasattr(due_time, "hour") and hasattr(due_time, "minute"):
+        return dt_time(due_time.hour, due_time.minute, getattr(due_time, "second", 0))
+    if isinstance(due_time, str):
+        try:
+            parts = [int(p) for p in due_time.strip().split(":")[:3]]
+            return dt_time(parts[0], parts[1], parts[2] if len(parts) > 2 else 0)
+        except Exception:
+            return None
+    return None
+
+
+def _is_stale_prealert(item_id, label, sched_ist, due_time, now, at_time_item_ids) -> bool:
+    """Returns True when a lead-time pre-alert is superseded by an already-past event or concurrent at_time alert."""
+    if label not in ("day_before", "due_day", "15min", "5min"):
+        return False
+    if item_id is not None and item_id in at_time_item_ids:
+        return True
+    if not sched_ist:
+        return False
+    if label == "15min":
+        return now >= (sched_ist + timedelta(minutes=15))
+    if label == "5min":
+        return now >= (sched_ist + timedelta(minutes=5))
+    t_obj = _parse_due_time_obj(due_time)
+    if t_obj is None:
+        return False
+    event_date = sched_ist.date() + (timedelta(days=1) if label == "day_before" else timedelta(days=0))
+    event_dt = datetime.combine(event_date, t_obj, tzinfo=IST)
+    return now >= event_dt
+
+
 async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = False) -> int:
     """
     DB-driven multi-instance reminder delivery.
     Claims rows atomically via SKIP LOCKED to prevent duplicate dispatches across instances.
+    Coalesces stale lead-time pre-alerts and records delivery failures with bounded retries.
     """
     now = timeutil.now(IST)
-    from db import claim_pending_reminders
+    from db import (
+        claim_pending_reminders,
+        mark_reminder_superseded,
+        record_reminder_failure,
+        canonical_chat_id,
+        get_all_linked_chat_ids,
+    )
 
     claimed = claim_pending_reminders(worker_id=worker_id, now=now)
     if not claimed:
         return 0
+
+    at_time_item_ids = {
+        row[9]
+        for row in claimed
+        if len(row) > 9 and row[9] is not None and row[7] in ("at_time", "due")
+    }
 
     sent_count = 0
     for row in claimed:
@@ -3690,34 +3759,25 @@ async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = Fa
         category = row[2]
         title = row[3]
         amount = row[4]
-        due_date = row[5]
+        _due_date = row[5]
         due_time = row[6]
         label = row[7]
         scheduled_at = row[8] if len(row) > 8 else None
+        item_id = row[9] if len(row) > 9 else None
+
+        sched_ist = _parse_reminder_ist_dt(scheduled_at)
+
+        # Suppress obsolete pre-alerts ("In 15 min", "In 5 min", "Due today") if event time already passed
+        if _is_stale_prealert(item_id, label, sched_ist, due_time, now, at_time_item_ids):
+            try:
+                mark_reminder_superseded(rid, sent_at=now)
+            except Exception as sup_err:
+                print(f"Error superseding stale pre-alert {rid}:", sup_err)
+                record_reminder_failure(rid, str(sup_err))
+            continue
 
         # Determine if reminder was delayed (> 2 mins late due to server sleep/restart)
-        is_delayed = False
-        if scheduled_at:
-            sched_dt = None
-            if isinstance(scheduled_at, str):
-                try:
-                    sched_dt = datetime.fromisoformat(scheduled_at.replace(" ", "T"))
-                except Exception:
-                    try:
-                        sched_dt = datetime.strptime(scheduled_at.split(".")[0], "%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        pass
-            elif isinstance(scheduled_at, datetime):
-                sched_dt = scheduled_at
-
-            if sched_dt:
-                if hasattr(sched_dt, "tzinfo") and sched_dt.tzinfo is not None:
-                    sched_ist = sched_dt.astimezone(IST)
-                else:
-                    sched_ist = sched_dt.replace(tzinfo=IST)
-                delay_sec = (now - sched_ist).total_seconds()
-                if delay_sec > 120:
-                    is_delayed = True
+        is_delayed = bool(sched_ist and (now - sched_ist).total_seconds() > 120)
 
         reply_lang.set(get_language(chat_id))
         base_msg = reminder_text(label, category, title, amount, due_time)
@@ -3727,21 +3787,30 @@ async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = Fa
             msg_text = base_msg
 
         # Deliver to user chat_id and linked canonical/desktop Telegram accounts
-        from db import canonical_chat_id, get_all_linked_chat_ids
         target_ids = get_all_linked_chat_ids(chat_id)
         canon_cid = canonical_chat_id(chat_id)
 
-        # Log turn once in chat history for canonical identity
-        record_chat_turn(canon_cid, "assistant", msg_text)
-
+        delivered_any = False
+        last_err = None
         for cid in target_ids:
             try:
                 await send_telegram_text(cid, msg_text)
+                delivered_any = True
             except Exception as e:
+                last_err = str(e)
                 print(f"Error sending reminder {rid} to {cid}:", e)
 
-        mark_sent(rid, sent_at=now)
-        sent_count += 1
+        if delivered_any or not target_ids:
+            if delivered_any:
+                record_chat_turn(canon_cid, "assistant", msg_text)
+            try:
+                mark_sent(rid, sent_at=now)
+                sent_count += 1
+            except Exception as ack_err:
+                print(f"Error acknowledging reminder {rid}:", ack_err)
+                record_reminder_failure(rid, str(ack_err))
+        else:
+            record_reminder_failure(rid, last_err or "Telegram delivery failed for all linked targets")
 
     return sent_count
 

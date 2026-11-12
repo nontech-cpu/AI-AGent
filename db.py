@@ -552,6 +552,67 @@ def export_data(chat_id):
 
 _REMINDERS_COLS_INITIALIZED = False
 
+def _unsent_reminder_sql(alias: str = "") -> str:
+    """Returns a dialect-safe SQL predicate matching unsent reminder rows."""
+    prefix = f"{alias}." if alias else ""
+    if engine.dialect.name == "postgresql":
+        return f"({prefix}sent IS NOT TRUE)"
+    return f"({prefix}sent IS NOT TRUE OR {prefix}sent = 0)"
+
+
+def _parse_dt_value(val):
+    if isinstance(val, str):
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                return datetime.strptime(val.split(".")[0], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return val
+    return val
+
+
+def _compute_next_occurrence_datetimes(remind_at, due_at, recurrence: str):
+    """Advances remind_at and due_at by one recurrence period ('daily', 'weekly', 'weekdays')."""
+    from datetime import timedelta
+    remind_dt = _parse_dt_value(remind_at)
+    due_dt = _parse_dt_value(due_at)
+    step_days = 7 if recurrence == "weekly" else 1
+    next_remind_at = (remind_dt + timedelta(days=step_days)) if hasattr(remind_dt, "year") else None
+    next_due_at = (due_dt + timedelta(days=step_days)) if hasattr(due_dt, "year") else None
+    if recurrence == "weekdays" and next_due_at and next_due_at.weekday() >= 5:
+        add_days = 2 if next_due_at.weekday() == 5 else 1
+        next_remind_at = (next_remind_at + timedelta(days=add_days)) if next_remind_at else None
+        next_due_at = (next_due_at + timedelta(days=add_days)) if next_due_at else None
+    return next_remind_at, next_due_at
+
+
+def _schedule_next_recurring_slot(conn, item_id: int, remind_at, due_at, label: Optional[str], recurrence: str) -> None:
+    """Idempotently inserts the next occurrence for (item_id, label) without blocking other labels."""
+    if recurrence not in ("daily", "weekly", "weekdays"):
+        return
+    next_remind_at, next_due_at = _compute_next_occurrence_datetimes(remind_at, due_at, recurrence)
+    if not next_remind_at:
+        return
+    unsent_cond = _unsent_reminder_sql()
+    existing_next = conn.execute(
+        text(
+            f"SELECT id FROM reminders "
+            f"WHERE item_id = :id "
+            f"  AND COALESCE(label, '') = COALESCE(:label, '') "
+            f"  AND ({unsent_cond} OR remind_at = :next_remind_at) "
+            f"  AND (status IS NULL OR status NOT IN ('deleted', 'superseded', 'dead_letter'))"
+        ),
+        {"id": item_id, "label": label, "next_remind_at": next_remind_at},
+    ).first()
+    if not existing_next:
+        conn.execute(
+            text("INSERT INTO reminders (item_id, remind_at, due_at, label) VALUES (:item_id, :remind_at, :due_at, :label)"),
+            {"item_id": item_id, "remind_at": next_remind_at, "due_at": next_due_at, "label": label},
+        )
+
+
 def _init_reminders_scheduler_columns():
     global _REMINDERS_COLS_INITIALIZED
     if _REMINDERS_COLS_INITIALIZED:
@@ -566,9 +627,19 @@ def _init_reminders_scheduler_columns():
                     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_by VARCHAR(64);
                     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
                     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS attempt_count INTEGER DEFAULT 0;
+                    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error TEXT;
                 """))
             else:
-                for col, c_type in [("due_at", "TIMESTAMP"), ("sent_at", "TIMESTAMP"), ("claimed_by", "TEXT"), ("claimed_at", "TIMESTAMP"), ("status", "TEXT DEFAULT 'active'")]:
+                for col, c_type in [
+                    ("due_at", "TIMESTAMP"),
+                    ("sent_at", "TIMESTAMP"),
+                    ("claimed_by", "TEXT"),
+                    ("claimed_at", "TIMESTAMP"),
+                    ("status", "TEXT DEFAULT 'active'"),
+                    ("attempt_count", "INTEGER DEFAULT 0"),
+                    ("last_error", "TEXT"),
+                ]:
                     try:
                         conn.execute(text(f"ALTER TABLE reminders ADD COLUMN {col} {c_type}"))
                     except Exception:
@@ -591,13 +662,13 @@ def add_reminders(item_id, reminders):
             )
 
 
-def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int = 50, stale_seconds: int = 300):
+def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int = 50, stale_seconds: int = 300, max_attempts: int = 3):
     """
-    Multi-instance scheduler with concurrency control.
+    Multi-instance scheduler with concurrency control and dead-letter capping.
     Uses FOR UPDATE SKIP LOCKED on PostgreSQL to prevent double-sending across Render instances.
     On SQLite, uses an atomic transaction.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
     from timing import IST
     import core.timeutil as timeutil
 
@@ -607,54 +678,79 @@ def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int 
     _init_reminders_scheduler_columns()
     is_pg = engine.dialect.name == "postgresql"
     stale_cutoff = now - timedelta(seconds=stale_seconds)
+    unsent_r = _unsent_reminder_sql("r")
+    unsent_plain = _unsent_reminder_sql()
 
     with engine.begin() as conn:
+        # Move any repeatedly failing stale claims to dead_letter so they cannot spam indefinitely
+        conn.execute(
+            text(f"""
+                UPDATE reminders
+                SET status = 'dead_letter', claimed_by = NULL, claimed_at = NULL
+                WHERE {unsent_plain}
+                  AND (status IS NULL OR status NOT IN ('deleted', 'superseded', 'dead_letter'))
+                  AND COALESCE(attempt_count, 0) >= :max_attempts
+                  AND (claimed_at IS NULL OR claimed_at < :stale_cutoff)
+            """),
+            {"max_attempts": max_attempts, "stale_cutoff": stale_cutoff},
+        )
+
         if is_pg:
-            query = text("""
+            query = text(f"""
                 SELECT r.id, u.telegram_chat_id, m.category, m.title, m.amount,
-                       m.due_date, m.due_time, r.label, COALESCE(r.due_at, r.remind_at) as scheduled_at
+                       m.due_date, m.due_time, r.label, COALESCE(r.due_at, r.remind_at) as scheduled_at,
+                       m.id as item_id
                 FROM reminders r
                 JOIN memory_items m ON m.id = r.item_id
                 JOIN users u ON u.id = m.user_id
-                WHERE (r.sent IS NOT TRUE)
+                WHERE {unsent_r}
                   AND (m.status IS NULL OR m.status != 'deleted')
-                  AND (r.status IS NULL OR r.status != 'deleted')
+                  AND (r.status IS NULL OR r.status NOT IN ('deleted', 'superseded', 'dead_letter'))
+                  AND COALESCE(r.attempt_count, 0) < :max_attempts
                   AND (r.claimed_at IS NULL OR r.claimed_at < :stale_cutoff)
                   AND COALESCE(r.due_at, r.remind_at) <= :now
                 ORDER BY COALESCE(r.due_at, r.remind_at)
                 FOR UPDATE OF r SKIP LOCKED
                 LIMIT :limit
             """)
-            rows = conn.execute(query, {"now": now, "stale_cutoff": stale_cutoff, "limit": limit}).fetchall()
+            rows = conn.execute(
+                query,
+                {"now": now, "stale_cutoff": stale_cutoff, "limit": limit, "max_attempts": max_attempts},
+            ).fetchall()
             if rows:
                 claimed_ids = [r[0] for r in rows]
                 conn.execute(
-                    text("UPDATE reminders SET claimed_by = :wid, claimed_at = :now WHERE id = ANY(:ids)"),
-                    {"wid": worker_id, "now": now, "ids": claimed_ids}
+                    text("UPDATE reminders SET claimed_by = :wid, claimed_at = :now, attempt_count = COALESCE(attempt_count, 0) + 1 WHERE id = ANY(:ids)"),
+                    {"wid": worker_id, "now": now, "ids": claimed_ids},
                 )
             return rows
         else:
-            query = text("""
+            query = text(f"""
                 SELECT r.id, u.telegram_chat_id, m.category, m.title, m.amount,
-                       m.due_date, m.due_time, r.label, COALESCE(r.due_at, r.remind_at) as scheduled_at
+                       m.due_date, m.due_time, r.label, COALESCE(r.due_at, r.remind_at) as scheduled_at,
+                       m.id as item_id
                 FROM reminders r
                 JOIN memory_items m ON m.id = r.item_id
                 JOIN users u ON u.id = m.user_id
-                WHERE (r.sent IS NOT TRUE OR r.sent = 0)
+                WHERE {unsent_r}
                   AND (m.status IS NULL OR m.status != 'deleted')
-                  AND (r.status IS NULL OR r.status != 'deleted')
+                  AND (r.status IS NULL OR r.status NOT IN ('deleted', 'superseded', 'dead_letter'))
+                  AND COALESCE(r.attempt_count, 0) < :max_attempts
                   AND (r.claimed_at IS NULL OR r.claimed_at < :stale_cutoff)
                   AND COALESCE(r.due_at, r.remind_at) <= :now
                 ORDER BY COALESCE(r.due_at, r.remind_at)
                 LIMIT :limit
             """)
-            rows = conn.execute(query, {"now": now, "stale_cutoff": stale_cutoff, "limit": limit}).fetchall()
+            rows = conn.execute(
+                query,
+                {"now": now, "stale_cutoff": stale_cutoff, "limit": limit, "max_attempts": max_attempts},
+            ).fetchall()
             if rows:
                 claimed_ids = [r[0] for r in rows]
                 for cid in claimed_ids:
                     conn.execute(
-                        text("UPDATE reminders SET claimed_by = :wid, claimed_at = :now WHERE id = :id"),
-                        {"wid": worker_id, "now": now, "id": cid}
+                        text("UPDATE reminders SET claimed_by = :wid, claimed_at = :now, attempt_count = COALESCE(attempt_count, 0) + 1 WHERE id = :id"),
+                        {"wid": worker_id, "now": now, "id": cid},
                     )
             return rows
 
@@ -662,6 +758,7 @@ def claim_pending_reminders(worker_id: str = "worker_1", now = None, limit: int 
 def get_pending_reminders(now):
     # Compatibility query for legacy callers
     _init_reminders_scheduler_columns()
+    unsent_r = _unsent_reminder_sql("r")
     with engine.connect() as conn:
         return conn.execute(
             text(
@@ -670,9 +767,9 @@ def get_pending_reminders(now):
                 "FROM reminders r "
                 "JOIN memory_items m ON m.id = r.item_id "
                 "JOIN users u ON u.id = m.user_id "
-                "WHERE (r.sent IS NOT TRUE OR r.sent = 0) "
+                f"WHERE {unsent_r} "
                 "AND (m.status IS NULL OR m.status != 'deleted') "
-                "AND (r.status IS NULL OR r.status != 'deleted') "
+                "AND (r.status IS NULL OR r.status NOT IN ('deleted', 'superseded', 'dead_letter')) "
                 "AND COALESCE(r.due_at, r.remind_at) <= :now "
                 "ORDER BY COALESCE(r.due_at, r.remind_at)"
             ),
@@ -682,6 +779,7 @@ def get_pending_reminders(now):
 
 def get_upcoming_reminders(chat_id, now):
     _init_reminders_scheduler_columns()
+    unsent_r = _unsent_reminder_sql("r")
     with engine.connect() as conn:
         return conn.execute(
             text(
@@ -690,7 +788,9 @@ def get_upcoming_reminders(chat_id, now):
                 "JOIN memory_items m ON m.id = r.item_id "
                 "JOIN users u ON u.id = m.user_id "
                 "WHERE u.telegram_chat_id = :c "
-                "AND (r.sent IS NOT TRUE OR r.sent = 0) "
+                f"AND {unsent_r} "
+                "AND (m.status IS NULL OR m.status != 'deleted') "
+                "AND (r.status IS NULL OR r.status NOT IN ('deleted', 'superseded', 'dead_letter')) "
                 "AND COALESCE(r.due_at, r.remind_at) > :now "
                 "ORDER BY COALESCE(r.due_at, r.remind_at) LIMIT 30"
             ),
@@ -698,59 +798,80 @@ def get_upcoming_reminders(chat_id, now):
         ).fetchall()
 
 
+def _advance_recurring_after_ack(reminder_id: int) -> None:
+    """Runs recurring next-slot insertion in an isolated transaction so delivery ack never rolls back."""
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT r.item_id, r.remind_at, r.due_at, r.label, COALESCE(m.recurrence, 'none')
+                    FROM reminders r
+                    JOIN memory_items m ON m.id = r.item_id
+                    WHERE r.id = :i AND (m.status IS NULL OR m.status != 'deleted')
+                """),
+                {"i": reminder_id},
+            ).first()
+            if row and row[4] in ("daily", "weekly", "weekdays"):
+                _schedule_next_recurring_slot(
+                    conn,
+                    item_id=row[0],
+                    remind_at=row[1],
+                    due_at=row[2],
+                    label=row[3],
+                    recurrence=row[4],
+                )
+    except Exception as adv_err:
+        logger.exception(f"Recurring reminder advancement failed for reminder_id={reminder_id}: {adv_err}")
+
+
 def mark_sent(reminder_id, sent_at=None):
     if sent_at is None:
         from timing import IST
         import core.timeutil as timeutil
         sent_at = timeutil.now(IST)
+    _init_reminders_scheduler_columns()
     with engine.begin() as conn:
         conn.execute(
-            text("UPDATE reminders SET sent = true, sent_at = :s, claimed_by = NULL, claimed_at = NULL WHERE id = :i"),
+            text("UPDATE reminders SET sent = true, sent_at = :s, claimed_by = NULL, claimed_at = NULL, last_error = NULL WHERE id = :i"),
             {"i": reminder_id, "s": sent_at},
         )
-        # Self-Advancing Recurring Reminder Dispatcher
-        try:
-            row = conn.execute(
-                text("""
-                    SELECT r.item_id, r.remind_at, r.due_at, r.label, m.due_date, m.due_time, COALESCE(m.recurrence, 'none')
-                    FROM reminders r
-                    JOIN memory_items m ON m.id = r.item_id
-                    WHERE r.id = :i
-                """),
-                {"i": reminder_id}
-            ).first()
-            if row and row[6] in ("daily", "weekly", "weekdays"):
-                item_id, remind_at, due_at, label, base_d, due_t, rec = row
-                from datetime import datetime, timedelta
-                if isinstance(remind_at, str):
-                    try:
-                        remind_at = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
-                    except Exception:
-                        pass
-                if isinstance(due_at, str):
-                    try:
-                        due_at = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
-                    except Exception:
-                        pass
-                step_days = 7 if rec == "weekly" else 1
-                next_remind_at = (remind_at + timedelta(days=step_days)) if remind_at else None
-                next_due_at = (due_at + timedelta(days=step_days)) if due_at else None
-                if rec == "weekdays" and next_due_at and next_due_at.weekday() >= 5:
-                    add_days = 2 if next_due_at.weekday() == 5 else 1
-                    next_remind_at = (next_remind_at + timedelta(days=add_days)) if next_remind_at else None
-                    next_due_at = (next_due_at + timedelta(days=add_days)) if next_due_at else None
+    # Isolated transaction: recurrence scheduling failure must never roll back the sent acknowledgement
+    _advance_recurring_after_ack(reminder_id)
 
-                existing_next = conn.execute(
-                    text("SELECT id FROM reminders WHERE item_id = :id AND (sent IS NOT TRUE OR sent = 0)"),
-                    {"id": item_id}
-                ).first()
-                if not existing_next and next_remind_at:
-                    conn.execute(
-                        text("INSERT INTO reminders (item_id, remind_at, due_at, label) VALUES (:item_id, :remind_at, :due_at, :label)"),
-                        {"item_id": item_id, "remind_at": next_remind_at, "due_at": next_due_at, "label": label}
-                    )
-        except Exception as adv_err:
-            pass
+
+def mark_reminder_superseded(reminder_id, sent_at=None):
+    """Marks a stale pre-alert as superseded without sending, while preserving next recurring occurrence."""
+    if sent_at is None:
+        from timing import IST
+        import core.timeutil as timeutil
+        sent_at = timeutil.now(IST)
+    _init_reminders_scheduler_columns()
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE reminders SET sent = true, sent_at = :s, status = 'superseded', claimed_by = NULL, claimed_at = NULL WHERE id = :i"),
+            {"i": reminder_id, "s": sent_at},
+        )
+    _advance_recurring_after_ack(reminder_id)
+
+
+def record_reminder_failure(reminder_id, error_msg: str, max_attempts: int = 3):
+    """Records delivery/ack error and transitions exhausted rows to dead_letter."""
+    _init_reminders_scheduler_columns()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE reminders
+                    SET last_error = :err,
+                        status = CASE WHEN COALESCE(attempt_count, 0) >= :max_a THEN 'dead_letter' ELSE status END,
+                        claimed_by = CASE WHEN COALESCE(attempt_count, 0) >= :max_a THEN NULL ELSE claimed_by END,
+                        claimed_at = CASE WHEN COALESCE(attempt_count, 0) >= :max_a THEN NULL ELSE claimed_at END
+                    WHERE id = :i
+                """),
+                {"i": reminder_id, "err": str(error_msg or "")[:500], "max_a": max_attempts},
+            )
+    except Exception as rec_err:
+        logger.exception(f"Failed recording reminder failure for reminder_id={reminder_id}: {rec_err}")
 
 # ---------- Email linking ----------
 
@@ -1156,45 +1277,44 @@ def soft_delete_reminders(chat_id, item_ids, scope: str = "all"):
         safe_ids = [int(r[0]) for r in owned]
 
         if scope == "this":
-            # Delete only current active occurrence in reminders table
-            from datetime import timedelta
+            # Delete all alert rows belonging to the earliest pending occurrence cycle
+            unsent_cond = _unsent_reminder_sql()
             for r_row in owned:
-                m_id, m_title, m_rec = r_row[0], r_row[1], r_row[2]
-                curr_rem = conn.execute(
-                    text("SELECT id, remind_at, due_at, label FROM reminders WHERE item_id = :mid AND (sent IS NOT TRUE OR sent = 0) AND (status IS NULL OR status != 'deleted') ORDER BY id ASC LIMIT 1"),
-                    {"mid": m_id}
-                ).first()
-                if curr_rem:
-                    rem_pk, remind_at, due_at, label = curr_rem
-                    conn.execute(
-                        text("UPDATE reminders SET status = 'deleted' WHERE id = :rid"),
-                        {"rid": rem_pk}
-                    )
-                    # Advance to next recurrence if recurring
-                    if m_rec in ("daily", "weekly", "weekdays"):
-                        from datetime import datetime
-                        if isinstance(remind_at, str):
-                            try:
-                                remind_at = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
-                            except Exception:
-                                pass
-                        if isinstance(due_at, str):
-                            try:
-                                due_at = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
-                            except Exception:
-                                pass
-                        step_days = 7 if m_rec == "weekly" else 1
-                        next_remind_at = (remind_at + timedelta(days=step_days)) if remind_at else None
-                        next_due_at = (due_at + timedelta(days=step_days)) if due_at else None
-                        if m_rec == "weekdays" and next_due_at and next_due_at.weekday() >= 5:
-                            add_days = 2 if next_due_at.weekday() == 5 else 1
-                            next_remind_at = (next_remind_at + timedelta(days=add_days)) if next_remind_at else None
-                            next_due_at = (next_due_at + timedelta(days=add_days)) if next_due_at else None
-                        if next_remind_at:
-                            conn.execute(
-                                text("INSERT INTO reminders (item_id, remind_at, due_at, label) VALUES (:item_id, :remind_at, :due_at, :label)"),
-                                {"item_id": m_id, "remind_at": next_remind_at, "due_at": next_due_at, "label": label}
-                            )
+                m_id, _m_title, m_rec = r_row[0], r_row[1], r_row[2]
+                pending_rows = conn.execute(
+                    text(
+                        f"SELECT id, remind_at, due_at, label FROM reminders "
+                        f"WHERE item_id = :mid AND {unsent_cond} "
+                        f"  AND (status IS NULL OR status NOT IN ('deleted', 'superseded', 'dead_letter')) "
+                        f"ORDER BY COALESCE(due_at, remind_at) ASC, id ASC"
+                    ),
+                    {"mid": m_id},
+                ).fetchall()
+                if pending_rows:
+                    seen_labels = set()
+                    occ_rows = []
+                    for pr in pending_rows:
+                        lbl = pr[3] or ""
+                        if lbl in seen_labels:
+                            break
+                        seen_labels.add(lbl)
+                        occ_rows.append(pr)
+                        if lbl in ("at_time", "due"):
+                            break
+
+                    for rem_pk, remind_at, due_at, label in occ_rows:
+                        conn.execute(
+                            text("UPDATE reminders SET status = 'deleted' WHERE id = :rid"),
+                            {"rid": rem_pk},
+                        )
+                        _schedule_next_recurring_slot(
+                            conn,
+                            item_id=m_id,
+                            remind_at=remind_at,
+                            due_at=due_at,
+                            label=label,
+                            recurrence=m_rec,
+                        )
                 else:
                     # No pending reminder row; mark memory_item deleted
                     conn.execute(text("UPDATE memory_items SET status = 'deleted' WHERE id = :mid"), {"mid": m_id})
