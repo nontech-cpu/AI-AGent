@@ -125,24 +125,109 @@ def sanitize_regional_scripts(reply: str) -> str:
     return reply
 
 
+def _resolve_effective_user_lang(
+    user_lang: str,
+    user_query: str = "",
+    draft_reply: str = "",
+    explicit_lang_lock: bool = False
+) -> str:
+    """Resolves effective reply language while respecting explicit user preference locks."""
+    clean_lang = (user_lang or "english").strip().lower()
+    if explicit_lang_lock and clean_lang not in ("auto", "none", ""):
+        return clean_lang
+    if clean_lang == "english":
+        combined_text = f" {user_query} {draft_reply} ".lower()
+        hinglish_cues = (
+            " kar diya ", " laga do ", " kripya ", " karo ", " bhai ", " maine ",
+            " aaj ", " kal ", " kaisa ", " hai ", " hain ", " hata ", " bhej ",
+            " kya ", " tha ", " aapka ", " pichla ", " ka ", " kaise ", " ke ",
+            " ki ", " ko ", " mein ", " me ", " konse "
+        )
+        if any(cue in combined_text for cue in hinglish_cues):
+            return "hinglish"
+    return clean_lang
+
+
+def _has_verified_route_or_web_evidence(
+    tool_results: List[Dict[str, Any]],
+    audit: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Returns True when navigation tools or verified search_web/places results ground the reply."""
+    for tr in (tool_results or []):
+        if not isinstance(tr, dict):
+            continue
+        t_name = str(tr.get("tool_name") or tr.get("action") or "").lower()
+        if t_name in ("google_maps", "get_directions", "navigation") or "route" in tr:
+            return True
+        if t_name in ("search_web", "web_search", "find_nearby_places", "read_webpage", "fetch_url"):
+            if tr.get("status") == "success" and (tr.get("results") or tr.get("places") or tr.get("message")):
+                if audit is not None and audit.get("sourced_by_tool"):
+                    return True
+    return False
+
+
+async def rewrite_reply_with_grounding(
+    draft_reply: str,
+    violation_reason: str,
+    evidence_str: str,
+    user_query: str,
+    eff_lang: str
+) -> Optional[str]:
+    """
+    Critique-and-rewrite pass: repairs ONLY the ungrounded claim while preserving
+    verified facts and clarifying questions strictly in the user's language.
+    """
+    try:
+        import llm.provider as llm_provider
+        rewrite_sys = (
+            f"You are revising a draft assistant reply to fix a grounding issue.\n"
+            f"Issue detected: {violation_reason}\n"
+            f"Rules:\n"
+            f"1. Remove or qualify ONLY the unsupported claim (e.g., unverified live traffic/road ETA or unsupported external facts).\n"
+            f"2. Keep any helpful verified facts from the Evidence, plus any helpful clarifying/planning questions for the user.\n"
+            f"3. Do NOT fabricate any facts, places, routes, or executed actions.\n"
+            f"4. Respond 100% in {eff_lang.upper()}."
+        )
+        rewrite_user = (
+            f"User Message:\n{user_query}\n\n"
+            f"Verified Evidence:\n{evidence_str or '[None]'}\n\n"
+            f"Draft Reply to Fix:\n{draft_reply}"
+        )
+        resp = await llm_provider.chat(
+            messages=[
+                {"role": "system", "content": rewrite_sys},
+                {"role": "user", "content": rewrite_user},
+            ],
+            temperature=0.2,
+            timeout=8.0,
+            tier="fast",
+        )
+        candidate = (resp.text or "").strip() if resp else ""
+        # Reject mock JSON audit outputs or empty responses so fallback i18n handles cleanly
+        if not candidate or candidate.startswith("{") or '"claims_action_done"' in candidate:
+            return None
+        return sanitize_regional_scripts(candidate)
+    except Exception as exc:
+        logger.warning(f"Grounded rewrite pass error: {exc}")
+        return None
+
+
 def deterministic_verify(
     draft_reply: str,
     tool_results: List[Dict[str, Any]],
     memory_context: Optional[Dict[str, Any]] = None,
     user_query: str = "",
     recent_history: Optional[List[Dict[str, Any]]] = None,
-    user_lang: str = "english"
+    user_lang: str = "english",
+    explicit_lang_lock: bool = False
 ) -> Tuple[bool, Optional[str], List[str]]:
     """
     Deterministic safety checks for tool-result facts (status==success, IDs, URLs).
     Guarantees zero-latency enforcement on objective, verifiable tool artifacts.
     """
     from core.i18n import get_i18n_string
-    if user_lang == "english":
-        combined_text = f"{user_query} {draft_reply}".lower()
-        if any(w in combined_text for w in ("kar diya", "laga do", "kripya", "karo", "bhai", "maine", "aaj", "kal", "kaisa", "hai", "hain", "hata", "bhej")):
-            user_lang = "hinglish"
-    action_failed_msg = get_i18n_string("action_failed", lang=user_lang)
+    eff_lang = _resolve_effective_user_lang(user_lang, user_query, draft_reply, explicit_lang_lock=explicit_lang_lock)
+    action_failed_msg = get_i18n_string("action_failed", lang=eff_lang)
     evidence_str = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
     violations = []
 
@@ -162,7 +247,7 @@ def deterministic_verify(
         low_rep = draft_reply.lower()
         if not any(w in low_rep for w in ("confirm", "kya main", "kya aap", "proceed", "yes/no", "options:")):
             violations.append("Claimed action completed without success: Action requires confirmation")
-            return False, "Maine details prepare kar li hain. Kya aap confirm karte hain ki ise proceed kar doon? (Reply yes/no)", violations
+            return False, get_i18n_string("confirm_action_prompt", lang=eff_lang), violations
 
     # If any tool failed with error and draft does not mention the error/conflict
     has_conflict = any(
@@ -198,12 +283,7 @@ def deterministic_verify(
             is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "dlete", "delte", "delet", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean", "entire memory", "saari memory", "all data", "poora data"))
             if is_wipe_claim and is_user_wipe_request:
                 violations.append("Claimed data/memory wipe completed without verified deletion tool execution")
-                revised = (
-                    "⚠️ **Security & Privacy Warning**:\n\n"
-                    "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
-                    "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
-                    "Reply **yes/haan** to confirm ya **no/cancel** to abort."
-                )
+                revised = get_i18n_string("wipe_privacy_warning", lang=eff_lang)
                 return False, revised, violations
             violations.append("Claimed action completed without success: Action created or scheduled without successful tool execution in evidence")
             return False, action_failed_msg, violations
@@ -273,9 +353,9 @@ def deterministic_verify(
                         if r.get('title'):
                             verified_items.append(f"• **{r['title']}**: {r.get('snippet', '')[:100]}...")
                 if verified_items:
-                    revised = "Jodhpur ke live verified shopping destinations:\n\n" + "\n".join(verified_items[:4])
-                    return False, revised, violations
-            return False, "Jodhpur ke verified malls mein **Ashapurna Mall** (Shastri Nagar) aur **Reliance Smart Mall** popular shopping destinations hain.", violations
+                    header = "Verified shopping destinations:\n\n" if eff_lang == "english" else "Jodhpur ke live verified shopping destinations:\n\n"
+                    return False, header + "\n".join(verified_items[:4]), violations
+            return False, get_i18n_string("malls_verified_fallback", lang=eff_lang), violations
 
     # 5. Route & Travel Time Grounding without Navigation Tool
     has_nav_tool = any(isinstance(tr, dict) and tr.get("tool_name") in ("google_maps", "get_directions", "navigation") for tr in tool_results)
@@ -284,22 +364,13 @@ def deterministic_verify(
         if any(w in low_query for w in ('sardarpura', 'sardapura', 'ratanada', 'shastri nagar', 'paota')) and any(bad in low_rep for bad in ('nh-48', '35-40 km', '40 km', '45-50 min', '50 min', 'bypass')):
             violations.append('Fabricated highway & inflated distance for local city transit')
             maps_link = "https://www.google.com/maps/dir/?api=1&origin=Sardarpura+Jodhpur&destination=Ratanada+Jodhpur"
-            revised = (
-                "Sardarpura se Ratanada ka faasla sirf **3–4 km** ka local city drive hai (lagbhag 7–10 minute via Sardarpura–Ratanada link road).\n\n"
-                "🚗 Live traffic aur exact turn-by-turn route ke liye aap direct Google Maps link use kar sakte hain:\n"
-                f"🔗 {maps_link}"
-            )
+            revised = get_i18n_string("local_transit_fallback", lang=eff_lang, maps_link=maps_link)
             return False, revised, violations
 
         # Check ungrounded route or travel time prediction
         if any(w in low_rep for w in ('minute', 'min', 'hote hue', 'circle se', 'road se', 'time:')) and not any(isinstance(tr, dict) and "route" in tr for tr in tool_results):
             violations.append("Ungrounded route or travel time claimed without verified maps tool")
-            revised = (
-                "Mere paas live GPS navigation aur real-time traffic maps ka live access nahi hai, "
-                "isliye main exact travel time ya road route predict nahi kar sakta. "
-                "Aap live traffic aur best route ke liye Google Maps check kar sakte hain:\n\n"
-                "👉 https://www.google.com/maps/dir/?api=1"
-            )
+            revised = get_i18n_string("route_gps_unavailable", lang=eff_lang)
             return False, revised, violations
 
     # 6. Regional Script Sanitization
@@ -310,10 +381,8 @@ def deterministic_verify(
             clean_reply = MEET_URL_PATTERN.sub("[Meet link available upon confirmation]", draft_reply)
             return False, clean_reply, violations
         if any("Fabricated GitHub repository" in v for v in violations) and has_repo_list_tool:
-            revised = (
-                "Aapke GitHub account par ye verified repositories hain:\n\n" +
-                "\n".join(f"{i+1}. **{r}**" for i, r in enumerate(sorted(real_repos)))
-            )
+            repos_list = "\n".join(f"{i+1}. **{r}**" for i, r in enumerate(sorted(real_repos)))
+            revised = get_i18n_string("github_verified_repos", lang=eff_lang, repos_list=repos_list)
             return False, revised, violations
         return False, action_failed_msg, violations
 
@@ -413,15 +482,18 @@ async def verify_and_ground_reply(
     user_query: str = "",
     recent_history: Optional[List[Dict[str, Any]]] = None,
     allow_llm: bool = True,
-    user_lang: str = "english"
+    user_lang: str = "english",
+    explicit_lang_lock: bool = False
 ) -> Tuple[bool, str, List[str]]:
     """
     Phase 5 Unified Verification & Grounding:
     1. Deterministic tool-result facts check (status==success, Meet links, repo lists).
     2. Structured LLM claim-checker evaluating {claims_action_done, which_action, claims_external_fact, sourced_by_tool}.
-    3. Blocks any reply claiming action execution without successful tool result,
-       or claiming external live facts without verified tool source.
+    3. Blocks unverified claims via language-matched critique-rewrite or localized i18n fallback.
     """
+    from core.i18n import get_i18n_string
+    eff_lang = _resolve_effective_user_lang(user_lang, user_query, draft_reply, explicit_lang_lock=explicit_lang_lock)
+
     # 1. Deterministic rule check
     passed_det, revised_det, violations_det = deterministic_verify(
         draft_reply=draft_reply,
@@ -429,11 +501,11 @@ async def verify_and_ground_reply(
         memory_context=memory_context,
         user_query=user_query,
         recent_history=recent_history,
-        user_lang=user_lang
+        user_lang=eff_lang,
+        explicit_lang_lock=True
     )
     if not passed_det:
-        from core.i18n import get_i18n_string
-        fallback_msg = get_i18n_string("action_failed", lang=user_lang)
+        fallback_msg = get_i18n_string("action_failed", lang=eff_lang)
         return False, revised_det or fallback_msg, violations_det
 
     # Fast-path for questions or trivial short acknowledgements (0ms overhead, zero keyword sets)
@@ -479,12 +551,7 @@ async def verify_and_ground_reply(
             is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "dlete", "delte", "delet", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean", "entire memory", "saari memory", "all data", "poora data"))
             if is_wipe_act and is_user_wipe_request:
                 violations.append(f"Claimed data/memory wipe '{act_label}' completed without verified deletion tool execution")
-                revised = (
-                    "⚠️ **Security & Privacy Warning**:\n\n"
-                    "Kya aap sach me apni saari memories, chat history, notes, reminders, smart lists aur saved contacts permanently delete karna chahte hain? "
-                    "Ye action irreversible hai aur data wapas recover nahi hoga.\n\n"
-                    "Reply **yes/haan** to confirm ya **no/cancel** to abort."
-                )
+                revised = get_i18n_string("wipe_privacy_warning", lang=eff_lang)
                 return False, revised, violations
 
             # If user declined or cancelled, or tool reported error, NEVER overwrite with canned text:
@@ -494,39 +561,53 @@ async def verify_and_ground_reply(
                 return True, sanitize_regional_scripts(draft_reply), []
 
             violations.append(f"Claimed action '{act_label}' completed without verified tool execution")
-            if (user_lang or "").strip().lower() == "english":
-                revised = "Your request has been noted. Please confirm the details so I can proceed."
-            else:
-                revised = "Aapka request note kar liya gaya hai. Kripya details confirm karein taaki main ise proceed kar sakun."
+            rewritten = await rewrite_reply_with_grounding(
+                draft_reply,
+                f"Do not claim '{act_label}' succeeded because no tool executed it yet; ask the user to confirm or provide missing details.",
+                evidence_text,
+                user_query,
+                eff_lang,
+            )
+            revised = rewritten or get_i18n_string("request_noted_confirm_details", lang=eff_lang)
             return False, revised, violations
 
-    # Check 2B: Route / Travel Time Claimed Without Verified Navigation Tool
-    has_nav_tool = any(isinstance(tr, dict) and tr.get("tool_name") in ("google_maps", "get_directions", "navigation") for tr in tool_results)
-    if audit.get("claims_route_or_travel_time") and not has_nav_tool:
+    # Check 2B: Route / Travel Time Claimed Without Verified Navigation or Grounded Web Tool
+    if audit.get("claims_route_or_travel_time") and not _has_verified_route_or_web_evidence(tool_results, audit=audit):
         violations.append("Ungrounded route or travel time claimed without verified maps tool")
-        revised = (
-            "Mere paas live GPS navigation aur real-time traffic maps ka live access nahi hai, "
-            "isliye main exact travel time ya road route predict nahi kar sakta. "
-            "Aap live traffic aur best route ke liye Google Maps check kar sakte hain:\n\n"
-            "👉 https://www.google.com/maps/dir/?api=1"
+        rewritten = await rewrite_reply_with_grounding(
+            draft_reply,
+            "Do not predict live road routes, street turns, or unverified travel duration without a navigation tool; mention Google Maps directions link (https://www.google.com/maps/dir/?api=1) if helpful and keep any relevant clarifying questions.",
+            evidence_text,
+            user_query,
+            eff_lang,
         )
+        revised = rewritten or get_i18n_string("route_gps_unavailable", lang=eff_lang)
         return False, revised, violations
 
     # Check 2C: General External Facts Claimed Without Tool Source
     if audit.get("claims_external_fact") and not audit.get("sourced_by_tool"):
-        # If evidence contains the exact numbers/facts, allow
         violations.append("Unsubstantiated external fact claimed without verified tool source")
-        from core.i18n import get_i18n_string
-        revised = get_i18n_string("unverified_information", lang=user_lang) or "Mere paas iski verified information nahi hai."
+        rewritten = await rewrite_reply_with_grounding(
+            draft_reply,
+            "Remove unsupported external facts that are not present in Evidence; honestly state what is unavailable or ask a clarifying question.",
+            evidence_text,
+            user_query,
+            eff_lang,
+        )
+        revised = rewritten or get_i18n_string("unverified_information", lang=eff_lang)
         return False, revised, violations
 
     # Check 2D: Unavailable Capability Claimed (e.g. Offering to book tickets / make payments)
     if audit.get("claims_unavailable_capability"):
         violations.append(f"Claimed unavailable capability: {audit.get('reason')}")
-        revised = (
-            "Main directly tickets book ya purchases nahi kar sakta kyunki mere paas ticket booking tool nahi hai. "
-            "Lekin main schedules, showtimes, options aur direct booking links dhoondhne mein aapki madad kar sakta hoon!"
+        rewritten = await rewrite_reply_with_grounding(
+            draft_reply,
+            f"Do not claim you can directly execute unavailable capabilities ({audit.get('reason')}); state honestly what you cannot book/pay directly while offering schedules, timings, or options.",
+            evidence_text,
+            user_query,
+            eff_lang,
         )
+        revised = rewritten or get_i18n_string("ticket_booking_unavailable", lang=eff_lang)
         return False, revised, violations
 
     return True, sanitize_regional_scripts(draft_reply), violations

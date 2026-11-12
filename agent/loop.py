@@ -76,8 +76,8 @@ GROUNDING & TRUTH CONTRACT:
    - When the user asks to delete, trash, or remove pages from Notion (e.g. 'dlete all the fast api series', 'notion se ye page delete kardo', 'trash notion page'):
      ALWAYS call the official tool `delete_notion_page(page_id_or_title=...)`!
      NEVER call `execute_python_code` or print text pretending to delete. You have the native `delete_notion_page` tool!
-   - Casual plans, everyday events, trip updates, appointments, tasks, or time statements (e.g. '4:30 trip h dost k sth', 'kal 5 bje doctor ke jana h', 'gym jana h', 'shaam ko movie dekhna hai') are SCHEDULE / REMINDER items, NEVER Notion pages!
-   - When a user states a plan with a time (e.g. '4:30 trip h dost k sth'): check schedule for conflicts, alert them if there is a clash, and offer or create a reminder / calendar event (`create_reminder` or `create_meeting`). NEVER create a Notion page for it!
+   - Casual plans, everyday events, trip updates, appointments, or open-ended plans (e.g. '4:30 trip h dost k sth', 'I have to go ramdevra on Saturday', 'kal 5 bje doctor ke jana h') are SCHEDULE / PLANNING items, NEVER Notion pages!
+   - When a user gives an explicit time (e.g. '4:30 trip h dost k sth'): check schedule for conflicts and create/offer the reminder. When a user shares an open-ended plan/trip WITHOUT a specific time or explicit reminder request, NEVER invent a default time like 08:00 — check schedule availability read-only and ask ONE concise planning question (e.g. travel mode, departure time, or whether to set a reminder).
 13. DELETING REMINDERS & MEETINGS (CRITICAL MANDATE - ZERO REFUSAL):
    - You have FULL access and native tools (`delete_reminder`, `delete_meeting`) to delete or cancel reminders, tasks, and calendar events from the system and database.
    - When the user asks to delete, cancel, or remove a reminder or meeting (including typos like 'remidner', 'rmeinder', 'dlt', 'dlet', 'del', 'hata do', 'hatao', 'cancel', or quoting title/time like 'electri** - 05:30 PM'):
@@ -444,7 +444,9 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     # 4. Context assembly: Ground Truth System Prompt & Chat History
     mem_ctx = await asyncio.to_thread(assemble_memory_context, chat_id, user_text)
     pref = db.get_user_preference(chat_id)
-    user_pref_lang = (pref.get("reply_language") or "english").strip().lower()
+    raw_pref_lang = (pref.get("reply_language") or "").strip().lower()
+    has_explicit_lang_lock = bool(raw_pref_lang and raw_pref_lang not in ("auto", "none"))
+    user_pref_lang = raw_pref_lang or "english"
 
     from agent.prompt import build_runtime_system_prompt
     system_content = await build_runtime_system_prompt(chat_id, user_text, custom_system, mem_ctx=mem_ctx)
@@ -561,6 +563,13 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
     trace_memory_status = "ok" if has_mem_data else ("timeout" if (mem_ctx and mem_ctx.get("error")) else "empty")
 
     forced_tool_choice = None
+    clarify_only_mode = False
+    blocked_write_clarifications: Dict[str, List[str]] = {}
+    read_lookup_seen_since_needs_info: set = set()
+    already_verified = False
+    pre_is_grounded = True
+    pre_violations: List[str] = []
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # Dynamic Token Budget:
@@ -590,14 +599,14 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 }
             )
 
-            if effective_tools and not is_terminal_synthesis:
+            if effective_tools and not is_terminal_synthesis and not clarify_only_mode:
                 payload["tools"] = effective_tools
                 payload["tool_choice"] = forced_tool_choice or "auto"
                 forced_tool_choice = None
             else:
                 payload.pop("tools", None)
                 payload.pop("tool_choice", None)
-                payload["temperature"] = 0.4 if is_terminal_synthesis else 0.7
+                payload["temperature"] = 0.4 if (is_terminal_synthesis or clarify_only_mode) else 0.7
 
             if iteration >= 1:
                 # Brief replenish pause for Groq per-second rate limit bucket
@@ -607,6 +616,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
             resp = None
 
             # Call Unified LLM Adapter (Phase 2)
+            # Never force tool_choice='required' blindly on iteration 0 so the model can freely clarify or chat
             try:
                 llm_resp = await llm_provider.chat(
                     messages=messages,
@@ -615,8 +625,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     temperature=payload.get("temperature", 0.2),
                     timeout=30.0,
                     client=client,
-                    require_tool_on_fallback=(iteration == 0 and bool(effective_tools)),
-                    tier=("fast" if is_terminal_synthesis else "primary")
+                    require_tool_on_fallback=False,
+                    tier=("fast" if (is_terminal_synthesis or clarify_only_mode) else "primary")
                 )
             except Exception as llm_err:
                 logger.error(f"Turn iteration {iteration} LLM call failed: {llm_err}")
@@ -646,22 +656,29 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
 
             if not tool_calls:
                 candidate_reply = choice_msg.get("content") or ""
-                # Audit grounding of candidate direct reply
-                is_cand_ok, v_cand_reply, cand_viols = await verify_and_ground_reply(
-                    draft_reply=candidate_reply,
-                    tool_results=tool_results_list,
-                    memory_context=mem_ctx,
-                    user_query=user_text,
-                    recent_history=recent_turns,
-                    user_lang=user_pref_lang
-                )
-                if not is_cand_ok and iteration == 0 and trace_llm_calls < 2 and effective_tools:
-                    # Model claimed an unverified action or external fact without tools; re-run with tool_choice='required'
-                    logger.info(f"Ungrounded direct reply intercepted on iteration 0: {cand_viols}. Re-running with tool_choice='required'")
-                    forced_tool_choice = "required"
-                    continue
+                if iteration == 0 and trace_llm_calls < 2 and effective_tools:
+                    # Check if direct reply fabricated an unverified action/fact without tools
+                    is_cand_ok, v_cand_reply, cand_viols = await verify_and_ground_reply(
+                        draft_reply=candidate_reply,
+                        tool_results=tool_results_list,
+                        memory_context=mem_ctx,
+                        user_query=user_text,
+                        recent_history=recent_turns,
+                        user_lang=user_pref_lang,
+                        explicit_lang_lock=has_explicit_lang_lock,
+                    )
+                    if not is_cand_ok:
+                        logger.info(f"Ungrounded direct reply intercepted on iteration 0: {cand_viols}. Re-running with tool_choice='required'")
+                        forced_tool_choice = "required"
+                        continue
+                    final_reply = v_cand_reply
+                    already_verified = True
+                    pre_is_grounded = True
+                    pre_violations = []
+                    break
 
-                final_reply = candidate_reply if is_cand_ok else v_cand_reply
+                # Hand off to single authoritative Phase 5 verifier pass so violations & rewrites are logged honestly
+                final_reply = candidate_reply
                 break
 
             # Append the assistant's tool-call request to messages
@@ -695,7 +712,31 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     args_dict = {}
 
                 # Pre-execution validation (Part D / Step 9 policy)
-                from agent.tool_metadata import validate_tool_call_parameters, validate_evidence
+                from agent.tool_metadata import validate_tool_call_parameters, validate_evidence, get_tool_metadata, TOOL_RISK_READ
+                tool_risk = get_tool_metadata(fn_name).get("risk", TOOL_RISK_READ)
+
+                # Stop-to-clarify gate: prevent repeating the same write tool with invented defaults after needs_info/ambiguous
+                if tool_risk != TOOL_RISK_READ and fn_name in blocked_write_clarifications and fn_name not in read_lookup_seen_since_needs_info:
+                    missing_prev = blocked_write_clarifications[fn_name]
+                    block_res = {
+                        "status": "needs_info",
+                        "action": fn_name,
+                        "tool_name": fn_name,
+                        "missing": missing_prev,
+                        "facts": {
+                            "reason": f"Stop retrying '{fn_name}' without user clarification. Ask the user concisely for: {missing_prev}."
+                        },
+                        "next_options": ["ask_user"]
+                    }
+                    tool_results_list.append(block_res)
+                    clarify_only_mode = True
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(block_res, ensure_ascii=False)
+                    })
+                    continue
+
                 param_valid, param_err = validate_tool_call_parameters(fn_name, args_dict)
                 if not param_valid and param_err:
                     tool_result = param_err
@@ -719,6 +760,23 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                 if isinstance(tool_result, dict):
                     tool_result.setdefault("action", fn_name)
                     tool_result.setdefault("tool_name", fn_name)
+
+                    if tool_risk == TOOL_RISK_READ and tool_result.get("status") in ("success", "ok", None):
+                        read_lookup_seen_since_needs_info.update(blocked_write_clarifications.keys())
+                    elif tool_risk != TOOL_RISK_READ:
+                        res_status = tool_result.get("status")
+                        if res_status == "ambiguous":
+                            blocked_write_clarifications[fn_name] = ["ambiguous_target"]
+                            read_lookup_seen_since_needs_info.discard(fn_name)
+                            clarify_only_mode = True
+                        elif res_status == "needs_info":
+                            missing_fields = list(tool_result.get("missing") or [])
+                            user_decision_fields = {"due_time", "start_iso", "to", "subject", "body", "recipient", "page_id", "reminder_id", "event_id", "repo"}
+                            if any(f in user_decision_fields for f in missing_fields) or len(missing_fields) >= 2:
+                                blocked_write_clarifications[fn_name] = missing_fields
+                                read_lookup_seen_since_needs_info.discard(fn_name)
+                                if any(f in {"due_time", "start_iso", "to", "subject", "body", "recipient"} for f in missing_fields):
+                                    clarify_only_mode = True
 
                 tool_results_list.append(tool_result)
 
@@ -1234,19 +1292,24 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     pending_action = payload_conf
                     break
 
-    # Phase 5: Structured Grounding Verifier Audit (skip extra LLM call when main LLM chain already exhausted)
-    is_grounded, verified_reply, violations = await verify_and_ground_reply(
-        draft_reply=final_reply,
-        tool_results=tool_results_list,
-        memory_context=mem_ctx,
-        user_query=user_text,
-        recent_history=recent_turns,
-        allow_llm=(not bool(trace_error_type)),
-        user_lang=user_pref_lang
-    )
-    if not is_grounded:
-        logger.info(f"Grounding Verifier intercepted unsupported claims: {violations}")
-        final_reply = verified_reply
+    # Phase 5: Single Authoritative Structured Grounding Verifier Audit (skip extra LLM call when main LLM chain already exhausted)
+    if already_verified:
+        is_grounded = pre_is_grounded
+        violations = list(pre_violations)
+    else:
+        is_grounded, verified_reply, violations = await verify_and_ground_reply(
+            draft_reply=final_reply,
+            tool_results=tool_results_list,
+            memory_context=mem_ctx,
+            user_query=user_text,
+            recent_history=recent_turns,
+            allow_llm=(not bool(trace_error_type)),
+            user_lang=user_pref_lang,
+            explicit_lang_lock=has_explicit_lang_lock,
+        )
+        if not is_grounded:
+            logger.info(f"Grounding Verifier intercepted unsupported claims: {violations}")
+            final_reply = verified_reply
 
     # Guardrail: Fake-Success Prevention in code
     is_fake_ok, fake_err = check_fake_success_guard(final_reply, tool_results_list, user_query=user_text)

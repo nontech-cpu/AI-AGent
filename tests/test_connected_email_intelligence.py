@@ -373,6 +373,22 @@ async def test_ticket_email_fast_path():
                 status_code = 200
                 def json(self): return {"ok": True}
             return MockTg()
+        req_json = kwargs.get("json") or {}
+        if req_json.get("response_format"):
+            audit_resp = {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"claims_action_done": false, "which_action": null, "claims_external_fact": false, "sourced_by_tool": true}',
+                        "tool_calls": None
+                    }
+                }],
+                "usage": {"total_tokens": 20}
+            }
+            class MockAuditResp:
+                status_code = 200
+                def json(self): return audit_resp
+            return MockAuditResp()
         nonlocal call_count
         call_count += 1
         req_json = kwargs.get("json", {})
@@ -470,6 +486,22 @@ async def test_ticket_past_date_calendar_rejection():
                 status_code = 200
                 def json(self): return {"ok": True}
             return MockTg()
+        req_json = kwargs.get("json") or {}
+        if req_json.get("response_format"):
+            audit_resp = {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"claims_action_done": false, "which_action": null, "claims_external_fact": false, "sourced_by_tool": true}',
+                        "tool_calls": None
+                    }
+                }],
+                "usage": {"total_tokens": 20}
+            }
+            class MockAuditResp:
+                status_code = 200
+                def json(self): return audit_resp
+            return MockAuditResp()
         nonlocal call_count
         call_count += 1
         if call_count % 2 == 1:
@@ -545,6 +577,22 @@ async def test_ticket_future_date_calendar_scheduling():
                 status_code = 200
                 def json(self): return {"ok": True}
             return MockTg()
+        req_json = kwargs.get("json") or {}
+        if req_json.get("response_format"):
+            audit_resp = {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"claims_action_done": false, "which_action": null, "claims_external_fact": false, "sourced_by_tool": true}',
+                        "tool_calls": None
+                    }
+                }],
+                "usage": {"total_tokens": 20}
+            }
+            class MockAuditResp:
+                status_code = 200
+                def json(self): return audit_resp
+            return MockAuditResp()
         nonlocal call_count
         call_count += 1
         class MockResp:
