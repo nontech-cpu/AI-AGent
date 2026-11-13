@@ -3778,6 +3778,15 @@ async def run_reminders(worker_id: str = "worker_default", is_catchup: bool = Fa
 
         sched_ist = _parse_reminder_ist_dt(scheduled_at)
 
+        # Suppress legacy 9 AM day_before / due_day reminders (8:00 AM morning briefing covers daily schedules)
+        if label in ("day_before", "due_day"):
+            try:
+                mark_reminder_superseded(rid, sent_at=now)
+            except Exception as sup_err:
+                print(f"Error superseding 9am reminder {rid}:", sup_err)
+                record_reminder_failure(rid, str(sup_err))
+            continue
+
         # Suppress obsolete pre-alerts ("In 15 min", "In 5 min", "Due today") if event time already passed
         if _is_stale_prealert(item_id, label, sched_ist, due_time, now, at_time_item_ids):
             try:

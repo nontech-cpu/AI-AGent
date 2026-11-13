@@ -190,13 +190,9 @@ def build_plan(due_date, due_time, now=None):
         if mins <= 0:
             return {"status": "past", "minutes": None, "reminders": []}
 
-        # Subah 9 wale reminders: sirf tab jab event me kam se kam 1 ghanta ho
-        for d, label in ((due_date - timedelta(days=1), "day_before"),
-                         (due_date, "due_day")):
-            at = _at(d, MORNING)
-            if at > now and at <= due_dt - timedelta(hours=1):
-                reminders.append((at, label))
-        # Time se pehle wale reminders (jo abhi bhi future me hain)
+        # Event-relative proximity alerts only (15min, 5min, at_time).
+        # Note: 9:00 AM day_before / due_day reminders are disabled because daily schedule
+        # is already proactively delivered via the 8:00 AM Morning Briefing.
         for mins_before, label in ((15, "15min"), (5, "5min")):
             at = due_dt - timedelta(minutes=mins_before)
             if at > now:
@@ -207,11 +203,7 @@ def build_plan(due_date, due_time, now=None):
     else:
         if due_date < now.date():
             return {"status": "past", "minutes": None, "reminders": []}
-        for d, label in ((due_date - timedelta(days=1), "day_before"),
-                         (due_date, "due_day")):
-            at = _at(d, MORNING)
-            if at > now:
-                reminders.append((at, label))
+        # All-day tasks are handled by the 8:00 AM Morning Briefing; no 9:00 AM blast.
 
     status = "urgent" if (due_time is not None and mins <= URGENT_MINUTES) else ("scheduled" if reminders else "none")
     return {"status": status, "minutes": max(1, round(mins)) if (due_time is not None and mins <= URGENT_MINUTES) else None, "reminders": reminders}

@@ -101,7 +101,9 @@ def test_per_label_recurring_advancement_and_idempotency():
             {"i": item_id},
         ).fetchall()
         labels = sorted(r[0] for r in tomorrow_rows)
-        assert labels == ["15min", "5min", "at_time", "due_day"]
+        # 9 AM due_day is suppressed; only 15min, 5min, and at_time recurring alerts are scheduled
+        assert labels == ["15min", "5min", "at_time"]
+        assert "due_day" not in labels
         assert all("2026-11-13" in str(r[1]) for r in tomorrow_rows)
 
 
@@ -160,13 +162,13 @@ async def test_run_reminders_coalesces_stale_prealerts_and_preserves_future_prea
         assert len(arihant_msgs) == 1
         assert "In 5 minutes" in arihant_msgs[0]
 
-        # Tomorrow's 4 recurring Check sugar slots must still be scheduled cleanly
+        # Tomorrow's 3 recurring Check sugar slots (15min, 5min, at_time) must still be scheduled cleanly (no 9 AM due_day)
         with db.engine.connect() as conn:
             next_sugar = conn.execute(
                 text("SELECT label FROM reminders WHERE item_id = :i AND (sent IS NOT TRUE OR sent = 0)"),
                 {"i": past_item},
             ).fetchall()
-            assert sorted(r[0] for r in next_sugar) == ["15min", "5min", "at_time", "due_day"]
+            assert sorted(r[0] for r in next_sugar) == ["15min", "5min", "at_time"]
     finally:
         _reset_time()
 

@@ -593,6 +593,9 @@ def _schedule_next_recurring_slot(conn, item_id: int, remind_at, due_at, label: 
     """Idempotently inserts the next occurrence for (item_id, label) without blocking other labels."""
     if recurrence not in ("daily", "weekly", "weekdays"):
         return
+    # Guard: never schedule legacy 9 AM day_before / due_day reminders for recurring tasks
+    if label in ("day_before", "due_day"):
+        return
     next_remind_at, next_due_at = _compute_next_occurrence_datetimes(remind_at, due_at, recurrence)
     if not next_remind_at:
         return
