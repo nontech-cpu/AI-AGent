@@ -72,15 +72,27 @@ class DispatchResult:
 
 def extract_mentions(text_content: str) -> List[str]:
     """
-    Extracts all @mention tokens from message preserving order without duplicates.
-    e.g. '@devender_contact ... @rahul' -> ['devender_contact', 'rahul']
+    Extracts all @mention tokens and phone number recipients from message preserving order.
+    Supports:
+      - @devender_contact, @keshav
+      - @+919876543210, @9876543210
+      - Standalone phone numbers (+919876543210 or 10-digit numbers)
     """
     if not text_content:
         return []
-    raw_mentions = re.findall(r"@([a-zA-Z0-9_]{2,32})", text_content)
+    # 1. Match @mentions (e.g. @devender, @keshav, @+919876543210, @9876543210)
+    raw_mentions = re.findall(r"@(\+?[a-zA-Z0-9_]{2,32})", text_content)
+
+    # 2. Also match standalone phone numbers if present
+    phone_matches = re.findall(r"(?:^|[\s,;:])(\+?[0-9]{10,13})(?=[\s,;:]|$)", text_content)
+    all_tokens = list(raw_mentions)
+    for p in phone_matches:
+        if p not in all_tokens:
+            all_tokens.append(p)
+
     seen = set()
     result = []
-    for m in raw_mentions:
+    for m in all_tokens:
         low = m.lower()
         if low not in seen:
             seen.add(low)
@@ -91,9 +103,9 @@ def extract_mentions(text_content: str) -> List[str]:
 def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientProfile:
     """
     Pillar 2: Presence Mesh Resolver.
-    Resolves an @mention handle against:
-      1. Registered App Users (users.username)
-      2. Sender's Contact Memories (contact_memories.name / phone)
+    Resolves an @mention handle or phone number against:
+      1. Registered App Users (users.username or users.phone_number)
+      2. Sender's Contact Memories (contact_memories.name or contact_memories.phone)
     Determines active platform: Telegram vs App vs WhatsApp.
     """
     raw_handle = handle.strip().lstrip("@")
@@ -101,7 +113,10 @@ def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientPro
     # Strip optional '_contact' or '_user' suffix for CRM contact matching
     base_name = re.sub(r"_(contact|user|dev)$", "", clean_handle)
 
-    # 1. Search Global Registered App Users by username
+    digits = re.sub(r"\D", "", raw_handle)
+    is_phone = len(digits) >= 10
+
+    # 1. Search Global Registered App Users by username or phone
     try:
         with db.engine.connect() as conn:
             u_row = conn.execute(
@@ -113,12 +128,17 @@ def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientPro
                     text("SELECT id, telegram_chat_id, username, first_name, phone_number FROM users WHERE LOWER(username) = :u"),
                     {"u": base_name}
                 ).mappings().first()
+            if not u_row and is_phone:
+                u_row = conn.execute(
+                    text("SELECT id, telegram_chat_id, username, first_name, phone_number FROM users WHERE phone_number LIKE :p"),
+                    {"p": f"%{digits[-10:]}%"}
+                ).mappings().first()
 
             if u_row:
                 disp_name = u_row["first_name"] or u_row["username"] or raw_handle
                 tg_id = u_row["telegram_chat_id"]
-                # If tagged with _contact or _tg, prefer Telegram; otherwise App
-                if raw_handle.lower().endswith(("_contact", "_tg")):
+                # If tagged with _contact or _tg, or if resolved via phone with Telegram ID, prefer Telegram; otherwise App
+                if raw_handle.lower().endswith(("_contact", "_tg")) or (is_phone and tg_id):
                     channel = "telegram" if tg_id else "app"
                 else:
                     channel = "app"
@@ -134,13 +154,17 @@ def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientPro
     except Exception as exc:
         logger.warning(f"Error querying registered users for {raw_handle}: {exc}")
 
-    # 2. Search Sender's Personal Contact Memories
+    # 2. Search Sender's Personal Contact Memories (by Name OR Phone Number)
     try:
         sender_cid = db.canonical_chat_id(sender_chat_id)
         contacts = db.get_contact_memories(sender_cid)
         for c in contacts:
             c_name = (c.get("name") or "").strip().lower()
-            if c_name == clean_handle or c_name == base_name or base_name in c_name or clean_handle in c_name:
+            c_phone = re.sub(r"\D", "", c.get("phone") or "")
+            name_match = (c_name == clean_handle or c_name == base_name or base_name in c_name or clean_handle in c_name)
+            phone_match = bool(is_phone and c_phone and digits[-10:] in c_phone)
+
+            if name_match or phone_match:
                 phone = c.get("phone")
                 email = c.get("email")
 
@@ -172,7 +196,20 @@ def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientPro
     except Exception as exc:
         logger.warning(f"Error searching contact memories for {raw_handle}: {exc}")
 
-    # 3. Fallback: Unlinked Recipient
+    # 3. Fallback: If phone number, prepare for direct WhatsApp dispatch
+    if is_phone:
+        formatted_phone = f"+{digits}" if not raw_handle.startswith("+") else raw_handle
+        return RecipientProfile(
+            handle=raw_handle,
+            display_name=formatted_phone,
+            target_channel="whatsapp",
+            user_id=None,
+            telegram_chat_id=None,
+            phone_number=formatted_phone,
+            is_registered_app_user=False,
+        )
+
+    # 4. Fallback: Unlinked Recipient
     disp_title = base_name.capitalize() if base_name else raw_handle
     return RecipientProfile(
         handle=raw_handle,
@@ -211,7 +248,8 @@ def deconstruct_targeted_directives(
     # Locate each mention's start and end index in full_prompt
     mention_spans: List[Tuple[int, int, RecipientProfile]] = []
     for r in recipients:
-        pattern = rf"@\b{re.escape(r.handle)}\b"
+        h_esc = re.escape(r.handle)
+        pattern = rf"(?:@{h_esc}(?!\w)|(?<!\w){h_esc}(?!\w))"
         m = re.search(pattern, full_prompt, re.I)
         if m:
             mention_spans.append((m.start(), m.end(), r))

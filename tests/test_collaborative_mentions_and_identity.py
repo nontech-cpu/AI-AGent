@@ -249,3 +249,88 @@ def test_api_username_check_and_claim():
     assert resp_svg.status_code == 200
     assert "image/svg+xml" in resp_svg.headers.get("content-type", "")
     assert "<svg" in resp_svg.text
+
+
+def test_mention_by_phone_number_resolves_contact_and_dispatches():
+    sender_chat = 99881110
+    db.ensure_user(sender_chat)
+
+    # Devender is registered in users with phone number and telegram chat ID
+    devender_tg_chat = 99881111
+    db.ensure_user(devender_tg_chat)
+    with db.engine.begin() as conn:
+        conn.execute(
+            db.text("UPDATE users SET phone_number = '+919876543210', first_name = 'Devender' WHERE telegram_chat_id = :c"),
+            {"c": devender_tg_chat}
+        )
+
+    # Sender also has Devender in contact memories
+    db.save_contact_memory(
+        chat_id=sender_chat,
+        name="Devender Sharma",
+        phone="+919876543210"
+    )
+
+    # 1. Test resolving by @9876543210
+    prof = resolve_recipient_identity(sender_chat, "9876543210")
+    assert prof.target_channel == "telegram"
+    assert prof.telegram_chat_id == devender_tg_chat
+    assert "Devender" in prof.display_name
+
+    # 2. Test resolving by @+919876543210
+    prof_plus = resolve_recipient_identity(sender_chat, "+919876543210")
+    assert prof_plus.target_channel == "telegram"
+    assert prof_plus.telegram_chat_id == devender_tg_chat
+
+    # 3. Test token extraction with phone numbers
+    mentions = extract_mentions("@+919876543210 we have a meeting and @keshav work on ui")
+    assert "+919876543210" in mentions
+    assert "keshav" in mentions
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_dispatch_with_phone_number_and_username():
+    db._init_mentions_and_dispatches_tables()
+    sender_chat = 99881112
+    db.ensure_user(sender_chat)
+
+    # Devender on Telegram with phone number
+    dev_chat = 99881113
+    db.ensure_user(dev_chat)
+    with db.engine.begin() as conn:
+        conn.execute(
+            db.text("UPDATE users SET phone_number = '+919999988888', first_name = 'Devender' WHERE telegram_chat_id = :c"),
+            {"c": dev_chat}
+        )
+
+    # Keshav on App
+    kesh_chat = 99881114
+    db.ensure_user(kesh_chat)
+    db.claim_username(kesh_chat, "keshav_phone_test")
+    kesh_uid = db.resolve_user_id(kesh_chat)
+
+    prompt = "@9999988888 we have client sync at 4pm and @keshav_phone_test design the landing page"
+
+    sent_tg = []
+    async def mock_tg(cid, msg):
+        sent_tg.append((cid, msg))
+
+    with patch("main.send_telegram_text", side_effect=mock_tg):
+        res = await execute_targeted_mentions_dispatch(sender_chat, prompt)
+
+    assert res.status == "success"
+    assert len(res.directives) == 2
+
+    # Devender receives via Telegram
+    assert len(sent_tg) == 1
+    assert sent_tg[0][0] == dev_chat
+    assert "client sync at 4pm" in sent_tg[0][1]
+    assert "landing page" not in sent_tg[0][1]
+
+    # Keshav receives via In-App Notification
+    notifs = db.get_in_app_notifications(kesh_uid)
+    assert len(notifs) >= 1
+    assert "design the landing page" in notifs[0]["body"]
+    assert "client sync at 4pm" not in notifs[0]["body"]
+
+
