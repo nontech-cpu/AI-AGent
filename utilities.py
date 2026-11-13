@@ -1095,13 +1095,32 @@ def convert_tables_to_cards(text: str) -> str:
         if not data_rows:
             return [" ".join(headers)]
 
+        # Check if first column is an ID / serial number
+        first_h_low = (headers[0] or "").strip().lower()
+        id_headers = {"id", "#", "s.no", "sno", "s.no.", "sr.no", "no", "no."}
+        title_col_idx = 0
+        if first_h_low in id_headers or all(r[0].strip().isdigit() for r in data_rows if r and r[0].strip()):
+            # Look for a meaningful title/name/task column among subsequent headers
+            for idx, h in enumerate(headers):
+                if any(k in h.lower() for k in ("title", "name", "task", "reminder", "event", "item", "option")):
+                    title_col_idx = idx
+                    break
+            else:
+                if len(headers) > 1:
+                    title_col_idx = 1
+
         cards = []
         for r_idx, row in enumerate(data_rows):
-            title = row[0] if len(row) > 0 and row[0] else f"Option {r_idx + 1}"
+            title = row[title_col_idx] if len(row) > title_col_idx and row[title_col_idx] else f"Option {r_idx + 1}"
             card = [f"📍 **{title}**"]
-            for col_idx in range(1, max(len(headers), len(row))):
+            for col_idx in range(len(headers)):
+                if col_idx == title_col_idx:
+                    continue
                 h = headers[col_idx] if col_idx < len(headers) else f"Field {col_idx + 1}"
                 val = row[col_idx] if col_idx < len(row) else ""
+                # Strip internal technical database IDs from user-facing cards
+                if h.strip().lower() in id_headers and val.strip().isdigit():
+                    continue
                 if val:
                     card.append(f"• **{h}:** {val}")
             cards.append("\n".join(card))
