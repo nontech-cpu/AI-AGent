@@ -1,0 +1,251 @@
+import pytest
+from unittest.mock import AsyncMock, patch
+from fastapi.testclient import TestClient
+
+import db
+from core.avatar_generator import generate_avatar_svg
+from core.mentions_engine import (
+    RecipientProfile,
+    TargetedDirective,
+    deconstruct_targeted_directives,
+    execute_targeted_mentions_dispatch,
+    extract_mentions,
+    resolve_recipient_identity,
+)
+from main import app
+
+client = TestClient(app)
+
+
+# =============================================================================
+# 1. Pillar 1 Tests: Unique Usernames & Reddit-Style Avatars
+# =============================================================================
+
+def test_pillar1_username_validation_and_case_insensitive_uniqueness():
+    chat_a = 99881101
+    chat_b = 99881102
+    db.ensure_user(chat_a)
+    db.ensure_user(chat_b)
+
+    # 1. Validation rules: Length & Characters
+    ok, msg = db.check_username_available("ab")
+    assert ok is False
+    assert "between 3 and 30" in msg
+
+    ok, msg = db.check_username_available("invalid user!")
+    assert ok is False
+    assert "letters, numbers, and underscores" in msg
+
+    # 2. Reserved usernames
+    for res_name in ["admin", "support", "peculiar", "bot", "official"]:
+        ok, msg = db.check_username_available(res_name)
+        assert ok is False
+        assert "reserved" in msg
+
+    # 3. User A claims 'keshav_dev'
+    claimed_a, msg_a = db.claim_username(chat_a, "keshav_dev")
+    assert claimed_a is True
+    assert "@keshav_dev" in msg_a
+
+    # 4. User B attempts to claim same username (case-insensitive clash: KESHAV_DEV)
+    claimed_b, msg_b = db.claim_username(chat_b, "KESHAV_DEV")
+    assert claimed_b is False
+    assert "already taken" in msg_b.lower()
+
+    # User B chooses an available username
+    claimed_b2, msg_b2 = db.claim_username(chat_b, "rahul_lead")
+    assert claimed_b2 is True
+
+
+def test_pillar1_reddit_style_avatar_customization():
+    chat_id = 99881103
+    db.ensure_user(chat_id)
+
+    custom_cfg = {
+        "primary_color": "#EC4899",  # Pink
+        "bg_color": "#FCE7F3",
+        "eye_style": "wink",
+        "antenna_style": "star"
+    }
+
+    # Save configuration
+    saved = db.update_avatar_config(chat_id, custom_cfg)
+    assert saved["primary_color"] == "#EC4899"
+
+    # Retrieve via profile
+    prof = db.get_user_profile(chat_id)
+    assert prof["avatar_config"]["primary_color"] == "#EC4899"
+    assert prof["avatar_config"]["antenna_style"] == "star"
+
+    # Vector SVG generation
+    svg = generate_avatar_svg("keshav_dev", prof["avatar_config"])
+    assert "<svg" in svg
+    assert "</svg>" in svg
+    assert "#EC4899" in svg
+    assert "#FCE7F3" in svg
+
+
+# =============================================================================
+# 2. Pillar 2 Tests: Cross-Channel Identity & Presence Mesh
+# =============================================================================
+
+def test_pillar2_presence_mesh_resolves_app_user_and_contact_memory():
+    sender_chat = 99881104
+    db.ensure_user(sender_chat)
+
+    # Setup Registered App User: 'keshav_app'
+    app_user_chat = 99881105
+    db.ensure_user(app_user_chat)
+    db.claim_username(app_user_chat, "keshav_app")
+
+    # Setup Personal Contact Memory for Sender: 'Devender' with linked phone
+    db.save_contact_memory(
+        sender_chat,
+        name="Devender Sharma",
+        phone="+919876543210",
+        role_title="Backend Lead"
+    )
+
+    # 1. Resolve registered app user by @handle
+    recip_keshav = resolve_recipient_identity(sender_chat, "keshav_app")
+    assert recip_keshav.handle == "keshav_app"
+    assert recip_keshav.is_registered_app_user is True
+    assert recip_keshav.target_channel == "app"
+
+    # 2. Resolve personal contact by @handle with _contact suffix
+    recip_devender = resolve_recipient_identity(sender_chat, "devender_contact")
+    assert recip_devender.display_name == "Devender Sharma"
+    assert recip_devender.phone_number == "+919876543210"
+
+    # 3. Resolve unlinked handle
+    recip_unknown = resolve_recipient_identity(sender_chat, "random_person")
+    assert recip_unknown.target_channel == "unlinked"
+
+
+# =============================================================================
+# 3. Pillar 3 Tests: Mention Lexer & Targeted Scope Decompiler (Zero-Leakage Guard)
+# =============================================================================
+
+def test_pillar3_extract_mentions_tokens():
+    text_sample = "Hey @devender_contact please check this with @rahul_lead and cc @keshav"
+    mentions = extract_mentions(text_sample)
+    assert mentions == ["devender_contact", "rahul_lead", "keshav"]
+
+
+def test_pillar3_strict_privacy_scope_partitioning_zero_leakage():
+    """
+    Critical Security Test:
+    Devender's private message MUST NOT leak Rahul's name or task.
+    Rahul's private message MUST NOT leak Devender's name or task.
+    """
+    raw_prompt = "@devender_contact u need to work on project a and @rahul_contact u need to work on project b"
+
+    recip_dev = RecipientProfile(handle="devender_contact", display_name="Devender", target_channel="telegram", telegram_chat_id=1111)
+    recip_rah = RecipientProfile(handle="rahul_contact", display_name="Rahul", target_channel="app", user_id=2222)
+
+    directives = deconstruct_targeted_directives(raw_prompt, [recip_dev, recip_rah])
+    assert len(directives) == 2
+
+    dev_directive = directives[0]
+    rah_directive = directives[1]
+
+    # Verify Devender's scoped directive
+    assert dev_directive.recipient.handle == "devender_contact"
+    assert "work on project a" in dev_directive.private_message.lower()
+    # ZERO LEAKAGE ASSERTIONS FOR DEVENDER:
+    assert "rahul" not in dev_directive.private_message.lower()
+    assert "project b" not in dev_directive.private_message.lower()
+
+    # Verify Rahul's scoped directive
+    assert rah_directive.recipient.handle == "rahul_contact"
+    assert "work on project b" in rah_directive.private_message.lower()
+    # ZERO LEAKAGE ASSERTIONS FOR RAHUL:
+    assert "devender" not in rah_directive.private_message.lower()
+    assert "project a" not in rah_directive.private_message.lower()
+
+
+def test_pillar3_single_mention_scoped_directive():
+    raw_prompt = "@keshav please submit the financial budget report before 5 PM"
+    recip_keshav = RecipientProfile(handle="keshav", display_name="Keshav", target_channel="app", user_id=3333)
+
+    directives = deconstruct_targeted_directives(raw_prompt, [recip_keshav])
+    assert len(directives) == 1
+    assert "submit the financial budget report before 5 pm" in directives[0].private_message.lower()
+
+
+# =============================================================================
+# 4. Pillar 4 Tests: Omni-Channel Dispatch Engine & In-App Notifications
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_pillar4_end_to_end_directed_dispatch_across_telegram_and_app():
+    sender_chat = 99881106
+    db.ensure_user(sender_chat)
+    db.claim_username(sender_chat, "sender_boss")
+
+    # Recipient 1: Telegram user
+    tg_chat_id = 99881107
+    db.ensure_user(tg_chat_id)
+    db.claim_username(tg_chat_id, "tg_member")
+
+    # Recipient 2: App user
+    app_chat_id = 99881108
+    db.ensure_user(app_chat_id)
+    db.claim_username(app_chat_id, "app_member")
+    app_uid = db.resolve_user_id(app_chat_id)
+
+    prompt = "@tg_member_contact please review database migration and @app_member prepare the release notes"
+
+    sent_tg_messages = []
+    async def mock_tg_send(cid, msg):
+        sent_tg_messages.append((cid, msg))
+
+    with patch("main.send_telegram_text", side_effect=mock_tg_send):
+        res = await execute_targeted_mentions_dispatch(sender_chat, prompt)
+
+    assert res.status == "success"
+    assert len(res.directives) == 2
+
+    # 1. Telegram delivery verification
+    assert len(sent_tg_messages) == 1
+    tg_dest, tg_body = sent_tg_messages[0]
+    assert tg_dest == tg_chat_id
+    assert "review database migration" in tg_body
+    assert "release notes" not in tg_body  # Zero leakage!
+
+    # 2. In-App notification delivery verification
+    inbox = db.get_in_app_notifications(app_uid)
+    assert len(inbox) >= 1
+    app_notif = inbox[0]
+    assert "release notes" in app_notif["body"]
+    assert "database migration" not in app_notif["body"]  # Zero leakage!
+
+
+# =============================================================================
+# 5. REST API Route Tests (api_v1.py)
+# =============================================================================
+
+def test_api_username_check_and_claim():
+    cid = 99881109
+    db.ensure_user(cid)
+
+    # Check available
+    resp = client.get("/api/v1/user/check-username?username=my_new_handle", headers={"X-Chat-Id": str(cid)})
+    assert resp.status_code == 200
+    assert resp.json()["available"] is True
+
+    # Claim username
+    resp_claim = client.post("/api/v1/user/claim-username", json={"username": "my_new_handle"}, headers={"X-Chat-Id": str(cid)})
+    assert resp_claim.status_code == 200
+    assert resp_claim.json()["username"] == "my_new_handle"
+
+    # Profile check
+    resp_prof = client.get("/api/v1/user/profile", headers={"X-Chat-Id": str(cid)})
+    assert resp_prof.status_code == 200
+    assert resp_prof.json()["username"] == "my_new_handle"
+
+    # SVG Avatar endpoint
+    resp_svg = client.get("/api/v1/user/my_new_handle/avatar.svg")
+    assert resp_svg.status_code == 200
+    assert "image/svg+xml" in resp_svg.headers.get("content-type", "")
+    assert "<svg" in resp_svg.text

@@ -374,6 +374,14 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
             "evidence": {"required": False, "default": None, "can_be_found_in": []}
         }
     },
+    "send_targeted_mention_message": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "message": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "attachments": {"required": False, "default": [], "can_be_found_in": []},
+            "evidence": {"required": False, "default": None, "can_be_found_in": []}
+        }
+    },
     "upload_to_drive": {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {

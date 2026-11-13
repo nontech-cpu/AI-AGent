@@ -2016,6 +2016,127 @@ async def get_active_companion_profile(
     }
 
 
+# =============================================================================
+# Collaborative Mentions, Unique Usernames & Avatar API
+# =============================================================================
+
+class ClaimUsernameBody(BaseModel):
+    username: str
+
+class UpdateAvatarBody(BaseModel):
+    primary_color: Optional[str] = None
+    bg_color: Optional[str] = None
+    style: Optional[str] = None
+    eye_style: Optional[str] = None
+    antenna_style: Optional[str] = None
+    seed: Optional[str] = None
+
+class DispatchMentionsBody(BaseModel):
+    message: str
+    attachments: Optional[List[Dict[str, Any]]] = None
+
+@router.get("/user/check-username", summary="Check Unique Username Availability")
+async def check_username_route(
+    username: str = Query(..., description="Desired unique username (e.g. keshav)"),
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import check_username_available
+    avail, msg = check_username_available(username, exclude_chat_id=chat_id)
+    return {"username": username.strip().lower(), "available": avail, "message": msg}
+
+
+@router.post("/user/claim-username", summary="Claim or Update Unique Username")
+async def claim_username_route(
+    body: ClaimUsernameBody,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import claim_username
+    ok, msg = claim_username(chat_id, body.username)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"status": "success", "username": body.username.strip().lower(), "message": msg}
+
+
+@router.get("/user/profile", summary="Get User Identity, Channels & Avatar Profile")
+async def get_user_profile_route(
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import get_user_profile
+    return get_user_profile(chat_id)
+
+
+@router.post("/user/avatar", summary="Update Reddit-Style Avatar Customization")
+async def update_avatar_route(
+    body: UpdateAvatarBody,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import update_avatar_config
+    cfg = body.model_dump(exclude_unset=True)
+    res = update_avatar_config(chat_id, cfg)
+    return {"status": "success", "avatar_config": res}
+
+
+@router.get("/user/{username}/avatar.svg", summary="Render Reddit-Style Dynamic Vector Avatar SVG")
+async def render_avatar_svg_route(
+    username: str
+):
+    from core.avatar_generator import generate_avatar_svg
+    from db import engine, text
+    import json
+    cfg = {}
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT avatar_config FROM users WHERE LOWER(username) = LOWER(:u)"),
+                {"u": username.strip().lower()}
+            ).first()
+            if row and row[0]:
+                cfg = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    except Exception:
+        pass
+    svg_content = generate_avatar_svg(username, cfg)
+    return Response(content=svg_content, media_type="image/svg+xml")
+
+
+@router.get("/notifications", summary="Get In-App Notifications Inbox")
+async def get_notifications_route(
+    limit: int = Query(50, ge=1, le=100),
+    unread_only: bool = Query(False),
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import get_in_app_notifications
+    return get_in_app_notifications(chat_id, limit=limit, unread_only=unread_only)
+
+
+@router.post("/notifications/{notification_id}/read", summary="Mark In-App Notification as Read")
+async def mark_notification_read_route(
+    notification_id: int,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import mark_notification_read
+    ok = mark_notification_read(notification_id, chat_id)
+    return {"status": "success" if ok else "not_found", "marked_read": ok}
+
+
+@router.post("/mentions/dispatch", summary="Targeted Mentions Dispatch (Privacy-Partitioned)")
+async def dispatch_mentions_route(
+    body: DispatchMentionsBody,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from core.mentions_engine import execute_targeted_mentions_dispatch
+    res = await execute_targeted_mentions_dispatch(
+        sender_chat_id=chat_id,
+        text_content=body.message,
+        attachments=body.attachments
+    )
+    return {
+        "status": res.status,
+        "summary": res.summary_message,
+        "directives": [d.to_dict() for d in res.directives],
+        "privacy_guarantee": res.privacy_guarantee
+    }
+
+
 @router.get("/calendar/events", summary="Get Calendar Events")
 async def get_calendar_events_route(
     view: Optional[str] = Query("month", description="month | week | day | upcoming"),

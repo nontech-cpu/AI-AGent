@@ -3752,6 +3752,344 @@ def update_memory_calendar_id(chat_id, item_id: int, cal_event_id: str):
         )
 
 
+# =============================================================================
+# Collaborative Mentions, Unique Usernames & Cross-Platform Directed Dispatch
+# =============================================================================
+
+def resolve_user_id(chat_id_or_uid: int) -> Optional[int]:
+    """Resolves primary database users.id from either integer user_id or telegram_chat_id."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id FROM users WHERE id = :x OR telegram_chat_id = :x"),
+            {"x": chat_id_or_uid}
+        ).first()
+        return row[0] if row else None
+
+
+_MENTIONS_TABLES_INITIALIZED = False
+
+def _init_mentions_and_dispatches_tables():
+    global _MENTIONS_TABLES_INITIALIZED
+    if _MENTIONS_TABLES_INITIALIZED:
+        return
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32);
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_config JSONB;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users (LOWER(username)) WHERE username IS NOT NULL AND username != '';
+
+                    CREATE TABLE IF NOT EXISTS directed_dispatches (
+                        id SERIAL PRIMARY KEY,
+                        sender_id INTEGER,
+                        sender_chat_id BIGINT,
+                        sender_name TEXT,
+                        recipient_user_id INTEGER,
+                        recipient_chat_id BIGINT,
+                        recipient_handle TEXT,
+                        target_channel VARCHAR(32),
+                        raw_prompt TEXT,
+                        private_message TEXT,
+                        attachments JSONB DEFAULT '[]'::jsonb,
+                        status VARCHAR(32) DEFAULT 'pending',
+                        delivered_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_directed_dispatches_recip ON directed_dispatches (recipient_user_id, status);
+                    CREATE INDEX IF NOT EXISTS idx_directed_dispatches_chat ON directed_dispatches (recipient_chat_id, status);
+
+                    CREATE TABLE IF NOT EXISTS in_app_notifications (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER,
+                        sender_name TEXT,
+                        title TEXT,
+                        body TEXT,
+                        data JSONB DEFAULT '{}'::jsonb,
+                        attachments JSONB DEFAULT '[]'::jsonb,
+                        is_read BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON in_app_notifications (user_id, is_read);
+                """))
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN phone_number TEXT;"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN avatar_config TEXT;"))
+                except Exception:
+                    pass
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS directed_dispatches (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        sender_id INTEGER,
+                        sender_chat_id INTEGER,
+                        sender_name TEXT,
+                        recipient_user_id INTEGER,
+                        recipient_chat_id INTEGER,
+                        recipient_handle TEXT,
+                        target_channel TEXT,
+                        raw_prompt TEXT,
+                        private_message TEXT,
+                        attachments TEXT DEFAULT '[]',
+                        status TEXT DEFAULT 'pending',
+                        delivered_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS in_app_notifications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
+                        sender_name TEXT,
+                        title TEXT,
+                        body TEXT,
+                        data TEXT DEFAULT '{}',
+                        attachments TEXT DEFAULT '[]',
+                        is_read INTEGER DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """))
+        _MENTIONS_TABLES_INITIALIZED = True
+    except Exception as exc:
+        print("_init_mentions_and_dispatches_tables error:", exc)
+
+
+RESERVED_USERNAMES = frozenset({
+    "admin", "administrator", "root", "system", "support", "help",
+    "bot", "peculiar", "official", "api", "guest", "anonymous"
+})
+
+
+def check_username_available(username: str, exclude_chat_id: Optional[int] = None) -> tuple[bool, str]:
+    """Checks if a username is valid and globally available (case-insensitive)."""
+    _init_mentions_and_dispatches_tables()
+    u = (username or "").strip().lower()
+    if not u or len(u) < 3 or len(u) > 30:
+        return False, "Username must be between 3 and 30 characters."
+    import re
+    if not re.match(r"^[a-zA-Z0-9_]+$", u):
+        return False, "Username can only contain letters, numbers, and underscores."
+    if u in RESERVED_USERNAMES:
+        return False, f"Username '{u}' is reserved and cannot be claimed."
+
+    ex_cid = canonical_chat_id(exclude_chat_id) if exclude_chat_id else None
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id FROM users WHERE LOWER(username) = :u AND (:ex IS NULL OR telegram_chat_id != :ex)"),
+            {"u": u, "ex": ex_cid}
+        ).first()
+        if row:
+            return False, "Username already taken. Please choose another username."
+    return True, "Username is available."
+
+
+def claim_username(chat_id: int, username: str) -> tuple[bool, str]:
+    """Idempotently assigns a unique username to user."""
+    _init_mentions_and_dispatches_tables()
+    cid = canonical_chat_id(chat_id)
+    ensure_user(cid)
+    available, msg = check_username_available(username, exclude_chat_id=cid)
+    if not available:
+        return False, msg
+
+    clean_u = username.strip().lower()
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE users SET username = :u WHERE telegram_chat_id = :c"),
+            {"u": clean_u, "c": cid}
+        )
+    return True, f"Username '@{clean_u}' successfully claimed."
+
+
+def update_avatar_config(chat_id: int, avatar_config: dict) -> dict:
+    """Saves user's Reddit-style avatar styling configuration."""
+    _init_mentions_and_dispatches_tables()
+    cid = canonical_chat_id(chat_id)
+    ensure_user(cid)
+    import json
+    cfg_data = json.dumps(avatar_config) if isinstance(avatar_config, dict) else str(avatar_config)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE users SET avatar_config = :cfg WHERE telegram_chat_id = :c"),
+            {"cfg": cfg_data, "c": cid}
+        )
+    return avatar_config
+
+
+def get_user_profile(chat_id: int) -> dict:
+    """Returns profile with username, phone, and avatar configuration."""
+    _init_mentions_and_dispatches_tables()
+    cid = canonical_chat_id(chat_id)
+    ensure_user(cid)
+    import json
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id, telegram_chat_id, username, first_name, phone_number, avatar_config FROM users WHERE telegram_chat_id = :c"),
+            {"c": cid}
+        ).mappings().first()
+        if not row:
+            return {"chat_id": cid, "username": None, "avatar_config": {}}
+        av_cfg = row["avatar_config"]
+        if isinstance(av_cfg, str):
+            try:
+                av_cfg = json.loads(av_cfg)
+            except Exception:
+                av_cfg = {}
+        return {
+            "id": row["id"],
+            "chat_id": row["telegram_chat_id"],
+            "username": row["username"],
+            "first_name": row["first_name"] or "",
+            "phone_number": row["phone_number"] or "",
+            "avatar_config": av_cfg or {}
+        }
+
+
+def create_in_app_notification(user_id: int, sender_name: str, title: str, body: str, attachments: Optional[list] = None) -> int:
+    """Records an unread in-app notification for user."""
+    _init_mentions_and_dispatches_tables()
+    import json
+    att_data = json.dumps(attachments or [])
+    with engine.begin() as conn:
+        res = conn.execute(
+            text("""
+                INSERT INTO in_app_notifications (user_id, sender_name, title, body, attachments, is_read)
+                VALUES (:u, :s, :t, :b, :att, FALSE)
+                RETURNING id
+            """),
+            {"u": user_id, "s": sender_name, "t": title, "b": body, "att": att_data}
+        )
+        return res.scalar()
+
+
+def get_in_app_notifications(user_id_or_chat_id: int, limit: int = 50, unread_only: bool = False) -> list[dict]:
+    """Retrieves notifications for user inbox."""
+    _init_mentions_and_dispatches_tables()
+    import json
+    with engine.connect() as conn:
+        # Determine user_id
+        uid_row = conn.execute(
+            text("SELECT id FROM users WHERE id = :x OR telegram_chat_id = :x"),
+            {"x": user_id_or_chat_id}
+        ).first()
+        if not uid_row:
+            return []
+        uid = uid_row[0]
+
+        cond = "AND (is_read IS NOT TRUE OR is_read = 0)" if unread_only else ""
+        rows = conn.execute(
+            text(f"""
+                SELECT id, sender_name, title, body, attachments, is_read, created_at
+                FROM in_app_notifications
+                WHERE user_id = :u {cond}
+                ORDER BY id DESC LIMIT :lim
+            """),
+            {"u": uid, "lim": limit}
+        ).fetchall()
+        result = []
+        for r in rows:
+            atts = r[4]
+            if isinstance(atts, str):
+                try:
+                    atts = json.loads(atts)
+                except Exception:
+                    atts = []
+            result.append({
+                "id": r[0],
+                "sender_name": r[1] or "Peculiar AI",
+                "title": r[2],
+                "body": r[3],
+                "attachments": atts or [],
+                "is_read": bool(r[5]),
+                "created_at": r[6].isoformat() if hasattr(r[6], "isoformat") else str(r[6])
+            })
+        return result
+
+
+def mark_notification_read(notification_id: int, user_id_or_chat_id: int) -> bool:
+    """Marks an in-app notification as read."""
+    _init_mentions_and_dispatches_tables()
+    with engine.begin() as conn:
+        uid_row = conn.execute(
+            text("SELECT id FROM users WHERE id = :x OR telegram_chat_id = :x"),
+            {"x": user_id_or_chat_id}
+        ).first()
+        if not uid_row:
+            return False
+        uid = uid_row[0]
+        res = conn.execute(
+            text("UPDATE in_app_notifications SET is_read = TRUE WHERE id = :nid AND user_id = :u"),
+            {"nid": notification_id, "u": uid}
+        )
+        return res.rowcount > 0
+
+
+def record_directed_dispatch(
+    sender_chat_id: int,
+    sender_name: str,
+    recipient_handle: str,
+    private_message: str,
+    target_channel: str,
+    recipient_user_id: Optional[int] = None,
+    recipient_chat_id: Optional[int] = None,
+    attachments: Optional[list] = None,
+    raw_prompt: Optional[str] = None
+) -> int:
+    """Persists an isolated outbox dispatch packet."""
+    _init_mentions_and_dispatches_tables()
+    import json
+    cid = canonical_chat_id(sender_chat_id)
+    att_data = json.dumps(attachments or [])
+    with engine.begin() as conn:
+        uid_row = conn.execute(text("SELECT id FROM users WHERE telegram_chat_id = :c"), {"c": cid}).first()
+        s_uid = uid_row[0] if uid_row else None
+        res = conn.execute(
+            text("""
+                INSERT INTO directed_dispatches (
+                    sender_id, sender_chat_id, sender_name,
+                    recipient_user_id, recipient_chat_id, recipient_handle,
+                    target_channel, raw_prompt, private_message, attachments, status
+                ) VALUES (
+                    :sid, :scid, :sname,
+                    :ruid, :rcid, :rhandle,
+                    :channel, :raw, :msg, :att, 'pending'
+                ) RETURNING id
+            """),
+            {
+                "sid": s_uid,
+                "scid": cid,
+                "sname": sender_name,
+                "ruid": recipient_user_id,
+                "rcid": recipient_chat_id,
+                "rhandle": recipient_handle,
+                "channel": target_channel,
+                "raw": raw_prompt or "",
+                "msg": private_message,
+                "att": att_data
+            }
+        )
+        return res.scalar()
+
+
+def mark_dispatch_delivered(dispatch_id: int):
+    """Marks outbox dispatch packet as delivered."""
+    _init_mentions_and_dispatches_tables()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    IST = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(IST)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE directed_dispatches SET status = 'delivered', delivered_at = :now WHERE id = :id"),
+            {"id": dispatch_id, "now": now}
+        )
+
+
+
 
 
 

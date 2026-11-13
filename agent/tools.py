@@ -305,6 +305,10 @@ class SendEmailArgs(BaseModel):
     subject: str = Field(..., description="Email subject line.")
     body: str = Field(..., description="Email body content.")
 
+class SendTargetedMentionMessageArgs(BaseModel):
+    message: str = Field(..., description="Prompt text containing @mentions and their respective directives.")
+    attachments: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Optional file attachments.")
+
 class UploadToDriveArgs(BaseModel):
     filename: str = Field(..., description="Name of the file to create on Google Drive.")
     content: str = Field(..., description="Text content of the file.")
@@ -941,6 +945,21 @@ TOOL_DEFINITIONS = [
                     "request_quote": {"type": "string", "description": "Exact words from user's message requesting to send this email."}
                 },
                 "required": ["to", "subject", "body"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_targeted_mention_message",
+            "description": "Send targeted, private messages to mentioned contacts or app users (e.g. @devender_contact, @rahul). Guarantees strict privacy isolation: each recipient only receives their respective assigned task without seeing other recipients' directives.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "The full prompt containing @mentions and respective tasks (e.g. '@devender work on project a and @rahul work on project b')."},
+                    "attachments": {"type": "array", "items": {"type": "object"}, "description": "Optional list of attachment file paths or names."}
+                },
+                "required": ["message"]
             }
         }
     },
@@ -3972,6 +3991,17 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "action": "upload_file",
                 "filename": args.filename,
                 "content": args.content
+            }
+
+        elif tool_name == "send_targeted_mention_message":
+            args = SendTargetedMentionMessageArgs(**arguments)
+            from core.mentions_engine import execute_targeted_mentions_dispatch
+            disp_res = await execute_targeted_mentions_dispatch(chat_id, args.message, attachments=args.attachments)
+            return {
+                "status": disp_res.status,
+                "summary": disp_res.summary_message,
+                "directives": [d.to_dict() for d in disp_res.directives],
+                "privacy_guarantee": disp_res.privacy_guarantee
             }
 
         elif tool_name == "check_integrations_status":
