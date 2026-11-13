@@ -181,8 +181,8 @@ def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientPro
                         if p_row:
                             matched_uid, matched_tg_id = p_row[0], p_row[1]
 
-                # Check if sender has an identity link or telegram chat ID for contact
-                channel = "telegram" if matched_tg_id else ("whatsapp" if phone else "telegram")
+                # Only route to Telegram/App if recipient actually exists in Peculiar AI
+                channel = "telegram" if matched_tg_id else ("app" if matched_uid else "unlinked")
                 return RecipientProfile(
                     handle=raw_handle,
                     display_name=c.get("name") or raw_handle,
@@ -191,18 +191,18 @@ def resolve_recipient_identity(sender_chat_id: int, handle: str) -> RecipientPro
                     telegram_chat_id=matched_tg_id,
                     phone_number=phone,
                     email=email,
-                    is_registered_app_user=bool(matched_uid),
+                    is_registered_app_user=bool(matched_uid or matched_tg_id),
                 )
     except Exception as exc:
         logger.warning(f"Error searching contact memories for {raw_handle}: {exc}")
 
-    # 3. Fallback: If phone number, prepare for direct WhatsApp dispatch
+    # 3. Fallback: If phone number but not registered in users
     if is_phone:
         formatted_phone = f"+{digits}" if not raw_handle.startswith("+") else raw_handle
         return RecipientProfile(
             handle=raw_handle,
             display_name=formatted_phone,
-            target_channel="whatsapp",
+            target_channel="unlinked",
             user_id=None,
             telegram_chat_id=None,
             phone_number=formatted_phone,
@@ -398,12 +398,13 @@ async def execute_targeted_mentions_dispatch(
                 logger.error(f"In-App dispatch error to {recip.handle}: {app_err}")
                 delivery_summaries.append(f"• **@{recip.handle}** via App: Failed ({app_err})")
 
-        # Channel C: WhatsApp or Unlinked Contact
+        # Channel C: Not in Peculiar AI network / dimension
         else:
-            if recip.phone_number:
-                delivery_summaries.append(f"• **@{recip.handle}** ({recip.display_name}): Prepared for WhatsApp ({recip.phone_number}) 📱")
-            else:
-                delivery_summaries.append(f"• **@{recip.handle}** ({recip.display_name}): Contact has no linked Telegram ID or App account yet.")
+            handle_name = recip.display_name if recip.display_name and recip.display_name != recip.handle else recip.handle
+            delivery_summaries.append(
+                f"• **@{recip.handle}** ({handle_name}): This user is not connected to the Peculiar AI network yet. "
+                f"Once they login with their phone or link their Telegram account to the bot, directives and files can be delivered directly to them."
+            )
 
     summary = (
         f"🎯 **Targeted Mentions Dispatched:**\n"

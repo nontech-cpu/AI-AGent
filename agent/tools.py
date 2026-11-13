@@ -309,6 +309,10 @@ class SendTargetedMentionMessageArgs(BaseModel):
     message: str = Field(..., description="Prompt text containing @mentions and their respective directives.")
     attachments: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Optional file attachments.")
 
+class LinkUserPhoneNumberArgs(BaseModel):
+    phone_number: str = Field(..., description="The user's verified phone number with country code (e.g. '+919461089998' or '9461089998').")
+
+
 class UploadToDriveArgs(BaseModel):
     filename: str = Field(..., description="Name of the file to create on Google Drive.")
     content: str = Field(..., description="Text content of the file.")
@@ -952,7 +956,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "send_targeted_mention_message",
-            "description": "Send targeted, private messages to mentioned contacts or app users (e.g. @devender_contact, @rahul). Guarantees strict privacy isolation: each recipient only receives their respective assigned task without seeing other recipients' directives.",
+            "description": "Send targeted, private messages to mentioned contacts or app users (e.g. @devender_contact, @rahul, @9461089998). Guarantees strict privacy isolation: each recipient only receives their respective assigned task without seeing other recipients' directives.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -960,6 +964,20 @@ TOOL_DEFINITIONS = [
                     "attachments": {"type": "array", "items": {"type": "object"}, "description": "Optional list of attachment file paths or names."}
                 },
                 "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "link_user_phone_number",
+            "description": "Explicitly link or update the caller's phone number in the Peculiar AI network (e.g. when user says 'my phone number is 9461089998', 'mera number ye hai', or registers phone). Enables receiving targeted directives and notifications from other users.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phone_number": {"type": "string", "description": "User's 10-12 digit phone number with optional country code (e.g. '+919461089998' or '9461089998')."}
+                },
+                "required": ["phone_number"]
             }
         }
     },
@@ -4004,6 +4022,15 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "privacy_guarantee": disp_res.privacy_guarantee
             }
 
+        elif tool_name == "link_user_phone_number":
+            args = LinkUserPhoneNumberArgs(**arguments)
+            ok, msg = db.set_user_phone_number(chat_id, args.phone_number)
+            return {
+                "status": "success" if ok else "error",
+                "phone_number": args.phone_number,
+                "message": msg
+            }
+
         elif tool_name == "check_integrations_status":
             args = CheckIntegrationsStatusArgs(**arguments)
             s_key = (args.service or "").strip().lower()
@@ -5225,13 +5252,18 @@ CORE_TOOL_NAMES = {
     "save_note_or_fact", "delete_note_or_fact", "search_memory", "save_contact", "get_contact", "list_contacts", "get_commitments",
     "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "set_user_preference", "ask_user", "learn_user_correction",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "create_calendar_event", "schedule_event",
-    "search_web", "find_nearby_places"
+    "search_web", "find_nearby_places",
+    "send_targeted_mention_message", "link_user_phone_number"
 }
 
 # Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
 
 
 TOOL_GROUPS = {
+    "communication_mentions": {
+        "description": "mention contact message telegram dispatch targeted directive tag user send task notify phone number direct work ui design",
+        "tools": {"send_targeted_mention_message", "link_user_phone_number"}
+    },
     "developer_github": {
         "description": "git github repository commit pull request source code file branch issue readme programming",
         "tools": {"list_github_repos", "get_github_file", "update_github_file", "list_github_issues"}
@@ -5328,7 +5360,8 @@ _BUDGET_ESSENTIAL_TOOLS = {
     "list_notion_pages", "get_notion_page_content",
     "search_user_emails", "send_email",
     "save_contact", "get_contact", "list_contacts",
-    "check_integrations_status"
+    "check_integrations_status",
+    "send_targeted_mention_message", "link_user_phone_number"
 }
 
 

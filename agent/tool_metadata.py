@@ -382,6 +382,13 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
             "evidence": {"required": False, "default": None, "can_be_found_in": []}
         }
     },
+    "link_user_phone_number": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "phone_number": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "evidence": {"required": False, "default": None, "can_be_found_in": []}
+        }
+    },
     "upload_to_drive": {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {

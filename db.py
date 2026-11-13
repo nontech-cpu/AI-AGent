@@ -3911,6 +3911,24 @@ def claim_username(chat_id: int, username: str) -> tuple[bool, str]:
     return True, f"Username '@{clean_u}' successfully claimed."
 
 
+def set_user_phone_number(chat_id: int, phone_number: str) -> tuple[bool, str]:
+    """Links or updates a user's verified phone number in the Peculiar AI network."""
+    _init_mentions_and_dispatches_tables()
+    cid = canonical_chat_id(chat_id)
+    ensure_user(cid)
+    import re
+    clean_p = re.sub(r"[^\d+]", "", (phone_number or "").strip())
+    if not clean_p or len(re.sub(r"\D", "", clean_p)) < 10:
+        return False, "Invalid phone number. Must contain at least 10 digits."
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE users SET phone_number = :p WHERE telegram_chat_id = :c"),
+            {"p": clean_p, "c": cid}
+        )
+    return True, f"Phone number {clean_p} successfully linked to your Peculiar AI account."
+
+
+
 def update_avatar_config(chat_id: int, avatar_config: dict) -> dict:
     """Saves user's Reddit-style avatar styling configuration."""
     _init_mentions_and_dispatches_tables()

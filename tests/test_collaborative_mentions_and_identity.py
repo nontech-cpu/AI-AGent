@@ -334,3 +334,42 @@ async def test_end_to_end_dispatch_with_phone_number_and_username():
     assert "client sync at 4pm" not in notifs[0]["body"]
 
 
+@pytest.mark.asyncio
+async def test_unlinked_phone_number_reports_not_in_peculiar_ai_network():
+    db._init_mentions_and_dispatches_tables()
+    sender_chat = 99881120
+    db.ensure_user(sender_chat)
+
+    prompt = "@9461089998 u have the work on ui design"
+    res = await execute_targeted_mentions_dispatch(sender_chat, prompt)
+    assert res.status == "success"
+    assert "not connected to the Peculiar AI network yet" in res.summary_message
+
+
+@pytest.mark.asyncio
+async def test_link_user_phone_number_and_subsequent_directed_dispatch():
+    db._init_mentions_and_dispatches_tables()
+    sender_chat = 99881121
+    devender_chat = 99881122
+    db.ensure_user(sender_chat)
+    db.ensure_user(devender_chat)
+
+    # Devender explicitly links his phone number
+    ok, msg = db.set_user_phone_number(devender_chat, "9461089998")
+    assert ok is True
+
+    prompt = "@9461089998 u have the work on ui design"
+    sent_tg = []
+    async def mock_tg(cid, msg):
+        sent_tg.append((cid, msg))
+
+    with patch("main.send_telegram_text", side_effect=mock_tg):
+        res = await execute_targeted_mentions_dispatch(sender_chat, prompt)
+
+    assert res.status == "success"
+    assert len(sent_tg) == 1
+    assert sent_tg[0][0] == devender_chat
+    assert "work on ui design" in sent_tg[0][1]
+
+
+
