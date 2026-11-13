@@ -78,7 +78,7 @@ class GmailConnector(Connector):
             )
 
         if tool_name == "send_email":
-            to = args.get("to", "")
+            to = args.get("to", "").strip()
             subject = args.get("subject", "")
             body = args.get("body", "")
             if not to or not subject or not body:
@@ -87,6 +87,20 @@ class GmailConnector(Connector):
                     error={
                         "type": ErrorType.INVALID_ARGS.value,
                         "message": "Missing required fields for email (to, subject, body).",
+                        "retryable": False
+                    }
+                )
+
+            # Industry-grade 3-layer Email Validation (Syntax, Typo, DNS MX)
+            from core.email_verifier import verify_email
+            val_res = await verify_email(to)
+            if not val_res.is_valid:
+                err_msg = val_res.error_message or f"Recipient email '{to}' is invalid."
+                return ToolResult(
+                    ok=False,
+                    error={
+                        "type": ErrorType.INVALID_ARGS.value,
+                        "message": err_msg,
                         "retryable": False
                     }
                 )
@@ -100,7 +114,10 @@ class GmailConnector(Connector):
                         "action": "send_email",
                         "to": to,
                         "subject": subject,
-                        "body": body
+                        "body": body,
+                        "has_typo": val_res.has_typo,
+                        "suggested_email": val_res.suggested_email,
+                        "warning": val_res.warning_message
                     }
                 )
 

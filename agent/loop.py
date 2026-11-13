@@ -882,6 +882,11 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                         is_initial_draft = any(k in low_u for k in ("subject", "body", "@", "mailto", "mail to", "email to", "send a mail", "send an email"))
                         is_affirmative = not is_initial_draft and (classify_confirmation_intent(user_text, payload)[0] == "confirm")
                         if is_affirmative:
+                            from core.email_verifier import verify_email
+                            val_to = await verify_email(payload["to"])
+                            if not val_to.is_valid:
+                                final_reply = f"Cannot send email: {val_to.error_message}"
+                                break
                             import google_services
                             try:
                                 msg_id = await google_services.send_email(
@@ -908,6 +913,8 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             subject=payload["subject"],
                             body=payload["body"]
                         )
+                        if tool_result.get("suggested_email"):
+                            final_reply = f"⚠️ **Possible typo detected**: Did you mean **{tool_result['suggested_email']}** instead of **{payload['to']}**?\n\n{final_reply}"
                         comp_receipts = format_companion_tool_receipts(tool_results_list[:-1])
                         if comp_receipts:
                             final_reply = f"{comp_receipts}\n\n{final_reply}".strip()

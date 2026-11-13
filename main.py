@@ -1888,6 +1888,12 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
     try:
         kind = pending['kind']
         if kind == 'send_email':
+            from core.email_verifier import verify_email
+            val_to = await verify_email(pending['to'])
+            if not val_to.is_valid:
+                err_text = val_to.error_message or f"Recipient email '{pending['to']}' is invalid."
+                await say(chat_id, f"❌ Cannot send email: {err_text}")
+                return True
             result = await google_send_email(chat_id, pending['to'], pending['subject'], pending['body'])
             try:
                 from services.followup_service import record_followup

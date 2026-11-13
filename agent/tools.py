@@ -3942,12 +3942,27 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
         elif tool_name == "send_email":
             args = SendEmailArgs(**arguments)
+            from core.email_verifier import verify_email
+            val_res = await verify_email(args.to)
+            if not val_res.is_valid:
+                err_msg = val_res.error_message or f"Recipient email '{args.to}' is invalid."
+                return {
+                    "status": "error",
+                    "action": "send_email",
+                    "error": err_msg,
+                    "to": args.to,
+                    "has_typo": val_res.has_typo,
+                    "suggested_email": val_res.suggested_email
+                }
             return {
                 "status": "needs_confirmation",
                 "action": "send_email",
                 "to": args.to,
                 "subject": args.subject,
-                "body": args.body
+                "body": args.body,
+                "has_typo": val_res.has_typo,
+                "suggested_email": val_res.suggested_email,
+                "warning": val_res.warning_message
             }
 
         elif tool_name == "upload_to_drive":

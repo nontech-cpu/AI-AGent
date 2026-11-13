@@ -91,3 +91,4 @@ async def test_run_reminders_supersedes_legacy_9am_reminders():
             assert all(r[1] == "superseded" for r in rows)
     finally:
         _reset_time()
+

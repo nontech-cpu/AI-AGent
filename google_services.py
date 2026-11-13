@@ -66,6 +66,10 @@ async def _request(method, url, access, **kwargs):
     return response.json() if response.content else {}
 
 async def send_email(chat_id, to, subject, body):
+    from core.email_verifier import verify_email
+    val_to = await verify_email(to)
+    if not val_to.is_valid:
+        raise ValueError(val_to.error_message or f"Invalid recipient email: {to}")
     access, account = await access_token_for_chat(chat_id)
     msg = EmailMessage()
     msg['To'] = to
