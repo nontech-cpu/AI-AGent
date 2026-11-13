@@ -312,6 +312,9 @@ class SendTargetedMentionMessageArgs(BaseModel):
 class LinkUserPhoneNumberArgs(BaseModel):
     phone_number: str = Field(..., description="The user's verified phone number with country code (e.g. '+919461089998' or '9461089998').")
 
+class UnlinkUserPhoneNumberArgs(BaseModel):
+    confirm: Optional[bool] = Field(True, description="Confirmation flag to unlink phone number.")
+
 
 class UploadToDriveArgs(BaseModel):
     filename: str = Field(..., description="Name of the file to create on Google Drive.")
@@ -971,13 +974,26 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "link_user_phone_number",
-            "description": "Explicitly link or update the caller's phone number in the Peculiar AI network (e.g. when user says 'my phone number is 9461089998', 'mera number ye hai', or registers phone). Enables receiving targeted directives and notifications from other users.",
+            "description": "Explicitly link or update/change the caller's phone number in the Peculiar AI network (e.g. when user says 'my phone number is 9461089998', 'mera number ye hai', or '9461089998 is my number remove that connect with this'). Enables receiving targeted directives and notifications from other users.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "phone_number": {"type": "string", "description": "User's 10-12 digit phone number with optional country code (e.g. '+919461089998' or '9461089998')."}
                 },
                 "required": ["phone_number"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unlink_user_phone_number",
+            "description": "Unlink or disconnect the caller's phone number from their Peculiar AI account (e.g. when user says 'unlink my number', 'remove my phone number', 'mera number hata do').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": "boolean", "description": "Confirmation flag to unlink phone number."}
+                }
             }
         }
     },
@@ -4031,6 +4047,13 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "message": msg
             }
 
+        elif tool_name == "unlink_user_phone_number":
+            ok, msg = db.unlink_user_phone_number(chat_id)
+            return {
+                "status": "success" if ok else "error",
+                "message": msg
+            }
+
         elif tool_name == "check_integrations_status":
             args = CheckIntegrationsStatusArgs(**arguments)
             s_key = (args.service or "").strip().lower()
@@ -5253,7 +5276,7 @@ CORE_TOOL_NAMES = {
     "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "set_user_preference", "ask_user", "learn_user_correction",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "create_calendar_event", "schedule_event",
     "search_web", "find_nearby_places",
-    "send_targeted_mention_message", "link_user_phone_number"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
 }
 
 # Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
@@ -5261,8 +5284,8 @@ CORE_TOOL_NAMES = {
 
 TOOL_GROUPS = {
     "communication_mentions": {
-        "description": "mention contact message telegram dispatch targeted directive tag user send task notify phone number direct work ui design",
-        "tools": {"send_targeted_mention_message", "link_user_phone_number"}
+        "description": "mention contact message telegram dispatch targeted directive tag user send task notify phone number direct work ui design link unlink phone remove",
+        "tools": {"send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"}
     },
     "developer_github": {
         "description": "git github repository commit pull request source code file branch issue readme programming",
@@ -5361,7 +5384,7 @@ _BUDGET_ESSENTIAL_TOOLS = {
     "search_user_emails", "send_email",
     "save_contact", "get_contact", "list_contacts",
     "check_integrations_status",
-    "send_targeted_mention_message", "link_user_phone_number"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
 }
 
 

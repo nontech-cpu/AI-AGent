@@ -3912,20 +3912,73 @@ def claim_username(chat_id: int, username: str) -> tuple[bool, str]:
 
 
 def set_user_phone_number(chat_id: int, phone_number: str) -> tuple[bool, str]:
-    """Links or updates a user's verified phone number in the Peculiar AI network."""
+    """
+    Links or updates a user's verified phone number in the Peculiar AI network.
+    Enforces Strict 1:1 Identity Mapping (One phone number can only belong to one active account at a time).
+    Detects collisions and supports replacing/updating the caller's existing number.
+    """
     _init_mentions_and_dispatches_tables()
     cid = canonical_chat_id(chat_id)
     ensure_user(cid)
     import re
     clean_p = re.sub(r"[^\d+]", "", (phone_number or "").strip())
-    if not clean_p or len(re.sub(r"\D", "", clean_p)) < 10:
+    digits = re.sub(r"\D", "", clean_p)
+    if not digits or len(digits) < 10:
         return False, "Invalid phone number. Must contain at least 10 digits."
+
+    canonical_10 = digits[-10:]
+
     with engine.begin() as conn:
+        # 1. Collision Check: Is this phone number already linked to ANOTHER user?
+        existing_other = conn.execute(
+            text("SELECT id, telegram_chat_id FROM users WHERE phone_number LIKE :p AND telegram_chat_id != :c"),
+            {"p": f"%{canonical_10}%", "c": cid}
+        ).first()
+
+        if existing_other:
+            return False, f"Phone number {clean_p} is already linked to another Peculiar AI account. Please unlink it from that account first."
+
+        # 2. Check caller's current phone number
+        current_row = conn.execute(
+            text("SELECT phone_number FROM users WHERE telegram_chat_id = :c"),
+            {"c": cid}
+        ).first()
+        old_p = current_row[0] if current_row else None
+
+        final_phone = clean_p if clean_p.startswith("+") else (f"+91{clean_p}" if len(digits) == 10 else f"+{digits}")
+
         conn.execute(
             text("UPDATE users SET phone_number = :p WHERE telegram_chat_id = :c"),
-            {"p": clean_p, "c": cid}
+            {"p": final_phone, "c": cid}
         )
-    return True, f"Phone number {clean_p} successfully linked to your Peculiar AI account."
+
+    if old_p and re.sub(r"\D", "", old_p)[-10:] != canonical_10:
+        return True, f"Your linked phone number has been updated from {old_p} to {final_phone}."
+    return True, f"Phone number {final_phone} has been successfully linked to your Peculiar AI account."
+
+
+def unlink_user_phone_number(chat_id: int) -> tuple[bool, str]:
+    """
+    Unlinks and clears the caller's phone number from their Peculiar AI account.
+    """
+    _init_mentions_and_dispatches_tables()
+    cid = canonical_chat_id(chat_id)
+    ensure_user(cid)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT phone_number FROM users WHERE telegram_chat_id = :c"),
+            {"c": cid}
+        ).first()
+        if not row or not row[0]:
+            return False, "No phone number is currently linked to your Peculiar AI account."
+        old_p = row[0]
+        conn.execute(
+            text("UPDATE users SET phone_number = NULL WHERE telegram_chat_id = :c"),
+            {"c": cid}
+        )
+    return True, f"Phone number {old_p} has been successfully unlinked from your account."
+
 
 
 

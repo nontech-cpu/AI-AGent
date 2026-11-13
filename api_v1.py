@@ -2023,6 +2023,9 @@ async def get_active_companion_profile(
 class ClaimUsernameBody(BaseModel):
     username: str
 
+class LinkPhoneBody(BaseModel):
+    phone_number: str
+
 class UpdateAvatarBody(BaseModel):
     primary_color: Optional[str] = None
     bg_color: Optional[str] = None
@@ -2055,6 +2058,30 @@ async def claim_username_route(
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return {"status": "success", "username": body.username.strip().lower(), "message": msg}
+
+
+@router.post("/user/phone/link", summary="Link or Update Verified Phone Number (1:1 Exclusive Account Mapping)")
+async def link_phone_route(
+    body: LinkPhoneBody,
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import set_user_phone_number
+    ok, msg = set_user_phone_number(chat_id, body.phone_number)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"status": "success", "phone_number": body.phone_number, "message": msg}
+
+
+@router.post("/user/phone/unlink", summary="Unlink Verified Phone Number")
+async def unlink_phone_route(
+    chat_id: int = Depends(get_current_chat_id)
+):
+    from db import unlink_user_phone_number
+    ok, msg = unlink_user_phone_number(chat_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "success", "message": msg}
+
 
 
 @router.get("/user/profile", summary="Get User Identity, Channels & Avatar Profile")

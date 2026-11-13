@@ -372,4 +372,57 @@ async def test_link_user_phone_number_and_subsequent_directed_dispatch():
     assert "work on ui design" in sent_tg[0][1]
 
 
+def test_phone_number_single_account_collision_and_update_and_unlink():
+    db._init_mentions_and_dispatches_tables()
+    user_1 = 99881130
+    user_2 = 99881131
+    db.ensure_user(user_1)
+    db.ensure_user(user_2)
+
+    # 1. User 1 links phone 8824466229
+    ok1, msg1 = db.set_user_phone_number(user_1, "8824466229")
+    assert ok1 is True
+    assert "successfully linked" in msg1
+
+    # 2. User 2 tries to link same phone 8824466229 (Collision Check)
+    ok2, msg2 = db.set_user_phone_number(user_2, "8824466229")
+    assert ok2 is False
+    assert "already linked to another Peculiar AI account" in msg2
+
+    # 3. User 1 updates / replaces their phone number to 8824466230
+    ok3, msg3 = db.set_user_phone_number(user_1, "8824466230")
+    assert ok3 is True
+    assert "updated" in msg3
+
+    # 4. Now phone 8824466229 is freed up, so User 2 can link 8824466229!
+    ok4, msg4 = db.set_user_phone_number(user_2, "8824466229")
+    assert ok4 is True
+
+    # 5. User 1 unlinks their phone
+    ok_unlink, msg_unlink = db.unlink_user_phone_number(user_1)
+    assert ok_unlink is True
+    assert "successfully unlinked" in msg_unlink
+
+    # Unlink when already unlinked
+    ok_unl2, _ = db.unlink_user_phone_number(user_1)
+    assert ok_unl2 is False
+
+
+def test_api_phone_link_and_unlink_endpoints():
+    db._init_mentions_and_dispatches_tables()
+    cid = 99881135
+    db.ensure_user(cid)
+
+    # Link via REST API
+    res = client.post("/api/v1/user/phone/link", json={"phone_number": "9811223344"}, headers={"X-Chat-Id": str(cid)})
+    assert res.status_code == 200
+    assert res.json()["status"] == "success"
+
+    # Unlink via REST API
+    res_unl = client.post("/api/v1/user/phone/unlink", headers={"X-Chat-Id": str(cid)})
+    assert res_unl.status_code == 200
+    assert res_unl.json()["status"] == "success"
+
+
+
 
