@@ -3878,10 +3878,16 @@ def check_username_available(username: str, exclude_chat_id: Optional[int] = Non
 
     ex_cid = canonical_chat_id(exclude_chat_id) if exclude_chat_id else None
     with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT id FROM users WHERE LOWER(username) = :u AND (:ex IS NULL OR telegram_chat_id != :ex)"),
-            {"u": u, "ex": ex_cid}
-        ).first()
+        if ex_cid is not None:
+            row = conn.execute(
+                text("SELECT id FROM users WHERE LOWER(username) = :u AND telegram_chat_id != :ex"),
+                {"u": u, "ex": ex_cid}
+            ).first()
+        else:
+            row = conn.execute(
+                text("SELECT id FROM users WHERE LOWER(username) = :u"),
+                {"u": u}
+            ).first()
         if row:
             return False, "Username already taken. Please choose another username."
     return True, "Username is available."
