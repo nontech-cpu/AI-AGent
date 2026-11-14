@@ -540,5 +540,25 @@ async def test_photo_upload_without_caption_prompts_clean_inquiry():
     assert any(w in raw_responses.lower() for w in ("analyze", "karna chahte", "what would you like"))
 
 
+@pytest.mark.asyncio
+async def test_self_mention_guardrail_suppresses_self_dispatch():
+    db._init_mentions_and_dispatches_tables()
+    sender_chat = 99881145
+    db.ensure_user(sender_chat)
+    db.set_user_phone_number(sender_chat, "6377313458")
+
+    sent_texts = []
+    async def mock_send_text(cid, text):
+        sent_texts.append({"chat_id": cid, "text": text})
+
+    with patch("main.send_telegram_text", side_effect=mock_send_text):
+        res = await execute_targeted_mentions_dispatch(sender_chat, "sent in the same document to @6377313458")
+
+    assert res.status == "self_mention_error"
+    # Must NOT deliver duplicate echo to sender's own chat
+    assert len(sent_texts) == 0
+    assert "Ye aapka hi linked" in res.summary_message
+
+
 
 

@@ -364,6 +364,7 @@ async def execute_targeted_mentions_dispatch(
         prof = db.get_user_profile(sender_chat_id)
         s_name = prof.get("first_name") or prof.get("username") or "Your teammate"
 
+    sender_uid = db.resolve_user_id(sender_chat_id)
     delivery_summaries = []
 
     # 4. Atomic Outbox Dispatch
@@ -371,6 +372,21 @@ async def execute_targeted_mentions_dispatch(
         recip = d.recipient
         priv_msg = d.private_message
         atts = d.attachments
+
+        # Self-mention Guardrail: A user cannot dispatch collaborative tasks/files to themselves
+        is_self = False
+        if recip.telegram_chat_id and recip.telegram_chat_id == sender_chat_id:
+            is_self = True
+        elif recip.user_id and sender_uid and recip.user_id == sender_uid:
+            is_self = True
+
+        if is_self:
+            logger.info(f"Self-mention detected for handle @{recip.handle} by sender {sender_chat_id}. Suppressing self-dispatch.")
+            delivery_summaries.append(
+                f"• **@{recip.handle}**: ⚠️ Ye aapka hi linked account/number hai! "
+                f"Kisi doosre user ya teammate ko bhejne ke liye unka phone number ya @username use karein (jaise @9549408914 ya @8824466229)."
+            )
+            continue
 
         # Record in directed_dispatches table (Isolation Vault)
         d_id = db.record_directed_dispatch(
@@ -449,6 +465,10 @@ async def execute_targeted_mentions_dispatch(
                 f"Once they login with their phone or link their Telegram account to the bot, directives and files can be delivered directly to them."
             )
 
+    has_self = any("Ye aapka hi linked" in s for s in delivery_summaries)
+    has_other_directives = any("Ye aapka hi linked" not in s for s in delivery_summaries)
+    status = "self_mention_error" if (has_self and not has_other_directives) else "success"
+
     summary = (
         f"🎯 **Targeted Mentions Dispatched:**\n"
         + "\n".join(delivery_summaries)
@@ -456,7 +476,7 @@ async def execute_targeted_mentions_dispatch(
     )
 
     return DispatchResult(
-        status="success",
+        status=status,
         sender_chat_id=sender_chat_id,
         sender_name=s_name,
         directives=directives,
