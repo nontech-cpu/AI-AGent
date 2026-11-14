@@ -470,7 +470,7 @@ class GroqProvider(BaseLLMProvider):
         target_model: str,
         temperature: float,
         response_format: Optional[Dict[str, Any]],
-        max_tools: int = 12,
+        max_tools: int = 24,
         max_est_tokens: int = 6000,
         max_hist_turns: int = 4,
     ) -> Dict[str, Any]:
@@ -600,7 +600,7 @@ class GroqProvider(BaseLLMProvider):
             target_model=target_model,
             temperature=temperature,
             response_format=response_format,
-            max_tools=12,
+            max_tools=24,
             max_est_tokens=6000,
             max_hist_turns=4,
         )

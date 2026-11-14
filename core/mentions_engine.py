@@ -280,9 +280,19 @@ def deconstruct_targeted_directives(
         # Targeted attachment matching: if attachment name is referenced in this slice, attach it
         recip_attachments = []
         if attachments:
+            clean_low = cleaned.lower()
             for att in attachments:
                 att_name = (att.get("filename") or att.get("name") or "").lower()
-                if att_name and att_name in cleaned.lower():
+                matched = False
+                if att_name and att_name in clean_low:
+                    matched = True
+                else:
+                    # check if significant keyword from filename is in text
+                    stem = os.path.splitext(att_name)[0]
+                    words = [w for w in re.split(r"[-_.\s]+", stem) if len(w) >= 4]
+                    if any(w in clean_low for w in words):
+                        matched = True
+                if matched:
                     recip_attachments.append(att)
             # If no specific match, attach all shared attachments
             if not recip_attachments:
@@ -347,6 +357,15 @@ async def execute_targeted_mentions_dispatch(
                     "caption": fname
                 }]
     else:
+        # Normalize attachments in case caller passes list of strings or incomplete dicts
+        normalized_attachments = []
+        for att in attachments:
+            if isinstance(att, str):
+                normalized_attachments.append({"filename": att, "path": att, "caption": att})
+            elif isinstance(att, dict):
+                normalized_attachments.append(dict(att))
+        attachments = normalized_attachments
+
         for att in attachments:
             if not att.get("file_id") and active_doc and active_doc.get("file_id"):
                 att["file_id"] = active_doc.get("file_id")

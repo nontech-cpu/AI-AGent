@@ -5596,14 +5596,29 @@ def route_tools(user_text: str, context_text: Optional[str] = None) -> List[Dict
             activated_tools.discard("create_notion_page")
             activated_tools.discard("update_notion_page")
     else:
-        # Safe default when embeddings are unavailable (offline test suite):
-        is_casual_trip = any(w in low.lower() for w in ("trip", "tour", "chalte hain", "dost k sth", "dost ke sath", "ghoomne")) and not any(w in low.lower() for w in ("notion", "note", "doc", "page", "write", "likh"))
-        domain_tools = [
-            t for t in TOOL_DEFINITIONS
-            if t["function"]["name"] not in CORE_TOOL_NAMES and
-            not (is_casual_trip and t["function"]["name"] in ("create_notion_page", "update_notion_page"))
-        ]
-        return core_tools + domain_tools
+        # Safe default when embeddings are unavailable (offline test suite / fast mode):
+        if activated_tools:
+            extra_tools = [
+                t for t in TOOL_DEFINITIONS
+                if t["function"]["name"] in activated_tools and t["function"]["name"] not in CORE_TOOL_NAMES
+            ]
+            return core_tools + extra_tools
+        # If no explicit domain group matched, check if query directly references a domain tool name
+        direct_matches = set()
+        low_words = set(re.findall(r"\b[a-z]{3,}\b", low.lower()))
+        for t in TOOL_DEFINITIONS:
+            t_name = t["function"]["name"]
+            if t_name not in CORE_TOOL_NAMES:
+                for w in t_name.split("_"):
+                    if len(w) >= 4 and w in low_words:
+                        direct_matches.add(t_name)
+        if direct_matches:
+            extra_tools = [
+                t for t in TOOL_DEFINITIONS
+                if t["function"]["name"] in direct_matches and t["function"]["name"] not in CORE_TOOL_NAMES
+            ]
+            return core_tools + extra_tools
+        return core_tools
 
     extra_tools = [
         t for t in TOOL_DEFINITIONS
