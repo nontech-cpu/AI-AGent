@@ -4166,6 +4166,266 @@ def mark_dispatch_delivered(dispatch_id: int):
         )
 
 
+# ==========================================
+# UPI PAYMENT & DYNAMIC INVOICE LEDGER (NPCI)
+# ==========================================
+
+_PAYMENT_TABLES_INITIALIZED = False
+
+def _init_payment_tables():
+    global _PAYMENT_TABLES_INITIALIZED
+    if _PAYMENT_TABLES_INITIALIZED:
+        return
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS upi_id VARCHAR(128);
+                    CREATE TABLE IF NOT EXISTS payment_requests (
+                        id SERIAL PRIMARY KEY,
+                        ref_id VARCHAR(64) UNIQUE NOT NULL,
+                        creator_chat_id BIGINT NOT NULL,
+                        payer_handle VARCHAR(64),
+                        payer_chat_id BIGINT,
+                        upi_id VARCHAR(128) NOT NULL,
+                        payee_name VARCHAR(128) NOT NULL,
+                        amount NUMERIC(12, 2) NOT NULL,
+                        currency VARCHAR(10) DEFAULT 'INR',
+                        note TEXT,
+                        status VARCHAR(32) DEFAULT 'pending',
+                        receipt_proof TEXT,
+                        qr_file_path TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        completed_at TIMESTAMPTZ
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_payment_requests_ref ON payment_requests (ref_id);
+                    CREATE INDEX IF NOT EXISTS idx_payment_requests_creator ON payment_requests (creator_chat_id, status);
+                    CREATE INDEX IF NOT EXISTS idx_payment_requests_payer ON payment_requests (payer_chat_id, status);
+                """))
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN upi_id TEXT;"))
+                except Exception:
+                    pass
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS payment_requests (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ref_id TEXT UNIQUE NOT NULL,
+                        creator_chat_id INTEGER NOT NULL,
+                        payer_handle TEXT,
+                        payer_chat_id INTEGER,
+                        upi_id TEXT NOT NULL,
+                        payee_name TEXT NOT NULL,
+                        amount REAL NOT NULL,
+                        currency TEXT DEFAULT 'INR',
+                        note TEXT,
+                        status TEXT DEFAULT 'pending',
+                        receipt_proof TEXT,
+                        qr_file_path TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TIMESTAMP
+                    );
+                """))
+                try:
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payment_requests_ref ON payment_requests (ref_id);"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payment_requests_creator ON payment_requests (creator_chat_id, status);"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payment_requests_payer ON payment_requests (payer_chat_id, status);"))
+                except Exception:
+                    pass
+        _PAYMENT_TABLES_INITIALIZED = True
+    except Exception as exc:
+        print("_init_payment_tables error:", exc)
+
+
+def set_user_upi_id(chat_id: int, upi_id: str) -> tuple[bool, str]:
+    """Validates and updates user's default receiving UPI ID."""
+    _init_payment_tables()
+    cid = canonical_chat_id(chat_id)
+    ensure_user(cid)
+    u_id = (upi_id or "").strip()
+    import re
+    if not re.match(r"^[\w.\-_]{2,100}@[a-zA-Z]{2,64}$", u_id):
+        return False, "Invalid UPI ID format. Expected format: username@bank (e.g. nirav@okhdfcbank or 9461089998@ybl)."
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE users SET upi_id = :u WHERE telegram_chat_id = :c"),
+            {"u": u_id, "c": cid}
+        )
+    return True, f"Your receiving UPI ID has been set to **{u_id}**."
+
+
+def get_user_upi_id(chat_id: int) -> Optional[str]:
+    """Retrieves user's default receiving UPI ID."""
+    _init_payment_tables()
+    cid = canonical_chat_id(chat_id)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT upi_id FROM users WHERE telegram_chat_id = :c"),
+            {"c": cid}
+        ).first()
+        if row and row[0]:
+            return row[0].strip()
+    return None
+
+
+def create_payment_request(
+    ref_id: str,
+    creator_chat_id: int,
+    upi_id: str,
+    payee_name: str,
+    amount: float,
+    note: str,
+    payer_handle: Optional[str] = None,
+    payer_chat_id: Optional[int] = None,
+    qr_file_path: Optional[str] = None
+) -> str:
+    """Inserts a new pending payment request invoice."""
+    _init_payment_tables()
+    cid = canonical_chat_id(creator_chat_id)
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO payment_requests (
+                    ref_id, creator_chat_id, payer_handle, payer_chat_id,
+                    upi_id, payee_name, amount, note, status, qr_file_path
+                ) VALUES (
+                    :ref, :c_cid, :p_h, :p_cid,
+                    :upi, :p_name, :amt, :nt, 'pending', :qr
+                )
+            """),
+            {
+                "ref": ref_id,
+                "c_cid": cid,
+                "p_h": payer_handle,
+                "p_cid": payer_chat_id,
+                "upi": upi_id,
+                "p_name": payee_name,
+                "amt": amount,
+                "nt": note,
+                "qr": qr_file_path
+            }
+        )
+    return ref_id
+
+
+def get_payment_request(ref_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves a payment request by unique reference ID."""
+    _init_payment_tables()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id, ref_id, creator_chat_id, payer_handle, payer_chat_id,
+                       upi_id, payee_name, amount, currency, note, status,
+                       receipt_proof, qr_file_path, created_at, completed_at
+                FROM payment_requests WHERE ref_id = :r
+            """),
+            {"r": ref_id}
+        ).mappings().first()
+        if row:
+            return dict(row)
+    return None
+
+
+def get_latest_pending_payment_request(
+    creator_chat_id: Optional[int] = None,
+    payer_handle: Optional[str] = None,
+    payer_chat_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """Finds the most recent pending payment request matching participants."""
+    _init_payment_tables()
+    conditions = ["status = 'pending'"]
+    params = {}
+    if creator_chat_id:
+        conditions.append("(creator_chat_id = :c_cid OR payer_chat_id = :c_cid)")
+        params["c_cid"] = canonical_chat_id(creator_chat_id)
+    if payer_handle:
+        clean_h = payer_handle.lstrip("@").strip().lower()
+        conditions.append("(LOWER(payer_handle) LIKE :ph OR payer_handle LIKE :ph_raw)")
+        params["ph"] = f"%{clean_h}%"
+        params["ph_raw"] = f"%{clean_h}%"
+    if payer_chat_id:
+        conditions.append("payer_chat_id = :p_cid")
+        params["p_cid"] = payer_chat_id
+
+    where_clause = " AND ".join(conditions)
+    sql = f"""
+        SELECT id, ref_id, creator_chat_id, payer_handle, payer_chat_id,
+               upi_id, payee_name, amount, currency, note, status,
+               receipt_proof, qr_file_path, created_at, completed_at
+        FROM payment_requests
+        WHERE {where_clause}
+        ORDER BY id DESC LIMIT 1
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text(sql), params).mappings().first()
+        if row:
+            return dict(row)
+    return None
+
+
+def complete_payment_request(
+    ref_id: str,
+    receipt_proof: Optional[str] = None
+) -> tuple[bool, Optional[Dict[str, Any]]]:
+    """Atomically marks payment request as completed."""
+    _init_payment_tables()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    IST = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(IST)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT id, status FROM payment_requests WHERE ref_id = :r"),
+            {"r": ref_id}
+        ).first()
+        if not row:
+            return False, None
+        if row[1] == "completed":
+            full = get_payment_request(ref_id)
+            return True, full
+
+        conn.execute(
+            text("""
+                UPDATE payment_requests
+                SET status = 'completed', completed_at = :now, receipt_proof = COALESCE(:proof, receipt_proof)
+                WHERE ref_id = :r
+            """),
+            {"r": ref_id, "now": now, "proof": receipt_proof}
+        )
+    return True, get_payment_request(ref_id)
+
+
+def list_payment_requests(
+    chat_id: int,
+    status: Optional[str] = None,
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """Lists payment requests where user is creator or payer."""
+    _init_payment_tables()
+    cid = canonical_chat_id(chat_id)
+    conditions = ["(creator_chat_id = :cid OR payer_chat_id = :cid)"]
+    params = {"cid": cid, "limit": limit}
+    if status:
+        conditions.append("status = :st")
+        params["st"] = status
+
+    where_clause = " AND ".join(conditions)
+    sql = f"""
+        SELECT id, ref_id, creator_chat_id, payer_handle, payer_chat_id,
+               upi_id, payee_name, amount, currency, note, status,
+               receipt_proof, created_at, completed_at
+        FROM payment_requests
+        WHERE {where_clause}
+        ORDER BY id DESC LIMIT :limit
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
+
+
 
 
 

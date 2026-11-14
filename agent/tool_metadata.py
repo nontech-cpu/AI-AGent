@@ -396,6 +396,36 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
             "evidence": {"required": False, "default": None, "can_be_found_in": []}
         }
     },
+    "generate_payment_qr": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "amount": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "note": {"required": False, "default": "Payment", "can_be_found_in": ["user_message"]},
+            "payer_handle": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "upi_id": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "settle_payment_request": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "ref_id": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "payer_handle": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "receipt_proof": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "set_user_upi_id": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "upi_id": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "list_payment_requests": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "status": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "limit": {"required": False, "default": 20, "can_be_found_in": []}
+        }
+    },
     "upload_to_drive": {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {

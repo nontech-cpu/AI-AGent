@@ -315,6 +315,24 @@ class LinkUserPhoneNumberArgs(BaseModel):
 class UnlinkUserPhoneNumberArgs(BaseModel):
     confirm: Optional[bool] = Field(True, description="Confirmation flag to unlink phone number.")
 
+class GeneratePaymentQrArgs(BaseModel):
+    amount: float = Field(..., description="Amount in INR to be paid (e.g. 500 or 1500.50).")
+    note: str = Field("Payment", description="Purpose or description of the payment (e.g. 'Dinner contribution' or 'Project Advance').")
+    payer_handle: Optional[str] = Field(None, description="Optional recipient @username, phone number, or contact name who owes the money (e.g. '@9461089998' or '@rahul').")
+    upi_id: Optional[str] = Field(None, description="Optional payee UPI ID to receive payment. Defaults to user's saved UPI ID.")
+
+class SettlePaymentRequestArgs(BaseModel):
+    ref_id: Optional[str] = Field(None, description="Payment reference ID (e.g. 'PAY-20261114-A8B9C2'). If omitted, latest pending request is settled.")
+    payer_handle: Optional[str] = Field(None, description="Optional @handle or contact name who paid.")
+    receipt_proof: Optional[str] = Field(None, description="Optional UTR number, transaction ID, or note.")
+
+class SetUserUpiIdArgs(BaseModel):
+    upi_id: str = Field(..., description="User's receiving UPI ID (e.g. 'nirav@okhdfcbank' or '9461089998@ybl').")
+
+class ListPaymentRequestsArgs(BaseModel):
+    status: Optional[str] = Field(None, description="Filter by status: 'pending' or 'completed'.")
+    limit: Optional[int] = Field(20, description="Max records to return.")
+
 
 class UploadToDriveArgs(BaseModel):
     filename: str = Field(..., description="Name of the file to create on Google Drive.")
@@ -993,6 +1011,66 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "confirm": {"type": "boolean", "description": "Confirmation flag to unlink phone number."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_payment_qr",
+            "description": "Generate a dynamic NPCI-standard UPI QR Code card for instant payment collection. Embeds exact amount, purpose, and reference ID. Automatically dispatches the QR card and payment invoice to the payer if @mentioned.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "Amount in INR to collect (e.g. 500)."},
+                    "note": {"type": "string", "description": "Purpose or reason for payment (e.g. 'Dinner', 'Freelance advance')."},
+                    "payer_handle": {"type": ["string", "null"], "description": "Optional @username, phone number, or name of person who owes the money (e.g. '@9461089998' or '@devender')."},
+                    "upi_id": {"type": ["string", "null"], "description": "Optional payee UPI ID (e.g. 'nirav@okhdfcbank'). Defaults to saved profile UPI ID."}
+                },
+                "required": ["amount"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "settle_payment_request",
+            "description": "Verify, clear, and mark a payment request as completed. Dispatches instant confirmation notifications to both payee and payer, and automatically settles any contact debt/commitment.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref_id": {"type": ["string", "null"], "description": "Payment reference ID (e.g. 'PAY-20261114-A8B9C2')."},
+                    "payer_handle": {"type": ["string", "null"], "description": "Optional @username or name of payer."},
+                    "receipt_proof": {"type": ["string", "null"], "description": "Optional UTR reference number or payment confirmation note."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_user_upi_id",
+            "description": "Save or update the user's default receiving UPI ID (e.g. 'nirav@okhdfcbank' or '9461089998@ybl') for generating instant payment QR codes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "upi_id": {"type": "string", "description": "Valid UPI ID in format username@bank."}
+                },
+                "required": ["upi_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_payment_requests",
+            "description": "List payment requests and pending or completed invoices where user is payee or payer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": ["string", "null"], "description": "Filter by 'pending' or 'completed'."},
+                    "limit": {"type": ["integer", "null"], "description": "Max results (default 20)."}
                 }
             }
         }
@@ -4054,6 +4132,47 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "message": msg
             }
 
+        elif tool_name == "generate_payment_qr":
+            args = GeneratePaymentQrArgs(**arguments)
+            from core.payment_engine import create_and_dispatch_payment_request
+            res = await create_and_dispatch_payment_request(
+                sender_chat_id=chat_id,
+                amount=args.amount,
+                note=args.note or "Payment",
+                payer_handle=args.payer_handle,
+                upi_id=args.upi_id
+            )
+            return res
+
+        elif tool_name == "settle_payment_request":
+            args = SettlePaymentRequestArgs(**arguments)
+            from core.payment_engine import settle_and_notify_payment
+            res = await settle_and_notify_payment(
+                ref_id=args.ref_id,
+                sender_chat_id=chat_id,
+                payer_handle=args.payer_handle,
+                receipt_proof=args.receipt_proof
+            )
+            return res
+
+        elif tool_name == "set_user_upi_id":
+            args = SetUserUpiIdArgs(**arguments)
+            ok, msg = db.set_user_upi_id(chat_id, args.upi_id)
+            return {
+                "status": "success" if ok else "error",
+                "upi_id": args.upi_id,
+                "message": msg
+            }
+
+        elif tool_name == "list_payment_requests":
+            args = ListPaymentRequestsArgs(**arguments)
+            items = db.list_payment_requests(chat_id, status=args.status, limit=args.limit or 20)
+            return {
+                "status": "success",
+                "count": len(items),
+                "payment_requests": items
+            }
+
         elif tool_name == "check_integrations_status":
             args = CheckIntegrationsStatusArgs(**arguments)
             s_key = (args.service or "").strip().lower()
@@ -5276,7 +5395,8 @@ CORE_TOOL_NAMES = {
     "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "set_user_preference", "ask_user", "learn_user_correction",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "create_calendar_event", "schedule_event",
     "search_web", "find_nearby_places",
-    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number",
+    "generate_payment_qr", "settle_payment_request", "set_user_upi_id"
 }
 
 # Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
@@ -5286,6 +5406,10 @@ TOOL_GROUPS = {
     "communication_mentions": {
         "description": "mention contact message telegram dispatch targeted directive tag user send task notify phone number direct work ui design link unlink phone remove",
         "tools": {"send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"}
+    },
+    "payment_upi_qr": {
+        "description": "upi qr code payment pay paisa rupaye money request generate dynamic qr scan pay settlement settle received paid utr invoice",
+        "tools": {"generate_payment_qr", "settle_payment_request", "set_user_upi_id", "list_payment_requests"}
     },
     "developer_github": {
         "description": "git github repository commit pull request source code file branch issue readme programming",
@@ -5384,7 +5508,8 @@ _BUDGET_ESSENTIAL_TOOLS = {
     "search_user_emails", "send_email",
     "save_contact", "get_contact", "list_contacts",
     "check_integrations_status",
-    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number",
+    "generate_payment_qr", "settle_payment_request", "set_user_upi_id"
 }
 
 

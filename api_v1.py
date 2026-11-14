@@ -11,6 +11,7 @@ import httpx
 from fastapi import APIRouter, Request, Response, Header, HTTPException, UploadFile, File, Form, Depends, Query
 from pydantic import BaseModel, Field
 
+import db
 from db import (
     engine, text, ensure_user, has_consent, give_consent,
     get_persona, set_persona, get_categories, set_categories,
@@ -2690,6 +2691,74 @@ async def download_generated_artifact(
         media_type=mime_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ==========================================
+# UPI PAYMENT & SETTLEMENT WEBHOOK API
+# ==========================================
+
+class ConfirmPaymentBody(BaseModel):
+    receipt_proof: Optional[str] = None
+    utr: Optional[str] = None
+
+
+@router.get("/payments/{ref_id}", summary="Check status of a payment request")
+async def get_payment_status(ref_id: str):
+    """Inspects payment invoice and fulfillment state."""
+    req = db.get_payment_request(ref_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Payment request not found")
+    return {"status": "ok", "payment": req}
+
+
+@router.post("/payments/{ref_id}/confirm", summary="Confirm & settle a payment request")
+async def confirm_payment_request_endpoint(
+    ref_id: str,
+    body: Optional[ConfirmPaymentBody] = None
+):
+    """Settles a payment request and dispatches real-time Telegram notifications to payee and payer."""
+    from core.payment_engine import settle_and_notify_payment
+    proof = (body.utr if body and body.utr else (body.receipt_proof if body else None))
+    res = await settle_and_notify_payment(ref_id=ref_id, verified_by="api_webhook", receipt_proof=proof)
+    if res.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Payment request not found")
+    return res
+
+
+@router.post("/payments/webhook", summary="Inbound payment aggregator / bank webhook")
+async def inbound_payment_webhook(request: Request):
+    """
+    Receives automated payment confirmation webhooks from payment gateways
+    or external bank listeners, settles the invoice, and notifies users.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    ref_id = None
+    proof = None
+
+    # Standard formats
+    if isinstance(payload, dict):
+        # Format 1: Direct Peculiar AI webhook
+        ref_id = payload.get("ref_id") or payload.get("reference_id")
+        proof = payload.get("utr") or payload.get("payment_id")
+
+        # Format 2: Razorpay webhook payload
+        if not ref_id and "payload" in payload:
+            pay_ent = payload.get("payload", {}).get("payment", {}).get("entity", {})
+            notes = pay_ent.get("notes", {})
+            ref_id = notes.get("ref_id")
+            proof = pay_ent.get("id")
+
+    if not ref_id:
+        return {"status": "ignored", "message": "No ref_id found in webhook payload."}
+
+    from core.payment_engine import settle_and_notify_payment
+    res = await settle_and_notify_payment(ref_id=ref_id, verified_by="gateway_webhook", receipt_proof=proof)
+    return res
+
 
 
 
