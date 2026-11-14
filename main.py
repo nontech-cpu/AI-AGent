@@ -331,14 +331,33 @@ async def say(chat_id, text):
 
 
 
-async def send_file(chat_id, filename, content_bytes, caption, mime_type="application/octet-stream"):
+async def send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream"):
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
+
+    # If content_bytes is None and filename is an existing file path, read bytes
+    display_name = filename
+    if content_bytes is None:
+        if isinstance(filename, str) and os.path.exists(filename):
+            with open(filename, "rb") as f:
+                content_bytes = f.read()
+            display_name = os.path.basename(filename)
+        else:
+            raise ValueError(f"send_file requires content_bytes or an existing file path, got {filename}")
+    elif isinstance(filename, str):
+        display_name = os.path.basename(filename)
+
+    if not mime_type or mime_type == "application/octet-stream":
+        import mimetypes
+        guessed, _ = mimetypes.guess_type(display_name)
+        if guessed:
+            mime_type = guessed
+
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
         resp = await client.post(
             f"{API}/sendDocument",
             data={"chat_id": chat_id, "caption": (caption or "")[:1024]},
-            files={"document": (filename, content_bytes, mime_type)},
+            files={"document": (display_name, content_bytes, mime_type)},
         )
     payload = {}
     try:
@@ -3387,18 +3406,107 @@ async def process_photo(chat_id, photo_list, caption=""):
             await say(chat_id, "I couldn't extract details from that image. Please try another image or type.")
             return
 
+        from multimodal import LAST_DOWNLOADED_PHOTOS
+        photo_path = LAST_DOWNLOADED_PHOTOS.get(file_id, "")
+
         RECENT_DOCS[chat_id] = {
-            "filename": "Photo",
+            "filename": "Photo.jpg",
             "content": analysis,
+            "path": photo_path,
             "type": "image",
             "summary": analysis,
             "timestamp": timeutil.now(IST),
         }
         record_chat_turn(chat_id, "user", f"[Sent Photo] {caption or ''}")
-        record_chat_turn(chat_id, "assistant", analysis)
 
-        # Check caption for explicit commands
-        cap_low = (caption or "").lower()
+        try:
+            from state.active_context import set_active_document
+            set_active_document(chat_id, {
+                "filename": "Photo.jpg",
+                "content": analysis,
+                "path": photo_path,
+                "timestamp": timeutil.now(IST).isoformat(),
+            })
+        except Exception:
+            pass
+
+        # Case A: User sent photo WITHOUT an explicit caption
+        if not (caption and caption.strip()):
+            try:
+                r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")
+                if r.get("intent") == "save_item" and r.get("item"):
+                    item = r["item"]
+                    title = item.get("title") or "Bill / Expense"
+                    due_d = item.get("due_date") or ""
+                    amt = item.get("amount") or ""
+                    detail_lines = [f"• **Item:** {title}"]
+                    if due_d:
+                        detail_lines.append(f"• **Due Date:** {due_d}")
+                    if amt:
+                        detail_lines.append(f"• **Amount:** ₹{amt}")
+                    detail_str = "\n".join(detail_lines)
+
+                    PENDING_GOOGLE_ACTIONS[chat_id] = {
+                        "kind": "save_item",
+                        "item": item,
+                        "created_at": timeutil.now(IST)
+                    }
+                    confirm_msg = (
+                        f"🖼️ Maine aapke image se ye details note ki hain:\n\n"
+                        f"{detail_str}\n\n"
+                        f"👉 **Kya main iska reminder schedule kar du, ya is document se related kuch aur save/janna hai?**\n"
+                        f"*(Bataiye: 'haan / schedule kar do' ya kisi contact ko bhejna hai)* 😊"
+                    )
+                    record_chat_turn(chat_id, "assistant", confirm_msg)
+                    await say_raw(chat_id, confirm_msg)
+                    return
+
+                elif r.get("intent") == "create_meeting":
+                    m_title = r.get("title") or "Meeting"
+                    m_start = r.get("start_iso") or ""
+                    PENDING_GOOGLE_ACTIONS[chat_id] = {
+                        "kind": "create_meeting",
+                        "title": m_title,
+                        "start_iso": m_start,
+                        "duration_minutes": r.get("duration_minutes", 30),
+                        "attendees": r.get("attendees", []),
+                        "created_at": timeutil.now(IST)
+                    }
+                    confirm_msg = (
+                        f"🖼️ Maine aapke image se meeting details note ki hain:\n\n"
+                        f"• **Title:** {m_title}\n"
+                        f"• **Time:** {m_start}\n\n"
+                        f"👉 **Kya main ye meeting Google Calendar me schedule kar du?** ('haan / schedule kar do' bolein) 😊"
+                    )
+                    record_chat_turn(chat_id, "assistant", confirm_msg)
+                    await say_raw(chat_id, confirm_msg)
+                    return
+            except Exception as e_und:
+                print("photo understand error:", repr(e_und))
+
+            user_lang = get_language(chat_id)
+            if user_lang == "hi":
+                photo_ack = (
+                    "🖼️ Maine aapka image analyze kar liya hai.\n\n"
+                    "Aap iske saath kya karna chahte hain?\n"
+                    "• Kisi contact ko bhejna (jaise `@handle ko bhej do`)\n"
+                    "• Isme se text, details ya summary nikalna\n"
+                    "• Reminder schedule karna ya note save karna"
+                )
+            else:
+                photo_ack = (
+                    "🖼️ I have analyzed your image.\n\n"
+                    "What would you like me to do with it?\n"
+                    "• Forward or share with a contact (e.g. *'Send to @handle'*)\n"
+                    "• Extract details or summary\n"
+                    "• Schedule a reminder or save as a note"
+                )
+            record_chat_turn(chat_id, "assistant", photo_ack)
+            await say_raw(chat_id, photo_ack)
+            return
+
+        # Case B: User sent photo WITH a prompt/caption
+        cap_low = caption.strip().lower()
         explicit_sched = any(w in cap_low for w in ("schedule", "reminder", "remind", "save", "laga do", "set kar", "add", "daal do", "bana do"))
         explicit_contact = any(w in cap_low for w in ("contact", "visiting card", "business card", "number save", "contact save"))
 
@@ -3430,76 +3538,28 @@ async def process_photo(chat_id, photo_list, caption=""):
             except Exception as card_err:
                 print("contact save from photo error:", repr(card_err))
 
-        try:
-            r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")
-            if explicit_sched:
+        if explicit_sched:
+            try:
+                r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")
                 if r.get("intent") == "save_item" and r.get("item"):
                     await save_item_flow(chat_id, r["item"])
                     return
                 elif r.get("intent") == "create_meeting":
                     await prepare_google_action(chat_id, r)
                     return
+            except Exception as sched_err:
+                print("photo sched error:", repr(sched_err))
 
-            # Single Natural, Conversational Response
-            if r.get("intent") == "save_item" and r.get("item"):
-                item = r["item"]
-                title = item.get("title") or "Bill / Expense"
-                due_d = item.get("due_date") or ""
-                amt = item.get("amount") or ""
-                detail_lines = [f"• **Item:** {title}"]
-                if due_d:
-                    detail_lines.append(f"• **Due Date:** {due_d}")
-                if amt:
-                    detail_lines.append(f"• **Amount:** ₹{amt}")
-                detail_str = "\n".join(detail_lines)
-
-                PENDING_GOOGLE_ACTIONS[chat_id] = {
-                    "kind": "save_item",
-                    "item": item,
-                    "created_at": timeutil.now(IST)
-                }
-                confirm_msg = (
-                    f"Maine aapke photo se ye details extract ki hain:\n\n"
-                    f"{detail_str}\n\n"
-                    f"👉 **Kya main iska reminder schedule kar du, ya is document se related kuch aur save/janna hai?**\n"
-                    f"*(Bataiye: 'haan / schedule kar do', 'Notion me save karo', ya 'summary batao')* 😊"
-                )
-                record_chat_turn(chat_id, "assistant", confirm_msg)
-                await say_raw(chat_id, confirm_msg)
-                return
-
-            elif r.get("intent") == "create_meeting":
-                m_title = r.get("title") or "Meeting"
-                m_start = r.get("start_iso") or ""
-                PENDING_GOOGLE_ACTIONS[chat_id] = {
-                    "kind": "create_meeting",
-                    "title": m_title,
-                    "start_iso": m_start,
-                    "duration_minutes": r.get("duration_minutes", 30),
-                    "attendees": r.get("attendees", []),
-                    "created_at": timeutil.now(IST)
-                }
-                confirm_msg = (
-                    f"Maine aapke image se meeting details extract ki hain:\n\n"
-                    f"• **Title:** {m_title}\n"
-                    f"• **Time:** {m_start}\n\n"
-                    f"👉 **Kya main ye meeting Google Calendar me schedule kar du?** ('haan / schedule kar do' bolein) 😊"
-                )
-                record_chat_turn(chat_id, "assistant", confirm_msg)
-                await say_raw(chat_id, confirm_msg)
-                return
-
-            # General Image
-            single_msg = (
-                f"🖼️ **Photo Summary:**\n\n{analysis}\n\n"
-                f"👉 **Aap is photo se related kya karna chahte hain?** (Jaise note banana, summary save karna, ya koi sawaal poochna — bataiye main kar dunga) 😊"
-            )
-            record_chat_turn(chat_id, "assistant", single_msg)
-            await say_raw(chat_id, single_msg)
-            return
-
-        except Exception as exc:
-            print("photo intent error:", repr(exc))
+        agent_prompt = (
+            f"User uploaded photo.\n"
+            f"[Attachment Available: filename='Photo.jpg', path='{photo_path}']\n\n"
+            f"--- Image Analysis Details ---\n"
+            f"{analysis[:3000]}\n"
+            f"--- End Image Analysis ---\n\n"
+            f"User instruction: {caption.strip()}"
+        )
+        await handle_active(chat_id, agent_prompt)
+        return
 
     except Exception as e:
         print("photo processing error:", repr(e))
@@ -3530,9 +3590,11 @@ async def process_document(chat_id, doc, caption=""):
             return
 
         text_content = res.get("text", "")
+        file_path = res.get("file_path", "")
         RECENT_DOCS[chat_id] = {
             "filename": file_name,
             "content": text_content,
+            "path": file_path,
             "type": "document",
             "summary": "",
             "timestamp": timeutil.now(IST),
@@ -3544,6 +3606,7 @@ async def process_document(chat_id, doc, caption=""):
             set_active_document(chat_id, {
                 "filename": file_name,
                 "content": text_content,
+                "path": file_path,
                 "timestamp": timeutil.now(IST).isoformat(),
             })
         except Exception as act_err:
@@ -3551,7 +3614,8 @@ async def process_document(chat_id, doc, caption=""):
 
         if caption.strip():
             agent_prompt = (
-                f"User uploaded document '{file_name}'.\n\n"
+                f"User uploaded document '{file_name}'.\n"
+                f"[Attachment Available: filename='{file_name}', path='{file_path}']\n\n"
                 f"--- Extracted Document Content (first 5000 chars) ---\n"
                 f"{text_content[:5000]}\n"
                 f"--- End Document Content ---\n\n"
@@ -3560,54 +3624,27 @@ async def process_document(chat_id, doc, caption=""):
             await handle_active(chat_id, agent_prompt)
             return
 
-        summary = await summarize_document_content(file_name, text_content, caption, get_language(chat_id))
-        RECENT_DOCS[chat_id]["summary"] = summary
-
-        is_bill_or_invoice = False
-        try:
-            low_text = text_content[:2000].lower()
-            cap_low = (caption or "").lower()
-            explicit_sched = any(w in cap_low for w in ("schedule", "reminder", "remind", "save", "laga do", "set kar", "add", "daal do", "bana do"))
-            if any(w in low_text for w in ("due date", "bill amount", "total due", "amount payable", "invoice amount", "बिजली", "बिल")):
-                r = await understand(f"This document might be a bill or invoice: {text_content[:800]}")
-                if r.get("intent") == "save_item" and r.get("item"):
-                    item = r["item"]
-                    if explicit_sched:
-                        await say_raw(chat_id, summary)
-                        await save_item_flow(chat_id, item)
-                        return
-                    else:
-                        title = item.get("title") or "Bill / Invoice"
-                        due_d = item.get("due_date") or ""
-                        amt = item.get("amount") or ""
-                        detail_lines = [f"• **Title:** {title}"]
-                        if due_d:
-                            detail_lines.append(f"• **Due Date:** {due_d}")
-                        if amt:
-                            detail_lines.append(f"• **Amount:** ₹{amt}")
-                        detail_str = "\n".join(detail_lines)
-
-                        PENDING_GOOGLE_ACTIONS[chat_id] = {
-                            "kind": "save_item",
-                            "item": item,
-                            "created_at": timeutil.now(IST)
-                        }
-                        combined_msg = (
-                            f"{summary}\n\n"
-                            f"Maine aapke document se bill details extract ki hain:\n"
-                            f"{detail_str}\n\n"
-                            f"👉 **Kya main iska reminder schedule kar du, ya is document se related kuch aur save/janna hai?** "
-                            f"('haan / schedule kar do' ya 'summary save karo' bolein) 😊"
-                        )
-                        record_chat_turn(chat_id, "assistant", combined_msg)
-                        await say_raw(chat_id, combined_msg)
-                        is_bill_or_invoice = True
-        except Exception as exc:
-            print("doc reminder check error:", repr(exc))
-
-        if not is_bill_or_invoice:
-            record_chat_turn(chat_id, "assistant", summary)
-            await say_raw(chat_id, summary)
+        # Clean acknowledgment when user sends document without a caption (no unsolicited text dumps)
+        user_lang = get_language(chat_id)
+        if user_lang == "hi":
+            ack_msg = (
+                f"📄 Maine aapka document **{file_name}** analyze kar liya hai.\n\n"
+                f"Aap iske saath kya karna chahte hain?\n"
+                f"• Kisi contact ko bhejna (jaise `@handle ko bhej do`)\n"
+                f"• Summary ya main points nikalna\n"
+                f"• Reminder schedule karna ya save karna"
+            )
+        else:
+            ack_msg = (
+                f"📄 I have analyzed your document **{file_name}**.\n\n"
+                f"What would you like me to do with it?\n"
+                f"• Forward to a contact (e.g. *'Send this to @handle'*)\n"
+                f"• Summarize key points or extract details\n"
+                f"• Schedule a reminder or save it"
+            )
+        record_chat_turn(chat_id, "assistant", ack_msg)
+        await say_raw(chat_id, ack_msg)
+        return
 
     except Exception as e:
         print("document processing error:", repr(e))

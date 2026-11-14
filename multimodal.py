@@ -9,12 +9,14 @@ load_dotenv()
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 VISION_MODEL = "qwen/qwen3.8-27b"
 
+LAST_DOWNLOADED_PHOTOS: dict[str, str] = {}
+
 
 async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
     """
-    Downloads a file from Telegram by file_id strictly into memory.
-    Returns (file_bytes, file_path).
-    Never writes to local disk.
+    Downloads a file from Telegram by file_id.
+    Persists to static/uploads/telegram/ for local attachments and tools.
+    Returns (file_bytes, local_file_path).
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -31,14 +33,29 @@ async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
         if not data.get("ok") or "result" not in data:
             raise RuntimeError(f"Failed to getFile from Telegram: {data}")
 
-        file_path = data["result"]["file_path"]
+        remote_file_path = data["result"]["file_path"]
 
         # Step 2: download bytes
         file_resp = await client.get(
-            f"https://api.telegram.org/file/bot{token}/{file_path}"
+            f"https://api.telegram.org/file/bot{token}/{remote_file_path}"
         )
         file_resp.raise_for_status()
-        return file_resp.content, file_path
+        content = file_resp.content
+
+        # Persist downloaded file to disk for forwarding / attachments / tools
+        upload_dir = os.path.abspath(os.path.join("static", "uploads", "telegram"))
+        os.makedirs(upload_dir, exist_ok=True)
+        raw_name = os.path.basename(remote_file_path)
+        safe_name = "".join(c for c in raw_name if c.isalnum() or c in "._-") or "file.bin"
+        local_saved_path = os.path.join(upload_dir, f"{file_id}_{safe_name}")
+        try:
+            with open(local_saved_path, "wb") as f:
+                f.write(content)
+        except Exception as write_err:
+            print(f"[multimodal] Warning: could not persist file to disk: {write_err}")
+            local_saved_path = remote_file_path
+
+        return content, local_saved_path
 
 
 async def analyze_image_with_groq(image_bytes: bytes, caption: str = "") -> str:
@@ -172,7 +189,9 @@ async def process_telegram_photo(file_id: str, caption: str = "") -> str:
     Full pipeline for Telegram photo:
     Download -> Vision LLM -> Actionable text summary
     """
-    img_bytes, _ = await download_telegram_file(file_id)
+    img_bytes, local_path = await download_telegram_file(file_id)
+    if local_path and os.path.exists(local_path):
+        LAST_DOWNLOADED_PHOTOS[file_id] = local_path
     return await analyze_image_with_groq(img_bytes, caption)
 
 
@@ -181,12 +200,24 @@ async def process_telegram_document(
     file_name: str,
     mime_type: str,
     caption: str = "",
-) -> str:
+) -> dict:
     """
     Full pipeline for Telegram document (PDF, text, image, etc.):
     Download -> In-memory parse -> Actionable summary
     """
-    file_bytes, _ = await download_telegram_file(file_id)
+    file_bytes, local_path = await download_telegram_file(file_id)
+    if not (isinstance(local_path, str) and os.path.exists(local_path)):
+        upload_dir = os.path.abspath(os.path.join("static", "uploads", "telegram"))
+        os.makedirs(upload_dir, exist_ok=True)
+        safe_fname = "".join(c for c in (file_name or "doc.bin") if c.isalnum() or c in "._-") or "doc.bin"
+        persisted_path = os.path.join(upload_dir, f"{file_id}_{safe_fname}")
+        try:
+            with open(persisted_path, "wb") as pf:
+                pf.write(file_bytes)
+            local_path = persisted_path
+        except Exception as w_err:
+            print("[multimodal] Could not persist document locally:", repr(w_err))
+
     lower_name = (file_name or "").lower()
     lower_mime = (mime_type or "").lower()
 
@@ -197,12 +228,14 @@ async def process_telegram_document(
             return {
                 "file_name": file_name,
                 "text": "",
+                "file_path": local_path,
                 "is_empty": True,
                 "error": f"I received '{file_name}', but it seems to contain scanned images without selectable text."
             }
         return {
             "file_name": file_name,
             "text": text,
+            "file_path": local_path,
             "is_empty": False,
             "error": None
         }
@@ -215,6 +248,7 @@ async def process_telegram_document(
         return {
             "file_name": file_name,
             "text": analysis,
+            "file_path": local_path,
             "is_image": True,
             "is_empty": False,
             "error": None
@@ -239,6 +273,7 @@ async def process_telegram_document(
         return {
             "file_name": file_name,
             "text": content,
+            "file_path": local_path,
             "is_empty": False,
             "error": None
         }
@@ -247,6 +282,7 @@ async def process_telegram_document(
     return {
         "file_name": file_name,
         "text": "",
+        "file_path": local_path,
         "is_empty": True,
         "error": f"Received file '{file_name}' ({mime_type or 'unknown format'}). I can read PDFs, text documents, and images."
     }

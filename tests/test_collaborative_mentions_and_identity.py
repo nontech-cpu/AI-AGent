@@ -424,5 +424,121 @@ def test_api_phone_link_and_unlink_endpoints():
     assert res_unl.json()["status"] == "success"
 
 
+# =============================================================================
+# 7. Media Ingestion & Attachment Forwarding Tests
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_mention_dispatch_delivers_file_attachment():
+    import os
+    from core import timeutil
+    from core.timeutil import IST
+    db._init_mentions_and_dispatches_tables()
+    sender_chat = 99881140
+    recip_chat = 99881141
+    db.ensure_user(sender_chat)
+    db.ensure_user(recip_chat)
+    db.claim_username(sender_chat, "nirav_sender")
+    db.set_user_phone_number(recip_chat, "9549408914")
+
+    test_dir = os.path.abspath(os.path.join("static", "uploads", "telegram"))
+    os.makedirs(test_dir, exist_ok=True)
+    file_path = os.path.join(test_dir, "test_resignation.pdf")
+    with open(file_path, "wb") as f:
+        f.write(b"%PDF-1.4 test dummy resignation document bytes")
+
+    from main import RECENT_DOCS
+    RECENT_DOCS[sender_chat] = {
+        "filename": "resignation.pdf",
+        "content": "Resignation letter text",
+        "path": file_path,
+        "type": "document",
+        "timestamp": timeutil.now(IST)
+    }
+
+    sent_files = []
+    sent_texts = []
+
+    async def mock_send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream"):
+        sent_files.append({"chat_id": chat_id, "filename": filename, "bytes": content_bytes, "caption": caption})
+
+    async def mock_send_text(chat_id, text):
+        sent_texts.append({"chat_id": chat_id, "text": text})
+
+    with patch("main.send_file", side_effect=mock_send_file), \
+         patch("main.send_telegram_text", side_effect=mock_send_text):
+        res = await execute_targeted_mentions_dispatch(sender_chat, "@9549408914 Here is the resignation document.")
+
+    assert res.status == "success"
+    assert len(sent_texts) == 1
+    assert sent_texts[0]["chat_id"] == recip_chat
+    assert "Here is the resignation document" in sent_texts[0]["text"]
+
+    assert len(sent_files) == 1
+    assert sent_files[0]["chat_id"] == recip_chat
+    assert sent_files[0]["filename"] == "resignation.pdf"
+    assert sent_files[0]["bytes"] == b"%PDF-1.4 test dummy resignation document bytes"
+
+
+@pytest.mark.asyncio
+async def test_document_upload_without_caption_prompts_clean_inquiry():
+    chat_id = 99881142
+    db.ensure_user(chat_id)
+
+    sent_messages = []
+    async def mock_say(cid, text):
+        sent_messages.append(text)
+
+    doc_payload = {
+        "file_id": "doc_file_123",
+        "file_name": "Quarterly_Report.pdf",
+        "mime_type": "application/pdf"
+    }
+
+    with patch("main.process_telegram_document", new_callable=AsyncMock) as mock_ptd, \
+         patch("main.say_raw", side_effect=mock_say), \
+         patch("main.say", side_effect=mock_say):
+
+        mock_ptd.return_value = {
+            "file_name": "Quarterly_Report.pdf",
+            "text": "Extensive 50 page report contents with tons of raw text...",
+            "file_path": "/fake/path/Quarterly_Report.pdf",
+            "is_empty": False
+        }
+
+        from main import process_document
+        await process_document(chat_id, doc_payload, caption="")
+
+    raw_responses = " ".join(sent_messages)
+    assert "Quarterly_Report.pdf" in raw_responses
+    assert "Extensive 50 page report contents" not in raw_responses
+    assert any(w in raw_responses.lower() for w in ("analyze", "karna chahte", "what would you like"))
+
+
+@pytest.mark.asyncio
+async def test_photo_upload_without_caption_prompts_clean_inquiry():
+    chat_id = 99881143
+    db.ensure_user(chat_id)
+
+    sent_messages = []
+    async def mock_say(cid, text):
+        sent_messages.append(text)
+
+    photos = [{"file_id": "photo_123"}]
+
+    with patch("main.process_telegram_photo", new_callable=AsyncMock) as mock_ptp, \
+         patch("main.say_raw", side_effect=mock_say), \
+         patch("main.say", side_effect=mock_say):
+
+        mock_ptp.return_value = "Detailed analysis of receipt with ₹5,000 electricity bill and 10 item breakdown..."
+
+        from main import process_photo
+        await process_photo(chat_id, photos, caption="")
+
+    raw_responses = " ".join(sent_messages)
+    assert "Detailed analysis of receipt with ₹5,000 electricity bill" not in raw_responses
+    assert any(w in raw_responses.lower() for w in ("analyze", "karna chahte", "what would you like"))
+
+
 
 
