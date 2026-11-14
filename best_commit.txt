@@ -1,6 +1,6 @@
-BEST_COMMIT_HASH=55bdeaa34d4893c010b8b36f333ca7e8080b136f
-SHORT_HASH=55bdeaa
-DATE=2026-11-07 22:42:04 +0530
-TITLE=docs(rules): codify non-negotiable zero-deletion and zero-regex preservation policies
-BASE_STABLE_CODE=8ee5e59
-ROLLBACK_COMMAND=git reset --hard 55bdeaa34d4893c010b8b36f333ca7e8080b136f
+BEST_COMMIT_HASH=3f77b93e1fd4f9ee0164682e6921e36ab194eebc
+SHORT_HASH=3f77b93
+DATE=2026-11-14 12:45:23 +0530
+TITLE=fix(mentions): implement cloud-native file_id document delivery and active context persistence
+BASE_STABLE_CODE=3f77b93
+ROLLBACK_COMMAND=git reset --hard 3f77b93e1fd4f9ee0164682e6921e36ab194eebc
