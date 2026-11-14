@@ -140,15 +140,18 @@ async def create_and_dispatch_payment_request(
     note: str,
     payer_handle: Optional[str] = None,
     upi_id: Optional[str] = None,
-    sender_name: Optional[str] = None
+    sender_name: Optional[str] = None,
+    due_date: Optional[str] = None,
+    due_time: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Executes full Payment QR lifecycle:
     1. Resolves payee UPI ID and display name.
     2. Builds NPCI URI and renders card PNG.
-    3. Persists to payment_requests table.
-    4. Automatically sends QR card to sender.
-    5. If payer is mentioned (@handle/phone), dispatches invoice and QR to payer's chat.
+    3. If due_date is in the future, smartly schedules collection reminder without spamming payer today.
+    4. Persists to payment_requests table.
+    5. Sends QR card to sender.
+    6. If immediate and payer is mentioned (@handle/phone), dispatches invoice and QR to payer's chat.
     """
     cid = db.canonical_chat_id(sender_chat_id)
     
@@ -213,14 +216,25 @@ async def create_and_dispatch_payment_request(
     # 5. Resolve Payer Identity (if provided)
     payer_chat_id = None
     payer_profile = None
+    payer_display = payer_handle or "Contact"
     if payer_handle:
         try:
             from core.mentions_engine import resolve_recipient_identity
             payer_profile = resolve_recipient_identity(cid, payer_handle)
-            if payer_profile and payer_profile.telegram_chat_id:
-                payer_chat_id = payer_profile.telegram_chat_id
+            if payer_profile:
+                payer_display = f"@{payer_profile.handle}" if payer_profile.handle else payer_profile.display_name
+                if payer_profile.telegram_chat_id:
+                    payer_chat_id = payer_profile.telegram_chat_id
         except Exception as p_err:
             logger.warning(f"Error resolving payer identity for {payer_handle}: {p_err}")
+
+    # Check future due_date scheduling
+    is_future_scheduled = False
+    today_iso = timeutil.now(IST).strftime("%Y-%m-%d")
+    if due_date and due_date.strip() > today_iso:
+        is_future_scheduled = True
+
+    init_status = "scheduled" if is_future_scheduled else "pending"
 
     # 6. Record in Database Ledger
     db.create_payment_request(
@@ -230,19 +244,38 @@ async def create_and_dispatch_payment_request(
         payee_name=p_name,
         amount=amount,
         note=note,
-        payer_handle=payer_handle,
+        payer_handle=payer_display,
         payer_chat_id=payer_chat_id,
-        qr_file_path=qr_path
+        qr_file_path=qr_path,
+        status=init_status,
+        due_date=due_date,
+        due_time=due_time
     )
+
+    # If scheduled in future, create a payment collection reminder in memory_items
+    if is_future_scheduled:
+        rem_title = f"Collect Payment ₹{amount:,.2f} from {payer_display} for '{note}' (Ref: {ref_id})"
+        try:
+            db.save_memory(
+                chat_id=cid,
+                category="reminders",
+                title=rem_title,
+                amount=amount,
+                due_date=due_date,
+                due_time=due_time or "10:00:00"
+            )
+        except Exception as rem_err:
+            logger.warning(f"Error saving scheduled payment reminder: {rem_err}")
 
     # 7. Dispatch to Creator
     from main import send_file, send_telegram_text
+    sched_note = f"\n🗓️ **Due Date:** {due_date} (Scheduled — payer will be requested on {due_date})" if is_future_scheduled else ""
     creator_caption = (
         f"📸 **Dynamic UPI QR Code Generated!**\n\n"
         f"💰 **Amount:** ₹{amount:,.2f}\n"
         f"👤 **Payee:** {p_name} (`{resolved_upi}`)\n"
         f"📝 **Purpose:** {note}\n"
-        f"🔖 **Ref ID:** `{ref_id}`\n\n"
+        f"🔖 **Ref ID:** `{ref_id}`{sched_note}\n\n"
         f"📲 **Direct UPI Link:**\n`{upi_url}`"
     )
     try:
@@ -256,9 +289,9 @@ async def create_and_dispatch_payment_request(
     except Exception as exc:
         logger.error(f"Failed sending QR card to creator {cid}: {exc}")
 
-    # 8. Dispatch to Payer (if linked on Telegram)
+    # 8. Dispatch to Payer ONLY if not future-scheduled
     payer_notified = False
-    if payer_chat_id and payer_chat_id != cid:
+    if not is_future_scheduled and payer_chat_id and payer_chat_id != cid:
         payer_caption = (
             f"💸 **Payment Request from {p_name}:**\n\n"
             f"💰 **Amount Due:** ₹{amount:,.2f}\n"
@@ -280,10 +313,16 @@ async def create_and_dispatch_payment_request(
         except Exception as p_tg_err:
             logger.error(f"Failed sending QR invoice to payer {payer_chat_id}: {p_tg_err}")
 
-    summary_msg = (
-        f"✅ Dynamic UPI QR Code for ₹{amount:,.2f} created successfully (Ref: `{ref_id}`). "
-        + (f"Invoice and QR also sent directly to {payer_handle}!" if payer_notified else "")
-    )
+    if is_future_scheduled:
+        summary_msg = (
+            f"📅 Dynamic UPI QR Code for ₹{amount:,.2f} created and **scheduled for {due_date}** (Ref: `{ref_id}`). "
+            f"{payer_display} ko abhi disturb nahi kiya gaya hai; {due_date} ko bot unhe automatically payment reminder bhej dega!"
+        )
+    else:
+        summary_msg = (
+            f"✅ Dynamic UPI QR Code for ₹{amount:,.2f} created successfully (Ref: `{ref_id}`). "
+            + (f"Invoice and QR also sent directly to {payer_display}!" if payer_notified else "")
+        )
 
     return {
         "status": "success",
@@ -294,6 +333,8 @@ async def create_and_dispatch_payment_request(
         "note": note,
         "upi_url": upi_url,
         "qr_file_path": qr_path,
+        "due_date": due_date,
+        "is_scheduled": is_future_scheduled,
         "payer_notified": payer_notified,
         "summary": summary_msg
     }

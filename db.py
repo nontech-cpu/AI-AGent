@@ -4196,9 +4196,13 @@ def _init_payment_tables():
                         status VARCHAR(32) DEFAULT 'pending',
                         receipt_proof TEXT,
                         qr_file_path TEXT,
+                        due_date VARCHAR(32),
+                        due_time VARCHAR(32),
                         created_at TIMESTAMPTZ DEFAULT NOW(),
                         completed_at TIMESTAMPTZ
                     );
+                    ALTER TABLE payment_requests ADD COLUMN IF NOT EXISTS due_date VARCHAR(32);
+                    ALTER TABLE payment_requests ADD COLUMN IF NOT EXISTS due_time VARCHAR(32);
                     CREATE INDEX IF NOT EXISTS idx_payment_requests_ref ON payment_requests (ref_id);
                     CREATE INDEX IF NOT EXISTS idx_payment_requests_creator ON payment_requests (creator_chat_id, status);
                     CREATE INDEX IF NOT EXISTS idx_payment_requests_payer ON payment_requests (payer_chat_id, status);
@@ -4223,10 +4227,20 @@ def _init_payment_tables():
                         status TEXT DEFAULT 'pending',
                         receipt_proof TEXT,
                         qr_file_path TEXT,
+                        due_date TEXT,
+                        due_time TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         completed_at TIMESTAMP
                     );
                 """))
+                try:
+                    conn.execute(text("ALTER TABLE payment_requests ADD COLUMN due_date TEXT;"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE payment_requests ADD COLUMN due_time TEXT;"))
+                except Exception:
+                    pass
                 try:
                     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payment_requests_ref ON payment_requests (ref_id);"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payment_requests_creator ON payment_requests (creator_chat_id, status);"))
@@ -4279,9 +4293,12 @@ def create_payment_request(
     note: str,
     payer_handle: Optional[str] = None,
     payer_chat_id: Optional[int] = None,
-    qr_file_path: Optional[str] = None
+    qr_file_path: Optional[str] = None,
+    status: str = "pending",
+    due_date: Optional[str] = None,
+    due_time: Optional[str] = None
 ) -> str:
-    """Inserts a new pending payment request invoice."""
+    """Inserts a new payment request invoice."""
     _init_payment_tables()
     cid = canonical_chat_id(creator_chat_id)
     with engine.begin() as conn:
@@ -4289,10 +4306,12 @@ def create_payment_request(
             text("""
                 INSERT INTO payment_requests (
                     ref_id, creator_chat_id, payer_handle, payer_chat_id,
-                    upi_id, payee_name, amount, note, status, qr_file_path
+                    upi_id, payee_name, amount, note, status, qr_file_path,
+                    due_date, due_time
                 ) VALUES (
                     :ref, :c_cid, :p_h, :p_cid,
-                    :upi, :p_name, :amt, :nt, 'pending', :qr
+                    :upi, :p_name, :amt, :nt, :st, :qr,
+                    :d_d, :d_t
                 )
             """),
             {
@@ -4304,7 +4323,10 @@ def create_payment_request(
                 "p_name": payee_name,
                 "amt": amount,
                 "nt": note,
-                "qr": qr_file_path
+                "st": status,
+                "qr": qr_file_path,
+                "d_d": due_date,
+                "d_t": due_time
             }
         )
     return ref_id
@@ -4318,7 +4340,7 @@ def get_payment_request(ref_id: str) -> Optional[Dict[str, Any]]:
             text("""
                 SELECT id, ref_id, creator_chat_id, payer_handle, payer_chat_id,
                        upi_id, payee_name, amount, currency, note, status,
-                       receipt_proof, qr_file_path, created_at, completed_at
+                       receipt_proof, qr_file_path, due_date, due_time, created_at, completed_at
                 FROM payment_requests WHERE ref_id = :r
             """),
             {"r": ref_id}

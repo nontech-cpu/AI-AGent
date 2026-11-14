@@ -151,6 +151,41 @@ async def test_create_and_dispatch_payment_request_and_settle():
         assert "settled" in (rahul_contact.get("commitments") or "").lower()
 
 
+@pytest.mark.asyncio
+async def test_future_scheduled_payment_does_not_disturb_payer_today():
+    sender_chat = 77119900
+    payer_chat = 77119911
+
+    db.ensure_user(sender_chat)
+    db.set_user_upi_id(sender_chat, "nirav@paytm")
+    db.ensure_user(payer_chat)
+    db.claim_username(payer_chat, "devender_friend")
+
+    with patch("main.send_file", new_callable=AsyncMock) as mock_send_file:
+        mock_send_file.return_value = {"ok": True}
+
+        # Request payment collection for a future date (2026-12-01)
+        res = await create_and_dispatch_payment_request(
+            sender_chat_id=sender_chat,
+            amount=750.0,
+            note="Dinner Bill",
+            payer_handle="@devender_friend",
+            due_date="2026-12-01"
+        )
+
+        assert res["status"] == "success"
+        assert res["is_scheduled"] is True
+        assert res["payer_notified"] is False  # Payer is NOT disturbed today!
+        # QR is sent only to the sender for their confirmation
+        assert mock_send_file.call_count == 1
+
+        # Check DB state
+        req = db.get_payment_request(res["ref_id"])
+        assert req["status"] == "scheduled"
+        assert req["due_date"] == "2026-12-01"
+
+
+
 def test_api_payment_endpoints():
     from main import app
     client = TestClient(app)

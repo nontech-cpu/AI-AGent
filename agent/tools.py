@@ -320,6 +320,8 @@ class GeneratePaymentQrArgs(BaseModel):
     note: str = Field("Payment", description="Purpose or description of the payment (e.g. 'Dinner contribution' or 'Project Advance').")
     payer_handle: Optional[str] = Field(None, description="Optional recipient @username, phone number, or contact name who owes the money (e.g. '@9461089998' or '@rahul').")
     upi_id: Optional[str] = Field(None, description="Optional payee UPI ID to receive payment. Defaults to user's saved UPI ID.")
+    due_date: Optional[str] = Field(None, description="Optional future date (YYYY-MM-DD) when payment collection is due. When specified, bot schedules the request for that date instead of sending immediately today.")
+    due_time: Optional[str] = Field(None, description="Optional time (HH:MM:SS) on the due date.")
 
 class SettlePaymentRequestArgs(BaseModel):
     ref_id: Optional[str] = Field(None, description="Payment reference ID (e.g. 'PAY-20261114-A8B9C2'). If omitted, latest pending request is settled.")
@@ -4140,7 +4142,9 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 amount=args.amount,
                 note=args.note or "Payment",
                 payer_handle=args.payer_handle,
-                upi_id=args.upi_id
+                upi_id=args.upi_id,
+                due_date=args.due_date,
+                due_time=args.due_time
             )
             return res
 
