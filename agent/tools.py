@@ -5248,8 +5248,9 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         elif tool_name in ("search_web", "web_search"):
             q = arguments.get("query") or arguments.get("q") or ""
             n = arguments.get("num_results") or arguments.get("max_results") or 5
+            eng = arguments.get("prefer_engine") or arguments.get("engine")
             from utilities import search_web
-            res = await search_web(q, max_results=int(n))
+            res = await search_web(q, max_results=int(n), prefer_engine=eng)
             return res
 
         elif tool_name in ("read_webpage", "fetch_url"):

@@ -709,75 +709,179 @@ class _DDGLiteHTMLParser(HTMLParser):
             self._cur_snippet.append(data)
 
 
-async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
-    """
-    Performs autonomous live internet web search for real-world facts, current events,
-    travel tolls, routes, distances, news, places, and documentation.
-    Multi-engine architecture: Serper/Google Search API -> DDG Lite parser -> DDG HTML parser.
-    Strictly ground-truth, anti-hallucination.
-    """
-    clean_q = (query or "").strip()
-    if not clean_q:
-        return {
-            "status": "error",
-            "success": False,
-            "query": "",
-            "count": 0,
-            "results": [],
-            "message": "Search query cannot be empty."
-        }
+# ==============================================================================
+# 5. HYBRID WEB SEARCH ENGINE (Tavily AI-Native + Google Serper + DDG Fallback)
+# ==============================================================================
 
-    results = []
+def classify_search_intent(query: str) -> str:
+    """
+    Classifies search intent to route between Google/Serper and Tavily:
+    - 'local_places': Physical venues, cafes, shops, local directions, showroom locations.
+      Best served by Google/Serper due to Google Maps/Places knowledge graph.
+    - 'knowledge_research': Technical documentation, current news, factual questions,
+      comparisons, coding, general knowledge.
+      Best served by Tavily due to LLM-optimized parsing, clean text, and direct answers.
+    """
+    q_low = (query or "").lower().strip()
 
-    # 1. Primary: Google / Serper API if key is present
+    # 1. Obvious local venue & geographical navigation keywords
+    local_keywords = (
+        "near me", "nearby", "location", "address", "pincode", "pin code",
+        "restaurant", "restaurants", "cafe", "cafes", "hotel", "hotels",
+        "hospital", "hospitals", "clinic", "clinics", "pharmacy", "chemist",
+        "shopping mall", "malls", "showroom", "store", "stores", "outlet",
+        "metro station", "bus stand", "railway station", "airport",
+        "distance between", "distance from", "route to", "how far is",
+        "toll plaza", "highway"
+    )
+    if any(k in q_low for k in local_keywords):
+        return "local_places"
+
+    # 2. Major Indian cities combined with venue hints
+    indian_cities = (
+        "delhi", "mumbai", "bangalore", "bengaluru", "kolkata", "chennai", "hyderabad",
+        "pune", "ahmedabad", "jaipur", "jodhpur", "udaipur", "kota", "indore", "bhopal",
+        "lucknow", "kanpur", "nagpur", "patna", "chandigarh", "noida", "gurgaon", "gurugram"
+    )
+    venue_hints = ("in ", "at ", "near ", "best ", "top ", "famous ", "open now", "timings")
+    has_city = any(c in q_low for c in indian_cities)
+    has_venue_hint = any(vh in q_low for vh in venue_hints)
+    if has_city and has_venue_hint:
+        research_indicators = ("history", "population", "gdp", "who is", "what is", "why", "meaning", "wikipedia", "rules")
+        if not any(ri in q_low for ri in research_indicators):
+            return "local_places"
+
+    return "knowledge_research"
+
+
+async def _search_tavily(query: str, max_results: int = 5, search_depth: str = "basic") -> Optional[Dict[str, Any]]:
+    """
+    Queries Tavily AI Search API for clean, parsed LLM-ready content and direct synthesized answers.
+    """
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_key:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=9.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "api_key": tavily_key,
+                    "query": query,
+                    "search_depth": search_depth,
+                    "include_answer": True,
+                    "include_images": False,
+                    "max_results": max_results
+                }
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = []
+                for item in data.get("results", [])[:max_results]:
+                    t = (item.get("title") or "").strip()
+                    c = (item.get("content") or "").strip()
+                    u = (item.get("url") or "").strip()
+                    if t and (c or u):
+                        results.append({"title": t, "snippet": c, "url": u})
+
+                if results:
+                    return {
+                        "results": results,
+                        "answer": data.get("answer"),
+                        "engine": "tavily"
+                    }
+            elif resp.status_code == 429:
+                print("[utilities._search_tavily] Tavily rate limit (429) hit, falling back to secondary engine.")
+    except Exception as exc:
+        print("[utilities._search_tavily] Tavily API error:", repr(exc))
+    return None
+
+
+async def _search_serper(query: str, max_results: int = 5) -> Optional[Dict[str, Any]]:
+    """
+    Queries Google Serper API for live Google organic results and local places.
+    """
     serp_key = os.getenv("SERPER_API_KEY") or os.getenv("GOOGLE_SEARCH_API_KEY")
-    if serp_key:
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    "https://google.serper.dev/search",
-                    headers={"X-API-KEY": serp_key, "Content-Type": "application/json"},
-                    json={"q": clean_q, "num": max_results, "gl": "in", "hl": "en"}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for org in data.get("organic", [])[:max_results]:
-                        t = org.get("title")
-                        s = org.get("snippet")
-                        u = org.get("link")
-                        if t and s:
-                            results.append({"title": t, "snippet": s, "url": u})
-        except Exception as exc_serp:
-            print("[utilities.search_web] Serper API error:", repr(exc_serp))
+    if not serp_key:
+        return None
 
-    # 2. Secondary: DuckDuckGo Lite Search (Bypasses Cloudflare / JavaScript blocks)
-    if not results:
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-            async with httpx.AsyncClient(timeout=9.0, follow_redirects=True) as client:
-                resp = await client.post(
-                    "https://lite.duckduckgo.com/lite/",
-                    data={"q": clean_q},
-                    headers=headers
-                )
-                if resp.status_code == 200:
-                    parser = _DDGLiteHTMLParser()
-                    parser.feed(resp.text)
-                    for r in parser.results:
-                        u_clean = r["url"]
-                        if any(sp in u_clean.lower() for sp in SPAM_DOMAINS):
-                            continue
-                        results.append(r)
-                        if len(results) >= max_results:
-                            break
-        except Exception as exc_lite:
-            print("[utilities.search_web] DuckDuckGo Lite search error:", repr(exc_lite))
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": serp_key, "Content-Type": "application/json"},
+                json={"q": query, "num": max_results, "gl": "in", "hl": "en"}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = []
+                # Check for Google Places cards if available
+                for p in data.get("places", [])[:2]:
+                    p_title = p.get("title")
+                    p_addr = p.get("address")
+                    p_rating = p.get("rating")
+                    rating_str = f" (Rating: {p_rating}★)" if p_rating else ""
+                    if p_title:
+                        results.append({
+                            "title": f"📍 {p_title}{rating_str}",
+                            "snippet": f"Address: {p_addr}" if p_addr else "Verified Local Place",
+                            "url": "https://maps.google.com"
+                        })
+                # Check organic results
+                for org in data.get("organic", [])[:max_results]:
+                    t = org.get("title")
+                    s = org.get("snippet")
+                    u = org.get("link")
+                    if t and s:
+                        results.append({"title": t, "snippet": s, "url": u})
 
-    # 3. Tertiary: DuckDuckGo HTML Search
+                if results:
+                    return {
+                        "results": results[:max_results],
+                        "answer": None,
+                        "engine": "serper_google"
+                    }
+            elif resp.status_code == 429:
+                print("[utilities._search_serper] Serper rate limit (429) hit.")
+    except Exception as exc_serp:
+        print("[utilities._search_serper] Serper API error:", repr(exc_serp))
+    return None
+
+
+async def _search_duckduckgo(query: str, max_results: int = 5) -> Optional[Dict[str, Any]]:
+    """
+    Fallback DuckDuckGo search (Lite parser followed by HTML parser).
+    """
+    results = []
+    # Try DDG Lite
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        async with httpx.AsyncClient(timeout=9.0, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://lite.duckduckgo.com/lite/",
+                data={"q": query},
+                headers=headers
+            )
+            if resp.status_code == 200:
+                parser = _DDGLiteHTMLParser()
+                parser.feed(resp.text)
+                for r in parser.results:
+                    u_clean = r["url"]
+                    if any(sp in u_clean.lower() for sp in SPAM_DOMAINS):
+                        continue
+                    results.append(r)
+                    if len(results) >= max_results:
+                        break
+    except Exception as exc_lite:
+        print("[utilities._search_duckduckgo] Lite error:", repr(exc_lite))
+
+    # Try DDG HTML if Lite had no results
     if not results:
         try:
             headers = {
@@ -788,7 +892,7 @@ async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                 resp = await client.post(
                     "https://html.duckduckgo.com/html/",
-                    data={"q": clean_q},
+                    data={"q": query},
                     headers=headers
                 )
                 if resp.status_code == 200:
@@ -815,28 +919,120 @@ async def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
                             })
                         if len(results) >= max_results:
                             break
-        except Exception as exc:
-            print("[utilities.search_web] DuckDuckGo HTML search error:", repr(exc))
+        except Exception as exc_html:
+            print("[utilities._search_duckduckgo] HTML error:", repr(exc_html))
 
     if results:
-        formatted = "\n\n".join([f"• **{r['title']}**\n{r['snippet']}\nLink: {r['url']}" for r in results[:max_results]])
+        return {
+            "results": results[:max_results],
+            "answer": None,
+            "engine": "duckduckgo"
+        }
+    return None
+
+
+async def search_web(
+    query: str,
+    max_results: int = 5,
+    prefer_engine: Optional[str] = None,
+    search_depth: str = "basic"
+) -> Dict[str, Any]:
+    """
+    Industrial-grade Hybrid Web Search Engine:
+    - Auto-classifies queries into Local Places (Google Serper) vs Factual/Research/Docs (Tavily AI Search).
+    - Features direct AI answer synthesis from Tavily.
+    - Zero-single-point-of-failure fallback chain: Primary Engine -> Secondary Engine -> DuckDuckGo.
+    """
+    clean_q = (query or "").strip()
+    if not clean_q:
+        return {
+            "status": "error",
+            "success": False,
+            "query": "",
+            "count": 0,
+            "results": [],
+            "message": "Search query cannot be empty."
+        }
+
+    # 1. Determine execution priority
+    intent = classify_search_intent(clean_q)
+    pref = (prefer_engine or "").lower().strip()
+
+    if pref in ("google", "serper"):
+        engines = [
+            ("serper", lambda: _search_serper(clean_q, max_results)),
+            ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+            ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
+        ]
+    elif pref == "tavily":
+        engines = [
+            ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+            ("serper", lambda: _search_serper(clean_q, max_results)),
+            ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
+        ]
+    else:
+        # Auto-hybrid routing based on intent
+        if intent == "local_places":
+            engines = [
+                ("serper", lambda: _search_serper(clean_q, max_results)),
+                ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+                ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
+            ]
+        else:
+            engines = [
+                ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+                ("serper", lambda: _search_serper(clean_q, max_results)),
+                ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
+            ]
+
+    # 2. Execute with resilient fallback
+    payload = None
+    engine_used = None
+    for eng_name, fetcher in engines:
+        res = await fetcher()
+        if res and res.get("results"):
+            payload = res
+            engine_used = res.get("engine", eng_name)
+            break
+
+    if payload and payload.get("results"):
+        results = payload["results"][:max_results]
+        answer = payload.get("answer")
+
+        # Clean formatting without raw markdown clutter
+        formatted_items = []
+        for r in results:
+            formatted_items.append(f"• {r['title']}\n{r['snippet']}\nLink: {r['url']}")
+        formatted = "\n\n".join(formatted_items)
+
+        if answer:
+            message_content = f"💡 Summary: {answer}\n\nSources:\n{formatted}"
+        else:
+            message_content = f"Found {len(results)} live web search result(s) via {engine_used} for '{clean_q}':\n\n{formatted}"
+
         return {
             "status": "success",
             "success": True,
             "query": clean_q,
             "count": len(results),
-            "results": results[:max_results],
-            "message": f"Found {len(results)} live web search result(s) for '{clean_q}':\n\n{formatted}"
+            "results": results,
+            "answer": answer,
+            "engine": engine_used,
+            "intent": intent,
+            "message": message_content
         }
-    else:
-        return {
-            "status": "success",
-            "success": True,
-            "query": clean_q,
-            "count": 0,
-            "results": [],
-            "message": f"No verified web search results found for '{clean_q}'. Do NOT invent or fabricate fake names, locations, or establishments. State clearly that verified live information was not found."
-        }
+
+    return {
+        "status": "success",
+        "success": True,
+        "query": clean_q,
+        "count": 0,
+        "results": [],
+        "answer": None,
+        "engine": "none",
+        "intent": intent,
+        "message": f"No verified web search results found for '{clean_q}'. Do NOT invent or fabricate fake names, locations, or establishments. State clearly that verified live information was not found."
+    }
 
 
 # ==============================================================================
@@ -1025,13 +1221,13 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: Op
         # Specific place / brand inquiry (e.g. 'kmall', 'k mall', 'ashapurna', 'starbucks')
         query = f"{clean_cat} in {clean_city} location address website timing" if not clean_area else f"{clean_cat} {clean_area} {clean_city} location address website"
 
-    search_res = await search_web(query, max_results=6)
+    search_res = await search_web(query, max_results=6, prefer_engine="google")
     results = search_res.get("results", [])
 
     # If results are sparse and area was specified, try broader city query
     if len(results) < 2 and clean_area:
         broad_query = f"top {clean_cat} in {clean_city}"
-        broad_res = await search_web(broad_query, max_results=5)
+        broad_res = await search_web(broad_query, max_results=5, prefer_engine="google")
         results.extend(broad_res.get("results", []))
 
     formatted_items = []

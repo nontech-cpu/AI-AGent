@@ -67,10 +67,10 @@ async def run_deep_research(topic: str, goal: Optional[str] = None) -> Dict[str,
     gathered_data = []
     async def _fetch(q):
         try:
-            res = await search_web(q, max_results=3)
-            return {"query": q, "results": res.get("results", [])}
+            res = await search_web(q, max_results=3, prefer_engine="tavily", search_depth="advanced")
+            return {"query": q, "results": res.get("results", []), "answer": res.get("answer")}
         except Exception:
-            return {"query": q, "results": []}
+            return {"query": q, "results": [], "answer": None}
 
     search_tasks = [_fetch(q) for q in search_queries]
     harvested = await asyncio.gather(*search_tasks)
@@ -79,6 +79,8 @@ async def run_deep_research(topic: str, goal: Optional[str] = None) -> Dict[str,
     evidence_blocks = []
     for item in harvested:
         evidence_blocks.append(f"### Search Angle: '{item['query']}'")
+        if item.get("answer"):
+            evidence_blocks.append(f"**Synthesized Insight**: {item['answer']}")
         for r in item["results"]:
             evidence_blocks.append(f"- **{r.get('title')}**: {r.get('snippet')} (Source: {r.get('url')})")
 
