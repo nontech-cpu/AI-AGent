@@ -209,9 +209,21 @@ def set_active_document(chat_id: int, doc_info: Dict[str, Any]):
 
 
 def get_active_document(chat_id: int) -> Optional[Dict[str, Any]]:
-    """Retrieves the last uploaded document info."""
-    ctx = _ACTIVE_CONTEXT_STORE.get(chat_id, {})
-    return ctx.get("last_document")
+    """Retrieves the last uploaded document info, restoring from DB if needed."""
+    ctx = get_active_context(chat_id)
+    doc = ctx.get("last_document")
+    if doc and not doc.get("file_id") and doc.get("path"):
+        # Auto-extract Telegram file_id from local filename pattern if present ({file_id}_{name})
+        try:
+            import os
+            base = os.path.basename(doc["path"])
+            if "_" in base:
+                fid = base.split("_")[0]
+                if len(fid) > 15:  # Standard Telegram file_id length
+                    doc["file_id"] = fid
+        except Exception:
+            pass
+    return doc
 
 
 def set_active_ticket(chat_id: int, ticket_info: Dict[str, Any]):

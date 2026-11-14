@@ -459,8 +459,8 @@ async def test_mention_dispatch_delivers_file_attachment():
     sent_files = []
     sent_texts = []
 
-    async def mock_send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream"):
-        sent_files.append({"chat_id": chat_id, "filename": filename, "bytes": content_bytes, "caption": caption})
+    async def mock_send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream", file_id=None, **kwargs):
+        sent_files.append({"chat_id": chat_id, "filename": filename, "bytes": content_bytes, "file_id": file_id, "caption": caption})
 
     async def mock_send_text(chat_id, text):
         sent_texts.append({"chat_id": chat_id, "text": text})
@@ -478,6 +478,57 @@ async def test_mention_dispatch_delivers_file_attachment():
     assert sent_files[0]["chat_id"] == recip_chat
     assert sent_files[0]["filename"] == "resignation.pdf"
     assert sent_files[0]["bytes"] == b"%PDF-1.4 test dummy resignation document bytes"
+
+
+@pytest.mark.asyncio
+async def test_mention_dispatch_delivers_file_via_telegram_file_id_when_local_disk_is_ephemeral():
+    from core import timeutil
+    from core.timeutil import IST
+    db._init_mentions_and_dispatches_tables()
+    sender_chat = 99881149
+    recip_chat = 99881150
+    db.ensure_user(sender_chat)
+    db.ensure_user(recip_chat)
+    db.claim_username(sender_chat, "sender_cloud")
+    recip_phone = "9876543299"
+    db.set_user_phone_number(recip_chat, recip_phone)
+
+    # Clear RAM RECENT_DOCS to simulate container restart on cloud host (e.g. Render)
+    from main import RECENT_DOCS
+    RECENT_DOCS.pop(sender_chat, None)
+
+    # Persist document metadata with Telegram file_id into active context
+    from state.active_context import set_active_document
+    set_active_document(sender_chat, {
+        "filename": "Offer_Letter.pdf",
+        "file_id": "BQACAgUAAxkBAAIQ5Wr38mzMI4b3l2QoxgxsykN4OcgjAAKJIwACQUnBV1tuBS",
+        "path": "/opt/render/project/non_existent_wiped_path.pdf",
+        "content": "Offer letter text content",
+        "timestamp": timeutil.now(IST).isoformat()
+    })
+
+    sent_files = []
+    sent_texts = []
+
+    async def mock_send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream", file_id=None, **kwargs):
+        sent_files.append({"chat_id": chat_id, "filename": filename, "file_id": file_id, "caption": caption})
+
+    async def mock_send_text(chat_id, text):
+        sent_texts.append({"chat_id": chat_id, "text": text})
+
+    with patch("main.send_file", side_effect=mock_send_file), \
+         patch("main.send_telegram_text", side_effect=mock_send_text):
+        res = await execute_targeted_mentions_dispatch(sender_chat, f"@{recip_phone} please review the offer letter.")
+
+    assert res.status == "success"
+    assert len(sent_texts) == 1
+    assert sent_texts[0]["chat_id"] == recip_chat
+
+    # Ensure document was resolved and delivered via cloud-native file_id even though disk file was missing!
+    assert len(sent_files) == 1
+    assert sent_files[0]["chat_id"] == recip_chat
+    assert sent_files[0]["filename"] == "Offer_Letter.pdf"
+    assert sent_files[0]["file_id"] == "BQACAgUAAxkBAAIQ5Wr38mzMI4b3l2QoxgxsykN4OcgjAAKJIwACQUnBV1tuBS"
 
 
 @pytest.mark.asyncio

@@ -317,40 +317,43 @@ async def execute_targeted_mentions_dispatch(
             summary_message="No @mentions detected in message."
         )
 
-    # Auto-resolve attachments from recent uploaded document/photo if available
-    if not attachments:
+    # Auto-resolve attachments from recent uploaded document/photo or persistent active context
+    active_doc = None
+    try:
+        from main import RECENT_DOCS
+        active_doc = RECENT_DOCS.get(sender_chat_id)
+    except Exception:
+        pass
+
+    if not active_doc or (not active_doc.get("file_id") and not (active_doc.get("path") and os.path.exists(str(active_doc.get("path"))))):
         try:
-            from main import RECENT_DOCS
-            from core import timeutil
-            from core.timeutil import IST
-            rec_doc = RECENT_DOCS.get(sender_chat_id)
-            if rec_doc and rec_doc.get("path") and os.path.exists(rec_doc.get("path")):
-                ts = rec_doc.get("timestamp")
-                is_recent = True
-                if ts:
-                    delta = (timeutil.now(IST) - ts).total_seconds()
-                    if delta > 3600:
-                        is_recent = False
-                if is_recent:
-                    attachments = [{
-                        "filename": rec_doc.get("filename", "document"),
-                        "path": rec_doc.get("path"),
-                        "caption": rec_doc.get("filename", "document")
-                    }]
-        except Exception as att_err:
-            logger.warning(f"Failed to auto-resolve recent document attachment: {att_err}")
-    elif attachments:
+            from state.active_context import get_active_document
+            db_doc = get_active_document(sender_chat_id)
+            if db_doc:
+                active_doc = db_doc
+        except Exception as act_err:
+            logger.warning(f"Failed to fetch active document from context: {act_err}")
+
+    if not attachments:
+        if active_doc:
+            fname = active_doc.get("filename", "document")
+            fpath = active_doc.get("path")
+            fid = active_doc.get("file_id")
+            if fid or (fpath and os.path.exists(str(fpath))):
+                attachments = [{
+                    "filename": fname,
+                    "path": fpath,
+                    "file_id": fid,
+                    "caption": fname
+                }]
+    else:
         for att in attachments:
-            if not att.get("path") or not os.path.exists(str(att.get("path"))):
-                try:
-                    from main import RECENT_DOCS
-                    rec_doc = RECENT_DOCS.get(sender_chat_id)
-                    if rec_doc and rec_doc.get("path") and os.path.exists(rec_doc.get("path")):
-                        att["path"] = rec_doc.get("path")
-                        if not att.get("filename"):
-                            att["filename"] = rec_doc.get("filename", "document")
-                except Exception:
-                    pass
+            if not att.get("file_id") and active_doc and active_doc.get("file_id"):
+                att["file_id"] = active_doc.get("file_id")
+            if (not att.get("path") or not os.path.exists(str(att.get("path")))) and active_doc and active_doc.get("path"):
+                att["path"] = active_doc.get("path")
+            if not att.get("filename") and active_doc and active_doc.get("filename"):
+                att["filename"] = active_doc.get("filename")
 
     # 1. Resolve Recipient Identities
     recipients = [resolve_recipient_identity(sender_chat_id, m) for m in raw_mentions]
@@ -415,8 +418,16 @@ async def execute_targeted_mentions_dispatch(
                 # Send attachments if any
                 for att in atts:
                     file_path = att.get("path")
+                    file_id = att.get("file_id")
                     att_name = att.get("filename") or (os.path.basename(file_path) if file_path else "document")
-                    if file_path and os.path.exists(file_path):
+                    if file_id:
+                        await send_file(
+                            chat_id=recip.telegram_chat_id,
+                            filename=att_name,
+                            file_id=file_id,
+                            caption=att.get("caption") or att_name
+                        )
+                    elif file_path and os.path.exists(file_path):
                         with open(file_path, "rb") as af:
                             file_bytes = af.read()
                         await send_file(

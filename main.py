@@ -331,19 +331,47 @@ async def say(chat_id, text):
 
 
 
-async def send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream"):
+async def send_file(chat_id, filename, content_bytes=None, caption="", mime_type="application/octet-stream", file_id=None):
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
 
-    # If content_bytes is None and filename is an existing file path, read bytes
+    # Priority 1: If Telegram file_id is provided, send directly via Telegram servers
+    if file_id:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+                resp = await client.post(
+                    f"{API}/sendDocument",
+                    data={"chat_id": chat_id, "document": file_id, "caption": (caption or "")[:1024]}
+                )
+            payload = {}
+            try:
+                payload = resp.json()
+            except Exception:
+                pass
+            if resp.status_code == 200 and isinstance(payload, dict) and payload.get("ok"):
+                return payload
+            print(f"[send_file] Direct file_id send failed ({resp.status_code}): {payload}, falling back to content bytes")
+        except Exception as fid_err:
+            print("[send_file] Direct file_id send error:", repr(fid_err))
+
+    # Priority 2: If content_bytes is None and filename is an existing file path, read bytes
     display_name = filename
     if content_bytes is None:
         if isinstance(filename, str) and os.path.exists(filename):
             with open(filename, "rb") as f:
                 content_bytes = f.read()
             display_name = os.path.basename(filename)
-        else:
-            raise ValueError(f"send_file requires content_bytes or an existing file path, got {filename}")
+        elif file_id:
+            try:
+                from multimodal import download_telegram_file
+                downloaded_bytes, _ = await download_telegram_file(file_id)
+                if downloaded_bytes:
+                    content_bytes = downloaded_bytes
+            except Exception as dl_err:
+                print(f"[send_file] Re-download file {file_id} error:", repr(dl_err))
+
+    if content_bytes is None:
+        raise ValueError(f"send_file requires content_bytes, an existing file path, or valid file_id, got {filename}")
     elif isinstance(filename, str):
         display_name = os.path.basename(filename)
 
@@ -3359,10 +3387,31 @@ async def process_voice(chat_id, voice):
 def is_recent_document_query(chat_id: int, text: str) -> bool:
     doc = RECENT_DOCS.get(chat_id)
     if not doc:
+        try:
+            from state.active_context import get_active_document
+            db_doc = get_active_document(chat_id)
+            if db_doc:
+                RECENT_DOCS[chat_id] = db_doc
+                doc = db_doc
+        except Exception:
+            pass
+    if not doc:
         return False
-    age = (timeutil.now(IST) - doc["timestamp"]).total_seconds()
-    if age > 7200:  # 2 hours validity
-        return False
+    ts = doc.get("timestamp")
+    if ts:
+        if isinstance(ts, str):
+            try:
+                from datetime import datetime
+                ts = datetime.fromisoformat(ts)
+            except Exception:
+                ts = None
+        if ts:
+            try:
+                age = (timeutil.now(IST) - ts).total_seconds()
+                if age > 7200:  # 2 hours validity
+                    return False
+            except Exception:
+                pass
 
     low = text.casefold()
     # Fast exclusions
@@ -3413,6 +3462,7 @@ async def process_photo(chat_id, photo_list, caption=""):
             "filename": "Photo.jpg",
             "content": analysis,
             "path": photo_path,
+            "file_id": file_id,
             "type": "image",
             "summary": analysis,
             "timestamp": timeutil.now(IST),
@@ -3425,6 +3475,7 @@ async def process_photo(chat_id, photo_list, caption=""):
                 "filename": "Photo.jpg",
                 "content": analysis,
                 "path": photo_path,
+                "file_id": file_id,
                 "timestamp": timeutil.now(IST).isoformat(),
             })
         except Exception:
@@ -3595,6 +3646,8 @@ async def process_document(chat_id, doc, caption=""):
             "filename": file_name,
             "content": text_content,
             "path": file_path,
+            "file_id": file_id,
+            "mime_type": mime_type,
             "type": "document",
             "summary": "",
             "timestamp": timeutil.now(IST),
@@ -3607,6 +3660,8 @@ async def process_document(chat_id, doc, caption=""):
                 "filename": file_name,
                 "content": text_content,
                 "path": file_path,
+                "file_id": file_id,
+                "mime_type": mime_type,
                 "timestamp": timeutil.now(IST).isoformat(),
             })
         except Exception as act_err:
@@ -3615,7 +3670,7 @@ async def process_document(chat_id, doc, caption=""):
         if caption.strip():
             agent_prompt = (
                 f"User uploaded document '{file_name}'.\n"
-                f"[Attachment Available: filename='{file_name}', path='{file_path}']\n\n"
+                f"[Attachment Available: filename='{file_name}', path='{file_path}', file_id='{file_id}']\n\n"
                 f"--- Extracted Document Content (first 5000 chars) ---\n"
                 f"{text_content[:5000]}\n"
                 f"--- End Document Content ---\n\n"
@@ -5579,6 +5634,53 @@ async def telegram_webhook(
                 pass
         if "text" in message:
             incoming_text = message["text"].strip()
+            # If user replied to a document or photo message
+            reply_msg = message.get("reply_to_message") or {}
+            reply_doc = reply_msg.get("document")
+            if reply_doc and reply_doc.get("file_id"):
+                r_fid = reply_doc["file_id"]
+                r_fname = reply_doc.get("file_name", "document")
+                r_mime = reply_doc.get("mime_type", "")
+                RECENT_DOCS[chat_id] = {
+                    "filename": r_fname,
+                    "file_id": r_fid,
+                    "mime_type": r_mime,
+                    "type": "document",
+                    "timestamp": timeutil.now(IST),
+                }
+                try:
+                    from state.active_context import set_active_document
+                    set_active_document(chat_id, {
+                        "filename": r_fname,
+                        "file_id": r_fid,
+                        "mime_type": r_mime,
+                        "timestamp": timeutil.now(IST).isoformat(),
+                    })
+                except Exception as r_err:
+                    print("reply_to_message active document error:", repr(r_err))
+            elif reply_msg.get("photo"):
+                r_photos = reply_msg.get("photo")
+                if isinstance(r_photos, list) and len(r_photos) > 0:
+                    best_p = r_photos[-1]
+                    r_fid = best_p.get("file_id")
+                    if r_fid:
+                        RECENT_DOCS[chat_id] = {
+                            "filename": "Photo.jpg",
+                            "file_id": r_fid,
+                            "type": "image",
+                            "timestamp": timeutil.now(IST),
+                        }
+                        try:
+                            from state.active_context import set_active_document
+                            set_active_document(chat_id, {
+                                "filename": "Photo.jpg",
+                                "file_id": r_fid,
+                                "type": "image",
+                                "timestamp": timeutil.now(IST).isoformat(),
+                            })
+                        except Exception as r_err:
+                            print("reply_to_message active photo error:", repr(r_err))
+
             task = asyncio.create_task(_safe_handle_user_text(chat_id, incoming_text))
             BG_TASKS.add(task)
             task.add_done_callback(BG_TASKS.discard)
