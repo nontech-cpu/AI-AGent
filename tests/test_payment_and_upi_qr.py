@@ -243,7 +243,39 @@ def test_api_payment_endpoints():
 
 def test_agent_tool_routing_for_payments():
     from agent.tools import route_tools
+    # Explicit request for QR code activates payment tools
     tools = route_tools("Rahul se 500 rupaye lene hain upi qr code bna do")
     tool_names = [t["function"]["name"] for t in tools]
     assert "generate_payment_qr" in tool_names
     assert "settle_payment_request" in tool_names
+
+
+def test_passive_debt_mention_does_not_force_payment_qr():
+    from agent.tools import route_tools
+    # Passive debt/reminder intent must NOT force generate_payment_qr into tools
+    tools = route_tools("bhy devender se 500 ruppee lene h")
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "generate_payment_qr" not in tool_names
+    # Core contact commitment and reminder tools remain available
+    assert "update_contact_commitment" in tool_names
+    assert "create_reminder" in tool_names
+
+
+def test_telegram_clean_formatting_and_markdown_stripping():
+    from main import format_for_telegram_html, strip_markdown_formatting
+    dirty_caption = "📸 **Dynamic UPI QR Code Generated!**\n\n💰 **Amount:** ₹500.00\n👤 **Payee:** Nirav (`6377313458@upi`)\n🔖 **Ref ID:** `PAY-12345`"
+    
+    # 1. HTML Formatting converts markdown to clean HTML tags
+    html_res = format_for_telegram_html(dirty_caption)
+    assert "**" not in html_res
+    assert "`" not in html_res
+    assert "<b>Amount:</b>" in html_res
+    assert "<code>6377313458@upi</code>" in html_res
+
+    # 2. Stripping completely removes all markdown artefacts without leaving raw ** or backticks
+    clean_res = strip_markdown_formatting(dirty_caption)
+    assert "**" not in clean_res
+    assert "`" not in clean_res
+    assert "Amount: ₹500.00" in clean_res
+    assert "Nirav (6377313458@upi)" in clean_res
+

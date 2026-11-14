@@ -275,6 +275,9 @@ def format_for_telegram_html(text: str) -> str:
     if not text:
         return ""
     import html
+    # Guard against unmatched ** which breaks Telegram HTML parsing
+    if text.count("**") % 2 != 0:
+        text = text.replace("**", "")
     s = html.escape(text, quote=False)
     s = re.sub(r"```(?:[a-zA-Z0-9_\-\+]+)?\n?(.*?)```", r"<pre>\1</pre>", s, flags=re.DOTALL)
     s = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", s)
@@ -287,9 +290,14 @@ def format_for_telegram_html(text: str) -> str:
 def strip_markdown_formatting(text: str) -> str:
     if not text:
         return ""
-    s = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-    s = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
-    s = re.sub(r"`([^`]+)`", r"\1", text)
+    s = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"`([^`\n]+)`", r"\1", s)
+    s = s.replace("**", "").replace("`", "")
+    # Clean up double/repetitive quotation marks
+    s = re.sub(r'""+', '"', s)
     return s
 
 
@@ -316,6 +324,8 @@ async def send_telegram_text(chat_id: int, text: str):
 
 async def say_raw(chat_id, text):
     """Bina translate kiye bhejta hai (jaise voice ka transcript)."""
+    if not text or not str(text).strip():
+        return
     from utilities import convert_tables_to_cards
     text = convert_tables_to_cards(text)
     record_chat_turn(chat_id, "assistant", text)
@@ -324,6 +334,8 @@ async def say_raw(chat_id, text):
 
 async def say(chat_id, text):
     """Sends message directly in natural LLM language without middleman translation."""
+    if not text or not str(text).strip():
+        return
     from utilities import convert_tables_to_cards
     text = convert_tables_to_cards(text)
     record_chat_turn(chat_id, "assistant", text)
@@ -335,13 +347,30 @@ async def send_file(chat_id, filename, content_bytes=None, caption="", mime_type
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
 
+    html_caption = format_for_telegram_html(caption) if caption else ""
+    clean_caption = strip_markdown_formatting(caption) if caption else ""
+
     # Priority 1: If Telegram file_id is provided, send directly via Telegram servers
     if file_id:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
                 resp = await client.post(
                     f"{API}/sendDocument",
-                    data={"chat_id": chat_id, "document": file_id, "caption": (caption or "")[:1024]}
+                    data={"chat_id": chat_id, "document": file_id, "caption": html_caption[:1024], "parse_mode": "HTML"}
+                )
+            payload = {}
+            try:
+                payload = resp.json()
+            except Exception:
+                pass
+            if resp.status_code == 200 and isinstance(payload, dict) and payload.get("ok"):
+                return payload
+
+            # Fallback without HTML formatting to clean text
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+                resp = await client.post(
+                    f"{API}/sendDocument",
+                    data={"chat_id": chat_id, "document": file_id, "caption": clean_caption[:1024]}
                 )
             payload = {}
             try:
@@ -381,10 +410,29 @@ async def send_file(chat_id, filename, content_bytes=None, caption="", mime_type
         if guessed:
             mime_type = guessed
 
+    # Try HTML formatted caption first
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            resp = await client.post(
+                f"{API}/sendDocument",
+                data={"chat_id": chat_id, "caption": html_caption[:1024], "parse_mode": "HTML"},
+                files={"document": (display_name, content_bytes, mime_type)},
+            )
+        payload = {}
+        try:
+            payload = resp.json()
+        except Exception:
+            pass
+        if resp.status_code == 200 and isinstance(payload, dict) and payload.get("ok"):
+            return payload
+    except Exception:
+        pass
+
+    # Clean text fallback
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
         resp = await client.post(
             f"{API}/sendDocument",
-            data={"chat_id": chat_id, "caption": (caption or "")[:1024]},
+            data={"chat_id": chat_id, "caption": clean_caption[:1024]},
             files={"document": (display_name, content_bytes, mime_type)},
         )
     payload = {}

@@ -1886,13 +1886,14 @@ async def create_user_reminder(
         from main import tg
         time_str = f" at {due_t.strftime('%I:%M %p')}" if due_t else ""
         tg_text = (
-            f"🔔 *New Reminder Set (via Web Companion)*:\n"
-            f"• *{body.title}*\n"
+            f"🔔 New Reminder Set (via Web Companion):\n"
+            f"• {body.title}\n"
             f"📅 Due: {due_d}{time_str}\n"
             f"✅ Synced to your Telegram assistant."
         )
+        from main import send_telegram_text
         for notify_cid in [target_chat_id]:
-            asyncio.create_task(tg("sendMessage", {"chat_id": notify_cid, "text": tg_text}))
+            asyncio.create_task(send_telegram_text(notify_cid, tg_text))
     except Exception as exc:
         print("[api_v1] Telegram reminder notify error:", exc)
 
@@ -2338,13 +2339,14 @@ async def create_calendar_event_route(
             time_label = clean_dt.strftime("%d %b %Y, %I:%M %p")
             meet_str = f"\n🔗 Video Meet: {res.get('meet_url')}" if res and res.get('meet_url') else ""
             msg = (
-                f"📅 *New Calendar Event Scheduled (via Companion App)*:\n"
-                f"• *{body.title}*\n"
+                f"📅 New Calendar Event Scheduled (via Companion App):\n"
+                f"• {body.title}\n"
                 f"⏰ Time: {time_label}"
                 f"{meet_str}\n"
                 f"✅ Synced to your Google Calendar & Telegram."
             )
-            await tg("sendMessage", {"chat_id": target_chat_id, "text": msg})
+            from main import send_telegram_text
+            await send_telegram_text(target_chat_id, msg)
         except Exception as exc:
             print("[api_v1] background google calendar sync notice:", exc)
 

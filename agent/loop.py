@@ -867,6 +867,19 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                     final_reply = get_i18n_string("file_delivered", user_pref_lang, filename=files_str)
                     break
 
+                # Dynamic UPI QR Code Delivery Fast-Completion (Zero Redundant Messages)
+                if fn_name == "generate_payment_qr" and tool_result.get("qr_image_delivered"):
+                    payer_notified = tool_result.get("payer_notified")
+                    sched = tool_result.get("scheduled_for")
+                    payer_disp = tool_result.get("payer_display") or "payer"
+                    if sched:
+                        final_reply = f"Payment request scheduled for {sched}. {payer_disp} ko automatically send ho jayega."
+                    elif payer_notified:
+                        final_reply = f"Payment request and QR code have also been sent directly to {payer_disp}."
+                    else:
+                        final_reply = ""
+                    break
+
                 # Two-phase confirmation interception
                 if tool_result.get("status") == "needs_confirmation":
                     act = tool_result.get("action", "")

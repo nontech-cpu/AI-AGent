@@ -5399,8 +5399,7 @@ CORE_TOOL_NAMES = {
     "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "set_user_preference", "ask_user", "learn_user_correction",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "create_calendar_event", "schedule_event",
     "search_web", "find_nearby_places",
-    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number",
-    "generate_payment_qr", "settle_payment_request", "set_user_upi_id"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
 }
 
 # Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
@@ -5412,7 +5411,7 @@ TOOL_GROUPS = {
         "tools": {"send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"}
     },
     "payment_upi_qr": {
-        "description": "upi qr code payment pay paisa rupaye money request generate dynamic qr scan pay settlement settle received paid utr invoice",
+        "description": "upi qr code payment link generate dynamic qr scan pay settlement settle invoice received paid utr upi id",
         "tools": {"generate_payment_qr", "settle_payment_request", "set_user_upi_id", "list_payment_requests"}
     },
     "developer_github": {
@@ -5512,8 +5511,7 @@ _BUDGET_ESSENTIAL_TOOLS = {
     "search_user_emails", "send_email",
     "save_contact", "get_contact", "list_contacts",
     "check_integrations_status",
-    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number",
-    "generate_payment_qr", "settle_payment_request", "set_user_upi_id"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
 }
 
 

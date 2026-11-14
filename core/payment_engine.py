@@ -269,14 +269,13 @@ async def create_and_dispatch_payment_request(
 
     # 7. Dispatch to Creator
     from main import send_file, send_telegram_text
-    sched_note = f"\n🗓️ **Due Date:** {due_date} (Scheduled — payer will be requested on {due_date})" if is_future_scheduled else ""
+    sched_note = f"\n🗓️ Due Date: {due_date} (Scheduled)" if is_future_scheduled else ""
     creator_caption = (
-        f"📸 **Dynamic UPI QR Code Generated!**\n\n"
-        f"💰 **Amount:** ₹{amount:,.2f}\n"
-        f"👤 **Payee:** {p_name} (`{resolved_upi}`)\n"
-        f"📝 **Purpose:** {note}\n"
-        f"🔖 **Ref ID:** `{ref_id}`{sched_note}\n\n"
-        f"📲 **Direct UPI Link:**\n`{upi_url}`"
+        f"📸 Dynamic UPI QR Code\n\n"
+        f"• Amount: ₹{amount:,.2f}\n"
+        f"• Payee: {p_name} ({resolved_upi})\n"
+        f"• Purpose: {note}\n"
+        f"• Ref ID: {ref_id}{sched_note}"
     )
     try:
         await send_file(
@@ -293,13 +292,12 @@ async def create_and_dispatch_payment_request(
     payer_notified = False
     if not is_future_scheduled and payer_chat_id and payer_chat_id != cid:
         payer_caption = (
-            f"💸 **Payment Request from {p_name}:**\n\n"
-            f"💰 **Amount Due:** ₹{amount:,.2f}\n"
-            f"📝 **For:** {note}\n"
-            f"🔖 **Ref ID:** `{ref_id}`\n\n"
+            f"💸 Payment Request from {p_name}\n\n"
+            f"• Amount Due: ₹{amount:,.2f}\n"
+            f"• For: {note}\n"
+            f"• Ref ID: {ref_id}\n\n"
             f"Please scan the attached QR code with Google Pay, PhonePe, Paytm, or BHIM to pay directly.\n\n"
-            f"📲 **Tap to Pay:**\n`{upi_url}`\n\n"
-            f"💡 *Payment karne ke baad reply karein 'Paid {ref_id}' ya receipt bhej kar confirm karein.*"
+            f"Payment karne ke baad reply karein 'Paid {ref_id}' ya receipt bhej kar confirm karein."
         )
         try:
             await send_file(
@@ -315,13 +313,13 @@ async def create_and_dispatch_payment_request(
 
     if is_future_scheduled:
         summary_msg = (
-            f"📅 Dynamic UPI QR Code for ₹{amount:,.2f} created and **scheduled for {due_date}** (Ref: `{ref_id}`). "
+            f"📅 Dynamic UPI QR Code for ₹{amount:,.2f} created and scheduled for {due_date} (Ref: {ref_id}). "
             f"{payer_display} ko abhi disturb nahi kiya gaya hai; {due_date} ko bot unhe automatically payment reminder bhej dega!"
         )
     else:
         summary_msg = (
-            f"✅ Dynamic UPI QR Code for ₹{amount:,.2f} created successfully (Ref: `{ref_id}`). "
-            + (f"Invoice and QR also sent directly to {payer_display}!" if payer_notified else "")
+            f"Payment QR code for ₹{amount:,.2f} created (Ref: {ref_id})."
+            + (f" Invoice also sent directly to {payer_display}." if payer_notified else "")
         )
 
     return {
@@ -393,12 +391,12 @@ async def settle_and_notify_payment(
 
     # 1. Notify Creator (Payee)
     creator_notif = (
-        f"🎉 **Payment Received & Verified!**\n\n"
-        f"💰 **Amount:** ₹{amount:,.2f}\n"
-        f"👤 **From:** {p_handle}\n"
-        f"📝 **For:** {note}\n"
-        f"🔖 **Ref ID:** `{actual_ref}`\n\n"
-        f"✅ Aapke ledger me balance successfully clear aur settle kar diya gaya hai."
+        f"🎉 Payment Received & Verified!\n\n"
+        f"• Amount: ₹{amount:,.2f}\n"
+        f"• From: {p_handle}\n"
+        f"• Purpose: {note}\n"
+        f"• Ref ID: {actual_ref}\n\n"
+        f"Aapke ledger me balance successfully clear aur settle kar diya gaya hai."
     )
     try:
         if creator_cid:
@@ -410,9 +408,9 @@ async def settle_and_notify_payment(
     payer_notified = False
     if payer_cid and payer_cid != creator_cid:
         payer_notif = (
-            f"🧾 **Payment Settlement Receipt**\n\n"
-            f"✅ Aapka ₹{amount:,.2f} ka payment **{payee_name}** ko **'{note}'** ke liye successfully verify ho gaya hai.\n"
-            f"🔖 **Ref ID:** `{actual_ref}`\n\n"
+            f"🧾 Payment Settlement Receipt\n\n"
+            f"Aapka ₹{amount:,.2f} ka payment {payee_name} ko '{note}' ke liye successfully verify ho gaya hai.\n"
+            f"Ref ID: {actual_ref}\n\n"
             f"Dhanyawaad! Pending request clear ho chuki hai."
         )
         try:

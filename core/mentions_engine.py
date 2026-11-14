@@ -431,7 +431,7 @@ async def execute_targeted_mentions_dispatch(
         if recip.target_channel == "telegram" and recip.telegram_chat_id:
             try:
                 from main import send_telegram_text, send_file
-                notification_text = f"📩 **Message from {s_name}:**\n\n\"{priv_msg}\""
+                notification_text = f"📩 Message from {s_name}:\n\n{priv_msg}"
                 await send_telegram_text(recip.telegram_chat_id, notification_text)
 
                 # Send attachments if any
