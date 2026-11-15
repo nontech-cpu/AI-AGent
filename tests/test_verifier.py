@@ -168,3 +168,23 @@ def test_verifier_provides_verified_repos_fallback_when_fake_repo_present():
     assert "php-project" in revised
 
 
+def test_verifier_allows_informational_reminders_query_without_question_mark():
+    draft = "Maine aapke aaj ke reminders check kar diya hai, aaj koi reminder nahi hai."
+    tool_results = [{
+        "tool_name": "list_reminders",
+        "status": "success",
+        "reminders": []
+    }]
+    passed, revised, violations = deterministic_verify(
+        draft,
+        tool_results=tool_results,
+        memory_context={},
+        user_query="hi mere remidnee btana aajke",
+        user_lang="english"
+    )
+    assert passed is True
+    assert revised == draft
+    assert len(violations) == 0
+
+
+

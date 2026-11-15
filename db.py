@@ -4525,3 +4525,286 @@ def list_payment_requests(
 
 
 
+
+
+# -------------------------------------------------------------
+# 18. Smart Expense Tracking & Travel Booking Tables
+# -------------------------------------------------------------
+
+_EXPENSES_AND_TRAVEL_INIT = False
+
+def _init_expenses_and_travel_tables():
+    global _EXPENSES_AND_TRAVEL_INIT
+    if _EXPENSES_AND_TRAVEL_INIT:
+        return
+    try:
+        is_pg = engine.dialect.name == "postgresql"
+        with engine.begin() as conn:
+            if is_pg:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_expenses (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        amount NUMERIC(12, 2) NOT NULL,
+                        currency VARCHAR(10) DEFAULT 'INR',
+                        merchant VARCHAR(255),
+                        category VARCHAR(100) DEFAULT 'General',
+                        expense_date VARCHAR(32) NOT NULL,
+                        payment_method VARCHAR(50) DEFAULT 'UPI',
+                        notes TEXT,
+                        receipt_file_id TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_expenses_chat ON user_expenses (chat_id, expense_date)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_expenses_category ON user_expenses (chat_id, category)"))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_travel_bookings (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        travel_type VARCHAR(32) NOT NULL,
+                        identifier VARCHAR(64) NOT NULL,
+                        service_name VARCHAR(255),
+                        origin VARCHAR(128),
+                        destination VARCHAR(128),
+                        departure_datetime VARCHAR(64),
+                        arrival_datetime VARCHAR(64),
+                        seat_info VARCHAR(128),
+                        status VARCHAR(64) DEFAULT 'Confirmed',
+                        calendar_event_id VARCHAR(128),
+                        reminder_id INTEGER,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_travel_bookings_ident ON user_travel_bookings (chat_id, identifier)"))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_expenses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER NOT NULL,
+                        amount REAL NOT NULL,
+                        currency TEXT DEFAULT 'INR',
+                        merchant TEXT,
+                        category TEXT DEFAULT 'General',
+                        expense_date TEXT NOT NULL,
+                        payment_method TEXT DEFAULT 'UPI',
+                        notes TEXT,
+                        receipt_file_id TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_expenses_chat ON user_expenses (chat_id, expense_date)"))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_travel_bookings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER NOT NULL,
+                        travel_type TEXT NOT NULL,
+                        identifier TEXT NOT NULL,
+                        service_name TEXT,
+                        origin TEXT,
+                        destination TEXT,
+                        departure_datetime TEXT,
+                        arrival_datetime TEXT,
+                        seat_info TEXT,
+                        status TEXT DEFAULT 'Confirmed',
+                        calendar_event_id TEXT,
+                        reminder_id INTEGER,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_travel_bookings_ident ON user_travel_bookings (chat_id, identifier)"))
+        _EXPENSES_AND_TRAVEL_INIT = True
+    except Exception as exc:
+        print("[db] _init_expenses_and_travel_tables error:", exc)
+
+
+def save_user_expense(
+    chat_id: int,
+    amount: float,
+    merchant: Optional[str] = None,
+    category: Optional[str] = None,
+    expense_date: Optional[str] = None,
+    payment_method: str = "UPI",
+    notes: Optional[str] = None,
+    receipt_file_id: Optional[str] = None
+) -> int:
+    """Inserts a new expense entry for a user."""
+    _init_expenses_and_travel_tables()
+    cid = canonical_chat_id(chat_id)
+    if not expense_date:
+        import core.timeutil as _tu
+        from timing import IST
+        expense_date = _tu.now(IST).strftime("%Y-%m-%d")
+
+    clean_category = (category or "General").strip().title()
+    clean_merchant = (merchant or "Unknown").strip()
+
+    with engine.begin() as conn:
+        res = conn.execute(
+            text("""
+                INSERT INTO user_expenses (
+                    chat_id, amount, currency, merchant, category,
+                    expense_date, payment_method, notes, receipt_file_id
+                ) VALUES (
+                    :cid, :amt, 'INR', :merch, :cat,
+                    :dt, :pm, :nt, :rf
+                )
+            """),
+            {
+                "cid": cid,
+                "amt": float(amount),
+                "merch": clean_merchant,
+                "cat": clean_category,
+                "dt": expense_date,
+                "pm": payment_method or "UPI",
+                "nt": notes or "",
+                "rf": receipt_file_id or ""
+            }
+        )
+        return getattr(res, "lastrowid", 1) or 1
+
+
+def list_user_expenses(
+    chat_id: int,
+    category: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """Fetches user expenses with optional category and date range filters."""
+    _init_expenses_and_travel_tables()
+    cid = canonical_chat_id(chat_id)
+    conditions = ["chat_id = :cid"]
+    params = {"cid": cid, "limit": limit}
+
+    if category and category.lower() not in ("all", "any"):
+        conditions.append("LOWER(category) = :cat")
+        params["cat"] = category.lower().strip()
+
+    if start_date:
+        conditions.append("expense_date >= :s_dt")
+        params["s_dt"] = start_date
+
+    if end_date:
+        conditions.append("expense_date <= :e_dt")
+        params["e_dt"] = end_date
+
+    where_clause = " AND ".join(conditions)
+    sql = f"""
+        SELECT id, chat_id, amount, currency, merchant, category,
+               expense_date, payment_method, notes, receipt_file_id, created_at
+        FROM user_expenses
+        WHERE {where_clause}
+        ORDER BY expense_date DESC, id DESC LIMIT :limit
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
+
+def get_user_expense_summary(
+    chat_id: int,
+    category: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """Calculates total spend, category breakdown, and count."""
+    expenses = list_user_expenses(chat_id, category=category, start_date=start_date, end_date=end_date, limit=1000)
+    total_amount = sum(float(e.get("amount") or 0.0) for e in expenses)
+    by_category: Dict[str, float] = {}
+    for e in expenses:
+        cat = e.get("category") or "Other"
+        by_category[cat] = by_category.get(cat, 0.0) + float(e.get("amount") or 0.0)
+
+    top_merchant = None
+    if expenses:
+        merchant_counts: Dict[str, int] = {}
+        for e in expenses:
+            m = e.get("merchant") or "Unknown"
+            merchant_counts[m] = merchant_counts.get(m, 0) + 1
+        top_merchant = max(merchant_counts.items(), key=lambda x: x[1])[0]
+
+    return {
+        "count": len(expenses),
+        "total_amount": round(total_amount, 2),
+        "currency": "INR",
+        "by_category": {k: round(v, 2) for k, v in sorted(by_category.items(), key=lambda x: x[1], reverse=True)},
+        "top_merchant": top_merchant,
+        "expenses": expenses[:20]
+    }
+
+
+def save_user_travel_booking(
+    chat_id: int,
+    travel_type: str,
+    identifier: str,
+    service_name: str,
+    origin: str,
+    destination: str,
+    departure_datetime: str,
+    arrival_datetime: Optional[str] = None,
+    seat_info: Optional[str] = None,
+    status: str = "Confirmed",
+    calendar_event_id: Optional[str] = None,
+    reminder_id: Optional[int] = None
+) -> int:
+    """Saves or updates a travel journey booking (Train PNR or Flight)."""
+    _init_expenses_and_travel_tables()
+    cid = canonical_chat_id(chat_id)
+    with engine.begin() as conn:
+        res = conn.execute(
+            text("""
+                INSERT INTO user_travel_bookings (
+                    chat_id, travel_type, identifier, service_name,
+                    origin, destination, departure_datetime, arrival_datetime,
+                    seat_info, status, calendar_event_id, reminder_id
+                ) VALUES (
+                    :cid, :tt, :ident, :sn,
+                    :org, :dst, :dep, :arr,
+                    :seat, :st, :cal_id, :rem_id
+                )
+            """),
+            {
+                "cid": cid,
+                "tt": travel_type.lower(),
+                "ident": identifier.strip(),
+                "sn": service_name or "",
+                "org": origin or "",
+                "dst": destination or "",
+                "dep": departure_datetime or "",
+                "arr": arrival_datetime or "",
+                "seat": seat_info or "",
+                "st": status or "Confirmed",
+                "cal_id": calendar_event_id or "",
+                "rem_id": reminder_id
+            }
+        )
+        return getattr(res, "lastrowid", 1) or 1
+
+
+def get_user_travel_bookings(
+    chat_id: int,
+    identifier: Optional[str] = None,
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """Retrieves saved travel bookings for user."""
+    _init_expenses_and_travel_tables()
+    cid = canonical_chat_id(chat_id)
+    conditions = ["chat_id = :cid"]
+    params = {"cid": cid, "limit": limit}
+    if identifier:
+        conditions.append("identifier = :ident")
+        params["ident"] = identifier.strip()
+
+    where_clause = " AND ".join(conditions)
+    sql = f"""
+        SELECT id, chat_id, travel_type, identifier, service_name,
+               origin, destination, departure_datetime, arrival_datetime,
+               seat_info, status, calendar_event_id, reminder_id, created_at
+        FROM user_travel_bookings
+        WHERE {where_clause}
+        ORDER BY id DESC LIMIT :limit
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+        return [dict(r) for r in rows]

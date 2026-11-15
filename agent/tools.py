@@ -357,6 +357,38 @@ class CreateDriveFolderArgs(BaseModel):
     folder_name: str = Field(..., description="Name of the new folder to create in Google Drive.")
     parent_folder_name: Optional[str] = Field(None, description="Optional parent folder name.")
 
+class LogExpenseArgs(BaseModel):
+    amount: float = Field(..., description="Amount spent in INR (numeric value).")
+    merchant: Optional[str] = Field(None, description="Shop, restaurant, or vendor name (e.g. 'Starbucks', 'Uber', 'Amazon').")
+    category: Optional[str] = Field(None, description="Category: 'Food & Dining', 'Groceries', 'Travel & Commute', 'Bills & Utilities', 'Shopping', 'Healthcare', 'Entertainment', 'Other'.")
+    date: Optional[str] = Field(None, description="Date in YYYY-MM-DD format (defaults to today).")
+    payment_method: Optional[str] = Field("UPI", description="Payment mode: 'UPI', 'Card', 'Cash', etc.")
+    notes: Optional[str] = Field(None, description="Additional notes or items.")
+
+class GetExpenseSummaryArgs(BaseModel):
+    category: Optional[str] = Field(None, description="Optional category to filter by (e.g. 'food', 'travel', 'shopping').")
+    timeframe: Optional[str] = Field("this_month", description="Timeframe: 'this_month', 'last_month', 'today', 'all_time'.")
+    month: Optional[int] = Field(None, description="Optional month number (1-12).")
+    year: Optional[int] = Field(None, description="Optional 4-digit year.")
+
+class ExportExpensesToDriveArgs(BaseModel):
+    folder_name: Optional[str] = Field("Expenses", description="Google Drive folder where the Excel report will be saved.")
+    timeframe: Optional[str] = Field("this_month", description="Timeframe: 'this_month', 'last_month', 'all_time'.")
+
+class TrackTravelBookingArgs(BaseModel):
+    text: Optional[str] = Field(None, description="Ticket text, booking confirmation, or SMS containing train PNR or flight details.")
+    identifier: Optional[str] = Field(None, description="PNR number (e.g. '2431256789') or Flight code (e.g. '6E-204').")
+    travel_type: Optional[str] = Field("train", description="'train' or 'flight'.")
+    service_name: Optional[str] = Field(None, description="Train name/number or Airline flight name.")
+    origin: Optional[str] = Field(None, description="Departure station or airport.")
+    destination: Optional[str] = Field(None, description="Arrival station or airport.")
+    departure_datetime: Optional[str] = Field(None, description="Departure time in ISO-8601 format.")
+    seat_info: Optional[str] = Field(None, description="Coach, berth, class, or seat.")
+
+class GetTravelStatusArgs(BaseModel):
+    identifier: str = Field(..., description="Train PNR number or Flight code.")
+    travel_type: Optional[str] = Field("train", description="'train' or 'flight'.")
+
 class CreateNotionPageArgs(BaseModel):
     title: str = Field(..., description="Title of the Notion page.")
     content: str = Field(..., description="Markdown or text content for the Notion page.")
@@ -1053,6 +1085,90 @@ TOOL_DEFINITIONS = [
                     "parent_folder_name": {"type": ["string", "null"], "description": "Optional parent folder name"}
                 },
                 "required": ["folder_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "log_expense",
+            "description": "Records an expense or purchase to the user's personal expense tracker. Use when user says e.g. 'maine aaj lunch pe 850 diye', 'auto fare 150 save karo', or confirms a bill.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "Expense amount in INR."},
+                    "merchant": {"type": ["string", "null"], "description": "Vendor, restaurant, or shop name."},
+                    "category": {"type": ["string", "null"], "description": "Category e.g. 'Food & Dining', 'Groceries', 'Travel & Commute', 'Bills & Utilities', 'Shopping'."},
+                    "date": {"type": ["string", "null"], "description": "Date in YYYY-MM-DD format (defaults to today)."},
+                    "payment_method": {"type": ["string", "null"], "description": "Payment method: 'UPI', 'Card', 'Cash'."},
+                    "notes": {"type": ["string", "null"], "description": "Optional note."}
+                },
+                "required": ["amount"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_expense_summary",
+            "description": "Queries total spending, category breakdown, and recent expenses. Use when user asks 'is mahine food pe kitna kharcha hua?', 'total expenses batao', or 'last month ka kharcha'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": ["string", "null"], "description": "Optional category filter."},
+                    "timeframe": {"type": ["string", "null"], "description": "'this_month', 'last_month', 'today', 'all_time'."},
+                    "month": {"type": ["integer", "null"], "description": "Month number 1-12."},
+                    "year": {"type": ["integer", "null"], "description": "4-digit year."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_expenses_to_drive",
+            "description": "Builds an executive-styled Excel spreadsheet of user expenses and uploads directly to Google Drive in folder 'Expenses'. Use when user asks 'Expense sheet bana kar Google Drive par upload kar do'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "folder_name": {"type": ["string", "null"], "description": "Google Drive folder name (default 'Expenses')."},
+                    "timeframe": {"type": ["string", "null"], "description": "'this_month', 'last_month', 'all_time'."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "track_travel_booking",
+            "description": "Tracks a train (IRCTC PNR) or flight journey from ticket text, confirmation SMS, or details. Automatically adds the journey to Google Calendar and schedules a 2-hour departure packing alert.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": ["string", "null"], "description": "Full ticket SMS or confirmation text to extract automatically."},
+                    "identifier": {"type": ["string", "null"], "description": "PNR number or flight IATA code."},
+                    "travel_type": {"type": ["string", "null"], "description": "'train' or 'flight'."},
+                    "service_name": {"type": ["string", "null"], "description": "Train name/number or Airline flight number."},
+                    "origin": {"type": ["string", "null"], "description": "Origin station or airport."},
+                    "destination": {"type": ["string", "null"], "description": "Destination station or airport."},
+                    "departure_datetime": {"type": ["string", "null"], "description": "Departure datetime in ISO-8601 format."},
+                    "seat_info": {"type": ["string", "null"], "description": "Coach, berth, class, or seat number."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_travel_status",
+            "description": "Checks the live platform, delay, or confirmation status of a train PNR or flight code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "identifier": {"type": "string", "description": "Train PNR number or flight code."},
+                    "travel_type": {"type": ["string", "null"], "description": "'train' or 'flight'."}
+                },
+                "required": ["identifier"]
             }
         }
     },
@@ -4266,6 +4382,118 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 "message": f"Folder '{args.folder_name}' is ready on Google Drive."
             }
 
+        elif tool_name == "log_expense":
+            args = LogExpenseArgs(**arguments)
+            from services.expense_service import record_user_expense
+            res = record_user_expense(
+                chat_id=chat_id,
+                amount=args.amount,
+                merchant=args.merchant,
+                category=args.category,
+                expense_date=args.date,
+                payment_method=args.payment_method or "UPI",
+                notes=args.notes
+            )
+            return {
+                "status": "success",
+                "expense_id": res["id"],
+                "amount": res["amount"],
+                "merchant": res["merchant"],
+                "category": res["category"],
+                "date": res["date"],
+                "message": f"Recorded expense of ₹{res['amount']:.2f} at {res['merchant']} ({res['category']})."
+            }
+
+        elif tool_name == "get_expense_summary":
+            args = GetExpenseSummaryArgs(**arguments)
+            from services.expense_service import query_expense_summary
+            res = query_expense_summary(
+                chat_id=chat_id,
+                category=args.category,
+                timeframe=args.timeframe,
+                month=args.month,
+                year=args.year
+            )
+            return {
+                "status": "success",
+                "data": res
+            }
+
+        elif tool_name == "export_expenses_to_drive":
+            args = ExportExpensesToDriveArgs(**arguments)
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "error_type": "google_not_connected",
+                    "message": "Google Drive is not connected. User must connect Google first."
+                }
+            from services.expense_service import sync_expenses_to_drive
+            res = await sync_expenses_to_drive(
+                chat_id=chat_id,
+                timeframe=args.timeframe or "this_month",
+                folder_name=args.folder_name or "Expenses"
+            )
+            return {
+                "status": "success",
+                "filename": res["filename"],
+                "folder_name": res["folder_name"],
+                "link": res["webViewLink"],
+                "total_amount": res["total_amount"],
+                "count": res["count"],
+                "message": f"Uploaded '{res['filename']}' to Google Drive in folder '{res['folder_name']}'."
+            }
+
+        elif tool_name == "track_travel_booking":
+            args = TrackTravelBookingArgs(**arguments)
+            from services.travel_service import extract_travel_booking_from_text, save_and_schedule_travel
+            booking_data = {}
+            if args.text and not args.identifier:
+                extracted = await extract_travel_booking_from_text(args.text)
+                if extracted.get("is_travel_booking"):
+                    booking_data = extracted
+
+            if not booking_data:
+                booking_data = {
+                    "travel_type": args.travel_type or "train",
+                    "identifier": args.identifier or "JOURNEY",
+                    "service_name": args.service_name or "Travel Journey",
+                    "origin": args.origin or "Origin",
+                    "destination": args.destination or "Destination",
+                    "departure_datetime": args.departure_datetime,
+                    "seat_info": args.seat_info or "",
+                    "status": "Confirmed"
+                }
+
+            res = await save_and_schedule_travel(chat_id, booking_data)
+            return {
+                "status": "success",
+                "booking_id": res["booking_id"],
+                "travel_type": res["travel_type"],
+                "identifier": res["identifier"],
+                "service_name": res["service_name"],
+                "origin": res["origin"],
+                "destination": res["destination"],
+                "departure_datetime": res["departure_datetime"],
+                "seat_info": res["seat_info"],
+                "calendar_scheduled": res["calendar_scheduled"],
+                "reminder_scheduled": res["reminder_scheduled"],
+                "message": f"Travel booking {res['identifier']} ({res['service_name']}) tracked successfully. Google Calendar event and 2-hour departure reminder scheduled."
+            }
+
+        elif tool_name == "get_travel_status":
+            args = GetTravelStatusArgs(**arguments)
+            from services.travel_service import check_live_travel_status
+            res = await check_live_travel_status(
+                identifier=args.identifier,
+                travel_type=args.travel_type or "train"
+            )
+            return {
+                "status": "success",
+                "data": res
+            }
+
         elif tool_name == "send_targeted_mention_message":
             args = SendTargetedMentionMessageArgs(**arguments)
             from core.mentions_engine import execute_targeted_mentions_dispatch
@@ -5622,6 +5850,14 @@ TOOL_GROUPS = {
     "google_drive_storage": {
         "description": "google drive gdrive upload file document pdf doc folder create folder search drive read document summarize drive",
         "tools": {"upload_to_drive", "search_drive_files", "read_drive_document", "create_drive_folder"}
+    },
+    "finance_expenses": {
+        "description": "expense receipt bill spend spent kharcha paisa shopping food grocery travel tracking export excel sheet",
+        "tools": {"log_expense", "get_expense_summary", "export_expenses_to_drive"}
+    },
+    "travel_transit": {
+        "description": "train irctc pnr flight airline ticket journey travel booking departure packing platform seat coach",
+        "tools": {"track_travel_booking", "get_travel_status"}
     },
     "subscriptions_finance": {
         "description": "manage subscriptions recurring bills renewals free trial watchdog cancel subscription audit services",

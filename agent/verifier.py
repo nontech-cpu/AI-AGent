@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 
-from connectors.guardrails import is_cancellation_or_decline
+from connectors.guardrails import is_cancellation_or_decline, is_inquiry_or_read_query
 from core.json_safe import safe_json_dumps
 
 logger = logging.getLogger("peculiar_verifier")
@@ -267,9 +267,15 @@ def deterministic_verify(
         and str(tr.get("tool_name") or tr.get("action") or "").lower() not in READ_ONLY_TOOL_NAMES
         for tr in tool_results
     )
+    has_read_tool_success = any(
+        isinstance(tr, dict)
+        and (tr.get("status") in ("success", "ok") or tr.get("ok") is True)
+        and str(tr.get("tool_name") or tr.get("action") or "").lower() in READ_ONLY_TOOL_NAMES
+        for tr in tool_results
+    )
     low_rep = draft_reply.lower()
 
-    is_user_inquiry = bool(user_query and "?" in user_query)
+    is_user_inquiry = is_inquiry_or_read_query(user_query)
     is_cancellation = is_cancellation_or_decline(user_query, draft_reply)
     if not has_action_tool_success and not has_pending_confirm and not is_user_inquiry and not is_cancellation:
         # Strip question clauses so questions like "Aaj Tuesday hai — bhej diya?" are not flagged as completion claims
@@ -280,7 +286,18 @@ def deterministic_verify(
             "save kar diya", "update kar diya", "shift kar diya", "successfully created", "successfully sent",
             "successfully scheduled", "successfully deleted", "hata di gayi", "hata diya", "clear kar diya", "wipe kar diya"
         )
+        # When read-only tools succeeded, filter out conversational observational tokens like "check kar diya hai"
         has_claim_token = any(tok in clean_rep for tok in action_claim_tokens)
+        if has_read_tool_success and has_claim_token:
+            # If read-only tool succeeded, only flag if claiming a mutating write/delete/send action
+            mutating_tokens = (
+                "email bhej diya", "mail bhej diya", "send kar diya",
+                "delete kar diya", "delete kar di", "delete kar diye",
+                "hata di gayi", "hata diya", "clear kar diya", "wipe kar diya",
+                "successfully created", "successfully sent", "successfully deleted",
+                "successfully scheduled"
+            )
+            has_claim_token = any(mt in clean_rep for mt in mutating_tokens)
         if has_claim_token:
             is_wipe_claim = any(w in clean_rep for w in ("delete kar di", "delete kar diye", "clear kar diya", "hata di gayi", "wipe kar diya")) and any(w in clean_rep for w in ("memory", "data", "contacts", "reminders", "account", "location"))
             is_user_wipe_request = any(k in (user_query or "").lower() for k in ("delete", "dlete", "delte", "delet", "wipe", "clear", "uda", "hata", "bhool", "erase", "reset", "purge", "forget", "clean", "entire memory", "saari memory", "all data", "poora data"))

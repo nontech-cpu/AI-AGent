@@ -586,6 +586,31 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
                     complete_pending_action(action_id, status="error")
                 return True, f"⚠️ **Google Drive Upload Failed:** {str(exc)}"
 
+        elif kind in ("save_expense", "expense"):
+            exp = payload.get("expense") if isinstance(payload.get("expense"), dict) else payload
+            from services.expense_service import record_user_expense
+            res = record_user_expense(
+                chat_id=chat_id,
+                amount=float(exp.get("amount") or 0.0),
+                merchant=exp.get("merchant"),
+                category=exp.get("category"),
+                expense_date=exp.get("date") or exp.get("expense_date"),
+                payment_method=exp.get("payment_method", "UPI"),
+                notes=exp.get("notes")
+            )
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+            return True, f"✅ **Expense Saved:** ₹{res['amount']:.2f} at {res['merchant']} ({res['category']})."
+
+        elif kind in ("book_travel", "travel_booking"):
+            booking = payload.get("booking") if isinstance(payload.get("booking"), dict) else payload
+            from services.travel_service import save_and_schedule_travel
+            res = await save_and_schedule_travel(chat_id, booking)
+            icon = "🚆" if res.get("travel_type") == "train" else "✈️"
+            if action_id:
+                complete_pending_action(action_id, status="confirmed")
+            return True, f"✅ **Journey Tracked!** {icon} {res['service_name']} ({res['origin']} -> {res['destination']}) — Google Calendar & 2-hour alert active."
+
         elif kind in ("delete_meeting",):
             event_id = payload.get("event_id")
             title = payload.get("title", "Meeting")

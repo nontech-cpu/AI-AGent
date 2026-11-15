@@ -460,6 +460,53 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
             "parent_folder_name": {"required": False, "default": None, "can_be_found_in": []}
         }
     },
+    "log_expense": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "amount": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "merchant": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "category": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "date": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "payment_method": {"required": False, "default": "UPI", "can_be_found_in": ["user_message"]},
+            "notes": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "get_expense_summary": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "category": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "timeframe": {"required": False, "default": "this_month", "can_be_found_in": ["user_message"]},
+            "month": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "year": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "export_expenses_to_drive": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "folder_name": {"required": False, "default": "Expenses", "can_be_found_in": ["user_message"]},
+            "timeframe": {"required": False, "default": "this_month", "can_be_found_in": ["user_message"]}
+        }
+    },
+    "track_travel_booking": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "text": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "identifier": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "travel_type": {"required": False, "default": "train", "can_be_found_in": ["user_message"]},
+            "service_name": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "origin": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "destination": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "departure_datetime": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "seat_info": {"required": False, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
+    "get_travel_status": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "identifier": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "travel_type": {"required": False, "default": "train", "can_be_found_in": ["user_message"]}
+        }
+    },
     "create_notion_page": {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {

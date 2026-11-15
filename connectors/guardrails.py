@@ -78,6 +78,25 @@ def is_cancellation_or_decline(user_query: str = "", reply_text: str = "") -> bo
     return user_declined or reply_dismissed
 
 
+def is_inquiry_or_read_query(user_query: str) -> bool:
+    """
+    Identifies whether the user is asking an informational query, looking up schedule/reminders,
+    or reading data (without requiring a strict question mark, supporting mobile typing & Hinglish).
+    """
+    if not user_query:
+        return False
+    uq = user_query.strip().lower()
+    if "?" in uq:
+        return True
+    inquiry_markers = (
+        "bata", "btao", "batao", "batana", "btana", "dikha", "dikhao", "dekho",
+        "kya", "kaun", "kab", "kaha", "kahan", "kitna", "kitne", "kaise", "hai kya",
+        "remind", "remidnee", "reminder", "reminders", "schedule", "events", "meetings",
+        "plans", "show", "list", "tell", "check", "display", "what", "when", "where", "who", "which", "how"
+    )
+    return any(w in uq for w in inquiry_markers)
+
+
 def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]], user_query: str = "") -> Tuple[bool, Optional[str]]:
     """
     Blocks claims of successful action execution unless confirmed by a real tool result with an ID or URL.
@@ -86,8 +105,8 @@ def check_fake_success_guard(draft_reply: str, tool_results: List[Dict[str, Any]
     if not draft_reply or not str(draft_reply).strip():
         return True, None
 
-    # Informational queries (structural question mark) are inquiries about past state, not new write commands
-    if user_query and "?" in user_query:
+    # Informational queries (explicit question mark or natural language inquiry/lookup intent)
+    if is_inquiry_or_read_query(user_query):
         return True, None
 
     low = draft_reply.lower()

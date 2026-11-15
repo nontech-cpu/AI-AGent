@@ -2100,6 +2100,35 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
                 await say(chat_id, "⚠️ Google Drive storage full ho chuka hai (100% space used). Kripya kuch files delete karein ya storage upgrade karein.")
             except Exception as e:
                 await say(chat_id, f"⚠️ Google Drive upload error: {e}")
+        elif kind == 'save_expense':
+            exp = pending.get("expense", {})
+            from services.expense_service import record_user_expense
+            res = record_user_expense(
+                chat_id=chat_id,
+                amount=float(exp.get("amount") or 0.0),
+                merchant=exp.get("merchant"),
+                category=exp.get("category"),
+                expense_date=exp.get("date"),
+                payment_method=exp.get("payment_method", "UPI"),
+                notes=exp.get("notes")
+            )
+            await say(chat_id, f"✅ **Expense Saved:** ₹{res['amount']:.2f} at {res['merchant']} ({res['category']}) on {res['date']}.")
+
+        elif kind == 'book_travel':
+            booking = pending.get("booking", {})
+            from services.travel_service import save_and_schedule_travel
+            res = await save_and_schedule_travel(chat_id, booking)
+            icon = "🚆" if res.get("travel_type") == "train" else "✈️"
+            cal_note = "added to Google Calendar" if res.get("calendar_scheduled") else "calendar not connected"
+            rem_note = "2-hour departure reminder set" if res.get("reminder_scheduled") else "reminder scheduled"
+            await say(
+                chat_id,
+                f"✅ **Journey Tracked!** {icon}\n"
+                f"• **Booking:** {res['service_name']} ({res['origin']} -> {res['destination']})\n"
+                f"• **Code:** {res['identifier']}\n"
+                f"• **Status:** {cal_note}, {rem_note}."
+            )
+
         elif kind == 'create_meeting':
             result = await google_create_meeting(chat_id, pending['title'], pending['start_iso'], pending['duration_minutes'], pending.get('attendees', []))
             raw_start = result.get('start') if isinstance(result, dict) else None
@@ -3650,6 +3679,33 @@ async def process_photo(chat_id, photo_list, caption=""):
         # Case A: User sent photo WITHOUT an explicit caption
         if not (caption and caption.strip()):
             try:
+                from services.expense_service import extract_expense_details
+                exp_res = await extract_expense_details(analysis)
+                if exp_res.get("is_expense") and exp_res.get("amount"):
+                    amt = float(exp_res.get("amount") or 0.0)
+                    merch = exp_res.get("merchant") or "Vendor"
+                    cat = exp_res.get("category") or "General"
+                    exp_dt = exp_res.get("date") or timeutil.now(IST).strftime("%Y-%m-%d")
+                    PENDING_GOOGLE_ACTIONS[chat_id] = {
+                        "kind": "save_expense",
+                        "expense": exp_res,
+                        "created_at": timeutil.now(IST)
+                    }
+                    confirm_msg = (
+                        f"🧾 **Maine aapke bill se ye details note ki hain:**\n\n"
+                        f"• **Merchant:** {merch}\n"
+                        f"• **Amount:** ₹{amt:,.2f}\n"
+                        f"• **Category:** {cat}\n"
+                        f"• **Date:** {exp_dt}\n\n"
+                        f"👉 **Kya main ise aapke Expense Tracker me save kar doon?**\n"
+                        f"*(Bataiye: 'haan save kar do' ya cancel bolein)* 😊"
+                    )
+                    record_chat_turn(chat_id, "assistant", confirm_msg)
+                    await say_raw(chat_id, confirm_msg)
+                    return
+            except Exception as e_exp:
+                print("photo expense extract error:", e_exp)
+            try:
                 r = await understand(f"User sent image. Details: {analysis}. Caption: {caption or ''}")
                 if r.get("intent") == "save_item" and r.get("item"):
                     item = r["item"]
@@ -3832,6 +3888,38 @@ async def process_document(chat_id, doc, caption=""):
             })
         except Exception as act_err:
             print("set_active_document error:", repr(act_err))
+
+        # Smart Travel Ticket Extraction (Train PNR or Flight)
+        try:
+            from services.travel_service import extract_travel_booking_from_text
+            travel_res = await extract_travel_booking_from_text(text_content)
+            if travel_res.get("is_travel_booking"):
+                icon = "🚆" if travel_res.get("travel_type") == "train" else "✈️"
+                s_name = travel_res.get("service_name") or "Journey"
+                org = travel_res.get("origin") or ""
+                dst = travel_res.get("destination") or ""
+                dep = travel_res.get("departure_datetime") or ""
+                ident = travel_res.get("identifier") or ""
+                seat = travel_res.get("seat_info") or ""
+                PENDING_GOOGLE_ACTIONS[chat_id] = {
+                    "kind": "book_travel",
+                    "booking": travel_res,
+                    "created_at": timeutil.now(IST)
+                }
+                travel_msg = (
+                    f"{icon} **Maine aapka {travel_res.get('travel_type', 'ticket').title()} ticket analyze kar liya hai:**\n\n"
+                    f"• **Journey:** {s_name} ({org} -> {dst})\n"
+                    f"• **Departure:** {dep}\n"
+                    f"• **Seat / Berth:** {seat}\n"
+                    f"• **Code / PNR:** {ident}\n\n"
+                    f"👉 **Kya main ise Google Calendar me add kar doon aur 2 ghante pehle departure alert schedule kar doon?**\n"
+                    f"*(Bataiye: 'haan schedule kar do' ya cancel bolein)* 😊"
+                )
+                record_chat_turn(chat_id, "assistant", travel_msg)
+                await say_raw(chat_id, travel_msg)
+                return
+        except Exception as e_trav:
+            print("document travel extract error:", e_trav)
 
         if caption.strip():
             agent_prompt = (
