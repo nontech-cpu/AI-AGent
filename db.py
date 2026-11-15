@@ -114,10 +114,20 @@ def get_persona(chat_id):
 def set_categories(chat_id, cats):
     chat_id = canonical_chat_id(chat_id)
     with engine.begin() as conn:
-        conn.execute(
-            text("UPDATE users SET categories = :cats WHERE telegram_chat_id = :c"),
-            {"cats": cats, "c": chat_id},
-        )
+        try:
+            conn.execute(
+                text("UPDATE users SET categories = :cats WHERE telegram_chat_id = :c"),
+                {"cats": cats, "c": chat_id},
+            )
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN categories TEXT"))
+                conn.execute(
+                    text("UPDATE users SET categories = :cats WHERE telegram_chat_id = :c"),
+                    {"cats": json.dumps(cats) if isinstance(cats, (list, dict)) else str(cats), "c": chat_id},
+                )
+            except Exception as e:
+                print("set_categories fallback error:", e)
 
 
 def get_categories(chat_id):

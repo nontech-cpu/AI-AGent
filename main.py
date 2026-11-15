@@ -1289,8 +1289,75 @@ async def send_export(chat_id):
 
 # ---------- Onboarding ----------
 
+ONBOARDING_LANGUAGE_TEXT = (
+    "Thank you! 🙏\n\n"
+    "Aap kis language me chat karna chahte hain? / Which language do you prefer to chat in?\n\n"
+    "1. Hinglish (Casual Hindi + English)\n"
+    "2. English\n"
+    "3. Hindi (हिंदी)\n\n"
+    "Reply with 1, 2, or 3 (or just type the language name)."
+)
+
+ONBOARDING_CITY_TEXT = (
+    "Aap kis city (shehar) me rehte hain? 📍\n"
+    "(e.g., Jodhpur, Jaipur, Delhi, Mumbai, Bengaluru, etc.)\n\n"
+    "Isse aapko live weather, local places aur restaurants bina baar-baar shehar bataye milenge."
+)
+
+
 async def ask_persona(chat_id):
     await say(chat_id, PERSONA_TEXT)
+
+
+async def handle_onboarding_language(chat_id: int, text: str):
+    clean_l = (text or "").strip().lower()
+    selected_lang = "hinglish"
+    if clean_l in {"1", "hinglish", "hindi english", "hindi+english"} or "hinglish" in clean_l:
+        selected_lang = "hinglish"
+    elif clean_l in {"2", "english", "angrezi", "en"} or "english" in clean_l:
+        selected_lang = "english"
+    elif clean_l in {"3", "hindi", "हिंदी"} or "hindi" in clean_l or "हिंदी" in clean_l:
+        selected_lang = "hindi"
+    else:
+        if any(c in clean_l for c in ("hi", "namaste", "aap", "mera", "theek")):
+            selected_lang = "hinglish"
+        else:
+            selected_lang = "hinglish"
+
+    db.set_user_preference(chat_id, selected_lang)
+    try:
+        set_language(chat_id, selected_lang)
+    except Exception:
+        pass
+    reply_lang.set(selected_lang)
+
+    set_state(chat_id, "onboarding_city")
+    await say(chat_id, ONBOARDING_CITY_TEXT)
+    _log_slash_or_early_trace(chat_id, text, "onboarding_language_set", ONBOARDING_CITY_TEXT)
+
+
+async def handle_onboarding_city(chat_id: int, text: str):
+    clean_raw = (text or "").strip()
+    from utilities import clean_city_query
+    cleaned_city = clean_city_query(clean_raw)
+
+    city_to_save = None
+    if cleaned_city and clean_raw.lower() not in {"skip", "baad me", "later", "no", "nahi", "nhi"}:
+        city_to_save = cleaned_city.title()
+
+    if city_to_save:
+        try:
+            db.set_user_location_state(chat_id, city_to_save, travel_status="home", confidence=1.0, source="onboarding")
+        except Exception:
+            pass
+        try:
+            db.save_user_fact(chat_id, f"User lives in {city_to_save}", category="profile")
+        except Exception:
+            pass
+
+    set_state(chat_id, "persona")
+    await ask_persona(chat_id)
+    _log_slash_or_early_trace(chat_id, text, "onboarding_city_set", PERSONA_TEXT)
 
 
 async def apply_persona(chat_id, persona):
@@ -1298,14 +1365,34 @@ async def apply_persona(chat_id, persona):
     set_categories(chat_id, DEFAULTS[persona])
     set_state(chat_id, None)
     names = ", ".join(CATEGORIES[c] for c in DEFAULTS[persona])
-    await say(
-        chat_id,
-        f"Great, you're set up as {PERSONA_LABELS[persona]}. I'll keep track of: {names}.\n\n"
-        "Just tell me things to remember, like 'Electricity bill 1200 due on 25 Oct' "
-        "or 'Meeting tomorrow at 5 PM'. Ask 'what's on today?' anytime. "
-        "To change what I track, say something like 'stop tracking work'. "
-        "You can chat with me in any language you prefer!"
+
+    pref = db.get_user_preference(chat_id) or {}
+    loc = db.get_user_location_state(chat_id) or {}
+    user_city = loc.get("current_city") or pref.get("city")
+    if not user_city:
+        for f in db.get_user_facts(chat_id):
+            if "lives in " in f.get("fact", ""):
+                user_city = f["fact"].split("lives in ")[-1].strip()
+                break
+
+    user_lang = pref.get("reply_language") or get_language(chat_id) or "hinglish"
+    lang_display = "Hinglish" if user_lang == "hinglish" else ("English" if user_lang == "english" else "Hindi")
+    city_bullet = f"• **City:** {user_city} 📍\n" if user_city else ""
+
+    welcome_card = (
+        f"🎉 **Setup Complete!**\n"
+        f"• **Language:** {lang_display}\n"
+        f"{city_bullet}"
+        f"• **Profile:** {PERSONA_LABELS[persona]} (tracking: {names}) 💼\n\n"
+        "Main aapke reminders, meetings aur zaroori tasks yaad rakhunga.\n\n"
+        "Aap mujhse kuch bhi puch sakte hain, jaise:\n"
+        "• *'Aaj mausam kaisa hai?'*\n"
+        "• *'Meeting tomorrow at 5 PM'*\n"
+        "• *'Electricity bill 1200 due on 25 Oct'*\n"
+        "• *'Best places to visit nearby'*\n\n"
+        "Bataiye, aaj aapki kya help karun? 🙂"
     )
+    await say(chat_id, welcome_card)
 
 
 async def handle_persona_answer(chat_id, text):
@@ -2583,10 +2670,9 @@ async def handle_user_text(chat_id, text, lang_hint=None):
                 yn = await classify_yes_no_any_language(clean, "The assistant is asking for initial user consent to continue setup.")
             if yn is True:
                 give_consent(chat_id)
-                set_state(chat_id, "persona")
-                await say(chat_id, "Thank you!")
-                await ask_persona(chat_id)
-                _log_slash_or_early_trace(chat_id, clean, "onboarding_consent_given", "Thank you!")
+                set_state(chat_id, "onboarding_language")
+                await say(chat_id, ONBOARDING_LANGUAGE_TEXT)
+                _log_slash_or_early_trace(chat_id, clean, "onboarding_consent_given", ONBOARDING_LANGUAGE_TEXT)
                 return
             elif yn is False:
                 delete_user(chat_id)
@@ -3219,15 +3305,22 @@ async def handle_user_text(chat_id, text, lang_hint=None):
             yn = await classify_yes_no_any_language(clean, "The assistant is asking for initial user consent to continue setup.")
         if yn is True:
             give_consent(chat_id)
-            set_state(chat_id, "persona")
-            await say(chat_id, "Thank you!")
-            await ask_persona(chat_id)
+            set_state(chat_id, "onboarding_language")
+            await say(chat_id, ONBOARDING_LANGUAGE_TEXT)
         elif yn is False:
             delete_user(chat_id)
             await say(chat_id, "Okay, nothing has been saved. "
                                "Message me anytime if you change your mind.")
         else:
             await say(chat_id, "Please reply yes to continue, or no to cancel.")
+        return
+
+    if state == "onboarding_language":
+        await handle_onboarding_language(chat_id, clean)
+        return
+
+    if state == "onboarding_city":
+        await handle_onboarding_city(chat_id, clean)
         return
 
     if state == "persona":
@@ -3294,6 +3387,17 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         await say(chat_id, await get_welcome_consent_text(chat_id))
         return
     if not get_persona(chat_id):
+        pref = db.get_user_preference(chat_id) or {}
+        if not pref.get("reply_language"):
+            set_state(chat_id, "onboarding_language")
+            await say(chat_id, ONBOARDING_LANGUAGE_TEXT)
+            return
+        if not pref.get("city"):
+            loc = db.get_user_location_state(chat_id)
+            if not loc or not loc.get("current_city"):
+                set_state(chat_id, "onboarding_city")
+                await say(chat_id, ONBOARDING_CITY_TEXT)
+                return
         set_state(chat_id, "persona")
         await ask_persona(chat_id)
         return

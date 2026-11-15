@@ -67,7 +67,8 @@ def clean_city_query(raw_city: Optional[str]) -> str:
     stop = {
         "bhy", "bhai", "bro", "in", "at", "m", "me", "mein", "mai", "ka", "ki", "ke", "ko",
         "se", "pe", "par", "weather", "mausam", "temp", "temperature", "today", "aaj",
-        "kaisa", "kya", "hai", "h", "city", "shehar", "plz", "pls", "batao", "dikhao", "check"
+        "kaisa", "kya", "hai", "h", "city", "shehar", "plz", "pls", "batao", "dikhao", "check",
+        "rehta", "rahta", "rehti", "rahti", "live", "living", "lives", "hu", "hoon", "i", "from"
     }
     words = [w for w in c.strip().split() if w.lower() not in stop]
     return " ".join(words).strip()
