@@ -449,7 +449,8 @@ class LearnCorrectionArgs(BaseModel):
     category: Optional[str] = Field("user_feedback", description="Category e.g. 'place_correction', 'user_preference'.")
 
 class FindNearbyPlacesArgs(BaseModel):
-    category: str = Field(..., description="Category of places e.g. 'cafe', 'coffee shop', 'restaurant', 'gym'.")
+    category: Optional[str] = Field(None, description="Category of places e.g. 'cafe', 'coffee shop', 'restaurant', 'gym'.")
+    query: Optional[str] = Field(None, description="Alternative place search query alias e.g. 'Smart Point'.")
     area: Optional[str] = Field(None, description="Local neighborhood or area.")
     city: Optional[str] = Field(None, description="City name. If omitted, asks user or infers from context.")
 
@@ -4131,6 +4132,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
             ok, msg = db.unlink_user_phone_number(chat_id)
             return {
                 "status": "success" if ok else "error",
+                "error_type": None if ok else "phone_not_linked",
                 "message": msg
             }
 
@@ -5236,7 +5238,7 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         elif tool_name == "find_nearby_places":
             args = FindNearbyPlacesArgs(**arguments)
             from utilities import find_nearby_places
-            res = await find_nearby_places(args.category, args.area, args.city)
+            res = await find_nearby_places(args.category or args.query, args.area, args.city, query=args.query)
             return res
 
         elif tool_name == "get_movie_showtimes":

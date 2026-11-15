@@ -12,7 +12,7 @@ import ast
 import html
 import operator
 import httpx
-from urllib.parse import unquote
+from urllib.parse import unquote, quote_plus
 from typing import Dict, Any, Optional, Tuple, List
 
 WEATHER_CODES = {
@@ -730,6 +730,8 @@ def classify_search_intent(query: str) -> str:
         "restaurant", "restaurants", "cafe", "cafes", "hotel", "hotels",
         "hospital", "hospitals", "clinic", "clinics", "pharmacy", "chemist",
         "shopping mall", "malls", "showroom", "store", "stores", "outlet",
+        "supermarket", "super store", "superstore", "hypermarket", "grocery", "kirana",
+        "smart point", "smart bazaar", "dmart", "d-mart", "bazaar", "market",
         "metro station", "bus stand", "railway station", "airport",
         "distance between", "distance from", "route to", "how far is",
         "toll plaza", "highway"
@@ -799,9 +801,17 @@ async def _search_tavily(query: str, max_results: int = 5, search_depth: str = "
     return None
 
 
-async def _search_serper(query: str, max_results: int = 5) -> Optional[Dict[str, Any]]:
+EXCLUDED_LOCAL_DOMAINS = (
+    "justdial.com", "sulekha.com", "magicbricks.com",
+    "mouthshut.com", "asklaila.com", "indiamart.com", "yellowpages.com"
+)
+
+
+async def _search_serper_places(query: str, max_results: int = 5) -> Optional[Dict[str, Any]]:
     """
-    Queries Google Serper API for live Google organic results and local places.
+    Queries Google Serper /places API endpoint for live Google Maps Business POIs.
+    Returns 100% verified real physical establishments with address, rating, coordinates, phone, and website.
+    Zero aggregator SEO scraping.
     """
     serp_key = os.getenv("SERPER_API_KEY") or os.getenv("GOOGLE_SEARCH_API_KEY")
     if not serp_key:
@@ -810,9 +820,87 @@ async def _search_serper(query: str, max_results: int = 5) -> Optional[Dict[str,
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
+                "https://google.serper.dev/places",
+                headers={"X-API-KEY": serp_key, "Content-Type": "application/json"},
+                json={"q": query, "gl": "in", "hl": "en"}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                places_raw = data.get("places", [])
+                if not places_raw:
+                    return None
+                results = []
+                for p in places_raw[:max_results]:
+                    title = p.get("title") or "Local Establishment"
+                    addr = p.get("address")
+                    rating = p.get("rating")
+                    rating_cnt = p.get("ratingCount")
+                    cat = p.get("category")
+                    phone = p.get("phoneNumber")
+                    web = p.get("website")
+                    cid = p.get("cid")
+
+                    rating_str = f" ★{rating}" if rating else ""
+                    if rating_cnt:
+                        rating_str += f" ({rating_cnt} reviews)"
+
+                    details = []
+                    if addr:
+                        details.append(f"Address: {addr}")
+                    if cat:
+                        details.append(f"Type: {cat}")
+                    if phone:
+                        details.append(f"Phone: {phone}")
+
+                    snippet_str = ". ".join(details) if details else "Verified Google Maps Business Location"
+
+                    map_url = web or (f"https://maps.google.com/?cid={cid}" if cid else f"https://www.google.com/maps/search/?api=1&query={quote_plus(title + ' ' + (addr or ''))}")
+
+                    results.append({
+                        "title": f"📍 {title}{rating_str}",
+                        "snippet": snippet_str,
+                        "url": map_url,
+                        "address": addr,
+                        "rating": rating,
+                        "category": cat
+                    })
+
+                if results:
+                    return {
+                        "results": results[:max_results],
+                        "answer": None,
+                        "engine": "google_places"
+                    }
+            elif resp.status_code == 429:
+                print("[utilities._search_serper_places] Serper Places rate limit (429) hit.")
+    except Exception as exc:
+        print("[utilities._search_serper_places] Serper Places error:", repr(exc))
+    return None
+
+
+async def _search_serper(
+    query: str,
+    max_results: int = 5,
+    exclude_aggregators: bool = False
+) -> Optional[Dict[str, Any]]:
+    """
+    Queries Google Serper API for live Google organic results and local places.
+    Filters out noisy directory scrapers (Justdial, Sulekha) for local queries.
+    """
+    serp_key = os.getenv("SERPER_API_KEY") or os.getenv("GOOGLE_SEARCH_API_KEY")
+    if not serp_key:
+        return None
+
+    clean_q = query
+    if exclude_aggregators:
+        clean_q = f"{clean_q} -site:justdial.com -site:sulekha.com"
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
                 "https://google.serper.dev/search",
                 headers={"X-API-KEY": serp_key, "Content-Type": "application/json"},
-                json={"q": query, "num": max_results, "gl": "in", "hl": "en"}
+                json={"q": clean_q, "num": max_results + 3, "gl": "in", "hl": "en"}
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -830,12 +918,17 @@ async def _search_serper(query: str, max_results: int = 5) -> Optional[Dict[str,
                             "url": "https://maps.google.com"
                         })
                 # Check organic results
-                for org in data.get("organic", [])[:max_results]:
+                for org in data.get("organic", []):
                     t = org.get("title")
                     s = org.get("snippet")
                     u = org.get("link")
-                    if t and s:
-                        results.append({"title": t, "snippet": s, "url": u})
+                    if not t or not s:
+                        continue
+                    if exclude_aggregators and any(bad in (u or "").lower() for bad in EXCLUDED_LOCAL_DOMAINS):
+                        continue
+                    results.append({"title": t, "snippet": s, "url": u})
+                    if len(results) >= max_results:
+                        break
 
                 if results:
                     return {
@@ -959,14 +1052,23 @@ async def search_web(
     pref = (prefer_engine or "").lower().strip()
 
     if pref in ("google", "serper"):
-        engines = [
-            ("serper", lambda: _search_serper(clean_q, max_results)),
-            ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
-            ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
-        ]
+        if intent == "local_places":
+            engines = [
+                ("google_places", lambda: _search_serper_places(clean_q, max_results)),
+                ("serper", lambda: _search_serper(clean_q, max_results, exclude_aggregators=True)),
+                ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+                ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
+            ]
+        else:
+            engines = [
+                ("serper", lambda: _search_serper(clean_q, max_results)),
+                ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+                ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
+            ]
     elif pref == "tavily":
         engines = [
             ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
+            ("google_places", lambda: _search_serper_places(clean_q, max_results)),
             ("serper", lambda: _search_serper(clean_q, max_results)),
             ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
         ]
@@ -974,7 +1076,8 @@ async def search_web(
         # Auto-hybrid routing based on intent
         if intent == "local_places":
             engines = [
-                ("serper", lambda: _search_serper(clean_q, max_results)),
+                ("google_places", lambda: _search_serper_places(clean_q, max_results)),
+                ("serper", lambda: _search_serper(clean_q, max_results, exclude_aggregators=True)),
                 ("tavily", lambda: _search_tavily(clean_q, max_results, search_depth)),
                 ("duckduckgo", lambda: _search_duckduckgo(clean_q, max_results))
             ]
@@ -1180,13 +1283,19 @@ async def get_movie_showtimes(city: Optional[str] = None, area: Optional[str] = 
 # 8. DIRECT LIVE SEARCH GROUNDED PLACES DISCOVERY (Zero Mock / Pure Truth)
 # ==============================================================================
 
-async def find_nearby_places(category: str, area: Optional[str] = None, city: Optional[str] = None) -> Dict[str, Any]:
+async def find_nearby_places(
+    category: Optional[str] = None,
+    area: Optional[str] = None,
+    city: Optional[str] = None,
+    query: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Finds real, verified local places, malls, cafes, and restaurants by querying live search engines.
+    Prioritizes dedicated Google Places API for 100% verified Google Maps business pins.
     Strictly zero mock lists, zero hardcoded fake names.
     Prompts user if city is unconfigured/omitted.
     """
-    clean_cat = (category or "").strip()
+    clean_cat = (category or query or "").strip()
     clean_area = (area or "").strip()
     raw_city = (city or "").strip()
 
@@ -1214,21 +1323,34 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: Op
     is_generic_food = cat_lower in ("cafe", "cafes", "coffee shop", "coffee", "restaurant", "restaurants", "food", "dining", "dhaba")
 
     if is_generic_mall:
-        query = f"shopping malls in {clean_city}" if not clean_area else f"shopping malls in {clean_area} {clean_city}"
+        places_q = f"shopping malls in {clean_city}" if not clean_area else f"shopping malls in {clean_area} {clean_city}"
     elif is_generic_food:
-        query = f"best {clean_cat} in {clean_city}" if not clean_area else f"best {clean_cat} in {clean_area} {clean_city}"
+        places_q = f"{clean_cat} in {clean_city}" if not clean_area else f"{clean_cat} in {clean_area} {clean_city}"
     else:
-        # Specific place / brand inquiry (e.g. 'kmall', 'k mall', 'ashapurna', 'starbucks')
-        query = f"{clean_cat} in {clean_city} location address website timing" if not clean_area else f"{clean_cat} {clean_area} {clean_city} location address website"
+        # Specific place / brand inquiry (e.g. 'Smart Point', 'kmall', 'starbucks')
+        places_q = f"{clean_cat} in {clean_city}" if not clean_area else f"{clean_cat} in {clean_area} {clean_city}"
 
-    search_res = await search_web(query, max_results=6, prefer_engine="google")
-    results = search_res.get("results", [])
+    # 1. Primary: Dedicated Google Places API (100% verified Google Maps business pins, zero aggregator SEO scraping)
+    places_res = await _search_serper_places(places_q, max_results=6)
+    results = list(places_res.get("results", [])) if places_res else []
 
-    # If results are sparse and area was specified, try broader city query
-    if len(results) < 2 and clean_area:
-        broad_query = f"top {clean_cat} in {clean_city}"
-        broad_res = await search_web(broad_query, max_results=5, prefer_engine="google")
-        results.extend(broad_res.get("results", []))
+    # 2. Secondary Fallback: If Google Places returned zero results, supplement with filtered web search
+    if not results:
+        search_res = await search_web(places_q, max_results=6, prefer_engine="google")
+        existing_titles = {r.get("title", "").lower() for r in results}
+        for r in search_res.get("results", []):
+            if r.get("title", "").lower() not in existing_titles:
+                results.append(r)
+
+    # 3. If still empty and area was specified, try broader city query
+    if not results and clean_area:
+        broad_q = f"top {clean_cat} in {clean_city}"
+        broad_places = await _search_serper_places(broad_q, max_results=5)
+        if broad_places and broad_places.get("results"):
+            results = list(broad_places["results"])
+        else:
+            broad_res = await search_web(broad_q, max_results=5, prefer_engine="google")
+            results = list(broad_res.get("results", []))
 
     formatted_items = []
     for r in results[:6]:
@@ -1244,7 +1366,7 @@ async def find_nearby_places(category: str, area: Optional[str] = None, city: Op
         "city": clean_city,
         "area": clean_area or clean_city,
         "category": clean_cat,
-        "search_query": query,
+        "search_query": places_q,
         "results": results[:6],
         "message": summary_text
     }

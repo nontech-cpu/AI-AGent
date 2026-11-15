@@ -52,7 +52,31 @@ async def test_hybrid_search_routes_research_to_tavily():
 
 
 @pytest.mark.asyncio
-async def test_hybrid_search_routes_local_places_to_google():
+async def test_hybrid_search_routes_local_places_to_google_places():
+    mock_places_data = {
+        "results": [
+            {"title": "📍 Curious Life Coffee Roasters (Rating: 4.6★)", "snippet": "Address: C Scheme, Jaipur", "url": "https://maps.google.com"}
+        ],
+        "answer": None,
+        "engine": "google_places"
+    }
+
+    with patch("utilities._search_serper_places", new_callable=AsyncMock, return_value=mock_places_data) as mock_places, \
+         patch("utilities._search_serper", new_callable=AsyncMock) as mock_serp, \
+         patch("utilities._search_tavily", new_callable=AsyncMock) as mock_tav:
+
+        res = await search_web("best cafe in jaipur")
+        assert res["status"] == "success"
+        assert res["engine"] == "google_places"
+        assert res["intent"] == "local_places"
+        assert len(res["results"]) == 1
+        mock_places.assert_called_once()
+        mock_serp.assert_not_called()
+        mock_tav.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_routes_local_places_to_google_serper_when_places_empty():
     mock_serper_data = {
         "results": [
             {"title": "📍 Curious Life Coffee Roasters (Rating: 4.6★)", "snippet": "Address: C Scheme, Jaipur", "url": "https://maps.google.com"}
@@ -61,7 +85,8 @@ async def test_hybrid_search_routes_local_places_to_google():
         "engine": "serper_google"
     }
 
-    with patch("utilities._search_serper", new_callable=AsyncMock, return_value=mock_serper_data) as mock_serp, \
+    with patch("utilities._search_serper_places", new_callable=AsyncMock, return_value=None) as mock_places, \
+         patch("utilities._search_serper", new_callable=AsyncMock, return_value=mock_serper_data) as mock_serp, \
          patch("utilities._search_tavily", new_callable=AsyncMock) as mock_tav:
 
         res = await search_web("best cafe in jaipur")
@@ -69,6 +94,7 @@ async def test_hybrid_search_routes_local_places_to_google():
         assert res["engine"] == "serper_google"
         assert res["intent"] == "local_places"
         assert len(res["results"]) == 1
+        mock_places.assert_called_once()
         mock_serp.assert_called_once()
         mock_tav.assert_not_called()
 
@@ -113,4 +139,48 @@ async def test_hybrid_search_duckduckgo_fallback_when_both_keys_missing():
         assert res["status"] == "success"
         assert res["engine"] == "duckduckgo"
         assert len(res["results"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_find_nearby_places_prioritizes_google_places():
+    from utilities import find_nearby_places
+    mock_places_data = {
+        "results": [
+            {
+                "title": "📍 Reliance Smart Point ★4.2",
+                "snippet": "Address: Ground floor, Geeta Bhawan Rd, Jodhpur. Type: Department store",
+                "url": "https://maps.google.com",
+                "address": "Ground floor, Geeta Bhawan Rd, Jodhpur"
+            }
+        ],
+        "answer": None,
+        "engine": "google_places"
+    }
+
+    with patch("utilities._search_serper_places", new_callable=AsyncMock, return_value=mock_places_data) as mock_p:
+        res = await find_nearby_places(category="Smart Point", city="Jodhpur")
+        assert res["status"] == "success"
+        assert res["city"] == "Jodhpur"
+        assert len(res["results"]) == 1
+        assert "Geeta Bhawan Rd" in res["message"]
+        mock_p.assert_called_once()
+
+
+def test_tool_metadata_find_nearby_places_bidirectional_alias():
+    from agent.tool_metadata import validate_tool_call_parameters
+
+    # Category provided -> automatically aliases to query
+    ok, err = validate_tool_call_parameters("find_nearby_places", {"category": "Smart Point", "city": "Jodhpur"})
+    assert ok is True
+    assert err is None
+
+    # Query provided -> automatically aliases to category
+    ok, err = validate_tool_call_parameters("find_nearby_places", {"query": "Smart Point", "city": "Jodhpur"})
+    assert ok is True
+    assert err is None
+
+    # Neither provided -> returns missing query
+    ok, err = validate_tool_call_parameters("find_nearby_places", {"city": "Jodhpur"})
+    assert ok is False
+    assert err["missing"] == ["query"]
 

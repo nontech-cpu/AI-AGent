@@ -679,6 +679,13 @@ def validate_tool_call_parameters(
     Checks that all required fields are present and non-empty.
     If an essential field is missing, returns needs_info with zero side effects.
     """
+    # Bidirectional parameter alias normalization for places discovery
+    if tool_name == "find_nearby_places" and isinstance(arguments, dict):
+        if not arguments.get("query") and arguments.get("category"):
+            arguments["query"] = arguments["category"]
+        elif arguments.get("query") and not arguments.get("category"):
+            arguments["category"] = arguments["query"]
+
     meta = get_tool_metadata(tool_name)
     params_meta = meta.get("parameters", {})
     missing = []
