@@ -15,16 +15,22 @@ from timing import IST
 import core.timeutil as timeutil
 from core.json_safe import safe_json_dumps
 
-# Redaction patterns for secrets
+# Redaction patterns for secrets & PII (GDPR / PCI-DSS compliant Privacy Shield)
 SECRET_PATTERNS = [
     (re.compile(r"ghp_[a-zA-Z0-9]{15,}", re.I), "[REDACTED_GH_TOKEN]"),
     (re.compile(r"github_pat_[a-zA-Z0-9_]{20,}", re.I), "[REDACTED_GH_TOKEN]"),
     (re.compile(r"(?:secret_|ntn_)[a-zA-Z0-9_]{10,}", re.I), "[REDACTED_NOTION_TOKEN]"),
     (re.compile(r"gsk_[a-zA-Z0-9_]{20,}", re.I), "[REDACTED_GROQ_KEY]"),
     (re.compile(r"AIza[0-9A-Za-z-_]{30,}", re.I), "[REDACTED_GOOGLE_KEY]"),
+    (re.compile(r"sk-[a-zA-Z0-9_-]{16,}", re.I), "[REDACTED_API_KEY]"),
     (re.compile(r"Bearer\s+[a-zA-Z0-9_\-\.]{15,}", re.I), "Bearer [REDACTED_TOKEN]"),
-    (re.compile(r"\b[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}\b"), "[REDACTED_CARD]"),
-    (re.compile(r"\b\d{4,8}\b(?=.*(?:otp|code))", re.I), "[REDACTED_OTP]")
+    (re.compile(r"(?i)\b(password|passwd|pin|cvv|locker\s*code)(?:\s+is|\s*[:=])?\s+(\S+)"), r"\1: [REDACTED_SECRET]"),
+    (re.compile(r"\b[\w\.-]+@(upi|okhdfcbank|okaxis|oksbi|paytm|ybl|ibl|axl)\b", re.I), r"******@\1"),
+    (re.compile(r"\b([a-zA-Z0-9_.+-]{1,2})[a-zA-Z0-9_.+-]*(@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\b"), r"\1***\2"),
+    (re.compile(r"\b(?:\d{4}[ -]?){3}(\d{4})\b"), r"************\1"),
+    (re.compile(r"\b\d{4}[ -]\d{4}[ -](\d{4})\b"), r"********\1"),
+    (re.compile(r"(?:\+?91[\s-]?)?\b([6-9]\d{2})\d{3}(\d{4})\b"), r"******\2"),
+    (re.compile(r"(?i)\b(?:otp|verification\s*code|security\s*code)(?:\s+is|\s*[:=])?\s+(\d{4,8})\b"), r"OTP: [REDACTED_OTP]")
 ]
 
 def redact_secrets(data: Any) -> Any:

@@ -81,6 +81,7 @@ from google_auth import (
 )
 
 load_dotenv()
+from core.rate_limiter import webhook_limiter, validate_webhook_freshness
 # Reverse-proxy deployment note: run this FastAPI app on port 8001; proxy.py owns port 8000.
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SECRET = os.getenv("WEBHOOK_SECRET")
@@ -5598,6 +5599,7 @@ async def web_chat(request: Request):
 @app.post("/telegram/otp-webhook")
 async def telegram_otp_webhook(request: Request):
     """Webhook dedicated to the OTP bot; never invokes the main assistant handler."""
+    webhook_limiter.check_request(request)
     if not OTP_BOT_TOKEN:
         raise HTTPException(status_code=503, detail="OTP bot is not configured")
     update = await request.json()
@@ -5645,10 +5647,15 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str = Header(None),
 ):
+    webhook_limiter.check_request(request)
     if not SECRET or not x_telegram_bot_api_secret_token or not secrets.compare_digest(x_telegram_bot_api_secret_token, SECRET):
         raise HTTPException(status_code=403, detail="Forbidden: Invalid secret token")
 
     update = await request.json()
+
+    # Replay defense: Drop updates older than freshness threshold
+    if not validate_webhook_freshness(update):
+        return {"ok": True, "status": "ignored_stale_update"}
 
     # Telegram retry kare to dobara process nahi karna
     uid = update.get("update_id")

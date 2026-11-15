@@ -1024,6 +1024,17 @@ async def _search_duckduckgo(query: str, max_results: int = 5) -> Optional[Dict[
     return None
 
 
+def sanitize_untrusted_evidence(text: str, source_label: str = "web") -> str:
+    """
+    Wraps untrusted third-party web content in strict XML sandbox boundaries
+    with delimiter sanitization to prevent Indirect Prompt Injections (IPI).
+    """
+    if not text:
+        return ""
+    safe = text.replace("</untrusted_web_evidence>", "&lt;/untrusted_web_evidence&gt;")
+    return f"<untrusted_web_evidence source=\"{source_label}\">\n{safe}\n</untrusted_web_evidence>"
+
+
 async def search_web(
     query: str,
     max_results: int = 5,
@@ -1109,9 +1120,11 @@ async def search_web(
         formatted = "\n\n".join(formatted_items)
 
         if answer:
-            message_content = f"💡 Summary: {answer}\n\nSources:\n{formatted}"
+            raw_summary = f"💡 Summary: {answer}\n\nSources:\n{formatted}"
         else:
-            message_content = f"Found {len(results)} live web search result(s) via {engine_used} for '{clean_q}':\n\n{formatted}"
+            raw_summary = f"Found {len(results)} live web search result(s) via {engine_used} for '{clean_q}':\n\n{formatted}"
+
+        message_content = sanitize_untrusted_evidence(raw_summary, source_label=f"search_web:{engine_used}")
 
         return {
             "status": "success",
@@ -1210,7 +1223,7 @@ async def read_webpage(url: str, max_chars: int = 4000) -> Dict[str, Any]:
                 "title": title,
                 "length": len(truncated),
                 "content": truncated,
-                "message": f"Webpage Content from '{title}' ({clean_url}):\n\n{truncated}"
+                "message": sanitize_untrusted_evidence(f"Webpage Content from '{title}' ({clean_url}):\n\n{truncated}", source_label=f"webpage:{clean_url}")
             }
     except Exception as exc:
         print("[utilities.read_webpage] error:", repr(exc))

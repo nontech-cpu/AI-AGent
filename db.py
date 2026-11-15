@@ -2152,12 +2152,58 @@ def get_chat_turns_mentioning_keyword(chat_id, keyword, limit=10):
         return []
 
 
+import base64
+import hashlib
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+SENSITIVE_FACT_KEYWORDS = {
+    "password", "passwd", "locker code", "secret code", "private key",
+    "api key", "access token", "pin code", "cvv", "credential", "wifi password"
+}
+
+def _get_encryption_key() -> bytes:
+    raw_key = os.getenv("ENCRYPTION_SECRET_KEY", "peculiar-ai-agent-default-master-key-seed-2026")
+    return hashlib.sha256(raw_key.encode("utf-8")).digest()
+
+def _encrypt_fact_value(value: str) -> str:
+    if not value:
+        return value
+    try:
+        key = _get_encryption_key()
+        aesgcm = AESGCM(key)
+        nonce = os.urandom(12)
+        ct = aesgcm.encrypt(nonce, value.encode("utf-8"), None)
+        return f"ENC_AES256_GCM:{base64.b64encode(nonce).decode('ascii')}:{base64.b64encode(ct).decode('ascii')}"
+    except Exception as exc:
+        logger.warning(f"Failed to encrypt sensitive fact value: {exc}")
+        return value
+
+def _decrypt_fact_value(value: str) -> str:
+    if not isinstance(value, str) or not value.startswith("ENC_AES256_GCM:"):
+        return value
+    try:
+        parts = value.split(":")
+        if len(parts) != 3:
+            return value
+        nonce = base64.b64decode(parts[1])
+        ct = base64.b64decode(parts[2])
+        key = _get_encryption_key()
+        aesgcm = AESGCM(key)
+        pt = aesgcm.decrypt(nonce, ct, None)
+        return pt.decode("utf-8")
+    except Exception as exc:
+        logger.warning(f"Failed to decrypt fact value: {exc}")
+        return value
+
+
 def save_user_fact(chat_id, fact, category="general"):
     chat_id = canonical_chat_id(chat_id)
-    """Saves an extracted life context fact, plan, or preference to user_facts."""
+    """Saves an extracted life context fact, plan, or preference to user_facts with FLE for sensitive secrets."""
     if not fact or not str(fact).strip():
         return
     clean_fact = str(fact).strip()
+    is_sensitive = any(kw in clean_fact.lower() for kw in SENSITIVE_FACT_KEYWORDS)
+    storage_fact = _encrypt_fact_value(clean_fact) if is_sensitive else clean_fact
     try:
         with engine.begin() as conn:
             # Avoid exact duplicate active facts
@@ -2165,9 +2211,9 @@ def save_user_fact(chat_id, fact, category="general"):
                 text(
                     "SELECT id FROM user_facts "
                     "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
-                    "AND status = 'active' AND LOWER(fact) = LOWER(:f)"
+                    "AND status = 'active' AND (LOWER(fact) = LOWER(:f) OR LOWER(fact) = LOWER(:orig))"
                 ),
-                {"cid": chat_id, "f": clean_fact}
+                {"cid": chat_id, "f": storage_fact, "orig": clean_fact}
             ).first()
             if not existing:
                 conn.execute(
@@ -2175,7 +2221,7 @@ def save_user_fact(chat_id, fact, category="general"):
                         "INSERT INTO user_facts (user_id, fact, category, status) "
                         "SELECT id, :f, :cat, 'active' FROM users WHERE telegram_chat_id = :cid"
                     ),
-                    {"cid": chat_id, "f": clean_fact, "cat": category}
+                    {"cid": chat_id, "f": storage_fact, "cat": category}
                 )
     except Exception as exc:
         print("save_user_fact error:", repr(exc))
@@ -2188,7 +2234,7 @@ def save_note_or_fact(chat_id, fact, category="general"):
 
 def get_user_facts(chat_id, limit=25):
     chat_id = canonical_chat_id(chat_id)
-    """Retrieves active life context facts, plans, and preferences for the user."""
+    """Retrieves active life context facts, plans, and preferences for the user, transparently decrypting sensitive items."""
     try:
         with engine.connect() as conn:
             rows = conn.execute(
@@ -2199,7 +2245,7 @@ def get_user_facts(chat_id, limit=25):
                 ),
                 {"cid": chat_id, "lim": limit}
             ).fetchall()
-        return [{"id": r[0], "fact": r[1], "category": r[2]} for r in rows]
+        return [{"id": r[0], "fact": _decrypt_fact_value(r[1]), "category": r[2]} for r in rows]
     except Exception as exc:
         print("get_user_facts error:", repr(exc))
         return []
@@ -2222,6 +2268,21 @@ def delete_matching_user_facts(chat_id, query):
                 {"cid": chat_id, "pat": pattern}
             )
             deleted_count += res.rowcount or 0
+
+            # Also check if any encrypted facts match query after decryption
+            enc_rows = conn.execute(
+                text(
+                    "SELECT id, fact FROM user_facts "
+                    "WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) "
+                    "AND status = 'active' AND fact LIKE 'ENC_AES256_GCM:%'"
+                ),
+                {"cid": chat_id}
+            ).fetchall()
+            for r_id, r_fact in enc_rows:
+                decrypted = _decrypt_fact_value(r_fact)
+                if query.strip().lower() in decrypted.lower():
+                    conn.execute(text("UPDATE user_facts SET status = 'deleted' WHERE id = :id"), {"id": r_id})
+                    deleted_count += 1
 
             # Also clean from reminders if matching
             res_rem = conn.execute(
