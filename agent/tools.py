@@ -337,8 +337,25 @@ class ListPaymentRequestsArgs(BaseModel):
 
 
 class UploadToDriveArgs(BaseModel):
-    filename: str = Field(..., description="Name of the file to create on Google Drive.")
-    content: str = Field(..., description="Text content of the file.")
+    filename: str = Field(..., description="Name of the file to create or upload to Google Drive (e.g. 'MeetingNotes.txt' or 'Invoice.pdf').")
+    content: Optional[str] = Field("", description="Text content of the file. If uploading a recently received document or file, this can be empty.")
+    folder_name: Optional[str] = Field(None, description="Optional Google Drive folder name where the file should be placed (e.g. 'Work', 'Invoices', 'Personal'). If it doesn't exist, it will be automatically created.")
+    folder_id: Optional[str] = Field(None, description="Optional Google Drive folder ID.")
+
+class SearchDriveFilesArgs(BaseModel):
+    query: Optional[str] = Field(None, description="Keywords or filename to search in Google Drive (e.g. 'Project Summary', 'invoice', 'taxes').")
+    folder_name: Optional[str] = Field(None, description="Optional folder name to search within.")
+    mime_type: Optional[str] = Field(None, description="Optional filter: 'pdf', 'document', 'spreadsheet', 'folder'.")
+    limit: Optional[int] = Field(10, description="Max files to return (default 10).")
+
+class ReadDriveDocumentArgs(BaseModel):
+    filename: Optional[str] = Field(None, description="Filename to find and read from Google Drive (e.g. 'Summary.pdf', 'Notes.docx').")
+    file_id: Optional[str] = Field(None, description="Optional Google Drive file ID if known.")
+    max_chars: Optional[int] = Field(8000, description="Max characters of document text to return.")
+
+class CreateDriveFolderArgs(BaseModel):
+    folder_name: str = Field(..., description="Name of the new folder to create in Google Drive.")
+    parent_folder_name: Optional[str] = Field(None, description="Optional parent folder name.")
 
 class CreateNotionPageArgs(BaseModel):
     title: str = Field(..., description="Title of the Notion page.")
@@ -973,6 +990,69 @@ TOOL_DEFINITIONS = [
                     "request_quote": {"type": "string", "description": "Exact words from user's message requesting to send this email."}
                 },
                 "required": ["to", "subject", "body"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "upload_to_drive",
+            "description": "Uploads a text note or document file directly to user's Google Drive, optionally in a new or existing folder (requires human confirmation before uploading).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Target filename e.g. 'MeetingNotes.txt' or 'Invoice.pdf'"},
+                    "content": {"type": "string", "description": "Text content to save into the file"},
+                    "folder_name": {"type": ["string", "null"], "description": "Optional folder name to place the file in. Will be created if it does not exist."},
+                    "folder_id": {"type": ["string", "null"], "description": "Optional folder ID"}
+                },
+                "required": ["filename"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_drive_files",
+            "description": "Searches and lists files or folders in Google Drive by name, folder, or file type.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": ["string", "null"], "description": "Search keyword or filename e.g. 'Project Summary', 'invoice'"},
+                    "folder_name": {"type": ["string", "null"], "description": "Optional folder name to search within"},
+                    "mime_type": {"type": ["string", "null"], "description": "Optional filter: 'pdf', 'document', 'spreadsheet', 'folder'"},
+                    "limit": {"type": ["integer", "null"], "description": "Max files to return (default 10)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_drive_document",
+            "description": "Reads and extracts text from a file or document on Google Drive (Google Docs, PDFs, Word DOCX, text) for reading or summarizing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": ["string", "null"], "description": "Filename to find and read from Google Drive"},
+                    "file_id": {"type": ["string", "null"], "description": "Optional Google Drive file ID if known"},
+                    "max_chars": {"type": ["integer", "null"], "description": "Max characters to extract (default 8000)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_drive_folder",
+            "description": "Creates a new folder in Google Drive.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "folder_name": {"type": "string", "description": "Name of the new folder to create in Google Drive"},
+                    "parent_folder_name": {"type": ["string", "null"], "description": "Optional parent folder name"}
+                },
+                "required": ["folder_name"]
             }
         }
     },
@@ -4101,11 +4181,89 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
 
         elif tool_name == "upload_to_drive":
             args = UploadToDriveArgs(**arguments)
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "error_type": "google_not_connected",
+                    "message": "Google Drive is not connected. User must connect Google first."
+                }
+            content = args.content or ""
+            if not content:
+                from state.active_context import get_active_document
+                active_doc = get_active_document(chat_id)
+                if active_doc and active_doc.get("content"):
+                    content = active_doc.get("content")
             return {
                 "status": "needs_confirmation",
                 "action": "upload_file",
                 "filename": args.filename,
-                "content": args.content
+                "content": content,
+                "folder_name": args.folder_name,
+                "folder_id": args.folder_id
+            }
+
+        elif tool_name == "search_drive_files":
+            args = SearchDriveFilesArgs(**arguments)
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "error_type": "google_not_connected",
+                    "message": "Google Drive is not connected. User must connect Google first."
+                }
+            import google_services
+            files = await google_services.search_drive_files(
+                chat_id,
+                query=args.query,
+                folder_name=args.folder_name,
+                mime_type=args.mime_type,
+                limit=args.limit or 10
+            )
+            return {
+                "status": "success",
+                "count": len(files),
+                "files": files
+            }
+
+        elif tool_name == "read_drive_document":
+            args = ReadDriveDocumentArgs(**arguments)
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "error_type": "google_not_connected",
+                    "message": "Google Drive is not connected. User must connect Google first."
+                }
+            import google_services
+            res = await google_services.read_drive_document(
+                chat_id,
+                file_id=args.file_id,
+                filename=args.filename,
+                max_chars=args.max_chars or 8000
+            )
+            return res
+
+        elif tool_name == "create_drive_folder":
+            args = CreateDriveFolderArgs(**arguments)
+            from main import get_valid_google_connection_by_chat_id
+            is_conn, _ = await get_valid_google_connection_by_chat_id(chat_id)
+            if not is_conn:
+                return {
+                    "status": "error",
+                    "error_type": "google_not_connected",
+                    "message": "Google Drive is not connected. User must connect Google first."
+                }
+            import google_services
+            fid = await google_services.get_or_create_drive_folder(chat_id, args.folder_name)
+            return {
+                "status": "success",
+                "folder_id": fid,
+                "folder_name": args.folder_name,
+                "message": f"Folder '{args.folder_name}' is ready on Google Drive."
             }
 
         elif tool_name == "send_targeted_mention_message":
@@ -5460,6 +5618,10 @@ TOOL_GROUPS = {
     "document_generation": {
         "description": "generate pdf documents create excel spreadsheet export files reports download pdf xlsx csv docx pptx word powerpoint slides deck markdown json html txt ics document file sheet",
         "tools": {"generate_pdf", "generate_excel", "generate_file"}
+    },
+    "google_drive_storage": {
+        "description": "google drive gdrive upload file document pdf doc folder create folder search drive read document summarize drive",
+        "tools": {"upload_to_drive", "search_drive_files", "read_drive_document", "create_drive_folder"}
     },
     "subscriptions_finance": {
         "description": "manage subscriptions recurring bills renewals free trial watchdog cancel subscription audit services",

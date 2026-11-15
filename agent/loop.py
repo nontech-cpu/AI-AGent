@@ -942,6 +942,7 @@ async def run_agent_turn(chat_id: int, user_text: str, custom_system: Optional[s
                             "filename": tool_result.get("filename", "notes.txt"),
                             "content": tool_result.get("content", ""),
                             "folder_id": tool_result.get("folder_id"),
+                            "folder_name": tool_result.get("folder_name"),
                             "created_at": timeutil.now(IST).isoformat()
                         }
                         pending_action = payload

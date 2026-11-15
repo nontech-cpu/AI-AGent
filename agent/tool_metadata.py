@@ -430,9 +430,34 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
         "parameters": {
             "filename": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
-            "content": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "content": {"required": False, "default": "", "can_be_found_in": ["user_message", "active_document"]},
+            "folder_name": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
             "folder_id": {"required": False, "default": None, "can_be_found_in": []},
             "evidence": {"required": False, "default": None, "can_be_found_in": []}
+        }
+    },
+    "search_drive_files": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "query": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "folder_name": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "mime_type": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "limit": {"required": False, "default": 10, "can_be_found_in": []}
+        }
+    },
+    "read_drive_document": {
+        "risk": TOOL_RISK_READ,
+        "parameters": {
+            "file_id": {"required": False, "default": None, "can_be_found_in": ["drive"]},
+            "filename": {"required": False, "default": None, "can_be_found_in": ["user_message"]},
+            "max_chars": {"required": False, "default": 8000, "can_be_found_in": []}
+        }
+    },
+    "create_drive_folder": {
+        "risk": TOOL_RISK_EXTERNAL_OR_IRREVERSIBLE,
+        "parameters": {
+            "folder_name": {"required": True, "default": None, "can_be_found_in": ["user_message"]},
+            "parent_folder_name": {"required": False, "default": None, "can_be_found_in": []}
         }
     },
     "create_notion_page": {

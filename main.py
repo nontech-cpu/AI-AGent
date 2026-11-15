@@ -2085,8 +2085,21 @@ async def handle_google_confirmation(chat_id, clean, raw_text=""):
                 pass
             await say(chat_id, f"Email sent successfully to {pending['to']}. (Message ID: {result})\n\n💡 Follow-up Watchdog active: Agar 3 din mein reply nahi aata, toh main aapko follow-up remind kara dunga.")
         elif kind == 'upload_file':
-            result = await google_upload_text_file(chat_id, pending['filename'], pending['content'], pending.get('folder_id'))
-            await say(chat_id, "File uploaded to Google Drive: " + (result.get('webViewLink') or result.get('name', pending['filename'])))
+            try:
+                import google_services
+                result = await google_services.upload_file_to_drive(
+                    chat_id,
+                    pending['filename'],
+                    content=pending.get('content'),
+                    folder_name=pending.get('folder_name'),
+                    folder_id=pending.get('folder_id')
+                )
+                folder_str = f" in folder '{pending.get('folder_name')}'" if pending.get('folder_name') else ""
+                await say(chat_id, f"✅ File uploaded to Google Drive{folder_str}: " + (result.get('webViewLink') or result.get('name', pending['filename'])))
+            except google_services.GoogleDriveQuotaExceededError:
+                await say(chat_id, "⚠️ Google Drive storage full ho chuka hai (100% space used). Kripya kuch files delete karein ya storage upgrade karein.")
+            except Exception as e:
+                await say(chat_id, f"⚠️ Google Drive upload error: {e}")
         elif kind == 'create_meeting':
             result = await google_create_meeting(chat_id, pending['title'], pending['start_iso'], pending['duration_minutes'], pending.get('attendees', []))
             raw_start = result.get('start') if isinstance(result, dict) else None

@@ -79,7 +79,15 @@ async def send_email(chat_id, to, subject, body):
     result = await _request('POST', f'{GOOGLE}/gmail/v1/users/me/messages/send', access, json={'raw': raw})
     return result.get('id', 'sent')
 
-async def list_drive_folders(chat_id):
+class GoogleDriveQuotaExceededError(RuntimeError):
+    """Raised when Google Drive storage quota has been exceeded (HTTP 403/507)."""
+    pass
+
+class GoogleDriveFileNotFoundError(RuntimeError):
+    """Raised when requested Google Drive file cannot be found."""
+    pass
+
+async def list_drive_folders(chat_id: int):
     access, _ = await access_token_for_chat(chat_id)
     data = await _request('GET', f'{GOOGLE}/drive/v3/files', access, params={
         'q': "mimeType='application/vnd.google-apps.folder' and trashed=false",
@@ -87,23 +95,261 @@ async def list_drive_folders(chat_id):
     })
     return data.get('files', [])
 
-async def upload_text_file(chat_id, filename, content, folder_id=None):
+async def get_or_create_drive_folder(chat_id: int, folder_name: str, parent_folder_id: str | None = None) -> str:
+    """Finds existing folder by name or creates a new one in Google Drive. Returns folder_id."""
+    if not folder_name or not folder_name.strip():
+        return None
+    folder_name = folder_name.strip()
+    access, _ = await access_token_for_chat(chat_id)
+    safe_name = folder_name.replace("'", "\'")
+    query_parts = [
+        "mimeType = 'application/vnd.google-apps.folder'",
+        "trashed = false",
+        f"name = '{safe_name}'"
+    ]
+    if parent_folder_id:
+        query_parts.append(f"'{parent_folder_id}' in parents")
+
+    q_str = " and ".join(query_parts)
+    try:
+        data = await _request('GET', f'{GOOGLE}/drive/v3/files', access, params={
+            'q': q_str,
+            'pageSize': 1,
+            'fields': 'files(id, name)'
+        })
+        files = data.get('files', [])
+        if files:
+            return files[0]['id']
+    except Exception as e:
+        logger.warning(f"Error searching drive folder '{folder_name}': {e}")
+
+    metadata = {
+        'name': folder_name,
+        'mimeType': 'application/vnd.google-apps.folder'
+    }
+    if parent_folder_id:
+        metadata['parents'] = [parent_folder_id]
+
+    created = await _request('POST', f'{GOOGLE}/drive/v3/files', access, json=metadata)
+    return created.get('id')
+
+async def upload_file_to_drive(
+    chat_id: int,
+    filename: str,
+    content: str | None = None,
+    file_bytes: bytes | None = None,
+    mime_type: str | None = None,
+    folder_name: str | None = None,
+    folder_id: str | None = None
+) -> dict:
+    """
+    Uploads a file or document to Google Drive.
+    Supports creating or locating target folders, custom binary data, text notes,
+    and handles Drive storage quota limits cleanly without hallucination.
+    """
+    if folder_name and not folder_id:
+        folder_id = await get_or_create_drive_folder(chat_id, folder_name)
+
     access, _ = await access_token_for_chat(chat_id)
     metadata = {'name': filename}
     if folder_id:
         metadata['parents'] = [folder_id]
-    # multipart upload; metadata JSON and text content
-    async with httpx.AsyncClient(timeout=30) as client:
+
+    if file_bytes is not None:
+        data = file_bytes
+    elif content is not None:
+        data = content.encode('utf-8')
+    else:
+        data = b""
+
+    if not mime_type:
+        import mimetypes
+        guessed_type, _ = mimetypes.guess_type(filename)
+        mime_type = guessed_type or ('text/plain' if filename.endswith(('.txt', '.md', '.json', '.csv', '.py')) else 'application/octet-stream')
+
+    import json as _json
+    async with httpx.AsyncClient(timeout=45) as client:
         response = await client.post(
-            f'{GOOGLE}/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+            f'{GOOGLE}/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,parents',
             headers={'Authorization': f'Bearer {access}'},
             files={
-                'metadata': (None, __import__('json').dumps(metadata), 'application/json; charset=UTF-8'),
-                'file': (filename, content.encode('utf-8'), 'text/plain'),
-            })
+                'metadata': (None, _json.dumps(metadata), 'application/json; charset=UTF-8'),
+                'file': (filename, data, mime_type),
+            }
+        )
+
     if response.is_error:
-        raise RuntimeError(f'Google Drive returned {response.status_code}: {response.text[:400]}')
-    return response.json()
+        err_text = response.text or ""
+        if response.status_code in (403, 507) and any(k in err_text for k in ("storageQuotaExceeded", "quotaExceeded", "insufficientFilePermissions", "User storage quota exceeded")):
+            raise GoogleDriveQuotaExceededError("The user's Google Drive storage quota has been exceeded.")
+        raise RuntimeError(f'Google Drive returned {response.status_code}: {err_text[:400]}')
+
+    res = response.json()
+    if folder_id and "folder_id" not in res:
+        res["folder_id"] = folder_id
+    if folder_name and "folder_name" not in res:
+        res["folder_name"] = folder_name
+    return res
+
+async def upload_text_file(chat_id: int, filename: str, content: str, folder_id: str | None = None) -> dict:
+    """Backward-compatible wrapper for upload_file_to_drive."""
+    return await upload_file_to_drive(chat_id, filename, content=content, folder_id=folder_id)
+
+async def search_drive_files(
+    chat_id: int,
+    query: str | None = None,
+    folder_name: str | None = None,
+    mime_type: str | None = None,
+    limit: int = 10
+) -> list:
+    """Searches and lists user files in Google Drive."""
+    access, _ = await access_token_for_chat(chat_id)
+    q_clauses = ["trashed = false"]
+    if query:
+        safe_q = query.replace("'", "\'")
+        q_clauses.append(f"name contains '{safe_q}'")
+    if folder_name:
+        fid = await get_or_create_drive_folder(chat_id, folder_name)
+        if fid:
+            q_clauses.append(f"'{fid}' in parents")
+    if mime_type:
+        clean_m = mime_type.lower().strip()
+        if clean_m in ("folder", "directory"):
+            q_clauses.append("mimeType = 'application/vnd.google-apps.folder'")
+        elif clean_m == "pdf":
+            q_clauses.append("mimeType = 'application/pdf'")
+        elif clean_m in ("document", "doc"):
+            q_clauses.append("(mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/pdf' or mimeType = 'text/plain')")
+        elif clean_m in ("spreadsheet", "sheet"):
+            q_clauses.append("(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'text/csv')")
+        else:
+            q_clauses.append(f"mimeType = '{mime_type}'")
+
+    q_str = " and ".join(q_clauses)
+    params = {
+        'q': q_str,
+        'pageSize': min(limit or 10, 50),
+        'fields': 'files(id, name, mimeType, size, modifiedTime, webViewLink)',
+        'orderBy': 'modifiedTime desc'
+    }
+    data = await _request('GET', f'{GOOGLE}/drive/v3/files', access, params=params)
+    return data.get('files', [])
+
+async def read_drive_document(
+    chat_id: int,
+    file_id: str | None = None,
+    filename: str | None = None,
+    max_chars: int = 8000
+) -> dict:
+    """
+    Downloads or exports a document from Google Drive and extracts clean text content.
+    Supports Google Docs, Google Sheets, Google Slides, PDFs (pypdf), DOCX, and text formats.
+    """
+    access, _ = await access_token_for_chat(chat_id)
+    target_id = file_id
+    meta = None
+
+    if not target_id and filename:
+        files = await search_drive_files(chat_id, query=filename, limit=1)
+        if files:
+            target_id = files[0]['id']
+            meta = files[0]
+        else:
+            return {
+                "ok": False,
+                "error": f"File '{filename}' not found in Google Drive."
+            }
+
+    if not target_id:
+        return {"ok": False, "error": "file_id or filename is required."}
+
+    if not meta:
+        meta = await _request('GET', f'{GOOGLE}/drive/v3/files/{target_id}', access, params={
+            'fields': 'id, name, mimeType, size, webViewLink'
+        })
+
+    mime = meta.get('mimeType', '')
+    doc_name = meta.get('name', 'document')
+    text_content = ""
+
+    # 1. Google Workspace files (must use /export endpoint)
+    if mime == 'application/vnd.google-apps.document':
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{GOOGLE}/drive/v3/files/{target_id}/export?mimeType=text/plain',
+                headers={'Authorization': f'Bearer {access}'}
+            )
+            if resp.is_error:
+                return {"ok": False, "error": f"Failed to export Google Doc: {resp.status_code}"}
+            text_content = resp.text
+
+    elif mime == 'application/vnd.google-apps.spreadsheet':
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{GOOGLE}/drive/v3/files/{target_id}/export?mimeType=text/csv',
+                headers={'Authorization': f'Bearer {access}'}
+            )
+            if resp.is_error:
+                return {"ok": False, "error": f"Failed to export Google Sheet: {resp.status_code}"}
+            text_content = resp.text
+
+    elif mime == 'application/vnd.google-apps.presentation':
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{GOOGLE}/drive/v3/files/{target_id}/export?mimeType=text/plain',
+                headers={'Authorization': f'Bearer {access}'}
+            )
+            if resp.is_error:
+                return {"ok": False, "error": f"Failed to export Google Slides: {resp.status_code}"}
+            text_content = resp.text
+
+    # 2. Binary or raw files (use alt=media endpoint)
+    else:
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.get(
+                f'{GOOGLE}/drive/v3/files/{target_id}?alt=media',
+                headers={'Authorization': f'Bearer {access}'}
+            )
+            if resp.is_error:
+                return {"ok": False, "error": f"Failed to download file from Google Drive: {resp.status_code}"}
+            raw_bytes = resp.content
+
+        # Extract text based on mime / extension
+        if mime == 'application/pdf' or doc_name.lower().endswith('.pdf'):
+            try:
+                import io, pypdf
+                reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+                pages = [p.extract_text() or "" for p in reader.pages]
+                text_content = "\n".join(p for p in pages if p.strip())
+            except Exception as pe:
+                text_content = f"[PDF Text Extraction Warning: {pe}]"
+
+        elif mime == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' or doc_name.lower().endswith('.docx'):
+            try:
+                import io, zipfile, xml.etree.ElementTree as ET
+                with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
+                    xml_content = z.read("word/document.xml")
+                    tree = ET.fromstring(xml_content)
+                    text_content = "".join(tree.itertext())
+            except Exception as de:
+                text_content = f"[DOCX Text Extraction Warning: {de}]"
+
+        elif mime.startswith('text/') or doc_name.lower().endswith(('.txt', '.csv', '.json', '.md', '.py', '.html', '.js')):
+            text_content = raw_bytes.decode('utf-8', errors='replace')
+        else:
+            text_content = f"[Binary file: {doc_name}, mimeType: {mime}, size: {meta.get('size')} bytes]"
+
+    truncated = len(text_content) > max_chars
+    return {
+        "ok": True,
+        "file_id": target_id,
+        "name": doc_name,
+        "mime_type": mime,
+        "text": text_content[:max_chars],
+        "total_chars": len(text_content),
+        "truncated": truncated,
+        "webViewLink": meta.get("webViewLink", "")
+    }
 
 _USER_TZ_CACHE: dict = {}
 

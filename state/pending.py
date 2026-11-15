@@ -362,8 +362,8 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
     Executes a confirmed pending action through Google Services.
     Updates the database row to 'confirmed'.
     """
-    kind = pending.get("action_kind") or pending.get("payload", {}).get("kind") or pending.get("payload", {}).get("action")
-    payload = pending.get("payload", {})
+    kind = pending.get("action_kind") or pending.get("kind") or pending.get("payload", {}).get("kind") or pending.get("payload", {}).get("action")
+    payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else pending
     action_id = pending.get("id")
 
     try:
@@ -558,21 +558,33 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             filename = payload.get("filename", "notes.txt")
             content = payload.get("content", "")
             folder_id = payload.get("folder_id")
+            folder_name = payload.get("folder_name")
 
-            res = await google_services.upload_text_file(
-                chat_id=chat_id,
-                filename=filename,
-                content=content,
-                folder_id=folder_id
-            )
-            file_link = res.get("webViewLink") or ""
-            reply = f"✅ **File successfully uploaded to Google Drive!**\n📄 **Name:** {filename}"
-            if file_link:
-                reply += f"\n🔗 **Link:** {file_link}"
+            try:
+                res = await google_services.upload_file_to_drive(
+                    chat_id=chat_id,
+                    filename=filename,
+                    content=content,
+                    folder_name=folder_name,
+                    folder_id=folder_id
+                )
+                file_link = res.get("webViewLink") or ""
+                folder_str = f" in folder **{folder_name}**" if folder_name else ""
+                reply = f"✅ **File successfully uploaded to Google Drive!**\n📄 **Name:** {filename}{folder_str}"
+                if file_link:
+                    reply += f"\n🔗 **Link:** {file_link}"
 
-            if action_id:
-                complete_pending_action(action_id, status="confirmed")
-            return True, reply
+                if action_id:
+                    complete_pending_action(action_id, status="confirmed")
+                return True, reply
+            except google_services.GoogleDriveQuotaExceededError:
+                if action_id:
+                    complete_pending_action(action_id, status="error")
+                return True, "⚠️ **Google Drive Storage Full:** Aapka Google Drive storage quota full ho chuka hai (100% space used). Nayi files upload karne ke liye Google Drive se kuch files delete karein ya storage upgrade karein."
+            except Exception as exc:
+                if action_id:
+                    complete_pending_action(action_id, status="error")
+                return True, f"⚠️ **Google Drive Upload Failed:** {str(exc)}"
 
         elif kind in ("delete_meeting",):
             event_id = payload.get("event_id")
