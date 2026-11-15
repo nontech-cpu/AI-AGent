@@ -113,3 +113,4 @@ async def test_hybrid_search_duckduckgo_fallback_when_both_keys_missing():
         assert res["status"] == "success"
         assert res["engine"] == "duckduckgo"
         assert len(res["results"]) == 1
+

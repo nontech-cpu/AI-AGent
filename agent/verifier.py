@@ -46,6 +46,8 @@ CRITICAL INQUIRY, CANCELLATION & ERROR EXCEPTION:
 4. "claims_route_or_travel_time": boolean. True if the Draft Reply asserts, describes, or predicts a physical travel route, road directions (e.g. via specific roads, highways, bypasses), transit path, or travel time/duration (e.g. '10-15 minute lagenge') between locations. False otherwise.
 5. "claims_unavailable_capability": boolean. True if the Draft Reply states, offers, or promises that the assistant can perform an action or capability that does NOT exist in the tool suite (e.g. offering to book tickets, book cinema/movie tickets, book flights/trains/buses, make payments/purchases, order food, place phone calls). False otherwise.
 6. "sourced_by_tool": boolean. True if ALL external facts, routes, or claimed actions in the Draft Reply are explicitly supported by and found in the Evidence (Tool Results or Memory Context). False if any claimed fact, route, or action is NOT found in the Evidence.
+CRITICAL SOURCE AUDIT RULE:
+- The string '(Source: Google Places)' or '(Source: Web Search)' or '(Source: Movie Showtimes)' written inside the Draft Reply itself is NOT evidence! You must check ONLY the actual 'Evidence (Tool Results & Memory)' section. If Tool Results does not contain verified search or place listings supporting the names, 'sourced_by_tool' MUST be false!
 7. "reason": string. Short 1-sentence explanation of your assessment.
 
 CRITICAL GROUNDING RULES FOR EXTERNAL SAAS / WORKSPACE ACTIONS:
@@ -374,7 +376,36 @@ def deterministic_verify(
             revised = get_i18n_string("route_gps_unavailable", lang=eff_lang)
             return False, revised, violations
 
-    # 6. Regional Script Sanitization
+    # 6. Unverified Place/Restaurant Recommendations & Fake Citation Check
+    has_place_tool_success = any(
+        isinstance(tr, dict) and
+        str(tr.get("tool_name") or tr.get("action") or "").lower() in ("find_nearby_places", "search_web", "web_search", "get_movie_showtimes") and
+        tr.get("status") == "success" and bool(tr.get("results") or tr.get("movies") or tr.get("message"))
+        for tr in tool_results
+    )
+    fake_citation = any(
+        cite in draft_reply for cite in ("(Source: Google Places)", "(Source: Web Search)", "(Source: Movie Showtimes)")
+    )
+    if fake_citation and not has_place_tool_success:
+        violations.append("Fake source citation claimed without executing corresponding tool")
+
+    venue_keywords = (
+        "restaurant", "restaurants", "restuant", "restraunt", "restro", "cafe", "cafes", "food", "hotel", "hotels",
+        "place", "places", "dhaba", "dosa", "sweet", "sweets", "cinema", "theatre",
+        "south indian", "north indian", "chinese", "dining", "eatery",
+        "रेस्टोरेंट", "होटल", "कैफे", "साउथ इंडियन"
+    )
+    venue_query = any(w in low_query for w in venue_keywords)
+    has_numbered_venues = bool(re.search(r'(?:^|\n)\s*(?:1\.|2\.|•|\*)\s*\*{0,2}[a-zA-Z\u0900-\u097F]+', draft_reply))
+    if venue_query and has_numbered_venues and not has_place_tool_success:
+        violations.append("Unverified place/restaurant recommendations provided without executing find_nearby_places or search_web")
+
+    # 7. Explicit Language Lock Enforcement
+    if explicit_lang_lock and eff_lang == "english":
+        if re.search(r'[\u0900-\u097F]{4,}', draft_reply):
+            violations.append("Draft reply in Devanagari Hindi violates explicit English language preference lock")
+
+    # 8. Regional Script Sanitization
     draft_reply = sanitize_regional_scripts(draft_reply)
 
     if violations:
@@ -509,9 +540,17 @@ async def verify_and_ground_reply(
         fallback_msg = get_i18n_string("action_failed", lang=eff_lang)
         return False, revised_det or fallback_msg, violations_det
 
-    # Fast-path for questions or trivial short acknowledgements (0ms overhead, zero keyword sets)
+    # Fast-path for pure clarifying questions or short acknowledgements (under 60 words, zero entity lists/citations)
     clean_reply_stripped = draft_reply.strip()
-    if "?" in clean_reply_stripped or len(clean_reply_stripped.split()) <= 3:
+    has_list_items = bool(re.search(r'(?:^|\n)\s*(?:1\.|2\.|•|\*|-)\s+', clean_reply_stripped))
+    has_external_artifacts = any(marker in clean_reply_stripped for marker in ("(Source:", "http://", "https://"))
+    is_clarifying_question = (
+        "?" in clean_reply_stripped and
+        not has_list_items and
+        not has_external_artifacts and
+        len(clean_reply_stripped.split()) <= 60
+    )
+    if is_clarifying_question or len(clean_reply_stripped.split()) <= 3:
         return True, sanitize_regional_scripts(draft_reply), []
 
     evidence_text = extract_evidence_text(tool_results, memory_context, user_query, recent_history)
