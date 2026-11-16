@@ -94,6 +94,14 @@ OPERATING PRINCIPLES:
       * TRAVEL & TRANSIT TRACKER (TRAIN PNR & FLIGHTS):
         - When user forwards a ticket text, booking SMS, or asks to track journey (e.g. 'ye meri train ticket hai PNR 1234567890', 'flight 6E-204 Mumbai to Delhi tomorrow calendar me daal do'): call `track_travel_booking(text=..., identifier=...)`. The system automatically adds the journey to Google Calendar and schedules a 2-hour departure packing alert.
         - When user asks for live status, platform, or delay: call `get_travel_status(identifier=...)`.
+      * ACTIVE SELF-LEARNING, USER CORRECTIONS & BEHAVIORAL FEEDBACK (MANDATORY Tool Execution):
+        - When the user corrects an error, points out a mistake, criticizes an action, or establishes a behavioral rule for the future (e.g. 'aage se dhyan rakhna X mat karna', 'ye galat hai, maine bola tha Y karna', 'don't do X in future', 'never use Hindi script', 'always confirm before saving', 'subah 8 baje se pehle message mat karna'):
+          YOU MUST ALWAYS CALL `learn_user_correction(wrong_concept=..., correct_rule=..., category=...)`!
+          * `wrong_concept`: Clear explanation of the mistake or incorrect behavior (e.g. 'Replying in Devanagari Hindi font' or 'Auto-saving receipt without asking').
+          * `correct_rule`: The permanent rule learned to avoid this mistake (e.g. 'Always use Roman Hinglish script for Indian languages, never Devanagari Hindi' or 'Always present confirmation card before logging expenses').
+          * `category`: 'communication_style', 'tool_behavior', 'preference', or 'factual_correction'.
+        - Acknowledge warmly, concisely and clearly in ChatGPT/Claude style (e.g. '✅ Samajh gaya bhai! Maine ye rule permanently note kar liya hai — aage se X nahi hoga.').
+        - STRICT BAN: NEVER just give a plain conversational apology ('Haan sorry aage se dhyan rakhunga') without calling `learn_user_correction`. If you do not call the tool, the rule will NOT be saved in memory!
 
 3. Temporal Correctness & Schedule Management:
    - Anchor all dates/days to Current Time, Today ISO, and Year in Session Info below. Never use past training cutoff dates (such as 2024 or 2025). Unless asked about historical events, scheduled events and deadlines are forward-looking.
@@ -128,6 +136,7 @@ User: {USER_NAME} | Current Time: {NOW_TIME} ({WEEKDAY}) [{USER_TIMEZONE}] | Tod
 {LANGUAGE_MANDATE}
 {MORNING_INTERACTION_MANDATE}
 {PREFERENCE_LOCK_BLOCK}
+{LEARNED_CORRECTIONS_DIRECTIVE}
 
 CONTEXT:
 - Profile & Memory: {MEMORY_CONTEXT_BLOCK}
@@ -135,8 +144,7 @@ CONTEXT:
 - Integrations: {CONNECTED_INTEGRATIONS}
 - Pending Actions: {PENDING_ACTIONS}
 - Active Context: {ACTIVE_CONTEXT}
-- Lists: {LISTS_BLOCK}
-- Learned Rules: {LEARNED_CORRECTIONS_BLOCK}"""
+- Lists: {LISTS_BLOCK}"""
 
 _USER_META_CACHE: dict = {}
 
@@ -475,7 +483,18 @@ async def build_runtime_system_prompt(
     try:
         corrections_str = db.format_user_corrections(chat_id)
     except Exception:
-        corrections_str = "None recorded yet."
+        corrections_str = ""
+    if corrections_str and corrections_str.strip():
+        corrections_directive = (
+            f"\n### 🧠 CRITICAL USER CORRECTIONS & PERMANENT LEARNED RULES (MANDATORY OVERRIDE)\n"
+            f"The user has explicitly corrected your previous mistakes and established these non-negotiable operational rules.\n"
+            f"YOU MUST STRICTLY ADHERE TO THESE RULES in all actions and responses — they supersede all default assumptions:\n"
+            f"{corrections_str}\n"
+            f"VIOLATING ANY OF THESE RULES IS A CRITICAL SYSTEM FAILURE.\n"
+        )
+    else:
+        corrections_directive = ""
+    prompt = prompt.replace("{LEARNED_CORRECTIONS_DIRECTIVE}", corrections_directive)
     prompt = prompt.replace("{LEARNED_CORRECTIONS_BLOCK}", corrections_str)
     prompt = prompt.replace("{MEMORY_CONTEXT_BLOCK}", memory_block)
     prompt = prompt.replace("{LISTS_BLOCK}", lists_str)

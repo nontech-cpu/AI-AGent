@@ -42,6 +42,11 @@ STRICT EXTRACTION RULES (CRITICAL):
 6. ABSOLUTE DATE RESOLUTION: If the user says "aaj" (today), "kal" (yesterday or tomorrow), or "morning", resolve it to the exact absolute date ({CURRENT_DATE_IST}) in YYYY-MM-DD.
 7. STRUCTURED MEASUREMENTS: If user mentions health, fitness, or numerical readings (glucose, blood sugar, blood pressure, weight, heart rate), ALWAYS populate the "measurements" list!
 8. PROFILE & IMPORTANCE (CRITICAL): Stable personal facts (home/work address, transport habits, vehicle, name, key relationships, permanent preferences) MUST be marked with "memory_type": "profile" and "importance": 5. General facts use "memory_type": "semantic_fact" and "importance": 3. Contradicting facts MUST use "action": "UPDATE".
+9. USER CORRECTIONS & BEHAVIORAL FEEDBACK (CRITICAL): If the user corrects a mistake made by the assistant, criticizes an action, or establishes a behavioral rule for the future (e.g. 'aage se dhyan rakhna X mat karna', 'ye galat hai, maine bola tha Y karna', 'don't do X in future', 'never use Hindi font', 'always ask me before saving'):
+Populate the "corrections" list:
+- "wrong_concept": What the assistant did wrong or assumed falsely.
+- "correction_rule": The permanent behavioral rule learned from the user to prevent repeating this mistake.
+- "category": "communication_style", "tool_behavior", "user_preference", or "factual_correction".
 
 Output valid JSON ONLY with this schema:
 {
@@ -154,12 +159,16 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
         if not clean_user or (len(clean_user.split()) <= 2 and clean_user in {"hi", "hello", "hey", "yes", "no", "haan", "ok", "theek", "theek hai", "cancel", "thanks", "thank you"}):
             return
 
-        # Explicitly ignore assistant reply to eliminate negative-fact poisoning
-        # Pass ONLY user's message to the extraction prompt
         now_ist = timeutil.now(IST)
         today_iso = now_ist.strftime("%Y-%m-%d")
 
         system_prompt = EXTRACTION_SYSTEM_PROMPT.replace("{CURRENT_DATE_IST}", today_iso)
+
+        # Build user turn context; if assistant_reply is available, provide it as passive context for correction extraction
+        user_turn_content = f"User message: {user_text}"
+        if assistant_reply and len(str(assistant_reply).strip()) > 5:
+            clean_asst = str(assistant_reply).strip()[:400].replace("\n", " ")
+            user_turn_content = f"[Assistant Prior Reply (context for evaluating corrections)]: {clean_asst}\n[User Message]: {user_text}"
 
         # Debounce slightly to prioritize foreground user turns over background extraction
         await asyncio.sleep(1.5)
@@ -172,7 +181,7 @@ async def extract_and_persist_turn(chat_id: int, user_text: str, assistant_reply
             resp = await llm_provider.chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"User message: {user_text}"}
+                    {"role": "user", "content": user_turn_content}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,

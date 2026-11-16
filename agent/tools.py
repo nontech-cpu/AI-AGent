@@ -5615,9 +5615,15 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
         elif tool_name == "learn_user_correction":
             args = LearnCorrectionArgs(**arguments)
             ok = db.save_user_correction(chat_id, args.wrong_concept, args.correct_rule, args.category or "user_feedback")
+            try:
+                from agent.prompt import invalidate_prompt_schedule_cache
+                invalidate_prompt_schedule_cache(chat_id)
+            except Exception:
+                pass
             return {
                 "status": "success" if ok else "error",
                 "learned_rule": args.correct_rule,
+                "wrong_concept": args.wrong_concept,
                 "message": f"Understood and permanently recorded: '{args.correct_rule}'"
             }
 

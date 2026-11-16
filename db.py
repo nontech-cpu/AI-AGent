@@ -3104,22 +3104,57 @@ def _init_user_corrections_table():
         print("init_user_corrections_table error:", repr(exc))
 
 
-def save_user_correction(chat_id: int, wrong_concept: str, correction_rule: str, category: str = "general") -> bool:
-    """Saves a permanent correction taught by the user so the bot never repeats the mistake."""
+def save_user_correction(chat_id: int, wrong_concept: str, correction_rule: str = "", category: str = "general", correct_rule: str = None) -> bool:
+    """Saves or updates a permanent correction taught by the user so the bot never repeats the mistake."""
     chat_id = canonical_chat_id(chat_id)
-    if not wrong_concept or not correction_rule:
+    actual_rule = str(correction_rule or correct_rule or "").strip()
+    if not wrong_concept or not actual_rule:
         return False
     _init_user_corrections_table()
+    w_clean = str(wrong_concept).strip()
+    r_clean = actual_rule
+    c_clean = str(category or "general").strip()
     try:
         is_pg = engine.dialect.name == "postgresql"
         with engine.begin() as conn:
+            # Deduplication: check if an active correction already matches the concept or rule
+            existing = conn.execute(
+                text("""
+                    SELECT id FROM user_corrections
+                    WHERE chat_id = :cid AND status = 'active'
+                    AND (LOWER(wrong_concept) = LOWER(:wrong) OR LOWER(correction_rule) = LOWER(:rule))
+                """),
+                {"cid": chat_id, "wrong": w_clean, "rule": r_clean}
+            ).first()
+
+            if existing:
+                if is_pg:
+                    conn.execute(
+                        text("""
+                            UPDATE user_corrections
+                            SET wrong_concept = :wrong, correction_rule = :rule, category = :cat, created_at = now()
+                            WHERE id = :id
+                        """),
+                        {"id": existing[0], "wrong": w_clean, "rule": r_clean, "cat": c_clean}
+                    )
+                else:
+                    conn.execute(
+                        text("""
+                            UPDATE user_corrections
+                            SET wrong_concept = :wrong, correction_rule = :rule, category = :cat, created_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                        """),
+                        {"id": existing[0], "wrong": w_clean, "rule": r_clean, "cat": c_clean}
+                    )
+                return True
+
             if is_pg:
                 conn.execute(
                     text("""
                         INSERT INTO user_corrections (chat_id, wrong_concept, correction_rule, category, created_at, status)
                         VALUES (:cid, :wrong, :rule, :cat, now(), 'active')
                     """),
-                    {"cid": chat_id, "wrong": wrong_concept.strip(), "rule": correction_rule.strip(), "cat": category.strip()}
+                    {"cid": chat_id, "wrong": w_clean, "rule": r_clean, "cat": c_clean}
                 )
             else:
                 conn.execute(
@@ -3127,12 +3162,36 @@ def save_user_correction(chat_id: int, wrong_concept: str, correction_rule: str,
                         INSERT INTO user_corrections (chat_id, wrong_concept, correction_rule, category, created_at, status)
                         VALUES (:cid, :wrong, :rule, :cat, CURRENT_TIMESTAMP, 'active')
                     """),
-                    {"cid": chat_id, "wrong": wrong_concept.strip(), "rule": correction_rule.strip(), "cat": category.strip()}
+                    {"cid": chat_id, "wrong": w_clean, "rule": r_clean, "cat": c_clean}
                 )
             return True
     except Exception as exc:
         print("save_user_correction error:", repr(exc))
         return False
+
+
+def delete_user_correction(chat_id: int, query: str) -> int:
+    """Deletes or archives matching user corrections (e.g. if user revokes an old rule)."""
+    chat_id = canonical_chat_id(chat_id)
+    if not query or not str(query).strip():
+        return 0
+    _init_user_corrections_table()
+    pattern = f"%{query.strip().lower()}%"
+    try:
+        with engine.begin() as conn:
+            res = conn.execute(
+                text("""
+                    UPDATE user_corrections
+                    SET status = 'deleted'
+                    WHERE chat_id = :cid AND status = 'active'
+                    AND (LOWER(wrong_concept) LIKE :pat OR LOWER(correction_rule) LIKE :pat)
+                """),
+                {"cid": chat_id, "pat": pattern}
+            )
+            return res.rowcount or 0
+    except Exception as exc:
+        print("delete_user_correction error:", repr(exc))
+        return 0
 
 
 def get_user_corrections(chat_id: int, limit: int = 15):
@@ -3166,13 +3225,13 @@ def get_user_corrections(chat_id: int, limit: int = 15):
 
 
 def format_user_corrections(chat_id: int) -> str:
-    """Formats active corrections into a sharp, unbreachable prompt block."""
-    corrections = get_user_corrections(chat_id)
+    """Formats active corrections into a sharp, unbreachable executive prompt block."""
+    corrections = get_user_corrections(chat_id, limit=15)
     if not corrections:
-        return "None recorded yet. Follow user instructions strictly."
+        return ""
     lines = []
-    for c in corrections:
-        lines.append(f"• DO NOT say/assume: '{c['wrong_concept']}' -> PERMANENT TRUTH: {c['correction_rule']}")
+    for idx, c in enumerate(corrections, 1):
+        lines.append(f"{idx}. [MANDATORY RULE]: {c['correction_rule']} (Past Mistake to Avoid: Never assume/do '{c['wrong_concept']}')")
     return "\n".join(lines)
 
 
