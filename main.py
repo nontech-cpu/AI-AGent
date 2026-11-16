@@ -456,10 +456,19 @@ async def save_item_flow(chat_id, item):
                            "that right now. Say 'track " + item["category"] + "' if you want me to.")
         return
 
+    rec = item.get("recurrence", "none") or "none"
     item_id = save_memory(chat_id, item["category"], item["title"], item["amount"],
-                          item["due_date"], item["due_time"])
+                          item["due_date"], item["due_time"], recurrence=rec)
     plan = build_plan(item["due_date"], item["due_time"])
-    if plan["reminders"] and item_id:
+    # If recurring item is created after today's occurrence has passed, schedule the next occurrence
+    if plan.get("status") == "past" and rec in ("daily", "weekly", "weekdays") and item.get("due_date") and item.get("due_time"):
+        step_days = 7 if rec == "weekly" else 1
+        next_d = item["due_date"] + timedelta(days=step_days)
+        if rec == "weekdays" and next_d.weekday() >= 5:
+            next_d += timedelta(days=(2 if next_d.weekday() == 5 else 1))
+        plan = build_plan(next_d, item["due_time"])
+
+    if plan.get("reminders") and item_id:
         add_reminders(item_id, plan["reminders"])
 
     parts = [f"Saved ✅ {CATEGORIES[item['category']]}: {item['title']}"]

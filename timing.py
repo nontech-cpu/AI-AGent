@@ -5,7 +5,7 @@ import core.timeutil as timeutil
 
 IST = ZoneInfo("Asia/Kolkata")
 MORNING = dtime(9, 0)   # din wale reminders ka time
-URGENT_MINUTES = 10     # itne ya kam minute me ho to turant alert
+URGENT_MINUTES = 15     # itne ya kam minute me ho to turant alert
 
 _WORD_NUMBERS = {
     # Hindi Devanagari

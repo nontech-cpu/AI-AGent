@@ -610,6 +610,50 @@ def _schedule_next_recurring_slot(conn, item_id: int, remind_at, due_at, label: 
     if not next_remind_at:
         return
     unsent_cond = _unsent_reminder_sql()
+
+    # For standard proximity alerts (15min, 5min, at_time), ensure that ALL THREE proximity alerts
+    # exist for the upcoming occurrence date, so an item created within 15min never permanently misses 15min.
+    if label in ("15min", "5min", "at_time"):
+        from timing import IST
+        from datetime import datetime as dt_cls, time as dt_time, timedelta
+        m_info = conn.execute(
+            text("SELECT due_time FROM memory_items WHERE id = :id"),
+            {"id": item_id},
+        ).first()
+        m_due_time = m_info[0] if m_info else None
+        if m_due_time:
+            if isinstance(m_due_time, str):
+                try:
+                    parts = [int(p) for p in m_due_time.split(":")[:3]]
+                    m_due_time = dt_time(parts[0], parts[1], parts[2] if len(parts) > 2 else 0)
+                except Exception:
+                    pass
+            if hasattr(m_due_time, "hour"):
+                occ_date = next_due_at.date() if hasattr(next_due_at, "date") else next_remind_at.date()
+                event_dt = dt_cls.combine(occ_date, m_due_time, tzinfo=IST)
+                slots = [
+                    (event_dt - timedelta(minutes=15), "15min"),
+                    (event_dt - timedelta(minutes=5), "5min"),
+                    (event_dt, "at_time"),
+                ]
+                for s_at, s_label in slots:
+                    exists = conn.execute(
+                        text(
+                            f"SELECT id FROM reminders "
+                            f"WHERE item_id = :id "
+                            f"  AND COALESCE(label, '') = :label "
+                            f"  AND ({unsent_cond} OR remind_at = :slot_at) "
+                            f"  AND (status IS NULL OR status NOT IN ('deleted', 'superseded', 'dead_letter'))"
+                        ),
+                        {"id": item_id, "label": s_label, "slot_at": s_at},
+                    ).first()
+                    if not exists:
+                        conn.execute(
+                            text("INSERT INTO reminders (item_id, remind_at, due_at, label) VALUES (:item_id, :remind_at, :due_at, :label)"),
+                            {"item_id": item_id, "remind_at": s_at, "due_at": s_at, "label": s_label},
+                        )
+                return
+
     existing_next = conn.execute(
         text(
             f"SELECT id FROM reminders "
@@ -625,6 +669,81 @@ def _schedule_next_recurring_slot(conn, item_id: int, remind_at, due_at, label: 
             text("INSERT INTO reminders (item_id, remind_at, due_at, label) VALUES (:item_id, :remind_at, :due_at, :label)"),
             {"item_id": item_id, "remind_at": next_remind_at, "due_at": next_due_at, "label": label},
         )
+
+
+def backfill_recurring_reminders() -> int:
+    """
+    Scans active recurring items and ensures all upcoming proximity alerts (15min, 5min, at_time)
+    are present in the reminders table, healing items that missed their initial 15min alert.
+    """
+    from timing import IST
+    import core.timeutil as timeutil
+    from datetime import datetime as dt_cls, timedelta, time as dt_time
+
+    backfilled_count = 0
+    unsent_cond = _unsent_reminder_sql()
+    now = timeutil.now(IST)
+
+    try:
+        with engine.begin() as conn:
+            items = conn.execute(text("""
+                SELECT m.id, m.due_time, m.recurrence, m.due_date
+                FROM memory_items m
+                WHERE (m.status IS NULL OR m.status != 'deleted')
+                  AND m.recurrence IN ('daily', 'weekly', 'weekdays')
+                  AND m.due_time IS NOT NULL
+            """)).fetchall()
+
+            for item_id, due_time, rec, due_date in items:
+                unsent = conn.execute(text(f"""
+                    SELECT id, remind_at, due_at, label
+                    FROM reminders
+                    WHERE item_id = :id AND {unsent_cond}
+                      AND (status IS NULL OR status NOT IN ('deleted', 'superseded', 'dead_letter'))
+                    ORDER BY remind_at ASC
+                """), {"id": item_id}).fetchall()
+
+                if not unsent:
+                    continue
+
+                first_remind_at = _parse_dt_value(unsent[0][1])
+                if not hasattr(first_remind_at, "astimezone"):
+                    continue
+                occ_date = first_remind_at.astimezone(IST).date()
+
+                t_obj = due_time
+                if isinstance(t_obj, str):
+                    try:
+                        parts = [int(p) for p in t_obj.split(":")[:3]]
+                        t_obj = dt_time(parts[0], parts[1], parts[2] if len(parts) > 2 else 0)
+                    except Exception:
+                        pass
+                if not hasattr(t_obj, "hour"):
+                    continue
+
+                event_dt = dt_cls.combine(occ_date, t_obj, tzinfo=IST)
+                slots = [
+                    (event_dt - timedelta(minutes=15), "15min"),
+                    (event_dt - timedelta(minutes=5), "5min"),
+                    (event_dt, "at_time"),
+                ]
+
+                existing_labels = {r[3] for r in unsent}
+                for slot_at, slot_label in slots:
+                    if slot_label not in existing_labels and slot_at > now:
+                        conn.execute(text("""
+                            INSERT INTO reminders (item_id, remind_at, due_at, label)
+                            VALUES (:mid, :remind_at, :due_at, :label)
+                        """), {
+                            "mid": item_id,
+                            "remind_at": slot_at,
+                            "due_at": slot_at,
+                            "label": slot_label,
+                        })
+                        backfilled_count += 1
+    except Exception as exc:
+        logger.debug(f"backfill_recurring_reminders error: {exc}")
+    return backfilled_count
 
 
 def _init_reminders_scheduler_columns():
@@ -659,6 +778,10 @@ def _init_reminders_scheduler_columns():
                     except Exception:
                         pass
         _REMINDERS_COLS_INITIALIZED = True
+        try:
+            backfill_recurring_reminders()
+        except Exception:
+            pass
     except Exception as exc:
         logger.debug(f"Reminders scheduler column init notice: {exc}")
 
