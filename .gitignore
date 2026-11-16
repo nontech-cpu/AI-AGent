@@ -7,6 +7,7 @@ __pycache__/
 *.bak*
 *.sqlite3
 *.db
+*.zip
 node_modules/
 .DS_Store
 test_card*.jpg
