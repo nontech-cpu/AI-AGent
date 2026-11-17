@@ -296,10 +296,17 @@ async def build_morning_briefing_message(
                 lines.append(f"🌅 **Good Morning{greeting_name}! Aaj aapka early schedule hai:**\n")
                 lines.append(f"⏰ **Early Appointment:** {early_event['title']} at **{ev_time_str} IST**\n")
     else:
-        if is_eng:
-            lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nHere is your daily overview for today:\n")
+        now_hr = timeutil.now(IST).hour
+        if now_hr < 12:
+            if is_eng:
+                lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nHere is your daily overview for today:\n")
+            else:
+                lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nAaj ka din shuru ho chuka hai — yahan hai aapka daily overview:\n")
         else:
-            lines.append(f"🌅 **Good Morning{greeting_name}!** ☀️\nAaj ka din shuru ho chuka hai — yahan hai aapka daily overview:\n")
+            if is_eng:
+                lines.append(f"☀️ **Daily Overview & Briefing (Good Afternoon{greeting_name})!**\nHere is your schedule & overview for today:\n")
+            else:
+                lines.append(f"☀️ **Daily Overview & Briefing (Good Afternoon{greeting_name})!**\nYeh raha aapka aaj ka schedule & overview:\n")
 
     # 2. WEATHER (ONLY if user's city is known in memory/facts, without asking)
     city = detect_user_city(chat_id)
@@ -526,12 +533,12 @@ async def process_user_morning_briefing(chat_id: int, user_info: dict, now_ist: 
         if trig_time <= now_ist <= ev_time + timedelta(minutes=30):
             should_send = True
             active_early = early_event
-        elif 8 <= now_ist.hour < 11:
+        elif 8 <= now_ist.hour < 14:
             should_send = True
             active_early = None
     else:
-        # Standard Morning Briefing: STRICTLY triggers in morning between 08:00 AM and 10:30 AM IST
-        if 8 <= now_ist.hour < 11:
+        # Standard Morning Briefing & daytime catch-up: triggers between 08:00 AM and 14:00 PM IST
+        if 8 <= now_ist.hour < 14:
             should_send = True
             active_early = None
 
@@ -564,9 +571,20 @@ async def morning_briefing_job():
     """
     Periodic job invoked in background loop.
     Iterates through all registered active users and checks if they need their morning briefing.
+    Uses bounded concurrency to avoid database pool saturation.
     """
     now_ist = timeutil.now(IST)
     users = db.get_all_active_telegram_users()
+    sem = asyncio.Semaphore(2)
+
+    async def _safe_process(cid, u):
+        async with sem:
+            try:
+                return await process_user_morning_briefing(cid, u, now_ist)
+            except Exception as e:
+                print(f"[morning_briefing_job] error for {cid}:", repr(e))
+                return False
+
     tasks = []
     seen_canonical = set()
     for u in users:
@@ -576,15 +594,15 @@ async def morning_briefing_job():
             if canon_cid in seen_canonical:
                 continue
             seen_canonical.add(canon_cid)
-            tasks.append(process_user_morning_briefing(cid, u, now_ist))
+            tasks.append(_safe_process(cid, u))
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def morning_briefing_loop():
     """Background monitoring loop running inside FastAPI lifespan."""
-    # Delay initial execution so server startup and web requests are blazing fast
-    await asyncio.sleep(60)
+    # Delay initial execution slightly so server startup is fast, but catches up within 10s
+    await asyncio.sleep(10)
     while True:
         try:
             await morning_briefing_job()

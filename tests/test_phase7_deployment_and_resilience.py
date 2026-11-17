@@ -203,3 +203,33 @@ def test_structured_turn_logging_masks_secrets():
     assert "ghp_1234567890abcdef1234567890" not in tr["message"]
     assert "secret_abcdef9876543210" not in tr["message"]
     assert "[REDACTED" in tr["message"] or "***" in tr["message"]
+
+
+@pytest.mark.asyncio
+async def test_morning_briefing_sleep_wake_catchup_pass():
+    """Verify morning briefing catch-up pass delivers daily overview if server woke up between 8 AM and 2 PM IST."""
+    from datetime import datetime, date
+    from timing import IST
+    import morning_briefing
+    import core.timeutil as timeutil
+
+    chat_id = 998877708
+    db.ensure_user(chat_id)
+    today_d = date(2026, 11, 17)
+
+    # 1. At 12:30 PM (afternoon wake-up catchup)
+    wake_dt = datetime(2026, 11, 17, 12, 30, tzinfo=IST)
+    timeutil.set_frozen_clock(wake_dt)
+
+    u_info = {"chat_id": chat_id, "first_name": "ResilientUser", "username": "resilient"}
+    msg, kind = await morning_briefing.build_morning_briefing_message(chat_id, u_info, today_d)
+    assert "Good Afternoon" in msg or "Daily Overview" in msg
+
+    # 2. Check process_user_morning_briefing triggers in daytime (< 14:00)
+    sent = await morning_briefing.process_user_morning_briefing(chat_id, u_info, wake_dt)
+    assert sent is True
+    assert db.is_morning_briefing_sent(chat_id, "2026-11-17") is True
+
+    # 3. Second run must be idempotent (no duplicate sends)
+    sent_second = await morning_briefing.process_user_morning_briefing(chat_id, u_info, wake_dt)
+    assert sent_second is False

@@ -355,6 +355,23 @@ async def check_relationship_warmth_weekly(now_ist: datetime):
                 logger.error(f"Warmth check error for {cid}: {e}")
 
 
+_LAST_KEEP_ALIVE_TS = 0.0
+
+async def _ping_keep_alive(now_ist):
+    """Pings health endpoint every 10 minutes between 07:00 and 23:00 IST to prevent cloud container sleep."""
+    global _LAST_KEEP_ALIVE_TS
+    import time
+    curr_ts = time.time()
+    if 7 <= now_ist.hour < 23 and (curr_ts - _LAST_KEEP_ALIVE_TS >= 600):
+        _LAST_KEEP_ALIVE_TS = curr_ts
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PUBLIC_BASE_URL") or "https://peculiar-ai-backend.onrender.com"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.get(f"{base_url.rstrip('/')}/health")
+        except Exception:
+            pass
+
+
 async def heartbeat_loop():
     """Continuous background monitoring daemon running inside FastAPI lifespan."""
     logger.info("Starting Proactive Heartbeat Daemon...")
@@ -362,6 +379,7 @@ async def heartbeat_loop():
     while True:
         try:
             now_ist = timeutil.now(IST)
+            await _ping_keep_alive(now_ist)
             await check_evening_wrapup(now_ist)
             await check_subscription_watchdog_daily(now_ist)
             await check_birthday_watchdog_daily(now_ist)

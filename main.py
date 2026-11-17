@@ -4289,6 +4289,14 @@ async def lifespan(app):
                 await build_runtime_system_prompt(cid, "ping", mem_ctx=m_ctx)
             # Immediate catch-up pass on startup for any missed reminders during sleep/reboot
             await run_startup_catchup_pass()
+            # Immediate morning briefing catch-up pass if server woke up during the day
+            try:
+                now_ist = timeutil.now(IST)
+                if 8 <= now_ist.hour < 14:
+                    from morning_briefing import morning_briefing_job
+                    await morning_briefing_job()
+            except Exception as mb_err:
+                logging.getLogger("uvicorn").warning(f"Startup morning briefing catch-up notice: {mb_err}")
         except Exception as w_err:
             logging.getLogger("uvicorn").warning(f"Startup warmup notice: {w_err}")
     asyncio.create_task(_warmup())
