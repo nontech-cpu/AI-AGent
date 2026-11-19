@@ -4501,11 +4501,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from api_v1 import router as api_v1_router
-app.include_router(api_v1_router)
-
-from services.frontier_router import router as frontier_router
-app.include_router(frontier_router)
+from api import api_router
+app.include_router(api_router)
 
 from fastapi.staticfiles import StaticFiles
 _assets_path = os.path.join(os.path.dirname(__file__), "assets")
