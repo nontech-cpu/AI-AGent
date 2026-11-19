@@ -10,30 +10,45 @@ GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 
 async def clean_voice_transcript(raw_text):
-    """Clean up obvious acoustic mishearings and speech-to-text typos using fast LLM pass."""
+    """Clean up obvious acoustic mishearings and speech-to-text typos into natural Roman Hinglish."""
     if not raw_text or len(raw_text.strip()) < 3:
         return raw_text
+
+    system = (
+        "You are an expert Speech-to-Text post-processor for an Indian personal assistant.\n"
+        "User speech often has Indian accents, Hindi/Hinglish/English slang, and acoustic mishearings.\n\n"
+        "CRITICAL SCRIPT MANDATE:\n"
+        "- ALWAYS output in clean ROMAN script (Hinglish / English). NEVER output in Devanagari Hindi script font.\n"
+        "- If the input is in Devanagari Hindi (e.g. 'चार बजे आराव को point कर देना...'), you MUST transliterate and clean it into natural Roman Hinglish (e.g. 'Chaar baje Aarav ko phone kar dena...').\n\n"
+        "ACOUSTIC & INTENT CORRECTIONS:\n"
+        "- Fix obvious speech recognition errors into what the user was actually saying in natural Roman Hinglish / English:\n"
+        "  * 'point kar dena' / 'point karna' when referring to a person -> 'phone kar dena' / 'call kar dena'\n"
+        "  * 'aath se payment' / 'aath payment' -> 'payment' / '800 payment'\n"
+        "  * 'os kar de' / 'hosta me' -> 'meeting host kar de'\n"
+        "  * 'panch doje' -> '5 baje'\n"
+        "  * 'aarav', 'rakshit', 'devender', 'ananya' -> capitalize names properly\n"
+        "- Preserve all times (e.g. 4 baje, 5 baje), tasks, numbers, and multiple thoughts accurately.\n"
+        "Return ONLY a JSON object: {\"clean_text\": \"...\"}."
+    )
+
+    try:
+        from llm.provider import chat
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": raw_text}
+        ]
+        res = await chat(messages, response_format={"type": "json_object"}, temperature=0.0, timeout=8.0)
+        parsed = json.loads(res.text or "{}")
+        clean = (parsed.get("clean_text") or "").strip()
+        if clean and len(clean) >= 2:
+            return clean
+    except Exception as exc:
+        print("clean_voice_transcript chat fallback:", repr(exc))
+
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
         return raw_text
 
-    system = (
-        "You are an expert Speech-to-Text post-processor for an Indian personal assistant. "
-        "User speech often has Indian accents, Hindi/Hinglish/English slang, and acoustic mishearings. "
-        "Fix obvious speech recognition errors into what the user was actually saying, in natural Hindi/Hinglish/English. "
-        "Examples: "
-        "- 'ओस कर देव' / 'वोस्ट करनी' / 'होस्ता में' -> 'होस्ट कर दे' / 'होस्ट करनी है' (meeting host), "
-        "- 'पान्च दोजें' -> 'पाँच बजे' (5 baje), "
-        "- 'जेवनिंग' -> 'evening', "
-        "- 'वाई' -> 'भाई', "
-        "- 'आई मतेशाम भूँ' -> 'आज शाम को', "
-        "- 'मिटिंग' -> 'मीटिंग', "
-        "- 'रनिया, रोई' / 'रानिया रोई' / 'अनन्या रोय' -> 'Ananya Roy', "
-        "- 'अनन्या' / 'अनाया' / 'अन्नाया' -> 'Ananya', "
-        "- 'देविंदर' / 'देवेंद्र' -> 'Devender'. "
-        "Preserve user intent and meaning accurately. If the text is already clear, keep it as is. "
-        "Return ONLY a JSON object: {\"clean_text\": \"...\"}."
-    )
     payload = {
         "model": os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b",
         "temperature": 0,
@@ -77,8 +92,8 @@ async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "voice.m4a"
         "temperature": "0",
         "prompt": (
             "Bhai meeting host kar de, Devender ke sath meeting schedule kar, Google Meet link bana, "
-            "reminder set kar, 5 baje, aaj shaam 5:00 PM, kal subah 11:00 AM, electricity bill 1200 due 25 Oct. "
-            "मीटिंग होस्ट कर दे, गूगल मीट, शेड्यूल्ड मीटिंग, रिमाइंडर, आज शाम पांच बजे, कल सुबह, devender ke sath."
+            "reminder set kar, chaar baje 4:00 PM Aarav ko phone kar dena, paanch baje 5:00 PM Rakshit ko payment, "
+            "kal subah 11:00 AM, electricity bill 1200 due 25 Oct, urgent reminder yaad rakhna."
         ),
     }
     async with httpx.AsyncClient(timeout=60) as client:

@@ -3593,6 +3593,21 @@ async def process_voice(chat_id, voice):
 
         # User ko dikhao ki bot ne kya suna (galat amount/date pakadne ke liye)
         await say_raw(chat_id, f"🎙️ “{transcript}”")
+
+        # Multi-Action / Brain Dump detection on Voice Notes:
+        try:
+            from services.brain_dump_service import decompose_brain_dump, stage_brain_dump_confirmation
+            user_tz = db.get_user_timezone(chat_id) or "Asia/Kolkata"
+            user_lang = db.get_user_language(chat_id) or "hinglish"
+            decomp = await decompose_brain_dump(transcript, user_timezone=user_tz)
+            if decomp.is_multi_intent and len(decomp.items) >= 2:
+                # Multi-action voice note: Stage confirmation so user can review and approve before writing!
+                action_id, confirm_card = stage_brain_dump_confirmation(chat_id, decomp, transcript, user_lang=user_lang)
+                await say(chat_id, confirm_card)
+                return
+        except Exception as v_err:
+            print("voice multi-action check fallback:", repr(v_err))
+
         await handle_user_text(chat_id, transcript, lang_hint=language_from_whisper(spoken))
     except Exception as e:
         print("voice error:", e)

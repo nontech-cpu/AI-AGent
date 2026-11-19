@@ -677,6 +677,13 @@ async def execute_pending_action(chat_id: int, pending: dict) -> Tuple[bool, str
             else:
                 return False, res.get("message") or "Reminder update nahi ho saka."
 
+        elif kind in ("brain_dump", "multi_action", "multi_reminder"):
+            from services.brain_dump_service import execute_staged_brain_dump
+            success, msg = await execute_staged_brain_dump(chat_id, pending)
+            if action_id:
+                complete_pending_action(action_id, status="confirmed" if success else "failed")
+            return success, msg
+
         else:
             from agent.tools import execute_tool
             clean_payload = {k: v for k, v in payload.items() if k not in ("action", "kind", "created_at")}

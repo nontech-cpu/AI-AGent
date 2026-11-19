@@ -441,3 +441,94 @@ async def process_and_execute_brain_dump(
         "formatted_summary": summary_msg,
         "message": summary_msg
     }
+
+
+def stage_brain_dump_confirmation(
+    chat_id: int,
+    decomposition: BrainDumpDecomposition,
+    transcript: str,
+    user_lang: str = "hinglish"
+) -> Tuple[int, str]:
+    """
+    Saves a pending confirmation action and renders a review card for the user.
+    Prevents unwanted/arbitrary writes before the user verifies what was parsed.
+    """
+    from state.pending import save_pending_action
+    is_eng = (user_lang == "english")
+
+    payload_items = []
+    for it in decomposition.items:
+        payload_items.append(it.model_dump() if hasattr(it, "model_dump") else it.dict())
+
+    action_id = save_pending_action(
+        chat_id=chat_id,
+        action_kind="brain_dump",
+        payload={
+            "action": "brain_dump",
+            "items": payload_items,
+            "transcript": transcript,
+            "summary_intent": decomposition.summary_intent,
+            "user_lang": user_lang
+        },
+        expires_minutes=15
+    )
+
+    lines = []
+    if is_eng:
+        lines.append(f"📋 **I've prepared {len(decomposition.items)} action(s) from your voice note:**\n")
+    else:
+        lines.append(f"📋 **Maine aapke voice note se ye {len(decomposition.items)} action(s) prepare kiye hain:**\n")
+
+    for idx, it in enumerate(decomposition.items, start=1):
+        cat = it.category.lower()
+        if cat == "calendar":
+            dt_str = f" ({it.target_date} at {it.target_time})" if it.target_date and it.target_time else (f" (at {it.target_time})" if it.target_time else "")
+            lines.append(f"{idx}. 📅 **Calendar:** {it.title}{dt_str}")
+        elif cat == "reminder":
+            dt_str = f" ({it.target_date} at {it.target_time})" if it.target_date and it.target_time else (f" (at {it.target_time})" if it.target_time else "")
+            lines.append(f"{idx}. ⏰ **Reminder:** {it.title}{dt_str}")
+        elif cat == "expense":
+            amt_str = f"₹{it.amount:,.2f}" if it.amount else ""
+            lines.append(f"{idx}. 💸 **Expense / Payment:** {it.title} ({amt_str})")
+        elif cat == "idea":
+            lines.append(f"{idx}. 💡 **Idea Vault:** {it.title}")
+        elif cat == "reading":
+            lines.append(f"{idx}. 🔖 **Reading List:** {it.title}")
+        elif cat == "commitment":
+            lines.append(f"{idx}. 🤝 **Commitment:** {it.title} ({it.person or 'Contact'})")
+        else:
+            lines.append(f"{idx}. 📝 **Task:** {it.title}")
+
+    if is_eng:
+        lines.append("\n**Should I schedule all of these?**\n• Reply **'Yes'** to confirm and schedule.\n• Reply **'Cancel'** or let me know if anything needs correction.")
+    else:
+        lines.append("\n**Kya main ye sabhi schedule kar doon?**\n• Reply **'Yes'** confirm karne ke liye.\n• Reply **'Cancel'** ya koi badlaav ho toh bataiye.")
+
+    return action_id, "\n".join(lines).strip()
+
+
+async def execute_staged_brain_dump(chat_id: int, pending: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Executes the confirmed staged items from pending action payload.
+    """
+    payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else pending
+    items_raw = payload.get("items") or []
+    user_lang = payload.get("user_lang") or db.get_user_language(chat_id) or "hinglish"
+    summary_intent = payload.get("summary_intent") or ""
+
+    if not items_raw:
+        return False, "Koi pending items nahi mile schedule karne ke liye."
+
+    results = []
+    for it_dict in items_raw:
+        try:
+            item = DecomposedItem(**it_dict)
+            res = await execute_brain_dump_item(chat_id, item)
+            results.append(res)
+        except Exception as exc:
+            logger.error(f"Error executing staged item: {exc}")
+            results.append({"status": "error", "title": it_dict.get("title", "Task"), "error": str(exc)})
+
+    summary_card = format_brain_dump_summary(results, summary_intent=summary_intent, user_lang=user_lang)
+    return True, summary_card
+

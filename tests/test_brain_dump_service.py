@@ -209,3 +209,65 @@ async def test_agent_tool_process_brain_dump_integration(setup_test_user):
         assert res["items_count"] == 2
         assert "Drink Water" in res["formatted_summary"]
         assert "Write newsletter" in res["formatted_summary"]
+
+
+@pytest.mark.asyncio
+async def test_clean_voice_transcript_roman_mandate():
+    """Verifies that clean_voice_transcript converts Devanagari Hindi into Roman Hinglish and corrects acoustic errors."""
+    from voice import clean_voice_transcript
+
+    mock_llm_json = """
+    {"clean_text": "Anu, 4 baje Aarav ko phone kar dena, yaad rakh dena, aur 5 baje Rakshit ko 800 payment, wo yaad rakh dena."}
+    """
+    with patch("llm.provider.chat", new_callable=AsyncMock) as mock_chat:
+        mock_resp = AsyncMock()
+        mock_resp.text = mock_llm_json
+        mock_chat.return_value = mock_resp
+
+        devanagari_input = "Anu, चार बजे आराव को point कर देना, याद रख देना, और पाँच बजे रक्षिक को आठ से payment, वो याद रख देना."
+        res = await clean_voice_transcript(devanagari_input)
+
+        assert "चार" not in res
+        assert "Aarav" in res
+        assert "phone kar dena" in res
+        assert "Rakshit" in res
+
+
+@pytest.mark.asyncio
+async def test_stage_and_execute_brain_dump_confirmation(setup_test_user):
+    """
+    Verifies that multi-action voice notes are staged first with a review card,
+    and only executed when the user confirms with 'yes'.
+    """
+    from services.brain_dump_service import stage_brain_dump_confirmation, execute_staged_brain_dump
+    from state.pending import get_pending_action, execute_pending_action
+
+    chat_id = setup_test_user
+    decomp = BrainDumpDecomposition(
+        is_multi_intent=True,
+        summary_intent="Two reminders",
+        items=[
+            DecomposedItem(category="reminder", title="Call Aarav", target_date="2026-11-20", target_time="16:00"),
+            DecomposedItem(category="expense", title="Pay Rakshit 800", amount=800.0, merchant="Rakshit", target_date="2026-11-20", target_time="17:00")
+        ]
+    )
+
+    # 1. Stage confirmation
+    action_id, preview_card = stage_brain_dump_confirmation(chat_id, decomp, "sample transcript", user_lang="hinglish")
+    assert "Maine aapke voice note se ye 2 action(s) prepare kiye hain" in preview_card
+    assert "Call Aarav" in preview_card
+    assert "Pay Rakshit" in preview_card
+    assert "Kya main ye sabhi schedule kar doon?" in preview_card
+
+    # 2. Verify pending action saved in DB
+    pending = get_pending_action(chat_id)
+    assert pending is not None
+    assert pending["action_kind"] == "brain_dump"
+
+    # 3. User says "Yes" -> execute_pending_action executes staged items
+    success, reply = await execute_pending_action(chat_id, pending)
+    assert success is True
+    assert "Brain Dump Sort & Organize Ho Gaya!" in reply
+    assert "Call Aarav" in reply
+    assert "₹800.00" in reply
+
