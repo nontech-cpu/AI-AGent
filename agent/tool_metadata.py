@@ -200,6 +200,12 @@ TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     },
 
     # ----------------- Reversible Write Tools -----------------
+    "process_brain_dump": {
+        "risk": TOOL_RISK_REVERSIBLE_WRITE,
+        "parameters": {
+            "raw_text": {"required": True, "default": None, "can_be_found_in": ["user_message"]}
+        }
+    },
     "create_reminder": {
         "risk": TOOL_RISK_REVERSIBLE_WRITE,
         "parameters": {

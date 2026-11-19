@@ -233,6 +233,9 @@ class CreateReminderArgs(BaseModel):
     force: Optional[bool] = Field(False, description="Set to true if user explicitly confirmed or insists to schedule despite a time conflict or tight schedule.")
     request_quote: Optional[str] = Field(None, description="Exact words from the user's message requesting this reminder.")
 
+class ProcessBrainDumpArgs(BaseModel):
+    raw_text: str = Field(..., description="The unformatted, chaotic text or voice note transcript containing multiple tasks, reminders, expenses, ideas, or links to organize.")
+
 class UpdateReminderArgs(BaseModel):
     title: Optional[str] = Field(None, description="Title or keyword of the reminder, meeting, or task to update.")
     new_title: Optional[str] = Field(None, description="New title if renaming or replacing the reminder (e.g. changing from 'Devender' to 'Rahul').")
@@ -818,6 +821,27 @@ TOOL_DEFINITIONS = [
                     "trip_date": {"type": ["string", "null"], "description": "Optional trip date in YYYY-MM-DD format."}
                 },
                 "required": ["trip_title", "items"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_brain_dump",
+            "description": (
+                "Decomposes and atomically organizes an unstructured multi-intent brain dump or chaotic stream of consciousness "
+                "(from voice notes or text dumps) into structured calendar events, timed reminders, expense entries, "
+                "idea vault notes, and reading bookmarks in one pass."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "raw_text": {
+                        "type": "string",
+                        "description": "The raw, unstructured text or voice note transcript containing multiple tasks/ideas to be organized."
+                    }
+                },
+                "required": ["raw_text"]
             }
         }
     },
@@ -2526,6 +2550,12 @@ async def _execute_tool_inner(chat_id: int, tool_name: str, arguments: dict, use
                 return {"status": "not_found", "contact": args.contact, "commitment": "No record found"}
             comms = [{"name": c["name"], "company": c.get("company"), "commitment": c["commitments"]} for c in contacts if c.get("commitments")]
             return {"status": "success", "commitments": comms}
+
+        elif tool_name == "process_brain_dump":
+            args = ProcessBrainDumpArgs(**arguments)
+            from services.brain_dump_service import process_and_execute_brain_dump
+            res = await process_and_execute_brain_dump(chat_id, args.raw_text, user_context=user_context)
+            return res
 
         elif tool_name == "save_note_or_fact":
             args = SaveNoteOrFactArgs(**arguments)
@@ -5794,7 +5824,8 @@ CORE_TOOL_NAMES = {
     "update_contact_commitment", "manage_relationship", "set_user_timezone", "set_user_language", "set_user_preference", "ask_user", "learn_user_correction",
     "connect_integration", "disconnect_integration", "check_integrations_status", "create_meeting", "create_calendar_event", "schedule_event",
     "search_web", "find_nearby_places",
-    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number",
+    "process_brain_dump"
 }
 
 # Dead keyword routing and duplicate _cosine_similarity excised per Phase 7c Item 6
@@ -5918,7 +5949,8 @@ _BUDGET_ESSENTIAL_TOOLS = {
     "search_user_emails", "send_email",
     "save_contact", "get_contact", "list_contacts",
     "check_integrations_status",
-    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number"
+    "send_targeted_mention_message", "link_user_phone_number", "unlink_user_phone_number",
+    "process_brain_dump"
 }
 
 

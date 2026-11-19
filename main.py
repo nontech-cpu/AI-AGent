@@ -2910,6 +2910,23 @@ async def handle_user_text(chat_id, text, lang_hint=None):
         await say(chat_id, "\n".join(lines))
         return
 
+    if cmd_token in {"/braindump", "/dump", "braindump"}:
+        dump_text = clean[len(cmd_token):].strip()
+        if not dump_text:
+            rep = (
+                "🧠 **Saptic AI Brain Dump Mode:**\n"
+                "Aap apne saare chaotic thoughts, tasks, meetings, expenses, ideas, ya links ek saath bhejo "
+                "(voice note ya text me) — main sabko automatically alag-alag categorize aur schedule kar dunga! 👍\n\n"
+                "*Example:*\n"
+                "• *Kal car service 10 baje, call Rohit at 12, pay ₹1500 electricity bill, and startup idea for creator tools*"
+            )
+            await say(chat_id, rep)
+            return
+        from services.brain_dump_service import process_and_execute_brain_dump
+        res = await process_and_execute_brain_dump(chat_id, dump_text)
+        await say(chat_id, res.get("formatted_summary", res.get("message", "Brain dump processed.")))
+        return
+
     if cmd_token == "/resolve_followup" or clean_lower.startswith("/resolve_followup"):
         parts = clean.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip().isdigit():
