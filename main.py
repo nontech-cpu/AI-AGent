@@ -4304,6 +4304,7 @@ async def lifespan(app):
     from heartbeat import heartbeat_loop
 
     async def _warmup():
+        # 1. DB ping & migrations
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1")).fetchall()
@@ -4314,23 +4315,42 @@ async def lifespan(app):
                 db._init_reminders_scheduler_columns()
             except Exception as mig_err:
                 logging.getLogger("uvicorn").warning(f"Startup schema migration notice: {mig_err}")
+        except Exception as db_ping_err:
+            logging.getLogger("uvicorn").warning(f"Startup DB ping notice: {db_ping_err}")
+
+        # 2. Memory context & runtime prompt warmup
+        try:
             from memory.retrieval import assemble_memory_context
             from agent.prompt import build_runtime_system_prompt
             for cid in (1758056012, 1234828592):
                 m_ctx = assemble_memory_context(cid, "ping")
                 await build_runtime_system_prompt(cid, "ping", mem_ctx=m_ctx)
-            # Immediate catch-up pass on startup for any missed reminders during sleep/reboot
+        except Exception as prompt_err:
+            logging.getLogger("uvicorn").warning(f"Startup prompt warmup notice: {prompt_err}")
+
+        # 3. Immediate catch-up pass on startup for any missed reminders during sleep/reboot
+        try:
             await run_startup_catchup_pass()
-            # Immediate morning briefing catch-up pass if server woke up during the day
-            try:
-                now_ist = timeutil.now(IST)
-                if 8 <= now_ist.hour < 14:
-                    from morning_briefing import morning_briefing_job
-                    await morning_briefing_job()
-            except Exception as mb_err:
-                logging.getLogger("uvicorn").warning(f"Startup morning briefing catch-up notice: {mb_err}")
-        except Exception as w_err:
-            logging.getLogger("uvicorn").warning(f"Startup warmup notice: {w_err}")
+        except Exception as rem_err:
+            logging.getLogger("uvicorn").warning(f"Startup reminder catch-up notice: {rem_err}")
+
+        # 4. Immediate morning briefing catch-up pass if server woke up during daytime (08:00 - 14:00 IST)
+        try:
+            now_ist = timeutil.now(IST)
+            if 8 <= now_ist.hour < 14:
+                from morning_briefing import morning_briefing_job
+                await morning_briefing_job()
+        except Exception as mb_err:
+            logging.getLogger("uvicorn").warning(f"Startup morning briefing catch-up notice: {mb_err}")
+
+        # 5. Immediate evening wrap-up catch-up pass if server woke up during evening (21:00 - 23:30 IST)
+        try:
+            now_ist = timeutil.now(IST)
+            if (now_ist.hour == 21) or (now_ist.hour == 22) or (now_ist.hour == 23 and now_ist.minute <= 30):
+                from heartbeat import check_evening_wrapup
+                await check_evening_wrapup(now_ist)
+        except Exception as ew_err:
+            logging.getLogger("uvicorn").warning(f"Startup evening wrap-up catch-up notice: {ew_err}")
     asyncio.create_task(_warmup())
 
     tasks = [

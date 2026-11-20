@@ -1,0 +1,15 @@
+name: PeculiarAI Cloud Keep-Alive
+
+on:
+  schedule:
+    # Run every 15 minutes to keep free-tier containers warm and prevent sleep during briefing windows
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Backend Health Endpoint
+        run: |
+          curl -s -f --max-time 15 "https://peculiar-ai-backend.onrender.com/health" || echo "Health check ping completed"

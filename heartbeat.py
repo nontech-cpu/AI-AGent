@@ -76,88 +76,110 @@ async def broadcast_alert(message: str, specific_chat_id: Optional[int] = None):
             # Send to Telegram (only positive valid telegram IDs)
             if cid > 0:
                 await send_proactive_telegram(cid, message)
-            # Log to DB chat history
-            db.log_chat_message(cid, "assistant", message)
+            # Log to DB chat history safely
+            try:
+                db.log_chat_message(cid, "assistant", message)
+            except Exception as log_err:
+                logger.debug(f"DB log chat message skipped for {cid}: {log_err}")
         except Exception as exc:
             logger.error(f"Broadcast error for {cid}: {repr(exc)}")
 
 
 async def check_evening_wrapup(now_ist: datetime):
-    """Sends a warm 9:30 PM reflection on pending checklists and day's accomplishments."""
+    """
+    Sends a warm evening reflection (9:00 PM - 11:30 PM IST) on pending checklists and day's accomplishments.
+    Persisted in database to survive cloud restarts, sleep, and deployments.
+    """
     today_str = str(now_ist.date())
-    # Target window: 21:30 - 21:35 IST
-    if now_ist.hour == 21 and 30 <= now_ist.minute <= 35:
+    # Resilient target window: 21:00 - 23:30 IST (catches up if container was asleep or woke up late)
+    if (now_ist.hour == 21) or (now_ist.hour == 22) or (now_ist.hour == 23 and now_ist.minute <= 30):
         for cid in get_active_target_chat_ids():
-            key = f"{today_str}_{cid}_evening"
-            if key in _EVENING_WRAPUP_SENT:
-                continue
-            _EVENING_WRAPUP_SENT.add(key)
-
-            cid_can = db.canonical_chat_id(cid)
-            lists = db.get_smart_lists(cid_can) or []
-            pending_items = []
-            for l in lists:
-                for item in l.get("items", []):
-                    if not item.get("checked"):
-                        pending_items.append(f"{item.get('title')} ({l.get('name')})")
-
-            name = db.get_user_display_name(cid)
-            greeting_name = f" {name}" if name else ""
-
-            # Check pending commitments due today
-            pending_comms = []
             try:
-                with db.engine.connect() as conn:
-                    rows = conn.execute(
-                        db.text("SELECT title FROM commitments WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) AND status = 'pending' AND (target_date IS NULL OR target_date <= :d)"),
-                        {"cid": cid_can, "d": now_ist.date()}
-                    ).fetchall()
-                    pending_comms = [r[0] for r in rows if r[0]]
-            except Exception:
-                pass
+                if db.is_evening_wrapup_sent(cid, today_str):
+                    continue
+                # Mark as dispatched atomically in DB and memory
+                db.record_evening_wrapup_sent(cid, today_str)
 
-            msg_parts = []
-            user_lang = db.get_user_language(cid)
-            is_eng = (user_lang == "english")
-            if pending_items:
-                preview = ", ".join(pending_items[:3])
-                if is_eng:
-                    user_salutation = f"{name}, y" if name else "Y"
-                    msg_parts.append(
-                        f"🌙 **Evening Wrap-up & Status Check:**\n"
-                        f"{user_salutation}ou have {len(pending_items)} items pending in your lists: **{preview}**."
-                    )
-                else:
-                    user_salutation = f"{name}, a" if name else "A"
-                    msg_parts.append(
-                        f"🌙 **Evening Wrap-up & Status Check:**\n"
-                        f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**."
-                    )
-            else:
-                if is_eng:
-                    msg_parts.append(
-                        f"🌙 **Good Evening{greeting_name}!**\n"
-                        f"All major tasks and schedule for today are complete."
-                    )
-                else:
-                    msg_parts.append(
-                        f"🌙 **Good Evening{greeting_name}!**\n"
-                        f"Aaj ke saare major tasks aur schedule complete hain."
-                    )
+                cid_can = db.canonical_chat_id(cid)
+                lists = []
+                try:
+                    lists = db.get_smart_lists(cid_can) or []
+                except Exception:
+                    lists = []
 
-            if pending_comms:
-                comm_preview = ", ".join(pending_comms[:2])
-                if is_eng:
-                    msg_parts.append(f"\n🤝 **Commitment Check:** You planned: **{comm_preview}**.\nWas this completed or should I carry it forward to tomorrow?")
-                else:
-                    msg_parts.append(f"\n🤝 **Commitment Check:** Aaj ke liye aapne promise/plan kiya tha: **{comm_preview}**.\nKya ye complete ho gaya hai ya kal carry-forward karoon?")
-            else:
-                if is_eng:
-                    msg_parts.append("\nLet me know if you would like to plan for tomorrow. Have a great rest! 😊")
-                else:
-                    msg_parts.append("\nKal ke din ki planning karni ho toh batana, aaram se rest karo! 😊")
+                pending_items = []
+                for l in lists:
+                    for item in l.get("items", []):
+                        if not item.get("checked"):
+                            pending_items.append(f"{item.get('title')} ({l.get('name')})")
 
-            await broadcast_alert("\n".join(msg_parts), specific_chat_id=cid)
+                name = ""
+                try:
+                    name = db.get_user_display_name(cid)
+                except Exception:
+                    pass
+                greeting_name = f" {name}" if name else ""
+
+                # Check pending commitments due today
+                pending_comms = []
+                try:
+                    with db.engine.connect() as conn:
+                        rows = conn.execute(
+                            db.text("SELECT title FROM commitments WHERE user_id = (SELECT id FROM users WHERE telegram_chat_id = :cid) AND status = 'pending' AND (target_date IS NULL OR target_date <= :d)"),
+                            {"cid": cid_can, "d": now_ist.date()}
+                        ).fetchall()
+                        pending_comms = [r[0] for r in rows if r[0]]
+                except Exception:
+                    pass
+
+                msg_parts = []
+                user_lang = "hinglish"
+                try:
+                    user_lang = db.get_user_language(cid)
+                except Exception:
+                    pass
+                is_eng = (user_lang == "english")
+                if pending_items:
+                    preview = ", ".join(pending_items[:3])
+                    if is_eng:
+                        user_salutation = f"{name}, y" if name else "Y"
+                        msg_parts.append(
+                            f"🌙 **Evening Wrap-up & Status Check:**\n"
+                            f"{user_salutation}ou have {len(pending_items)} items pending in your lists: **{preview}**."
+                        )
+                    else:
+                        user_salutation = f"{name}, a" if name else "A"
+                        msg_parts.append(
+                            f"🌙 **Evening Wrap-up & Status Check:**\n"
+                            f"{user_salutation}aj ke din ke ye {len(pending_items)} items lists mein pending hain: **{preview}**."
+                        )
+                else:
+                    if is_eng:
+                        msg_parts.append(
+                            f"🌙 **Good Evening{greeting_name}!**\n"
+                            f"All major tasks and schedule for today are complete."
+                        )
+                    else:
+                        msg_parts.append(
+                            f"🌙 **Good Evening{greeting_name}!**\n"
+                            f"Aaj ke saare major tasks aur schedule complete hain."
+                        )
+
+                if pending_comms:
+                    comm_preview = ", ".join(pending_comms[:2])
+                    if is_eng:
+                        msg_parts.append(f"\n🤝 **Commitment Check:** You planned: **{comm_preview}**.\nWas this completed or should I carry it forward to tomorrow?")
+                    else:
+                        msg_parts.append(f"\n🤝 **Commitment Check:** Aaj ke liye aapne promise/plan kiya tha: **{comm_preview}**.\nKya ye complete ho gaya hai ya kal carry-forward karoon?")
+                else:
+                    if is_eng:
+                        msg_parts.append("\nLet me know if you would like to plan for tomorrow. Have a great rest! 😊")
+                    else:
+                        msg_parts.append("\nKal ke din ki planning karni ho toh batana, aaram se rest karo! 😊")
+
+                await broadcast_alert("\n".join(msg_parts), specific_chat_id=cid)
+            except Exception as wrapup_err:
+                logger.error(f"Error executing evening wrapup for {cid}: {repr(wrapup_err)}")
 
 
 _LAST_RECURRING_ROLL_DATE = None

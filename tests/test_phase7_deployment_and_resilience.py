@@ -233,3 +233,51 @@ async def test_morning_briefing_sleep_wake_catchup_pass():
     # 3. Second run must be idempotent (no duplicate sends)
     sent_second = await morning_briefing.process_user_morning_briefing(chat_id, u_info, wake_dt)
     assert sent_second is False
+
+
+@pytest.mark.asyncio
+async def test_evening_wrapup_persistence_and_catchup_pass():
+    """Verify evening wrap-up delivers in the 21:00-23:30 window, persists in DB, and is idempotent."""
+    from datetime import datetime, date
+    from timing import IST
+    import heartbeat
+    from unittest.mock import patch, AsyncMock
+
+    chat_id = 998877709
+    db.ensure_user(chat_id)
+    today_str = "2026-11-19"
+    evening_dt = datetime(2026, 11, 19, 21, 45, tzinfo=IST)
+
+    # 1. Ensure table and reset sent state
+    db._init_evening_wrapup_table()
+    with db.engine.begin() as conn:
+        conn.execute(db.text("DELETE FROM daily_evening_wrapups WHERE chat_id = :c"), {"c": chat_id})
+    db._EVENING_WRAPUP_SENT_CACHE.discard(f"{chat_id}_{today_str}")
+
+    dispatched = []
+    async def mock_broadcast(msg, specific_chat_id=None):
+        dispatched.append((specific_chat_id, msg))
+
+    with patch("heartbeat.get_active_target_chat_ids", return_value=[chat_id]), \
+         patch("heartbeat.broadcast_alert", side_effect=mock_broadcast):
+        # First execution: should deliver reflection
+        await heartbeat.check_evening_wrapup(evening_dt)
+        assert len(dispatched) == 1
+        assert "Evening Wrap-up" in dispatched[0][1] or "Good Evening" in dispatched[0][1]
+        assert db.is_evening_wrapup_sent(chat_id, today_str) is True
+
+        # Second execution: must be idempotent and not send again
+        await heartbeat.check_evening_wrapup(evening_dt)
+        assert len(dispatched) == 1
+
+
+def test_morning_briefing_resilience_when_db_down():
+    """Verify get_all_active_telegram_users falls back to target chat IDs when DB raises connection error."""
+    from unittest.mock import patch
+    from sqlalchemy.exc import OperationalError
+
+    with patch.object(db.engine, "connect", side_effect=OperationalError("connection failed", None, Exception("quota exceeded"))):
+        users = db.get_all_active_telegram_users()
+        assert len(users) >= 1
+        chat_ids = [u["chat_id"] for u in users]
+        assert 1758056012 in chat_ids or 1234828592 in chat_ids
