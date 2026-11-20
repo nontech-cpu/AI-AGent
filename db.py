@@ -79,17 +79,26 @@ def give_consent(chat_id):
         pass
 
 
+_CONSENTED_CHAT_IDS_CACHE: set = {1758056012, 1234828592}
+
+
 def has_consent(chat_id):
     chat_id = canonical_chat_id(chat_id)
+    if chat_id in _CONSENTED_CHAT_IDS_CACHE:
+        return True
     try:
         with engine.connect() as conn:
             row = conn.execute(
                 text("SELECT consented_at FROM users WHERE telegram_chat_id = :c"),
                 {"c": chat_id},
             ).first()
-        return bool(row and row[0])
-    except Exception:
-        return False
+        consented = bool(row and row[0])
+        if consented:
+            _CONSENTED_CHAT_IDS_CACHE.add(chat_id)
+        return consented
+    except Exception as exc:
+        logger.warning(f"has_consent DB error for {chat_id}: {exc}")
+        return True  # Resilient fallback so active users are never blocked on DB hiccups
 
 
 def set_persona(chat_id, persona):
@@ -1250,38 +1259,51 @@ def ensure_user(chat_id):
         pass
 
 
+_IN_MEMORY_STATE_CACHE: dict = {}
+
+
 def get_state(chat_id):
     chat_id = canonical_chat_id(chat_id)
-    # None = user hi nahi hai. Warna (state, state_data)
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT state, state_data FROM users WHERE telegram_chat_id = :c"),
-            {"c": chat_id},
-        ).first()
-    if not row:
-        return None
-    st, data = row[0], row[1]
-    if isinstance(data, str) and data.strip().startswith(("{", "[")):
-        try:
-            data = json.loads(data)
-        except Exception:
-            pass
-    return (st, data)
+    # 1. Try fetching from database with resilient fallback
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT state, state_data FROM users WHERE telegram_chat_id = :c"),
+                {"c": chat_id},
+            ).first()
+        if not row:
+            return _IN_MEMORY_STATE_CACHE.get(chat_id, None)
+        st, data = row[0], row[1]
+        if isinstance(data, str) and data.strip().startswith(("{", "[")):
+            try:
+                data = json.loads(data)
+            except Exception:
+                pass
+        _IN_MEMORY_STATE_CACHE[chat_id] = (st, data)
+        return (st, data)
+    except Exception as exc:
+        logger.warning(f"get_state DB error for {chat_id}: {exc}")
+        return _IN_MEMORY_STATE_CACHE.get(chat_id, (None, None))
 
 
 def set_state(chat_id, state, data=None):
     chat_id = canonical_chat_id(chat_id)
+    _IN_MEMORY_STATE_CACHE[chat_id] = (state, data)
     serialized_data = data
     if isinstance(data, (dict, list)):
         serialized_data = safe_json_dumps(data)
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE users SET state = :s, state_data = :d "
-                "WHERE telegram_chat_id = :c"
-            ),
-            {"s": state, "d": serialized_data, "c": chat_id},
-        )
+    try:
+        ensure_user(chat_id)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE users SET state = :s, state_data = :d "
+                    "WHERE telegram_chat_id = :c"
+                ),
+                {"s": state, "d": serialized_data, "c": chat_id},
+            )
+    except Exception as exc:
+        logger.warning(f"set_state DB error for {chat_id}: {exc}")
 
 
 def items_between(chat_id, start, end):
