@@ -200,14 +200,14 @@ DDL_STATEMENTS = [
     # 13. pending_actions
     """CREATE TABLE IF NOT EXISTS pending_actions (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        action_type VARCHAR(64) NOT NULL,
-        payload JSONB NOT NULL,
-        status VARCHAR(32) DEFAULT 'pending',
-        created_at TIMESTAMPTZ DEFAULT now(),
-        expires_at TIMESTAMPTZ
+        chat_id BIGINT NOT NULL,
+        action_kind VARCHAR(64) NOT NULL,
+        payload JSONB NOT NULL DEFAULT '{}',
+        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP WITH TIME ZONE
     )""",
-    "CREATE INDEX IF NOT EXISTS idx_pending_actions_user ON pending_actions(user_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_pending_actions_chat ON pending_actions(chat_id, status)",
 
     # 14. active_contexts
     """CREATE TABLE IF NOT EXISTS active_contexts (
